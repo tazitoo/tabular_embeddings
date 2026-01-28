@@ -68,6 +68,31 @@ python compare_embeddings.py --suite relbench
 - relbench (for RelBench datasets, `pip install relbench`)
 - pmlb (for PMLB datasets, `pip install pmlb`)
 
+## Distributed Execution
+
+Same GPU worker pool as the finance project, with a dedicated conda env.
+
+- **Workers**: surfer4 (3090), terrax4 (2080 Ti), octo4 (3070), firelord4 (4090)
+- **Conda env**: `tabular_emb` on each worker
+- **Repo path**: `/home/brian/src/tabular_embeddings`
+- **Code sync**: `git pull --ff-only` on each worker before cluster start
+
+```bash
+# Check worker health
+python distributed.py --check
+
+# Sync code to workers
+python distributed.py --sync
+
+# Distributed embedding comparison (multi-dataset)
+python compare_embeddings.py --suite tabarena --models tabpfn hyperfast tabicl --distributed
+
+# Distributed SAE extraction
+python compare_sae_concepts.py --dataset adult --models tabpfn hyperfast --distributed
+```
+
+galactus orchestrates (Dask scheduler), workers extract embeddings on GPU, similarity analysis runs locally on galactus.
+
 ## Key Findings (Update as research progresses)
 
 - [ ] CKA scores between TabPFN and HyperFast

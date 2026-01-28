@@ -18,6 +18,9 @@ Usage:
 
     # Compare specific models
     python compare_embeddings.py --dataset iris --models tabpfn hyperfast
+
+    # Distributed across GPU workers (multi-dataset)
+    python compare_embeddings.py --suite tabarena --models tabpfn hyperfast tabicl --distributed
 """
 
 import argparse
@@ -251,6 +254,100 @@ def run_multi_dataset_comparison(
     return pd.DataFrame(rows)
 
 
+def run_multi_dataset_comparison_distributed(
+    datasets: List[Tuple[np.ndarray, np.ndarray, Dict]],
+    models: List[str],
+    context_size: int = 600,
+    query_size: int = 100,
+) -> pd.DataFrame:
+    """
+    Run comparison across multiple datasets using distributed GPU workers.
+
+    Distributes embedding extraction across workers, then runs similarity
+    analysis locally on the orchestrator.
+
+    Args:
+        datasets: List of (X, y, metadata) tuples
+        models: Models to compare
+        context_size: Context samples per dataset
+        query_size: Query samples per dataset
+
+    Returns:
+        DataFrame with aggregated results
+    """
+    from distributed import run_on_workers, extract_embeddings_task
+
+    # Build task list: (model, dataset) pairs
+    tasks = []
+    for X, y, meta in datasets:
+        dataset_name = meta.get("name", "unknown")
+        n_total = len(X)
+        ctx = context_size if n_total >= context_size + query_size else int(n_total * 0.7)
+        qry = min(query_size, n_total - ctx)
+
+        X_ctx = X[:ctx]
+        y_ctx = y[:ctx]
+        X_q = X[ctx:ctx + qry]
+
+        for model_name in models:
+            tasks.append({
+                "model_name": model_name,
+                "X_context": X_ctx,
+                "y_context": y_ctx,
+                "X_query": X_q,
+                "dataset_name": dataset_name,
+            })
+
+    print(f"\nDistributed: {len(tasks)} tasks ({len(datasets)} datasets x {len(models)} models)")
+
+    # Distribute extraction across workers
+    results = run_on_workers(extract_embeddings_task, tasks)
+
+    # Group results by dataset
+    dataset_embeddings: Dict[str, Dict[str, np.ndarray]] = {}
+    for r in results:
+        if r is None or r.get("status") != "ok" or r["embeddings"] is None:
+            if r is not None:
+                print(f"  Skipping {r.get('model')} @ {r.get('dataset')}: {r.get('status')}")
+            continue
+        ds = r["dataset"]
+        if ds not in dataset_embeddings:
+            dataset_embeddings[ds] = {}
+        dataset_embeddings[ds][r["model"]] = r["embeddings"]
+        # Also store layer embeddings
+        for layer_name, layer_emb in r.get("layer_embeddings", {}).items():
+            key = f"{r['model']}_{layer_name}"
+            if key not in dataset_embeddings[ds]:
+                dataset_embeddings[ds][key] = layer_emb
+
+    # Run similarity analysis locally
+    rows = []
+    for dataset_name, embeddings in dataset_embeddings.items():
+        if len(embeddings) < 2:
+            print(f"  {dataset_name}: <2 models succeeded, skipping similarity")
+            continue
+
+        print(f"\n{'=' * 70}")
+        print(f"Dataset: {dataset_name}")
+        print(f"{'=' * 70}")
+
+        pairwise_results = compute_pairwise_similarity(embeddings)
+        for (m1, m2), sim_result in pairwise_results.items():
+            print(sim_result.summary())
+            rows.append({
+                "dataset": dataset_name,
+                "model_a": m1,
+                "model_b": m2,
+                "cka_score": sim_result.cka_score,
+                "mean_cosine_sim": sim_result.mean_cosine_sim,
+                "procrustes_distance": sim_result.procrustes_distance,
+                "dim_a": sim_result.embedding_dim_a,
+                "dim_b": sim_result.embedding_dim_b,
+            })
+
+    return pd.DataFrame(rows)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compare embedding geometry across tabular foundation models"
@@ -279,6 +376,10 @@ def main():
                         help=f"Models to compare ({available_models})")
     parser.add_argument("--device", type=str, default="cpu",
                         choices=["cpu", "cuda", "mps"])
+
+    # Distributed
+    parser.add_argument("--distributed", action="store_true",
+                        help="Distribute extraction across GPU workers (multi-dataset only)")
 
     # Output
     parser.add_argument("--output", type=str, help="Output CSV path")
@@ -344,11 +445,19 @@ def main():
             device=args.device,
         )
     else:
-        results_df = run_multi_dataset_comparison(
-            datasets,
-            models=args.models,
-            device=args.device,
-        )
+        if args.distributed:
+            results_df = run_multi_dataset_comparison_distributed(
+                datasets,
+                models=args.models,
+                context_size=args.context_size,
+                query_size=args.query_size,
+            )
+        else:
+            results_df = run_multi_dataset_comparison(
+                datasets,
+                models=args.models,
+                device=args.device,
+            )
 
         # Summary across datasets
         print("\n" + "=" * 70)

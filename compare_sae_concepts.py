@@ -20,6 +20,9 @@ Usage:
 
     # Compare with specific dictionary size
     python compare_sae_concepts.py --dataset iris --dict-expansion 8
+
+    # Distributed embedding extraction across GPU workers
+    python compare_sae_concepts.py --dataset adult --models tabpfn hyperfast tabicl --distributed
 """
 
 import argparse
@@ -108,6 +111,47 @@ def extract_embeddings_for_sae(
     return embeddings
 
 
+def extract_embeddings_for_sae_distributed(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    models: List[str],
+) -> Dict[str, np.ndarray]:
+    """
+    Extract sliding-window embeddings using distributed GPU workers.
+
+    Same logic as extract_embeddings_for_sae but distributed across workers.
+    Each (model) becomes a task.
+    """
+    from distributed import run_on_workers, extract_sae_embeddings_task
+
+    X_all = np.vstack([X_context, X_query])
+    y_all = np.concatenate([y_context, np.zeros(len(X_query), dtype=int)])
+
+    tasks = []
+    for model_name in models:
+        tasks.append({
+            "model_name": model_name,
+            "X_all": X_all,
+            "y_all": y_all,
+            "dataset_name": "sae_extraction",
+        })
+
+    print(f"\nDistributed SAE extraction: {len(tasks)} models across GPU workers")
+    results = run_on_workers(extract_sae_embeddings_task, tasks)
+
+    embeddings = {}
+    for r in results:
+        if r is None or r.get("status") != "ok" or r["embeddings"] is None:
+            if r is not None:
+                print(f"  Skipping {r.get('model')}: {r.get('status')}")
+            continue
+        embeddings[r["model"]] = r["embeddings"]
+        print(f"  {r['model']}: shape={r['embeddings'].shape} (worker: {r.get('worker', '?')})")
+
+    return embeddings
+
+
 def run_sae_comparison(
     X: np.ndarray,
     y: np.ndarray,
@@ -117,6 +161,7 @@ def run_sae_comparison(
     n_epochs: int = 100,
     device: str = "cpu",
     verbose: bool = True,
+    distributed: bool = False,
 ) -> Dict:
     """
     Run SAE-based concept comparison across models.
@@ -151,11 +196,17 @@ def run_sae_comparison(
         print("STEP 1: Extract Embeddings")
         print(f"{'='*60}")
 
-    embeddings = extract_embeddings_for_sae(
-        X_context, y_context, X_query,
-        models=models,
-        device=device,
-    )
+    if distributed:
+        embeddings = extract_embeddings_for_sae_distributed(
+            X_context, y_context, X_query,
+            models=models,
+        )
+    else:
+        embeddings = extract_embeddings_for_sae(
+            X_context, y_context, X_query,
+            models=models,
+            device=device,
+        )
 
     if len(embeddings) == 0:
         print("No embeddings extracted!")
@@ -326,6 +377,10 @@ def main():
     parser.add_argument("--device", type=str, default="cpu",
                         choices=["cpu", "cuda", "mps"])
 
+    # Distributed
+    parser.add_argument("--distributed", action="store_true",
+                        help="Distribute embedding extraction across GPU workers")
+
     args = parser.parse_args()
 
     # Load data
@@ -359,6 +414,7 @@ def main():
         sparsity_penalty=args.sparsity,
         n_epochs=args.n_epochs,
         device=args.device,
+        distributed=args.distributed,
     )
 
 
