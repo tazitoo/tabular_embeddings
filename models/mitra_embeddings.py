@@ -1,15 +1,14 @@
 """
 Mitra embedding extraction.
 
-Mitra is a 72M parameter 2D attention transformer that processes both rows and columns
-simultaneously. It is available through AutoGluon's tabular interface.
+Mitra is a 72M parameter 2D attention transformer that processes rows and columns
+simultaneously. Available through AutoGluon's sklearn-compatible interface.
 
-We extract embeddings by:
-1. Accessing the underlying PyTorch model through AutoGluon's predictor
-2. Registering hooks on the 12-layer transformer outputs
-3. Falling back to prediction-based pseudo-embeddings if internal access fails
+Architecture: x_embedding → 12 Tab2D transformer layers → final_layer_norm → final_layer
+Extraction point: final_layer_norm output (last hidden state before output projection)
 
-Supports both classification and regression.
+Note: Mitra finetunes pretrained weights per dataset (not pure ICL). The sklearn
+interface (MitraClassifier) is lighter than full TabularPredictor.
 """
 
 from typing import Dict, List, Optional
@@ -21,12 +20,12 @@ from .base import EmbeddingExtractor, EmbeddingResult
 
 
 class MitraEmbeddingExtractor(EmbeddingExtractor):
-    """Extract embeddings from Mitra 2D attention transformer via AutoGluon."""
+    """Extract embeddings from Mitra's 2D attention transformer."""
 
-    def __init__(self, device: str = "cpu"):
+    def __init__(self, device: str = "cpu", n_estimators: int = 1):
         super().__init__(device)
-        self._layer_names = []
-        self._predictor = None
+        self.n_estimators = n_estimators
+        self._classifier = None
 
     @property
     def model_name(self) -> str:
@@ -34,57 +33,26 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
 
     @property
     def available_layers(self) -> List[str]:
-        return self._layer_names if self._layer_names else [
-            "transformer_2d_output",
+        return [
+            "final_hidden",   # After final_layer_norm, before output projection
             "final_probs",
         ]
 
     def load_model(self) -> None:
-        """Load Mitra via AutoGluon TabularPredictor."""
+        """Load Mitra via sklearn interface (lighter than TabularPredictor)."""
         try:
-            from autogluon.tabular import TabularPredictor
+            from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
         except ImportError:
             raise ImportError(
                 "AutoGluon with Mitra support not found. Install with: "
                 "pip install 'autogluon.tabular[mitra]'"
             )
 
-        # We create a lightweight predictor configured to use only Mitra.
-        # The actual fit happens in extract_embeddings since AutoGluon
-        # needs a DataFrame with the target column.
-        self._predictor = None  # Lazy init on first extract call
+        self._classifier = MitraClassifier(
+            device=self.device,
+            n_estimators=self.n_estimators,
+        )
         self._model = True  # Mark as loaded
-        self._discover_layers()
-
-    def _discover_layers(self):
-        """Set expected layer names. Actual discovery happens after fit."""
-        self._layer_names = [
-            "transformer_2d_output",
-            "final_probs",
-        ]
-
-    def _get_mitra_model(self):
-        """Dig into AutoGluon predictor to get the underlying Mitra PyTorch model."""
-        if self._predictor is None:
-            return None
-
-        try:
-            # AutoGluon stores models in _trainer.models
-            trainer = self._predictor._trainer
-            for model_name in trainer.get_model_names():
-                model_obj = trainer.load_model(model_name)
-                # Check if it's a Mitra model
-                if 'mitra' in model_name.lower() or 'mitra' in type(model_obj).__name__.lower():
-                    # Access the underlying PyTorch model
-                    for attr in ('model', '_model', 'net', 'network'):
-                        if hasattr(model_obj, attr):
-                            candidate = getattr(model_obj, attr)
-                            if hasattr(candidate, 'named_modules'):
-                                return candidate
-        except Exception:
-            pass
-
-        return None
 
     def extract_embeddings(
         self,
@@ -94,15 +62,27 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         layers: Optional[List[str]] = None,
     ) -> EmbeddingResult:
         """
-        Extract embeddings from Mitra.
+        Extract embeddings from Mitra's last hidden state.
 
-        Fits AutoGluon predictor on context data, then extracts representations
-        from the 12-layer 2D attention transformer.
+        Fits MitraClassifier on context data (finetunes pretrained weights),
+        then hooks final_layer_norm during prediction to capture the last hidden
+        state before the output projection.
+
+        The Tab2D forward pass produces shape (batch, n_query, n_features+1, dim).
+        We take the first feature position (y-token) and average across batches
+        to get (n_query, dim).
+
+        Args:
+            X_context: Training features (n_context, n_features)
+            y_context: Training labels (n_context,)
+            X_query: Query features (n_query, n_features)
+            layers: Unused (kept for API compatibility)
+
+        Returns:
+            EmbeddingResult with last hidden state embeddings
         """
         if self._model is None:
             self.load_model()
-
-        layers = layers or ["transformer_2d_output", "final_probs"]
 
         X_context = np.asarray(X_context, dtype=np.float32)
         y_context = np.asarray(y_context, dtype=np.int64)
@@ -110,125 +90,90 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
         X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
 
-        import pandas as pd
-        from autogluon.tabular import TabularPredictor
-        import tempfile
+        n_query = len(X_query)
 
-        # Build DataFrames (AutoGluon requires DataFrame input)
-        feature_names = [f"f{i}" for i in range(X_context.shape[1])]
-        df_train = pd.DataFrame(X_context, columns=feature_names)
-        df_train["target"] = y_context
-        df_query = pd.DataFrame(X_query, columns=feature_names)
+        # Fit (finetunes pretrained weights on context data)
+        self._classifier.fit(X_context, y_context)
 
-        # Fit predictor with Mitra only
-        with tempfile.TemporaryDirectory() as tmpdir:
-            self._predictor = TabularPredictor(
-                label="target",
-                path=tmpdir,
-                verbosity=0,
-            )
-            self._predictor.fit(
-                df_train,
-                hyperparameters={"MITRA": {}},
-                num_gpus=1 if self.device != "cpu" else 0,
-            )
+        layer_embeddings = {}
 
-            layer_embeddings = {}
+        # Hook final_layer_norm on each trainer's Tab2D model
+        all_hidden_states = []
+        captured_per_trainer = []
 
-            # Try internal extraction
-            internal = self._extract_internal_embeddings(X_query)
-            layer_embeddings.update(internal)
+        handles = []
+        for trainer in self._classifier.trainers:
+            tab2d_model = trainer.model
+            captured = {}
 
-            # Final probabilities
-            if "final_probs" in layers:
-                try:
-                    probs = self._predictor.predict_proba(df_query).values
-                    layer_embeddings["final_probs"] = probs
-                except Exception:
-                    preds = self._predictor.predict(df_query).values
-                    layer_embeddings["final_probs"] = preds.reshape(-1, 1)
+            def make_hook(capture_dict):
+                def hook_fn(module, input, output):
+                    if isinstance(output, torch.Tensor):
+                        capture_dict["hidden"] = output.detach().cpu().numpy()
+                return hook_fn
 
-        # Pseudo-embedding fallback
-        if not any(k != "final_probs" for k in layer_embeddings):
-            probs = layer_embeddings.get("final_probs")
-            if probs is not None:
-                if probs.ndim == 1:
-                    probs = probs.reshape(-1, 1)
-                layer_embeddings["transformer_2d_output"] = np.hstack([
-                    probs,
-                    np.log(np.abs(probs) + 1e-8),
-                    probs ** 2,
-                ])
+            h = tab2d_model.final_layer_norm.register_forward_hook(make_hook(captured))
+            handles.append(h)
+            captured_per_trainer.append(captured)
 
-        # Select primary embedding
-        for key in ["transformer_2d_output", "final_probs"]:
-            if key in layer_embeddings:
-                primary_embedding = layer_embeddings[key]
-                extraction_point = key
-                break
+        try:
+            probs = self._classifier.predict_proba(X_query)
+            layer_embeddings["final_probs"] = probs
+        finally:
+            for h in handles:
+                h.remove()
+
+        # Process captured hidden states
+        for captured in captured_per_trainer:
+            if "hidden" not in captured:
+                continue
+            hidden = captured["hidden"]
+            # Shape varies based on flash_attn path:
+            # With flash_attn: (n_valid_query, dim) — already flat
+            # Without flash_attn: (batch, n_query, n_features+1, dim)
+            if hidden.ndim == 2:
+                # (n_valid_query, dim) — need to figure out query samples
+                # This is the flash_attn path where padding is removed
+                # Take last n_query rows (query comes after support in the sequence)
+                if hidden.shape[0] >= n_query:
+                    all_hidden_states.append(hidden[-n_query:])
+            elif hidden.ndim == 4:
+                # (batch, n_query, n_features+1, dim)
+                # Take the y-token (first feature position) and average batches
+                y_token_hidden = hidden[:, :, 0, :]  # (batch, n_query, dim)
+                avg_hidden = y_token_hidden.mean(axis=0)  # (n_query, dim)
+                # Trim to actual query size (may have padding)
+                all_hidden_states.append(avg_hidden[:n_query])
+            elif hidden.ndim == 3:
+                # (batch, n_query, dim) — rare case
+                avg_hidden = hidden.mean(axis=0)
+                all_hidden_states.append(avg_hidden[:n_query])
+
+        if all_hidden_states:
+            # Average across ensemble trainers
+            primary_embedding = np.stack(all_hidden_states, axis=0).mean(axis=0)
+            layer_embeddings["final_hidden"] = primary_embedding
         else:
-            primary_embedding = list(layer_embeddings.values())[0]
-            extraction_point = list(layer_embeddings.keys())[0]
-
-        if primary_embedding.ndim == 1:
-            primary_embedding = primary_embedding.reshape(-1, 1)
+            # Fallback to probs
+            primary_embedding = probs
 
         return EmbeddingResult(
             embeddings=primary_embedding,
             model_name=self.model_name,
-            extraction_point=extraction_point,
+            extraction_point="final_hidden" if all_hidden_states else "final_probs",
             embedding_dim=primary_embedding.shape[1] if primary_embedding.ndim > 1 else 1,
-            n_samples=len(X_query),
+            n_samples=n_query,
             layer_embeddings=layer_embeddings,
         )
 
-    def _extract_internal_embeddings(self, X_query: np.ndarray) -> Dict[str, np.ndarray]:
-        """Hook into Mitra transformer for hidden state extraction."""
-        embeddings = {}
-
-        model = self._get_mitra_model()
-        if model is None:
-            return embeddings
-
-        self._clear_hooks()
-
-        for name, module in model.named_modules():
-            name_lower = name.lower()
-            if any(x in name_lower for x in ['attention', 'transformer', 'encoder', 'block']):
-                if hasattr(module, 'forward'):
-                    self._register_hook(module, name)
-
-        try:
-            import pandas as pd
-            feature_names = [f"f{i}" for i in range(X_query.shape[1])]
-            df_query = pd.DataFrame(X_query, columns=feature_names)
-
-            with torch.no_grad():
-                _ = self._predictor.predict(df_query)
-
-            for layer_name, activation in self._activations.items():
-                if activation.ndim >= 2:
-                    if activation.ndim == 3:
-                        activation = activation.mean(axis=1)
-                    if activation.shape[0] != len(X_query):
-                        if activation.shape[0] > len(X_query):
-                            activation = activation[-len(X_query):]
-                        else:
-                            activation = np.tile(
-                                activation.mean(axis=0, keepdims=True),
-                                (len(X_query), 1),
-                            )
-                    embeddings[layer_name] = activation
-        finally:
-            self._clear_hooks()
-
-        return embeddings
-
 
 if __name__ == "__main__":
-    print("Testing Mitra embedding extraction...")
+    import sys
 
-    extractor = MitraEmbeddingExtractor(device="cpu")
+    device = sys.argv[1] if len(sys.argv) > 1 else "cpu"
+    print(f"Testing Mitra embedding extraction on {device}...")
+
+    extractor = MitraEmbeddingExtractor(device=device, n_estimators=1)
     extractor.load_model()
 
     print(f"Model: {extractor.model_name}")
@@ -244,7 +189,5 @@ if __name__ == "__main__":
     print(f"  Embedding shape: {result.embeddings.shape}")
     print(f"  Embedding dim: {result.embedding_dim}")
     print(f"  Extraction point: {result.extraction_point}")
-    print(f"  Layer embeddings: {list(result.layer_embeddings.keys())}")
-
     for layer_name, emb in result.layer_embeddings.items():
-        print(f"    {layer_name}: {emb.shape}")
+        print(f"  {layer_name}: {emb.shape}")
