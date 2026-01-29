@@ -87,6 +87,7 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
         y_context: np.ndarray,
         X_query: np.ndarray,
         layers: Optional[List[str]] = None,
+        task: str = "classification",
     ) -> EmbeddingResult:
         """
         Extract penultimate hidden activations from HyperFast's generated network.
@@ -102,10 +103,14 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
             y_context: Training labels (n_context,)
             X_query: Query features (n_query, n_features)
             layers: Unused (kept for API compatibility)
+            task: "classification" or "regression"
 
         Returns:
             EmbeddingResult with penultimate hidden activations
         """
+        if task == "regression":
+            raise ValueError("HyperFast only supports classification (no regressor variant)")
+
         if self._model is None:
             self.load_model()
 

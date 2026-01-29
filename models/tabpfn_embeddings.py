@@ -19,8 +19,9 @@ from .base import EmbeddingExtractor, EmbeddingResult
 class TabPFNEmbeddingExtractor(EmbeddingExtractor):
     """Extract embeddings from TabPFN v2.5 transformer layers."""
 
-    # Local checkpoint path on GPU workers (avoids HuggingFace download)
-    WORKER_WEIGHT_PATH = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-classifier-v2.5_real.ckpt"
+    # Local checkpoint paths on GPU workers (avoids HuggingFace download)
+    WORKER_CLF_PATH = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-classifier-v2.5_real.ckpt"
+    WORKER_REG_PATH = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-regressor-v2.5_default.ckpt"
 
     def __init__(
         self,
@@ -44,27 +45,36 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
         """Return discovered layer names after model is loaded."""
         return self._layer_names if self._layer_names else ["final"]
 
-    def load_model(self) -> None:
-        """Load TabPFN classifier. Layer discovery happens after first fit."""
+    def load_model(self, task: str = "classification") -> None:
+        """Load TabPFN classifier or regressor based on task type."""
         import os
-        from tabpfn import TabPFNClassifier
+
+        is_regression = task == "regression"
+
+        if is_regression:
+            from tabpfn import TabPFNRegressor as TabPFNModel
+            worker_path = self.WORKER_REG_PATH
+        else:
+            from tabpfn import TabPFNClassifier as TabPFNModel
+            worker_path = self.WORKER_CLF_PATH
 
         # Resolve model path: explicit > worker checkpoint > auto-download
         model_path = self.model_path
-        if model_path is None and os.path.exists(self.WORKER_WEIGHT_PATH):
-            model_path = self.WORKER_WEIGHT_PATH
+        if model_path is None and os.path.exists(worker_path):
+            model_path = worker_path
 
         if self.version == "v2.5":
             kwargs = dict(device=self.device, n_estimators=self.n_estimators)
             if model_path is not None:
                 kwargs["model_path"] = model_path
-            self._model = TabPFNClassifier(**kwargs)
+            self._model = TabPFNModel(**kwargs)
         else:
-            self._model = TabPFNClassifier.create_default_for_version(
+            self._model = TabPFNModel.create_default_for_version(
                 self.version,
                 device=self.device,
                 n_estimators=self.n_estimators,
             )
+        self._current_task = task
 
     def extract_embeddings(
         self,
@@ -72,6 +82,7 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
         y_context: np.ndarray,
         X_query: np.ndarray,
         layers: Optional[List[str]] = None,
+        task: str = "classification",
     ) -> EmbeddingResult:
         """
         Extract embeddings from TabPFN's final transformer layer.
@@ -81,20 +92,26 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
         transformer layer, slice out the query samples, and mean-pool over the
         structure dimension to get (n_query, 192).
 
+        Supports both classification (TabPFNClassifier) and regression
+        (TabPFNRegressor) — automatically reloads the correct model variant.
+
         Args:
             X_context: Training features (n_context, n_features)
             y_context: Training labels (n_context,)
             X_query: Query features (n_query, n_features)
             layers: Unused (kept for API compatibility)
+            task: "classification" or "regression"
 
         Returns:
             EmbeddingResult with (n_query, 192) embeddings
         """
-        if self._model is None:
-            self.load_model()
+        # Load or reload model if task type changed
+        if self._model is None or getattr(self, "_current_task", None) != task:
+            self.load_model(task=task)
 
         X_context = np.asarray(X_context, dtype=np.float32)
-        y_context = np.asarray(y_context, dtype=np.int64)
+        y_dtype = np.float32 if task == "regression" else np.int64
+        y_context = np.asarray(y_context, dtype=y_dtype)
         X_query = np.asarray(X_query, dtype=np.float32)
         X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
         X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
@@ -117,8 +134,12 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
 
         try:
             with torch.no_grad():
-                probs = self._model.predict_proba(X_query)
-            layer_embeddings["final_probs"] = probs
+                if task == "regression":
+                    preds = self._model.predict(X_query)
+                    layer_embeddings["final_preds"] = preds
+                else:
+                    probs = self._model.predict_proba(X_query)
+                    layer_embeddings["final_probs"] = probs
         finally:
             handle.remove()
 

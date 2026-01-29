@@ -94,7 +94,8 @@ def main():
 
     for i, (X, y, meta) in enumerate(datasets):
         dataset_name = meta.get("name") if isinstance(meta, dict) else getattr(meta, "name", "unknown")
-        print(f"[{i+1}/{len(datasets)}] {dataset_name}...", end=" ", flush=True)
+        task = meta.get("task") if isinstance(meta, dict) else getattr(meta, "task", "classification")
+        print(f"[{i+1}/{len(datasets)}] {dataset_name} ({task})...", end=" ", flush=True)
 
         try:
             # Split into context and query (same logic as run_comparison)
@@ -109,7 +110,7 @@ def main():
             y_context = y[:ctx]
             X_query = X[ctx:ctx + qry]
 
-            result = extractor.extract_embeddings(X_context, y_context, X_query)
+            result = extractor.extract_embeddings(X_context, y_context, X_query, task=task)
 
             output_path = output_dir / f"{dataset_name}.npz"
             save_embeddings(result, output_path)

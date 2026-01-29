@@ -72,6 +72,7 @@ class EmbeddingExtractor(ABC):
         y_context: np.ndarray,
         X_query: np.ndarray,
         layers: Optional[List[str]] = None,
+        task: str = "classification",
     ) -> EmbeddingResult:
         """
         Extract embeddings for query samples given context.
@@ -81,6 +82,7 @@ class EmbeddingExtractor(ABC):
             y_context: Training/context labels (n_context,)
             X_query: Query features to get embeddings for (n_query, n_features)
             layers: Which layers to extract from (default: final layer only)
+            task: "classification" or "regression"
 
         Returns:
             EmbeddingResult with embeddings and metadata

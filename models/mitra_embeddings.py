@@ -62,6 +62,7 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         y_context: np.ndarray,
         X_query: np.ndarray,
         layers: Optional[List[str]] = None,
+        task: str = "classification",
     ) -> EmbeddingResult:
         """
         Extract embeddings from Mitra's last hidden state.
