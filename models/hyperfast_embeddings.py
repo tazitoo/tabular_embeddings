@@ -58,8 +58,10 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
             return self.weight_path
 
         hostname = socket.gethostname()
-        # GPU workers
-        if hostname in ("surfer4", "terrax4", "octo4", "firelord4"):
+        # GPU workers (hostname may or may not have numeric suffix)
+        worker_names = ("surfer", "terrax", "octo", "firelord",
+                        "surfer4", "terrax4", "octo4", "firelord4")
+        if hostname in worker_names:
             if os.path.exists(WORKER_WEIGHT_PATH):
                 return WORKER_WEIGHT_PATH
         # Orchestrator (galactus)

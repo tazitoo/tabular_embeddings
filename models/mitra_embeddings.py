@@ -7,8 +7,8 @@ simultaneously. Available through AutoGluon's sklearn-compatible interface.
 Architecture: x_embedding → 12 Tab2D transformer layers → final_layer_norm → final_layer
 Extraction point: final_layer_norm output (last hidden state before output projection)
 
-Note: Mitra finetunes pretrained weights per dataset (not pure ICL). The sklearn
-interface (MitraClassifier) is lighter than full TabularPredictor.
+Note: By default uses ICL mode (fine_tune=False) for frozen-weight embedding
+extraction. Pass fine_tune=True to finetune pretrained weights per dataset.
 """
 
 from typing import Dict, List, Optional
@@ -22,9 +22,10 @@ from .base import EmbeddingExtractor, EmbeddingResult
 class MitraEmbeddingExtractor(EmbeddingExtractor):
     """Extract embeddings from Mitra's 2D attention transformer."""
 
-    def __init__(self, device: str = "cpu", n_estimators: int = 1):
+    def __init__(self, device: str = "cpu", n_estimators: int = 1, fine_tune: bool = False):
         super().__init__(device)
         self.n_estimators = n_estimators
+        self.fine_tune = fine_tune
         self._classifier = None
 
     @property
@@ -51,6 +52,7 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         self._classifier = MitraClassifier(
             device=self.device,
             n_estimators=self.n_estimators,
+            fine_tune=self.fine_tune,
         )
         self._model = True  # Mark as loaded
 
@@ -64,9 +66,9 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         """
         Extract embeddings from Mitra's last hidden state.
 
-        Fits MitraClassifier on context data (finetunes pretrained weights),
-        then hooks final_layer_norm during prediction to capture the last hidden
-        state before the output projection.
+        Fits MitraClassifier on context data (ICL mode by default, no weight
+        updates), then hooks final_layer_norm during prediction to capture the
+        last hidden state before the output projection.
 
         The Tab2D forward pass produces shape (batch, n_query, n_features+1, dim).
         We take the first feature position (y-token) and average across batches
