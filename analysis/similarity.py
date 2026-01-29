@@ -64,7 +64,8 @@ def cosine_similarity_paired(emb_a: np.ndarray, emb_b: np.ndarray) -> np.ndarray
 
     # Handle dimension mismatch via SVD projection to common space
     if emb_a.shape[1] != emb_b.shape[1]:
-        common_dim = min(emb_a.shape[1], emb_b.shape[1], 128)
+        n_samples = emb_a.shape[0]
+        common_dim = min(emb_a.shape[1], emb_b.shape[1], n_samples, 128)
         emb_a = project_to_dim(emb_a, common_dim)
         emb_b = project_to_dim(emb_b, common_dim)
 
@@ -95,10 +96,11 @@ def project_to_dim(X: np.ndarray, target_dim: int) -> np.ndarray:
         padding = np.zeros((X.shape[0], target_dim - X.shape[1]))
         return np.hstack([X, padding])
 
-    # Truncated SVD
+    # Truncated SVD — target_dim can't exceed rank (min of n_samples, dim)
     X_centered = X - X.mean(axis=0)
     U, S, Vt = np.linalg.svd(X_centered, full_matrices=False)
-    return U[:, :target_dim] * S[:target_dim]
+    effective_dim = min(target_dim, U.shape[1])
+    return U[:, :effective_dim] * S[:effective_dim]
 
 
 def centered_kernel_alignment(emb_a: np.ndarray, emb_b: np.ndarray) -> float:
@@ -152,11 +154,12 @@ def procrustes_align(
     Returns:
         (distance, rotation_matrix, aligned_emb_a)
     """
-    # Match dimensions if needed
-    if emb_a.shape[1] != emb_b.shape[1]:
-        common_dim = min(emb_a.shape[1], emb_b.shape[1])
-        emb_a = project_to_dim(emb_a, common_dim)
-        emb_b = project_to_dim(emb_b, common_dim)
+    # Match dimensions: project both to common dim via PCA
+    # When n_samples < dim, PCA can only return n_samples components
+    n_samples = emb_a.shape[0]
+    common_dim = min(emb_a.shape[1], emb_b.shape[1], n_samples)
+    emb_a = project_to_dim(emb_a, common_dim)
+    emb_b = project_to_dim(emb_b, common_dim)
 
     # Center
     emb_a_centered = emb_a - emb_a.mean(axis=0)
