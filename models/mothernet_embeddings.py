@@ -1,27 +1,25 @@
 """
 MotherNet embedding extraction.
 
-MotherNet is a hypernetwork (from Microsoft's TICL project) that generates MLP
-weights from context data in a single forward pass - same family as HyperFast.
+MotherNet (Microsoft TICL) is a hypernetwork that generates MLP weights from
+context data in a single transformer forward pass. After fit(), the generated
+MLP layers are stored as numpy (bias, weight) tuples. We replay the MLP forward
+pass and capture the penultimate hidden activation — the last ReLU'd hidden
+state before the output projection.
 
-We extract:
-1. Transformer encoder hidden states (how context is processed)
-2. Generated MLP weights as a "dataset embedding" (what NN the model creates)
-3. Final prediction probabilities
-
-Classification only.
+Architecture: context → transformer encoder → decoder → generated MLP weights → apply to query
+Extraction point: penultimate hidden layer of generated MLP
 """
 
 from typing import Dict, List, Optional
 
 import numpy as np
-import torch
 
 from .base import EmbeddingExtractor, EmbeddingResult
 
 
 class MotherNetEmbeddingExtractor(EmbeddingExtractor):
-    """Extract embeddings from MotherNet hypernetwork."""
+    """Extract embeddings from MotherNet's generated MLP network."""
 
     def __init__(self, device: str = "cpu"):
         super().__init__(device)
@@ -33,26 +31,59 @@ class MotherNetEmbeddingExtractor(EmbeddingExtractor):
     @property
     def available_layers(self) -> List[str]:
         return [
-            "context_encoding",
-            "predicted_weights",
+            "penultimate_hidden",  # Last ReLU'd hidden state before output projection
             "final_probs",
         ]
 
     def load_model(self) -> None:
-        """Load MotherNet classifier."""
+        """Load MotherNet classifier from Microsoft TICL package.
+
+        The ticl package eagerly imports all models (gamformer, tabpfn, etc.) in
+        its __init__.py, pulling in optional deps like 'interpret'. We bypass
+        this by injecting a stub module before importing.
+        """
+        import importlib.util
+        import sys
+        import types
+
+        # Find the ticl package on disk
+        import os
+        pkg_path = None
+        for p in sys.path:
+            candidate = os.path.join(p, "ticl", "prediction", "mothernet.py")
+            if os.path.exists(candidate):
+                pkg_path = os.path.join(p, "ticl")
+                break
+
+        if pkg_path is None:
+            raise ImportError(
+                "MotherNet (ticl) not found. Install with: "
+                "pip install 'ticl @ git+https://github.com/microsoft/ticl.git'"
+            )
+
+        # Inject stub for ticl to prevent eager __init__ imports
+        needs_cleanup = "ticl" not in sys.modules
+        if needs_cleanup:
+            stub = types.ModuleType("ticl")
+            stub.__path__ = [pkg_path]
+            sys.modules["ticl"] = stub
+
         try:
-            from mothernet import MotherNetClassifier
-            self._model = MotherNetClassifier(device=self.device)
-        except ImportError:
-            try:
-                from mothernet.prediction import MotherNetClassifier
-                self._model = MotherNetClassifier(device=self.device)
-            except ImportError:
-                raise ImportError(
-                    "MotherNet not found. Install with: "
-                    "git clone https://github.com/microsoft/ticl && "
-                    "cd ticl && pip install -e ."
-                )
+            spec = importlib.util.spec_from_file_location(
+                "ticl.prediction.mothernet",
+                f"{pkg_path}/prediction/mothernet.py",
+                submodule_search_locations=[],
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            MotherNetClassifier = mod.MotherNetClassifier
+        except Exception as e:
+            raise ImportError(f"Failed to load MotherNet from ticl: {e}")
+        finally:
+            if needs_cleanup:
+                sys.modules.pop("ticl", None)
+
+        self._model = MotherNetClassifier(device=self.device)
 
     def extract_embeddings(
         self,
@@ -62,16 +93,24 @@ class MotherNetEmbeddingExtractor(EmbeddingExtractor):
         layers: Optional[List[str]] = None,
     ) -> EmbeddingResult:
         """
-        Extract embeddings from MotherNet.
+        Extract penultimate hidden activations from MotherNet's generated MLP.
 
-        Primary extraction: transformer encoder hidden states capturing how
-        context is encoded. Also captures generated MLP weights as a
-        dataset-level embedding.
+        After fit(), self._model.parameters_ holds the generated MLP as
+        [(b1, w1), (b2, w2), ..., (b_out, w_out)] numpy arrays. We replay the
+        forward pass (scale → matmul+bias → ReLU) stopping before the last
+        layer to capture the penultimate hidden state.
+
+        Args:
+            X_context: Training features (n_context, n_features)
+            y_context: Training labels (n_context,)
+            X_query: Query features (n_query, n_features)
+            layers: Unused (kept for API compatibility)
+
+        Returns:
+            EmbeddingResult with penultimate hidden activations
         """
         if self._model is None:
             self.load_model()
-
-        layers = layers or ["context_encoding", "predicted_weights", "final_probs"]
 
         X_context = np.asarray(X_context, dtype=np.float32)
         y_context = np.asarray(y_context, dtype=np.int64)
@@ -79,139 +118,44 @@ class MotherNetEmbeddingExtractor(EmbeddingExtractor):
         X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
         X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
 
+        n_query = len(X_query)
+
+        # Fit generates MLP weights from context via transformer + decoder
         self._model.fit(X_context, y_context)
+
         layer_embeddings = {}
 
-        # Final probabilities
-        if "final_probs" in layers:
-            probs = self._model.predict_proba(X_query)
-            if probs.ndim == 2:
-                layer_embeddings["final_probs"] = probs
-            else:
-                layer_embeddings["final_probs"] = probs.reshape(-1, 1)
+        # Get probabilities via normal path
+        probs = self._model.predict_proba(X_query)
+        layer_embeddings["final_probs"] = probs
 
-        # Internal extraction via hooks
-        internal = self._extract_internal_embeddings(X_context, y_context, X_query)
-        layer_embeddings.update(internal)
+        # Replay MLP forward pass, stopping before the last layer
+        mlp_layers = self._model.parameters_  # [(b, w), ...]
+        mean = self._model.mean_
+        std = self._model.std_
 
-        # Select primary embedding
-        for key in ["context_encoding", "predicted_weights", "final_probs"]:
-            if key in layer_embeddings:
-                primary_embedding = layer_embeddings[key]
-                extraction_point = key
-                break
-        else:
-            primary_embedding = layer_embeddings.get(
-                "final_probs", np.zeros((len(X_query), 2))
-            )
-            extraction_point = "final_probs"
+        X_test = np.nan_to_num(np.array(X_query, dtype=float), 0)
+        out = (X_test - mean) / std
+        out = np.clip(out, a_min=-100, a_max=100)
+
+        # Forward through all layers except the last (output projection)
+        for i, (b, w) in enumerate(mlp_layers[:-1]):
+            out = np.dot(out, w) + b
+            out = np.maximum(out, 0)  # ReLU
+
+        # out is now the penultimate hidden state: (n_query, hidden_dim)
+        primary_embedding = out
+
+        layer_embeddings["penultimate_hidden"] = primary_embedding
 
         return EmbeddingResult(
             embeddings=primary_embedding,
             model_name=self.model_name,
-            extraction_point=extraction_point,
+            extraction_point="penultimate_hidden",
             embedding_dim=primary_embedding.shape[1] if primary_embedding.ndim > 1 else 1,
-            n_samples=len(X_query),
+            n_samples=n_query,
             layer_embeddings=layer_embeddings,
         )
-
-    def _extract_internal_embeddings(
-        self,
-        X_context: np.ndarray,
-        y_context: np.ndarray,
-        X_query: np.ndarray,
-    ) -> Dict[str, np.ndarray]:
-        """
-        Extract internal representations from MotherNet.
-
-        MotherNet structure (similar to HyperFast):
-        1. Encoder: processes (X_context, y_context) -> context embedding
-        2. Hypernetwork: context embedding -> MLP weights
-        3. Generated MLP: applies predicted weights to X_query
-        """
-        embeddings = {}
-
-        # Access internal model
-        internal_model = None
-        for attr in ('model', '_model', 'net', 'network', 'transformer'):
-            if hasattr(self._model, attr):
-                candidate = getattr(self._model, attr)
-                if hasattr(candidate, 'named_modules'):
-                    internal_model = candidate
-                    break
-
-        if internal_model is None:
-            # Pseudo-embedding fallback
-            probs = self._model.predict_proba(X_query)
-            if probs.ndim == 1:
-                probs = probs.reshape(-1, 1)
-            embeddings["context_encoding"] = np.hstack([
-                probs,
-                np.log(probs + 1e-8),
-                np.var(probs, axis=1, keepdims=True) * np.ones_like(probs),
-            ])
-            return embeddings
-
-        self._clear_hooks()
-
-        # Hook encoder/context/hypernetwork components
-        for name, module in internal_model.named_modules():
-            name_lower = name.lower()
-            if any(x in name_lower for x in ['encoder', 'context', 'hyper', 'transformer']):
-                self._register_hook(module, name)
-
-        try:
-            with torch.no_grad():
-                _ = self._model.predict_proba(X_query)
-
-            for layer_name, activation in self._activations.items():
-                if activation.ndim >= 2:
-                    if activation.ndim == 3:
-                        activation = activation.mean(axis=1)
-                    # Broadcast context-level embeddings to query size
-                    if activation.shape[0] == 1:
-                        activation = np.tile(activation, (len(X_query), 1))
-                    elif activation.shape[0] != len(X_query):
-                        activation = np.tile(
-                            activation.mean(axis=0, keepdims=True),
-                            (len(X_query), 1),
-                        )
-                    embeddings[layer_name] = activation
-
-            # Try to capture predicted weights as a dataset embedding
-            self._extract_predicted_weights(internal_model, embeddings, len(X_query))
-
-        finally:
-            self._clear_hooks()
-
-        return embeddings
-
-    def _extract_predicted_weights(
-        self,
-        model: torch.nn.Module,
-        embeddings: Dict[str, np.ndarray],
-        n_query: int,
-    ):
-        """Extract generated MLP weights as a dataset-level embedding."""
-        try:
-            # Look for weight prediction layers / output heads
-            weight_tensors = []
-            for name, param in model.named_parameters():
-                name_lower = name.lower()
-                if any(x in name_lower for x in ['predict', 'weight_gen', 'output']):
-                    weight_tensors.append(param.detach().cpu().numpy().flatten())
-
-            if weight_tensors:
-                # Concatenate and truncate to reasonable size
-                weights = np.concatenate(weight_tensors)
-                if len(weights) > 1024:
-                    weights = weights[:1024]
-                # Broadcast to per-query (same for all queries since it's dataset-level)
-                embeddings["predicted_weights"] = np.tile(
-                    weights.reshape(1, -1), (n_query, 1)
-                )
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
@@ -233,7 +177,5 @@ if __name__ == "__main__":
     print(f"  Embedding shape: {result.embeddings.shape}")
     print(f"  Embedding dim: {result.embedding_dim}")
     print(f"  Extraction point: {result.extraction_point}")
-    print(f"  Layer embeddings: {list(result.layer_embeddings.keys())}")
-
     for layer_name, emb in result.layer_embeddings.items():
-        print(f"    {layer_name}: {emb.shape}")
+        print(f"  {layer_name}: {emb.shape}")
