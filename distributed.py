@@ -68,9 +68,9 @@ SCHEDULER_IP = "192.168.10.50"  # galactus on compute VLAN
 SCHEDULER_PORT = 8786
 DASHBOARD_PORT = 8787
 
-# Worker environment (Linux GPU workers)
-WORKER_PYTHON = "/home/brian/anaconda3/envs/tabular_emb/bin/python"
-WORKER_DASK_WORKER = "/home/brian/anaconda3/envs/tabular_emb/bin/dask-worker"
+# Worker environment (Linux GPU workers — using finance env which has torch+CUDA+model deps)
+WORKER_PYTHON = "/home/brian/anaconda3/envs/finance/bin/python"
+WORKER_DASK_WORKER = "/home/brian/anaconda3/envs/finance/bin/dask-worker"
 WORKER_BASE_DIR = "/home/brian/src/tabular_embeddings"
 
 
