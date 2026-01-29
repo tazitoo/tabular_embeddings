@@ -228,7 +228,7 @@ def run_multi_dataset_comparison(
     rows = []
 
     for X, y, meta in datasets:
-        dataset_name = meta.get("name", "unknown")
+        dataset_name = getattr(meta, "name", None) or (meta.get("name", "unknown") if isinstance(meta, dict) else "unknown")
         print(f"\n{'=' * 70}")
         print(f"Dataset: {dataset_name}")
         print(f"{'=' * 70}")
@@ -259,6 +259,7 @@ def run_multi_dataset_comparison_distributed(
     models: List[str],
     context_size: int = 600,
     query_size: int = 100,
+    sync_code: bool = True,
 ) -> pd.DataFrame:
     """
     Run comparison across multiple datasets using distributed GPU workers.
@@ -280,7 +281,7 @@ def run_multi_dataset_comparison_distributed(
     # Build task list: (model, dataset) pairs
     tasks = []
     for X, y, meta in datasets:
-        dataset_name = meta.get("name", "unknown")
+        dataset_name = getattr(meta, "name", None) or (meta.get("name", "unknown") if isinstance(meta, dict) else "unknown")
         n_total = len(X)
         ctx = context_size if n_total >= context_size + query_size else int(n_total * 0.7)
         qry = min(query_size, n_total - ctx)
@@ -301,7 +302,7 @@ def run_multi_dataset_comparison_distributed(
     print(f"\nDistributed: {len(tasks)} tasks ({len(datasets)} datasets x {len(models)} models)")
 
     # Distribute extraction across workers
-    results = run_on_workers(extract_embeddings_task, tasks)
+    results = run_on_workers(extract_embeddings_task, tasks, sync_code=sync_code)
 
     # Group results by dataset
     dataset_embeddings: Dict[str, Dict[str, np.ndarray]] = {}
@@ -380,6 +381,8 @@ def main():
     # Distributed
     parser.add_argument("--distributed", action="store_true",
                         help="Distribute extraction across GPU workers (multi-dataset only)")
+    parser.add_argument("--no-sync", action="store_true",
+                        help="Skip git sync to workers (use when code is already up to date)")
 
     # Output
     parser.add_argument("--output", type=str, help="Output CSV path")
@@ -451,6 +454,7 @@ def main():
                 models=args.models,
                 context_size=args.context_size,
                 query_size=args.query_size,
+                sync_code=not args.no_sync,
             )
         else:
             results_df = run_multi_dataset_comparison(

@@ -154,7 +154,7 @@ def sync_code_to_workers(
             print(f"  {worker}...", end=" ", flush=True)
         try:
             result = subprocess.run(
-                ["ssh", worker, f"cd {WORKER_BASE_DIR} && git pull --ff-only"],
+                ["ssh", worker, f"cd {WORKER_BASE_DIR} && GIT_TERMINAL_PROMPT=0 git pull --ff-only"],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -296,6 +296,16 @@ def gpu_cluster(
             if verbose:
                 print(f"  Starting worker on {name} ({ip})...")
 
+            worker_cmd = (
+                f"cd {WORKER_BASE_DIR} && "
+                f"PYTHONPATH={WORKER_BASE_DIR}:$PYTHONPATH "
+                f"{WORKER_DASK_WORKER} {config.scheduler_address}"
+                f" --nthreads {config.n_threads}"
+                f" --nworkers {config.n_workers_per_host}"
+                f" --no-dashboard"
+                f" --memory-limit {config.memory_limit}"
+                f" --name {name}"
+            )
             proc = subprocess.Popen(
                 [
                     "ssh",
@@ -303,13 +313,7 @@ def gpu_cluster(
                     "-o", "ServerAliveInterval=60",
                     "-o", "ServerAliveCountMax=10",
                     ip,
-                    WORKER_DASK_WORKER,
-                    config.scheduler_address,
-                    "--nthreads", str(config.n_threads),
-                    "--nworkers", str(config.n_workers_per_host),
-                    "--no-dashboard",
-                    "--memory-limit", config.memory_limit,
-                    "--name", name,
+                    worker_cmd,
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

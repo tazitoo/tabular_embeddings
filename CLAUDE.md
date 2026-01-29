@@ -70,19 +70,21 @@ python compare_embeddings.py --suite relbench
 
 ## Distributed Execution
 
-Same GPU worker pool as the finance project, with a dedicated conda env.
+Same GPU worker pool as the finance project, using the `finance` conda env (has torch+CUDA+model deps).
 
 - **Workers**: surfer4 (3090), terrax4 (2080 Ti), octo4 (3070), firelord4 (4090)
-- **Conda env**: `tabular_emb` on each worker
-- **Repo path**: `/home/brian/src/tabular_embeddings`
+- **Conda env**: `finance` on each worker
+- **Worker repo path**: `/home/brian/src/tabular_embeddings`
+- **Worker python**: `/home/brian/anaconda3/envs/finance/bin/python`
 - **Code sync**: `git pull --ff-only` on each worker before cluster start
+- **Module**: `cluster.py` (not `distributed.py` — renamed to avoid shadowing `dask.distributed`)
 
 ```bash
 # Check worker health
-python distributed.py --check
+python cluster.py --check
 
 # Sync code to workers
-python distributed.py --sync
+python cluster.py --sync
 
 # Distributed embedding comparison (multi-dataset)
 python compare_embeddings.py --suite tabarena --models tabpfn hyperfast tabicl --distributed
@@ -95,7 +97,10 @@ galactus orchestrates (Dask scheduler), workers extract embeddings on GPU, simil
 
 ## Key Findings (Update as research progresses)
 
-- [ ] CKA scores between TabPFN and HyperFast
+- [x] CKA between TabPFN (192d) and TabICL (512d) internal representations: **0.705** (5 datasets)
+- [x] CKA between TabPFN and TabICL output probabilities: **0.879** (higher convergence at output)
+- [x] Intrinsic dimensionality: TabPFN ~7 of 192 dims, TabICL ~17 of 512 dims
+- [ ] CKA scores with HyperFast and Mitra (pending GPU worker testing)
 - [ ] SAE richness comparison across models
 - [ ] Correlation: embedding geometry vs task performance
-- [ ] Intrinsic dimensionality comparison
+- [ ] Full TabArena sweep (51 datasets)

@@ -19,15 +19,20 @@ from .base import EmbeddingExtractor, EmbeddingResult
 class TabPFNEmbeddingExtractor(EmbeddingExtractor):
     """Extract embeddings from TabPFN v2.5 transformer layers."""
 
+    # Local checkpoint path on GPU workers (avoids HuggingFace download)
+    WORKER_WEIGHT_PATH = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-classifier-v2.5_real.ckpt"
+
     def __init__(
         self,
         device: str = "cpu",
         version: str = "v2.5",
         n_estimators: int = 2,
+        model_path: Optional[str] = None,
     ):
         super().__init__(device)
         self.version = version
         self.n_estimators = n_estimators
+        self.model_path = model_path
         self._layer_names = []
 
     @property
@@ -41,13 +46,19 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
 
     def load_model(self) -> None:
         """Load TabPFN classifier. Layer discovery happens after first fit."""
+        import os
         from tabpfn import TabPFNClassifier
 
+        # Resolve model path: explicit > worker checkpoint > auto-download
+        model_path = self.model_path
+        if model_path is None and os.path.exists(self.WORKER_WEIGHT_PATH):
+            model_path = self.WORKER_WEIGHT_PATH
+
         if self.version == "v2.5":
-            self._model = TabPFNClassifier(
-                device=self.device,
-                n_estimators=self.n_estimators,
-            )
+            kwargs = dict(device=self.device, n_estimators=self.n_estimators)
+            if model_path is not None:
+                kwargs["model_path"] = model_path
+            self._model = TabPFNClassifier(**kwargs)
         else:
             self._model = TabPFNClassifier.create_default_for_version(
                 self.version,

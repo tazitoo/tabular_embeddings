@@ -1,0 +1,26 @@
+\begin{table}[t]
+\centering
+\caption{Geometric similarity between TabPFN (192d) and TabICL (512d) across five classification datasets.
+CKA score ranges from 0 (unrelated) to 1 (identical geometry); Procrustes distance from 0 (identical after alignment) to $\sqrt{2}$ (orthogonal).}
+\label{tab:geometric-sweep}
+\small
+\begin{tabular}{llcccccc}
+\toprule
+Comparison & Metric & \texttt{breast} & \texttt{credit} & \texttt{iris} & \texttt{vehicle} & \texttt{wine} & Mean \\
+\midrule
+\multicolumn{8}{l}{\textit{Cross-model: TabPFN vs TabICL}} \\
+Internal repr. & CKA Score & 0.537 & 0.728 & 0.714 & 0.697 & 0.849 & 0.705 \\
+Internal repr. & Procrustes Dist. & 0.809 & 0.659 & 0.746 & 0.576 & 0.532 & 0.664 \\
+Output probs & CKA Score & 0.905 & 0.912 & 0.881 & 0.978 & 0.718 & 0.879 \\
+Output probs & Procrustes Dist. & 0.312 & 0.299 & 0.350 & 0.186 & 0.553 & 0.340 \\
+\midrule
+\multicolumn{8}{l}{\textit{Within-model: internal vs output probabilities}} \\
+TabPFN & CKA Score & 0.840 & 0.895 & 0.710 & 0.909 & 0.581 & 0.787 \\
+TabICL & CKA Score & 0.499 & 0.676 & 0.544 & 0.621 & 0.443 & 0.556 \\
+\midrule
+\multicolumn{8}{l}{\textit{TabICL layer comparison}} \\
+ICL head vs row & CKA Score & 0.501 & 0.370 & 0.725 & 0.195 & 0.620 & 0.482 \\
+TabPFN vs row out & CKA Score & 0.381 & 0.172 & 0.607 & 0.138 & 0.526 & 0.365 \\
+\bottomrule
+\end{tabular}
+\end{table}
