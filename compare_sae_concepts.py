@@ -123,7 +123,7 @@ def extract_embeddings_for_sae_distributed(
     Same logic as extract_embeddings_for_sae but distributed across workers.
     Each (model) becomes a task.
     """
-    from distributed import run_on_workers, extract_sae_embeddings_task
+    from cluster import run_on_workers, extract_sae_embeddings_task
 
     X_all = np.vstack([X_context, X_query])
     y_all = np.concatenate([y_context, np.zeros(len(X_query), dtype=int)])

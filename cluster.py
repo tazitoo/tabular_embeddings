@@ -7,19 +7,19 @@ execution across GPU workers without Prefect dependency.
 
 Usage:
     # Context manager for ad-hoc distributed compute
-    from distributed import gpu_cluster
+    from cluster import gpu_cluster
 
     with gpu_cluster() as client:
         futures = client.map(my_task_func, task_args)
         results = client.gather(futures)
 
     # Run tasks across workers with progress reporting
-    from distributed import run_on_workers
+    from cluster import run_on_workers
 
     results = run_on_workers(my_func, args_list)
 
     # Check worker health
-    python distributed.py --check
+    python cluster.py --check
 """
 
 from __future__ import annotations

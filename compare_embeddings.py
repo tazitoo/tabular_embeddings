@@ -275,7 +275,7 @@ def run_multi_dataset_comparison_distributed(
     Returns:
         DataFrame with aggregated results
     """
-    from distributed import run_on_workers, extract_embeddings_task
+    from cluster import run_on_workers, extract_embeddings_task
 
     # Build task list: (model, dataset) pairs
     tasks = []
