@@ -22,7 +22,7 @@ from .base import EmbeddingExtractor, EmbeddingResult
 
 # Default weight path (standard install location)
 DEFAULT_WEIGHT_PATH = "/Users/brian/.hyperfast/hyperfast.ckpt"
-WORKER_WEIGHT_PATH = "/data/models/tabular_fm/hyperfast.ckpt"
+WORKER_WEIGHT_PATH = "/data/models/tabular_fm/hyperfast/hyperfast.ckpt"
 
 
 class HyperFastEmbeddingExtractor(EmbeddingExtractor):
