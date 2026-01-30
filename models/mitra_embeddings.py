@@ -39,22 +39,26 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
             "final_probs",
         ]
 
-    def load_model(self) -> None:
-        """Load Mitra via sklearn interface (lighter than TabularPredictor)."""
+    def load_model(self, task: str = "classification") -> None:
+        """Load Mitra classifier or regressor based on task type."""
         try:
-            from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
+            if task == "regression":
+                from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor as MitraModel
+            else:
+                from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier as MitraModel
         except ImportError:
             raise ImportError(
                 "AutoGluon with Mitra support not found. Install with: "
                 "pip install 'autogluon.tabular[mitra]'"
             )
 
-        self._classifier = MitraClassifier(
+        self._classifier = MitraModel(
             device=self.device,
             n_estimators=self.n_estimators,
             fine_tune=self.fine_tune,
         )
         self._model = True  # Mark as loaded
+        self._current_task = task
 
     def extract_embeddings(
         self,
@@ -84,11 +88,12 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         Returns:
             EmbeddingResult with last hidden state embeddings
         """
-        if self._model is None:
-            self.load_model()
+        if self._model is None or getattr(self, "_current_task", None) != task:
+            self.load_model(task=task)
 
         X_context = np.asarray(X_context, dtype=np.float32)
-        y_context = np.asarray(y_context, dtype=np.int64)
+        y_dtype = np.float32 if task == "regression" else np.int64
+        y_context = np.asarray(y_context, dtype=y_dtype)
         X_query = np.asarray(X_query, dtype=np.float32)
         X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
         X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
@@ -120,8 +125,12 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
             captured_per_trainer.append(captured)
 
         try:
-            probs = self._classifier.predict_proba(X_query)
-            layer_embeddings["final_probs"] = probs
+            if task == "regression":
+                preds = self._classifier.predict(X_query)
+                layer_embeddings["final_preds"] = preds
+            else:
+                probs = self._classifier.predict_proba(X_query)
+                layer_embeddings["final_probs"] = probs
         finally:
             for h in handles:
                 h.remove()
