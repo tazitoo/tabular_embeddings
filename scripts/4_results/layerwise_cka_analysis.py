@@ -172,8 +172,13 @@ def extract_mitra_all_layers(
     for i, layer in enumerate(layers):
         def make_hook(layer_idx):
             def hook_fn(module, input, output):
-                if isinstance(output, torch.Tensor):
-                    captured[f"layer_{layer_idx}"] = output.detach().cpu().numpy()
+                # Mitra layers return tuples (hidden_state, ...)
+                if isinstance(output, tuple):
+                    out = output[0]  # First element is hidden state
+                else:
+                    out = output
+                if isinstance(out, torch.Tensor):
+                    captured[f"layer_{layer_idx}"] = out.detach().cpu().numpy()
             return hook_fn
         handle = layer.register_forward_hook(make_hook(i))
         handles.append(handle)
