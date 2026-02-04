@@ -255,6 +255,20 @@ def plot_model_comparison():
     except FileNotFoundError:
         pass
 
+    # Mitra
+    try:
+        data = np.load(OUTPUT_DIR / "layerwise_cka_mitra_adult.npz")
+        model_data['Mitra'] = data['cka_matrix']
+    except FileNotFoundError:
+        pass
+
+    # HyperFast
+    try:
+        data = np.load(OUTPUT_DIR / "layerwise_cka_hyperfast_adult.npz")
+        model_data['HyperFast'] = data['cka_matrix']
+    except FileNotFoundError:
+        pass
+
     if len(model_data) < 2:
         print("Need at least 2 models for comparison")
         return
