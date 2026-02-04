@@ -27,6 +27,7 @@ from analysis.similarity import centered_kernel_alignment
 def load_dataset(dataset_name: str, max_samples: int = 1000) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load a dataset from TabArena or OpenML."""
     import openml
+    from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
 
     # TabArena suite ID
     TABARENA_SUITE_ID = 457
@@ -48,6 +49,12 @@ def load_dataset(dataset_name: str, max_samples: int = 1000) -> Tuple[np.ndarray
 
     X, y, _, _ = dataset.get_data(target=dataset.default_target_attribute)
 
+    # Encode categorical features
+    import pandas as pd
+    for col in X.columns:
+        if X[col].dtype == 'object' or X[col].dtype.name == 'category':
+            X[col] = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1).fit_transform(X[[col]])
+
     # Convert to numpy
     X = X.values.astype(np.float32)
     y = y.values
@@ -56,9 +63,8 @@ def load_dataset(dataset_name: str, max_samples: int = 1000) -> Tuple[np.ndarray
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
     # Encode labels if needed
-    if y.dtype == object:
-        from sklearn.preprocessing import LabelEncoder
-        y = LabelEncoder().fit_transform(y)
+    if y.dtype == object or (hasattr(y.dtype, 'name') and y.dtype.name == 'category'):
+        y = LabelEncoder().fit_transform(y.astype(str))
 
     # Limit samples
     if len(X) > max_samples * 2:
