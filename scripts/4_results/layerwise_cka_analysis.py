@@ -322,7 +322,7 @@ def extract_tabdpt_all_layers(
                 else:
                     out = output
                 if isinstance(out, torch.Tensor):
-                    captured[f"layer_{layer_idx}"] = out.detach().cpu().numpy()
+                    captured[f"layer_{layer_idx}"] = out.detach().float().cpu().numpy()
             return hook_fn
         handle = layer.register_forward_hook(make_hook(i))
         handles.append(handle)
@@ -330,7 +330,8 @@ def extract_tabdpt_all_layers(
     # Also hook the input encoder and head
     def encoder_hook(module, input, output):
         if isinstance(output, torch.Tensor):
-            captured["input_encoder"] = output.detach().cpu().numpy()
+            out = output.detach().float().cpu().numpy()  # Convert bfloat16 to float32
+            captured["input_encoder"] = out
     handles.append(model.encoder.register_forward_hook(encoder_hook))
 
     # Forward pass
