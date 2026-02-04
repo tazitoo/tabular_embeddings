@@ -228,6 +228,23 @@ class CARTEEmbeddingExtractor(EmbeddingExtractor):
         df_context = pd.DataFrame(X_context, columns=feature_names)
         df_query = pd.DataFrame(X_query, columns=feature_names)
 
+        # CARTE requires at least one categorical column for graph construction
+        # Add a synthetic categorical column based on binned values
+        n_bins = min(5, X_context.shape[1])
+        bin_col = pd.cut(
+            df_context.iloc[:, 0],
+            bins=n_bins,
+            labels=[f"bin_{i}" for i in range(n_bins)]
+        ).astype(str)
+        df_context["_cat"] = bin_col
+
+        bin_col_query = pd.cut(
+            df_query.iloc[:, 0],
+            bins=n_bins,
+            labels=[f"bin_{i}" for i in range(n_bins)]
+        ).astype(str)
+        df_query["_cat"] = bin_col_query
+
         # Transform to graphs
         self._t2g.fit(df_context)
         X_context_graph = self._t2g.transform(df_context)
