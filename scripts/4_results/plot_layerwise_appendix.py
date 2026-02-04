@@ -291,6 +291,8 @@ def plot_model_comparison():
 
     colors = {'TabPFN': '#1f77b4', 'TabICL': '#ff7f0e', 'Mitra': '#2ca02c', 'HyperFast': '#d62728',
                'TabDPT': '#9467bd', 'CARTE': '#8c564b'}
+    markers = {'TabPFN': 'o', 'TabICL': 's', 'Mitra': '^', 'HyperFast': 'D',
+               'TabDPT': 'v', 'CARTE': 'P'}
 
     # Panel A: Representation drift (CKA with layer 0)
     ax = axes[0]
@@ -299,8 +301,10 @@ def plot_model_comparison():
         l0_cka = matrix[0, :]
         # Normalize to relative depth (0 to 1)
         rel_depth = np.linspace(0, 1, n_layers)
-        ax.plot(rel_depth, l0_cka, 'o-', label=f'{model_name} ({n_layers}L)',
-                color=colors.get(model_name, 'gray'), markersize=4, linewidth=2)
+        marker = markers.get(model_name, 'o')
+        ax.plot(rel_depth, l0_cka, marker=marker, linestyle='-',
+                label=f'{model_name} ({n_layers}L)',
+                color=colors.get(model_name, 'gray'), markersize=5, linewidth=2)
 
     ax.axvline(x=2/3, color='red', linestyle='--', alpha=0.7, linewidth=2, label='2/3 depth')
     ax.set_xlabel('Relative Depth (0=input, 1=output)', fontsize=11)
@@ -318,8 +322,10 @@ def plot_model_comparison():
         avg_cka, _ = compute_distance_cka(matrix)
         # Normalize distance to relative (0 to 1)
         rel_dist = np.linspace(1/n_layers, 1, len(avg_cka))
-        ax.plot(rel_dist, avg_cka, 'o-', label=f'{model_name}',
-                color=colors.get(model_name, 'gray'), markersize=4, linewidth=2)
+        marker = markers.get(model_name, 'o')
+        ax.plot(rel_dist, avg_cka, marker=marker, linestyle='-',
+                label=f'{model_name}',
+                color=colors.get(model_name, 'gray'), markersize=5, linewidth=2)
 
     ax.axvline(x=2/3, color='red', linestyle='--', alpha=0.7, linewidth=2, label='2/3 depth')
     ax.set_xlabel('Relative Layer Distance', fontsize=11)
