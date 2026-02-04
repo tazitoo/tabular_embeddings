@@ -33,18 +33,19 @@ class TabulaEmbeddingExtractor(EmbeddingExtractor):
 
     def load_model(self) -> None:
         """Load Tabula-8B with 8-bit quantization for 24GB VRAM."""
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
         self._tokenizer = AutoTokenizer.from_pretrained(self._model_path)
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
         # Load with 8-bit quantization to fit in 24GB
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
         self._model = AutoModelForCausalLM.from_pretrained(
             self._model_path,
             device_map="auto",
-            load_in_8bit=True,
-            torch_dtype=torch.float16,
+            quantization_config=bnb_config,
+            dtype=torch.float16,
         )
         self._model.eval()
 
