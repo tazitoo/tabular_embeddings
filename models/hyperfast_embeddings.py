@@ -81,6 +81,24 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
             custom_path=path,
         )
 
+    def _discretize_targets(self, y: np.ndarray, n_bins: int = 10) -> np.ndarray:
+        """Discretize continuous targets into bins for pseudo-classification.
+
+        For regression tasks, we bin the targets so HyperFast's classifier
+        can process them. The intermediate activations (embeddings) are
+        computed before the classification head, so they capture the data
+        structure regardless of the discretization.
+        """
+        from scipy.stats import rankdata
+
+        # Use rank-based binning for robustness to outliers
+        ranks = rankdata(y, method='ordinal')
+        n_samples = len(y)
+        bin_size = max(1, n_samples // n_bins)
+        bins = (ranks - 1) // bin_size
+        bins = np.clip(bins, 0, n_bins - 1).astype(np.int64)
+        return bins
+
     def extract_embeddings(
         self,
         X_context: np.ndarray,
@@ -98,6 +116,11 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
         the predict path to capture these per-ensemble-member, then average across
         the ensemble.
 
+        For regression tasks, continuous targets are discretized into bins so the
+        classifier can process them. The intermediate activations are computed
+        before the classification head, capturing data structure independent of
+        the target discretization.
+
         Args:
             X_context: Training features (n_context, n_features)
             y_context: Training labels (n_context,)
@@ -108,15 +131,17 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
         Returns:
             EmbeddingResult with penultimate hidden activations
         """
-        if task == "regression":
-            raise ValueError("HyperFast only supports classification (no regressor variant)")
-
         if self._model is None:
             self.load_model()
 
         X_context = np.asarray(X_context, dtype=np.float32)
-        y_context = np.asarray(y_context, dtype=np.int64)
         X_query = np.asarray(X_query, dtype=np.float32)
+
+        # For regression, discretize targets into bins
+        if task == "regression":
+            y_context = self._discretize_targets(np.asarray(y_context), n_bins=10)
+        else:
+            y_context = np.asarray(y_context, dtype=np.int64)
         X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
         X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
 

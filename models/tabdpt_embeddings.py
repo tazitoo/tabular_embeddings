@@ -35,22 +35,33 @@ class TabDPTEmbeddingExtractor(EmbeddingExtractor):
             "final_probs",
         ]
 
-    def load_model(self) -> None:
-        """Load TabDPT model from HuggingFace (Layer6/TabDPT)."""
+    def load_model(self, task: str = "classification") -> None:
+        """Load TabDPT model from HuggingFace (Layer6/TabDPT).
+
+        Uses compile=False to allow hook-based embedding extraction.
+        """
         try:
-            from tabdpt import TabDPTClassifier
-            self._model = TabDPTClassifier(device=self.device)
+            if task == "regression":
+                from tabdpt import TabDPTRegressor
+                self._model = TabDPTRegressor(device=self.device, compile=False)
+            else:
+                from tabdpt import TabDPTClassifier
+                self._model = TabDPTClassifier(device=self.device, compile=False)
         except ImportError:
-            # tabdpt may use different import pattern if installed from git
             try:
-                from tabdpt.model import TabDPTClassifier
-                self._model = TabDPTClassifier(device=self.device)
+                if task == "regression":
+                    from tabdpt.model import TabDPTRegressor
+                    self._model = TabDPTRegressor(device=self.device, compile=False)
+                else:
+                    from tabdpt.model import TabDPTClassifier
+                    self._model = TabDPTClassifier(device=self.device, compile=False)
             except ImportError:
                 raise ImportError(
                     "TabDPT not found. Install with: "
                     "git clone https://github.com/layer6ai-labs/TabDPT && "
                     "cd TabDPT && pip install -e ."
                 )
+        self._current_task = task
         self._discover_layers()
 
     def _discover_layers(self):
@@ -92,13 +103,15 @@ class TabDPTEmbeddingExtractor(EmbeddingExtractor):
         Primary extraction: transformer hidden states before prediction head.
         Falls back to predict_proba pseudo-embedding.
         """
-        if self._model is None:
-            self.load_model()
+        # Load or reload model if task type changed
+        if self._model is None or getattr(self, "_current_task", None) != task:
+            self.load_model(task=task)
 
         layers = layers or ["transformer_hidden", "final_probs"]
 
         X_context = np.asarray(X_context, dtype=np.float32)
-        y_context = np.asarray(y_context, dtype=np.int64)
+        y_dtype = np.float32 if task == "regression" else np.int64
+        y_context = np.asarray(y_context, dtype=y_dtype)
         X_query = np.asarray(X_query, dtype=np.float32)
         X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
         X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
@@ -107,13 +120,17 @@ class TabDPTEmbeddingExtractor(EmbeddingExtractor):
         layer_embeddings = {}
 
         # Internal hook-based extraction
-        internal = self._extract_internal_embeddings(X_context, y_context, X_query)
+        internal = self._extract_internal_embeddings(X_context, y_context, X_query, task=task)
         layer_embeddings.update(internal)
 
-        # Final probabilities
+        # Final predictions (probabilities for classification, values for regression)
         if "final_probs" in layers:
-            probs = self._model.predict_proba(X_query)
-            layer_embeddings["final_probs"] = probs
+            if task == "regression":
+                preds = self._model.predict(X_query)
+                layer_embeddings["final_preds"] = preds.reshape(-1, 1) if preds.ndim == 1 else preds
+            else:
+                probs = self._model.predict_proba(X_query)
+                layer_embeddings["final_probs"] = probs
 
         # Pseudo-embedding fallback
         if not any(k != "final_probs" for k in layer_embeddings):
@@ -148,6 +165,7 @@ class TabDPTEmbeddingExtractor(EmbeddingExtractor):
         X_context: np.ndarray,
         y_context: np.ndarray,
         X_query: np.ndarray,
+        task: str = "classification",
     ) -> Dict[str, np.ndarray]:
         """Hook into TabDPT transformer layers for hidden state extraction."""
         embeddings = {}
@@ -173,7 +191,10 @@ class TabDPTEmbeddingExtractor(EmbeddingExtractor):
 
         try:
             with torch.no_grad():
-                _ = self._model.predict_proba(X_query)
+                if task == "regression":
+                    _ = self._model.predict(X_query)
+                else:
+                    _ = self._model.predict_proba(X_query)
 
             for layer_name, activation in self._activations.items():
                 if activation.ndim >= 2:
