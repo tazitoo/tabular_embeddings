@@ -31,6 +31,26 @@ python compute_cka_from_saved.py --embedding-dir output/embeddings/tabarena --ou
 | CARTE | 51/51 | 300 | GNN (FastText node embeddings) |
 | Tabula-8B | 51/51 | 4096 | Llama-3 8B fine-tuned for tabular |
 
+## Embedding Extraction Points
+
+Current extraction points for each model (may need experimentation):
+
+| Model | Extraction Point | Rationale |
+|-------|-----------------|-----------|
+| TabPFN | Last transformer encoder layer | Pre-prediction head representation |
+| TabICL | Row transformer output (after col transformer) | Between stage 1 and ICL head |
+| TabDPT | Last transformer encoder block | Pre-prediction head representation |
+| Mitra | Hidden states from 2D attention layers | Internal transformer representation |
+| HyperFast | Penultimate layer of *generated* network | Last hidden before output projection |
+| CARTE | Central node from final GNN readout block | Row representation after message passing |
+| Tabula-8B | Final hidden state of last token | LLM's representation of serialized row |
+
+**Open questions:**
+- Are these the "right" layers for geometric comparison? Earlier layers may capture different structure.
+- For transformer models, should we compare across multiple layers?
+- CKA between early vs late layers within each model could reveal representation evolution.
+- Tabula-8B: should we use mean pooling across tokens instead of last token?
+
 ## 7-Model CKA Results
 
 | Model Pair | CKA (mean ± std) | n |
