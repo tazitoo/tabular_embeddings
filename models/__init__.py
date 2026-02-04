@@ -13,6 +13,7 @@ MODEL_REGISTRY = {
     "mitra": ("models.mitra_embeddings", "MitraEmbeddingExtractor", "cpu"),
     "mothernet": ("models.mothernet_embeddings", "MotherNetEmbeddingExtractor", "cpu"),
     "carte": ("models.carte_embeddings", "CARTEEmbeddingExtractor", "cpu"),
+    "tabula": ("models.tabula_embeddings", "TabulaEmbeddingExtractor", "cuda"),
 }
 
 
