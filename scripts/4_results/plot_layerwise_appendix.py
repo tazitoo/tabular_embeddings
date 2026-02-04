@@ -236,6 +236,111 @@ def plot_compact_figure():
     plt.close()
 
 
+def plot_model_comparison():
+    """Compare layer-wise CKA across different models."""
+    # Load data for multiple models
+    model_data = {}
+
+    # TabPFN
+    try:
+        data = np.load(OUTPUT_DIR / "layerwise_cka_tabpfn_adult.npz")
+        model_data['TabPFN'] = data['cka_matrix']
+    except FileNotFoundError:
+        pass
+
+    # TabICL
+    try:
+        data = np.load(OUTPUT_DIR / "layerwise_cka_tabicl_adult.npz")
+        model_data['TabICL'] = data['cka_matrix']
+    except FileNotFoundError:
+        pass
+
+    if len(model_data) < 2:
+        print("Need at least 2 models for comparison")
+        return
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+
+    colors = {'TabPFN': '#1f77b4', 'TabICL': '#ff7f0e', 'Mitra': '#2ca02c', 'HyperFast': '#d62728'}
+
+    # Panel A: Representation drift (CKA with layer 0)
+    ax = axes[0]
+    for model_name, matrix in model_data.items():
+        n_layers = matrix.shape[0]
+        l0_cka = matrix[0, :]
+        # Normalize to relative depth (0 to 1)
+        rel_depth = np.linspace(0, 1, n_layers)
+        ax.plot(rel_depth, l0_cka, 'o-', label=f'{model_name} ({n_layers}L)',
+                color=colors.get(model_name, 'gray'), markersize=4, linewidth=2)
+
+    ax.axvline(x=2/3, color='red', linestyle='--', alpha=0.7, linewidth=2, label='2/3 depth')
+    ax.set_xlabel('Relative Depth (0=input, 1=output)', fontsize=11)
+    ax.set_ylabel('CKA with First Layer', fontsize=11)
+    ax.set_title('(A) Representation Drift', fontsize=12)
+    ax.set_ylim(0, 1.05)
+    ax.set_xlim(0, 1)
+    ax.legend(loc='lower left', fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    # Panel B: CKA decay with relative distance
+    ax = axes[1]
+    for model_name, matrix in model_data.items():
+        n_layers = matrix.shape[0]
+        avg_cka, _ = compute_distance_cka(matrix)
+        # Normalize distance to relative (0 to 1)
+        rel_dist = np.linspace(1/n_layers, 1, len(avg_cka))
+        ax.plot(rel_dist, avg_cka, 'o-', label=f'{model_name}',
+                color=colors.get(model_name, 'gray'), markersize=4, linewidth=2)
+
+    ax.axvline(x=2/3, color='red', linestyle='--', alpha=0.7, linewidth=2, label='2/3 depth')
+    ax.set_xlabel('Relative Layer Distance', fontsize=11)
+    ax.set_ylabel('Average CKA', fontsize=11)
+    ax.set_title('(B) CKA Decay with Distance', fontsize=12)
+    ax.set_ylim(0, 1.05)
+    ax.set_xlim(0, 1)
+    ax.legend(loc='upper right', fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    # Panel C: First-to-last CKA comparison (bar chart)
+    ax = axes[2]
+    model_names = list(model_data.keys())
+    first_last_cka = [model_data[m][0, -1] for m in model_names]
+    two_thirds_cka = [model_data[m][0, int(model_data[m].shape[0] * 2/3)] for m in model_names]
+
+    x = np.arange(len(model_names))
+    width = 0.35
+    bars1 = ax.bar(x - width/2, first_last_cka, width, label='First vs Last', color='#d62728')
+    bars2 = ax.bar(x + width/2, two_thirds_cka, width, label='First vs 2/3', color='#2ca02c')
+
+    ax.set_ylabel('CKA Similarity', fontsize=11)
+    ax.set_title('(C) Layer Similarity Summary', fontsize=12)
+    ax.set_xticks(x)
+    ax.set_xticklabels(model_names)
+    ax.legend(fontsize=9)
+    ax.set_ylim(0, 1)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Add value labels on bars
+    for bar in bars1:
+        ax.annotate(f'{bar.get_height():.2f}',
+                    xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
+                    ha='center', va='bottom', fontsize=9)
+    for bar in bars2:
+        ax.annotate(f'{bar.get_height():.2f}',
+                    xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
+                    ha='center', va='bottom', fontsize=9)
+
+    plt.tight_layout()
+
+    output_path = OUTPUT_DIR / "layerwise_cka_model_comparison"
+    plt.savefig(output_path.with_suffix('.pdf'), dpi=300, bbox_inches='tight')
+    plt.savefig(output_path.with_suffix('.png'), dpi=300, bbox_inches='tight')
+    print(f"Saved: {output_path.with_suffix('.pdf')}")
+    print(f"Saved: {output_path.with_suffix('.png')}")
+    plt.close()
+
+
 if __name__ == "__main__":
     plot_appendix_figure()
     plot_compact_figure()
+    plot_model_comparison()
