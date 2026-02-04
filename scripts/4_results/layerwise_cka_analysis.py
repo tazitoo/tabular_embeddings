@@ -944,6 +944,14 @@ def plot_depth_distribution(results: dict, output_path: Path, model_name: str):
 
     depths = [r['critical_depth_frac'] for r in results.values()]
     half_depths = [r['half_cka_depth_frac'] for r in results.values()]
+    n_layers_list = [r['n_layers'] for r in results.values()]
+    critical_layers = [r['critical_layer'] for r in results.values()]
+
+    # Get representative n_layers (most common) and compute optimal layer
+    n_layers = max(set(n_layers_list), key=n_layers_list.count)
+    mean_depth = np.mean(depths)
+    optimal_layer = int(round(mean_depth * (n_layers - 1)))
+    mean_critical = np.mean(critical_layers)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -951,8 +959,8 @@ def plot_depth_distribution(results: dict, output_path: Path, model_name: str):
     ax = axes[0]
     ax.hist(depths, bins=10, edgecolor='black', alpha=0.7)
     ax.axvline(x=2/3, color='red', linestyle='--', linewidth=2, label='2/3 depth')
-    ax.axvline(x=np.mean(depths), color='blue', linestyle='-', linewidth=2,
-               label=f'Mean: {np.mean(depths):.2f}')
+    ax.axvline(x=mean_depth, color='blue', linestyle='-', linewidth=2,
+               label=f'Mean: {mean_depth:.2f}')
     ax.set_xlabel('Critical Depth (fraction)', fontsize=12)
     ax.set_ylabel('Count', fontsize=12)
     ax.set_title(f'{model_name}: Critical Depth Distribution\n(layer where CKA with L0 < 0.5)', fontsize=12)
@@ -961,15 +969,19 @@ def plot_depth_distribution(results: dict, output_path: Path, model_name: str):
 
     # Panel B: Individual dataset profiles
     ax = axes[1]
-    datasets = list(results.keys())
     for i, (dataset, r) in enumerate(results.items()):
         profile = r['l0_cka_profile']
-        n_layers = len(profile)
-        x_norm = np.arange(n_layers) / (n_layers - 1) if n_layers > 1 else [0]
+        n_lay = len(profile)
+        x_norm = np.arange(n_lay) / (n_lay - 1) if n_lay > 1 else [0]
         ax.plot(x_norm, profile, alpha=0.5, linewidth=1)
 
     ax.axvline(x=2/3, color='red', linestyle='--', linewidth=2, label='2/3 depth')
     ax.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5, label='CKA=0.5')
+
+    # Add optimal layer annotation
+    ax.axvline(x=mean_depth, color='blue', linestyle='-', linewidth=2,
+               label=f'Optimal: L{optimal_layer}/{n_layers} ({mean_depth:.0%})')
+
     ax.set_xlabel('Normalized Depth (0=input, 1=output)', fontsize=12)
     ax.set_ylabel('CKA with Layer 0', fontsize=12)
     ax.set_title(f'{model_name}: CKA Drift Profiles\n({len(results)} datasets)', fontsize=12)
