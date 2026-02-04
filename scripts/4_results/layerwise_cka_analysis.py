@@ -294,8 +294,8 @@ def extract_hyperfast_all_layers(
     Extract embeddings from all layers of HyperFast's GENERATED network.
 
     HyperFast generates a task-specific MLP from context data. The generated
-    network has residual linear layers. We need to intercept the forward pass
-    of the generated network to capture activations at each layer.
+    network is a list of (weight, bias) tuples representing linear layers.
+    We manually forward through each layer and capture activations.
     """
     from hyperfast import HyperFastClassifier
     from hyperfast.hyperfast import transform_data_for_main_network
@@ -310,24 +310,20 @@ def extract_hyperfast_all_layers(
 
     n_query = len(X_query)
 
-    # Get generated network structure
-    main_network = clf._main_networks[0]  # First ensemble member
-    print(f"HyperFast generated network keys: {list(main_network.keys())}")
-
-    # The generated network is a dict of weight tensors, not nn.Module
-    # We need to manually forward through each layer to capture activations
-    # Let's inspect the structure
-    n_layers = sum(1 for k in main_network.keys() if k.startswith('linear_layers'))
-    print(f"HyperFast generated network has ~{n_layers // 2} linear layers")
+    # Get generated network structure - it's a list of (weight, bias) tuples
+    main_network = clf._main_networks[0]
+    n_layers = len(main_network)
+    print(f"HyperFast generated network has {n_layers} layers (including output)")
 
     # Custom forward pass through generated network, capturing each layer
     X_tensor = torch.from_numpy(X_query.astype(np.float32)).to(device)
 
-    all_layer_activations = {f"layer_{i}": [] for i in range(n_layers // 2 + 1)}
+    # Initialize storage for each layer (input + all hidden layers, skip output)
+    all_layer_activations = {f"layer_{i}": [] for i in range(n_layers)}
 
     with torch.no_grad():
         for jj in range(len(clf._main_networks)):
-            main_net = clf._move_to_device(clf._main_networks[jj])
+            main_net = clf._main_networks[jj]
             rf = clf._move_to_device(clf._rfs[jj])
             pca = clf._move_to_device(clf._pcas[jj])
 
@@ -340,28 +336,23 @@ def extract_hyperfast_all_layers(
                 X=X_b, cfg=clf._cfg, rf=rf, pca=pca
             )
 
-            # Manual forward through generated network
+            # Forward through generated network layers
             x = X_transformed
             all_layer_activations["layer_0"].append(x.cpu().numpy())
 
-            layer_idx = 1
-            for i in range(0, len([k for k in main_net.keys() if 'linear_layers' in k]), 2):
-                weight_key = f'linear_layers.{i}.weight'
-                bias_key = f'linear_layers.{i}.bias'
-                if weight_key in main_net and bias_key in main_net:
-                    weight = main_net[weight_key]
-                    bias = main_net[bias_key]
-                    x_new = torch.nn.functional.linear(x, weight, bias)
-                    x_new = torch.nn.functional.relu(x_new)
+            for layer_idx, (weight, bias) in enumerate(main_net[:-1]):  # Skip output layer
+                weight = clf._move_to_device(weight)
+                bias = clf._move_to_device(bias)
+                x_new = torch.nn.functional.linear(x, weight, bias)
+                x_new = torch.nn.functional.relu(x_new)
 
-                    # Residual connection if dimensions match
-                    if x_new.shape == x.shape:
-                        x = x + x_new
-                    else:
-                        x = x_new
+                # Residual connection if dimensions match
+                if x_new.shape[-1] == x.shape[-1]:
+                    x = x + x_new
+                else:
+                    x = x_new
 
-                    all_layer_activations[f"layer_{layer_idx}"].append(x.cpu().numpy())
-                    layer_idx += 1
+                all_layer_activations[f"layer_{layer_idx + 1}"].append(x.cpu().numpy())
 
     # Average across ensemble
     layer_embeddings = {}
