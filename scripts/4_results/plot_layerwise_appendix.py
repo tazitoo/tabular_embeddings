@@ -333,7 +333,7 @@ def plot_model_comparison():
     ax.set_title('(B) CKA Decay with Distance', fontsize=12)
     ax.set_ylim(0, 1.05)
     ax.set_xlim(0, 1)
-    ax.legend(loc='upper right', fontsize=9)
+    ax.legend(loc='lower left', fontsize=9)
     ax.grid(True, alpha=0.3)
 
     # Panel C: First-to-last CKA comparison (bar chart)
