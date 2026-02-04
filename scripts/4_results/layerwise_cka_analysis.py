@@ -284,6 +284,210 @@ def extract_tabicl_all_layers(
     return layer_embeddings
 
 
+def extract_tabdpt_all_layers(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    device: str = "cuda",
+) -> Dict[str, np.ndarray]:
+    """
+    Extract embeddings from all TabDPT transformer encoder layers (16 layers).
+
+    TabDPT architecture: encoder → transformer_encoder (16 layers) → head
+    """
+    from tabdpt import TabDPTClassifier
+
+    clf = TabDPTClassifier(device=device, compile=False)
+    clf.fit(X_context, y_context)
+
+    n_query = len(X_query)
+
+    # Access the underlying model
+    model = clf.model
+
+    # Get transformer encoder layers
+    encoder_layers = model.transformer_encoder
+    n_layers = len(encoder_layers)
+    print(f"TabDPT has {n_layers} transformer encoder layers")
+
+    # Register hooks for all encoder layers
+    captured = {}
+    handles = []
+
+    for i, layer in enumerate(encoder_layers):
+        def make_hook(layer_idx):
+            def hook_fn(module, input, output):
+                if isinstance(output, tuple):
+                    out = output[0]
+                else:
+                    out = output
+                if isinstance(out, torch.Tensor):
+                    captured[f"layer_{layer_idx}"] = out.detach().cpu().numpy()
+            return hook_fn
+        handle = layer.register_forward_hook(make_hook(i))
+        handles.append(handle)
+
+    # Also hook the input encoder and head
+    def encoder_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["input_encoder"] = output.detach().cpu().numpy()
+    handles.append(model.encoder.register_forward_hook(encoder_hook))
+
+    # Forward pass
+    try:
+        with torch.no_grad():
+            _ = clf.predict_proba(X_query)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    # Process captured activations
+    layer_embeddings = {}
+    for key, act in captured.items():
+        # TabDPT shapes: (batch, seq_len, hidden_dim) or (batch, hidden_dim)
+        if act.ndim == 3:
+            # Take mean over sequence dimension, then slice query samples
+            emb = act.mean(axis=1)
+            if emb.shape[0] > n_query:
+                emb = emb[-n_query:]
+        elif act.ndim == 2:
+            emb = act[-n_query:] if act.shape[0] > n_query else act
+        else:
+            continue
+        layer_embeddings[key] = emb
+
+    return layer_embeddings
+
+
+def extract_carte_all_layers(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    device: str = "cuda",
+) -> Dict[str, np.ndarray]:
+    """
+    Extract embeddings from CARTE GNN layers.
+
+    CARTE architecture: initial_x → read_out_block (attention + MLP) → ft_classifier
+    Since CARTE is shallow, we hook:
+    - initial_x: Node embedding layer
+    - read_out_block.g_attn: Graph attention output
+    - read_out_block: Full block output (after MLP)
+    - ft_classifier intermediate layers
+    """
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
+    _patch_carte_amp()
+
+    from carte_ai import CARTEClassifier, Table2GraphTransformer
+    import pandas as pd
+
+    ft_path = _find_fasttext_model()
+    if not ft_path:
+        raise ValueError("FastText model not found")
+
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=20, disable_pbar=True)
+    t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
+
+    # Prepare data
+    feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+    df_context = pd.DataFrame(X_context, columns=feature_names)
+    df_query = pd.DataFrame(X_query, columns=feature_names)
+
+    # Add synthetic categorical column
+    n_bins = min(5, X_context.shape[1])
+    df_context["_cat"] = pd.cut(df_context["f0"], bins=n_bins,
+                                 labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
+    df_query["_cat"] = pd.cut(df_query["f0"], bins=n_bins,
+                               labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
+
+    # Transform to graphs
+    t2g.fit(df_context)
+    X_context_graph = t2g.transform(df_context)
+    X_query_graph = t2g.transform(df_query)
+
+    # Attach y values
+    for i, g in enumerate(X_context_graph):
+        g.y = torch.tensor([y_context[i]], dtype=torch.float32)
+
+    # Fit
+    clf.fit(X_context_graph, y_context)
+
+    n_query = len(X_query)
+    model = clf.model_list_[0]
+    model.eval()
+    base = model.ft_base
+
+    print(f"CARTE GNN: initial_x → read_out_block → classifier")
+
+    # Register hooks
+    captured = {}
+    handles = []
+
+    # Hook initial_x
+    def init_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["layer_0_initial"] = output.detach().cpu().numpy()
+    handles.append(base.initial_x.register_forward_hook(init_hook))
+
+    # Hook read_out_block attention
+    def attn_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["layer_1_attention"] = output.detach().cpu().numpy()
+    handles.append(base.read_out_block.g_attn.register_forward_hook(attn_hook))
+
+    # Hook read_out_block full output
+    def block_hook(module, input, output):
+        if isinstance(output, tuple):
+            out = output[0]
+        else:
+            out = output
+        if isinstance(out, torch.Tensor):
+            captured["layer_2_readout"] = out.detach().cpu().numpy()
+    handles.append(base.read_out_block.register_forward_hook(block_hook))
+
+    # Hook classifier layers
+    for i, layer in enumerate(model.ft_classifier):
+        if isinstance(layer, torch.nn.Linear):
+            def make_clf_hook(idx):
+                def hook_fn(module, input, output):
+                    if isinstance(output, torch.Tensor):
+                        captured[f"layer_{3+idx}_classifier"] = output.detach().cpu().numpy()
+                return hook_fn
+            handles.append(layer.register_forward_hook(make_clf_hook(i)))
+
+    # Forward pass
+    try:
+        from torch_geometric.data import Batch
+        batch = Batch.from_data_list(X_query_graph)
+        batch.to(clf.device_)
+
+        with torch.no_grad():
+            _ = model(batch)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    # Process captured activations - extract central node for per-node outputs
+    layer_embeddings = {}
+    for key, act in captured.items():
+        if act.shape[0] == n_query:
+            # Already per-graph
+            layer_embeddings[key] = act
+        elif act.shape[0] > n_query and hasattr(batch, 'ptr'):
+            # Per-node output - extract central nodes
+            ptr = batch.ptr.cpu().numpy()
+            central_emb = []
+            for i in range(len(ptr) - 1):
+                central_emb.append(act[ptr[i]])
+            layer_embeddings[key] = np.stack(central_emb)
+        elif act.ndim >= 2:
+            layer_embeddings[key] = act[:n_query]
+
+    return layer_embeddings
+
+
 def extract_hyperfast_all_layers(
     X_context: np.ndarray,
     y_context: np.ndarray,
@@ -481,7 +685,7 @@ def plot_cka_by_distance(cka_matrix: np.ndarray, output_path: Path, model_name: 
 def main():
     parser = argparse.ArgumentParser(description="Layer-wise CKA analysis")
     parser.add_argument("--model", type=str, default="tabpfn",
-                        choices=["tabpfn", "mitra", "tabicl", "hyperfast"],
+                        choices=["tabpfn", "mitra", "tabicl", "hyperfast", "tabdpt", "carte"],
                         help="Model to analyze")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device to use")
@@ -532,6 +736,14 @@ def main():
         )
     elif args.model == "hyperfast":
         layer_embeddings = extract_hyperfast_all_layers(
+            X_context, y_context, X_query, device=args.device
+        )
+    elif args.model == "tabdpt":
+        layer_embeddings = extract_tabdpt_all_layers(
+            X_context, y_context, X_query, device=args.device
+        )
+    elif args.model == "carte":
+        layer_embeddings = extract_carte_all_layers(
             X_context, y_context, X_query, device=args.device
         )
     else:
