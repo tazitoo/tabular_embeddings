@@ -546,8 +546,8 @@ def main():
         return
 
     print(f"\nExtracted embeddings from {len(layer_embeddings)} layers:")
-    for name, emb in sorted(layer_embeddings.items(), key=lambda x: int(x[0].split('_')[1])):
-        print(f"  {name}: {emb.shape}")
+    for name in sort_layer_names(list(layer_embeddings.keys())):
+        print(f"  {name}: {layer_embeddings[name].shape}")
 
     # Compute layer-wise CKA
     print("\nComputing layer-wise CKA...")
