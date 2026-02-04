@@ -269,13 +269,28 @@ def plot_model_comparison():
     except FileNotFoundError:
         pass
 
+    # TabDPT
+    try:
+        data = np.load(OUTPUT_DIR / "layerwise_cka_tabdpt_adult.npz")
+        model_data['TabDPT'] = data['cka_matrix']
+    except FileNotFoundError:
+        pass
+
+    # CARTE (uses SpeedDating since adult has preprocessing issues)
+    try:
+        data = np.load(OUTPUT_DIR / "layerwise_cka_carte_SpeedDating.npz")
+        model_data['CARTE'] = data['cka_matrix']
+    except FileNotFoundError:
+        pass
+
     if len(model_data) < 2:
         print("Need at least 2 models for comparison")
         return
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
 
-    colors = {'TabPFN': '#1f77b4', 'TabICL': '#ff7f0e', 'Mitra': '#2ca02c', 'HyperFast': '#d62728'}
+    colors = {'TabPFN': '#1f77b4', 'TabICL': '#ff7f0e', 'Mitra': '#2ca02c', 'HyperFast': '#d62728',
+               'TabDPT': '#9467bd', 'CARTE': '#8c564b'}
 
     # Panel A: Representation drift (CKA with layer 0)
     ax = axes[0]
