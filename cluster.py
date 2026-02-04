@@ -82,7 +82,7 @@ class ClusterConfig:
     scheduler_port: int = SCHEDULER_PORT
     dashboard_port: int = DASHBOARD_PORT
     workers: Dict[str, Dict] = field(default_factory=lambda: GPU_WORKERS.copy())
-    memory_limit: str = "16GB"
+    memory_limit: str = "0"  # no memory limit (let OS manage)
     n_threads: int = 1
     n_workers_per_host: int = 1
     worker_timeout: int = 30  # seconds to wait for workers to connect

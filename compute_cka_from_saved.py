@@ -8,14 +8,14 @@ per-dataset pairwise metrics, plus an aggregated summary.
 
 Usage:
     python compute_cka_from_saved.py \
-        --embedding-dir 3_output/embeddings/tabarena \
-        --output 3_output/geometric_sweep_full.csv
+        --embedding-dir output/embeddings/tabarena \
+        --output output/geometric_sweep_full.csv
 
     # With LaTeX table output
     python compute_cka_from_saved.py \
-        --embedding-dir 3_output/embeddings/tabarena \
-        --output 3_output/geometric_sweep_full.csv \
-        --latex 3_output/geometric_sweep_full.tex
+        --embedding-dir output/embeddings/tabarena \
+        --output output/geometric_sweep_full.csv \
+        --latex output/geometric_sweep_full.tex
 """
 
 import argparse

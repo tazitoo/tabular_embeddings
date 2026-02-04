@@ -13,10 +13,10 @@ ssh surfer4 "source /home/brian/anaconda3/etc/profile.d/conda.sh && conda activa
   python extract_embeddings.py --model tabpfn --suite tabarena --output-dir /data/embeddings/tabarena --device cuda"
 
 # Rsync to local
-rsync -avz surfer4:/data/embeddings/tabarena/ 3_output/embeddings/tabarena/
+rsync -avz surfer4:/data/embeddings/tabarena/ output/embeddings/tabarena/
 
 # Compute CKA
-python compute_cka_from_saved.py --embedding-dir 3_output/embeddings/tabarena --output 3_output/geometric_sweep_tabarena.csv
+python compute_cka_from_saved.py --embedding-dir output/embeddings/tabarena --output output/geometric_sweep_tabarena.csv
 ```
 
 ## Completed Extractions (TabArena, 51 datasets)
@@ -86,7 +86,7 @@ python compute_cka_from_saved.py --embedding-dir 3_output/embeddings/tabarena --
   carte/*.npz
   tabula/*.npz
 
-3_output/embeddings/tabarena/       (local, rsynced)
+output/embeddings/tabarena/       (local, rsynced)
   same structure (~240MB total)
 ```
 

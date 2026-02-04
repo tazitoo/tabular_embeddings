@@ -14,7 +14,7 @@ from pathlib import Path
 
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-OUTPUT_DIR = PROJECT_ROOT / "3_output"
+OUTPUT_DIR = PROJECT_ROOT / "output"
 SUMMARY_CSV = OUTPUT_DIR / "geometric_sweep_tabarena_7model_summary.csv"
 
 # Model ordering (cluster transformers together)

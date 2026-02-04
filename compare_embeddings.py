@@ -233,7 +233,11 @@ def run_multi_dataset_comparison(
         print(f"Dataset: {dataset_name}")
         print(f"{'=' * 70}")
 
-        results = run_comparison(X, y, models, device=device)
+        try:
+            results = run_comparison(X, y, models, device=device)
+        except Exception as e:
+            print(f"Error on {dataset_name}: {e}")
+            continue
 
         if not results:
             continue

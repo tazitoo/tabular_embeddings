@@ -115,8 +115,12 @@ def centered_kernel_alignment(emb_a: np.ndarray, emb_b: np.ndarray) -> float:
         emb_b: (n_samples, dim_b) embeddings from model B
 
     Returns:
-        CKA score in [0, 1], where 1 means identical structure
+        CKA score in [0, 1], where 1 means identical structure.
+        Returns NaN if sample counts differ.
     """
+    if emb_a.shape[0] != emb_b.shape[0]:
+        return float("nan")
+
     # Center the embeddings
     emb_a = emb_a - emb_a.mean(axis=0)
     emb_b = emb_b - emb_b.mean(axis=0)
@@ -206,6 +210,10 @@ def compute_pairwise_similarity(
         for model_b in model_names[i + 1:]:
             emb_a = embeddings[model_a]
             emb_b = embeddings[model_b]
+
+            # Skip if sample counts don't match
+            if emb_a.shape[0] != emb_b.shape[0]:
+                continue
 
             # CKA
             cka = centered_kernel_alignment(emb_a, emb_b)

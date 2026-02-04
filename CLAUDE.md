@@ -1,7 +1,7 @@
 # CLAUDE.md - Tabular Embeddings Geometry
 ## Project Overview
 
-Research project investigating the universal geometry of embeddings in tabular foundation models. Target: ML/AI conference publication.
+Research project investigating the universal geometry of embeddings in tabular foundation models. Target: ML/AI conference publication. This repo will be open sourced and heavily scrutinized by experts in the field.  The code should be concise, well written, well documented, and test coverage of at least 80%.  Research & experimentation code should not safe guard against edge cases - we need to know why it fails, and fix it.  Short cuts to get results undermine the validity of the paper.
 
 ## Research Goals
 
@@ -68,18 +68,18 @@ python compare_embeddings.py --suite relbench
 - pmlb (for PMLB datasets, `pip install pmlb`)
 
 ## Distributed Execution
-
+- Running on CPU is never a good idea.
 - Workers have two hostnames: surfer (1GbE) and surfer4 (40GbE, 192.168.10.x)                                                               
 - Always SSH to the 4 variant for data transfers                                                                                            
 - socket.gethostname() returns the short name (no 4), so code checking hostname must accept both   
 
-Same GPU worker pool as the finance project, using the `finance` conda env (has torch+CUDA+model deps).
+GPU worker pool using the `tfm` conda env (has torch+CUDA+model deps).
 
 - **Workers**: surfer4 (3090), terrax4 (2080 Ti), octo4 (3070), firelord4 (4090)
-- **Conda env**: `finance` on each worker
+- **Conda env**: `tfm` on each worker (may need to be created on each worker)
 - **Worker repo path**: `/home/brian/src/tabular_embeddings`
-- **Worker python**: `/home/brian/anaconda3/envs/finance/bin/python`
-- **Code sync**: `git pull --ff-only` on each worker before cluster start
+- **Worker python**: `/home/brian/anaconda3/envs/tfm/bin/python` 
+- **Code sync**: `git pull --ff-only` on each worker before cluster start.  Using rsync is never a good idea.
 - **Module**: `cluster.py` (not `distributed.py` — renamed to avoid shadowing `dask.distributed`)
 
 ```bash
@@ -100,7 +100,7 @@ galactus orchestrates (Dask scheduler), workers extract embeddings on GPU, simil
 
 ## Key Findings
 
-- [x] Full TabArena sweep (51 datasets, 4 models): see `3_output/geometric_sweep_full.csv`
+- [x] Full TabArena sweep (51 datasets, 4 models): see `output/geometric_sweep_full.csv`
 - [x] Transformer ICL cluster: Mitra-TabPFN CKA=0.81, Mitra-TabICL=0.66, TabICL-TabPFN=0.64
 - [x] HyperFast (hypernetwork) geometrically distinct: CKA ~0.21-0.25 vs all transformer models
 - [x] Intrinsic dimensionality: TabPFN ~7 of 192 dims, TabICL ~17 of 512 dims

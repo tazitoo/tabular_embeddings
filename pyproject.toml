@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "tabular-embeddings"
@@ -40,3 +40,7 @@ dev = [
     "matplotlib>=3.7",
     "seaborn>=0.12",
 ]
+
+[tool.setuptools.packages.find]
+include = ["models*", "data*", "analysis*"]
+exclude = ["output*", "notebooks*"]
