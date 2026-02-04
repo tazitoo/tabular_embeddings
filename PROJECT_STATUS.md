@@ -125,12 +125,34 @@ Embeddings are NOT in git. CSVs are.
 
 Note: CARTE requires FastText model at `/home/brian/cc.en.300.bin`
 
+## Layer-wise CKA Analysis (TabPFN)
+
+TabPFN v2.5 has 24 transformer layers. Layer-wise CKA analysis reveals:
+
+**Synthetic data:**
+- Early layers (L0-L3): CKA ~0.99 (near-identical representations)
+- Middle layers (L4-L16): Gradual decline, CKA ~0.8-0.95
+- Final layers (L17-L23): Divergence begins, L0-L23 CKA = 0.62
+
+**Real data (adult dataset):**
+- Early layers (L0-L3): CKA ~0.99
+- Middle layers (L4-L16): Gradual decline, CKA ~0.7-0.9
+- **L18 anomaly**: Very low CKA with everything (~0.26-0.55) - transition layer
+- Final layers (L19-L23): Form a separate cluster with CKA ~0.86-0.98
+- L0 vs L23 CKA = 0.30 (significant representation drift)
+
+**Key finding**: The "2/3 depth" phenomenon is confirmed. Around layer 16-17 (67% depth), representations begin to diverge significantly as they become task-specialized. Layer 18 appears to be a critical transition point.
+
+See `output/layerwise_cka_heatmap_tabpfn_adult.png` for visualization.
+
 ## Blocked
 
 - **MotherNet checkpoint**: Download host unreachable. Would test whether hypernetwork geometric distance is architecture-class or HyperFast-specific.
 
 ## Next Steps
 
+- [x] Layer-wise CKA analysis within TabPFN
+- [ ] Layer-wise analysis for other models (Mitra, TabICL)
 - [ ] Per-dataset CKA analysis: do regression vs classification datasets show different geometric patterns?
 - [ ] Intrinsic dimensionality analysis across all 7 models
 - [ ] SAE concept extraction and comparison
