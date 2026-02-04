@@ -1,0 +1,33 @@
+\begin{table}[t]
+\centering
+\caption{Pairwise CKA similarity between tabular foundation models (TabArena, 51 datasets). Models are sorted by mean CKA.}
+\label{tab:cka_pairwise}
+\small
+\begin{tabular}{llccc}
+\toprule
+Model A & Model B & CKA & Cosine & Procrustes \\
+\midrule
+Mitra & TabDPT & 0.82 \tiny{$\pm$0.14} & 0.36 & 0.57 \\
+Mitra & TabPFN & 0.79 \tiny{$\pm$0.14} & 0.34 & 0.57 \\
+TabDPT & TabPFN & 0.76 \tiny{$\pm$0.15} & 0.26 & 0.64 \\
+Mitra & TabICL & 0.65 \tiny{$\pm$0.19} & 0.01 & 0.67 \\
+TabDPT & TabICL & 0.64 \tiny{$\pm$0.16} & 0.19 & 0.64 \\
+TabICL & TabPFN & 0.61 \tiny{$\pm$0.18} & 0.19 & 0.70 \\
+CARTE & Mitra & 0.45 \tiny{$\pm$0.23} & 0.21 & 0.91 \\
+CARTE & TabDPT & 0.44 \tiny{$\pm$0.23} & 0.17 & 0.97 \\
+CARTE & TabPFN & 0.42 \tiny{$\pm$0.21} & 0.19 & 0.95 \\
+CARTE & TabICL & 0.37 \tiny{$\pm$0.20} & 0.12 & 1.00 \\
+HyperFast & Mitra & 0.28 \tiny{$\pm$0.22} & 0.03 & 1.01 \\
+HyperFast & TabDPT & 0.27 \tiny{$\pm$0.18} & 0.03 & 1.01 \\
+HyperFast & TabICL & 0.26 \tiny{$\pm$0.19} & 0.01 & 1.04 \\
+HyperFast & TabPFN & 0.22 \tiny{$\pm$0.17} & 0.00 & 1.06 \\
+TabICL & Tabula-8B & 0.17 \tiny{$\pm$0.17} & -0.01 & 0.93 \\
+CARTE & HyperFast & 0.16 \tiny{$\pm$0.14} & 0.01 & 1.14 \\
+Mitra & Tabula-8B & 0.16 \tiny{$\pm$0.17} & 0.02 & 1.00 \\
+TabDPT & Tabula-8B & 0.16 \tiny{$\pm$0.17} & -0.00 & 0.93 \\
+TabPFN & Tabula-8B & 0.15 \tiny{$\pm$0.17} & 0.01 & 0.99 \\
+HyperFast & Tabula-8B & 0.12 \tiny{$\pm$0.15} & 0.03 & 1.09 \\
+CARTE & Tabula-8B & 0.12 \tiny{$\pm$0.17} & 0.03 & 1.10 \\
+\bottomrule
+\end{tabular}
+\end{table}

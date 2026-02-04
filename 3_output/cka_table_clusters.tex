@@ -1,0 +1,33 @@
+\begin{table}[t]
+\centering
+\caption{CKA similarity reveals three geometric clusters among tabular foundation models.}
+\label{tab:cka_clusters}
+\small
+\begin{tabular}{lcc}
+\toprule
+Comparison & CKA & Interpretation \\
+\midrule
+\multicolumn{3}{l}{\textit{Within Transformer ICL cluster}} \\
+Mitra--TabDPT & 0.82 $\pm$ 0.14 & \\
+Mitra--TabPFN & 0.79 $\pm$ 0.14 & \\
+TabDPT--TabPFN & 0.76 $\pm$ 0.15 & \\
+Mitra--TabICL & 0.65 $\pm$ 0.19 & \\
+TabDPT--TabICL & 0.64 $\pm$ 0.16 & \\
+TabICL--TabPFN & 0.61 $\pm$ 0.18 & \\
+\midrule
+\multicolumn{3}{l}{\textit{CARTE (GNN) vs Transformers}} \\
+CARTE--Mitra & 0.45 $\pm$ 0.23 & \\
+CARTE--TabDPT & 0.44 $\pm$ 0.23 & \\
+CARTE--TabPFN & 0.42 $\pm$ 0.21 & \\
+CARTE--TabICL & 0.37 $\pm$ 0.20 & \\
+\midrule
+\multicolumn{3}{l}{\textit{Tabula-8B (LLM) vs all others}} \\
+Tabula--Mitra & 0.16 $\pm$ 0.17 & Most distinct \\
+Tabula--TabDPT & 0.16 $\pm$ 0.17 & Most distinct \\
+Tabula--TabPFN & 0.15 $\pm$ 0.17 & Most distinct \\
+Tabula--TabICL & 0.17 $\pm$ 0.17 & Most distinct \\
+Tabula--CARTE & 0.12 $\pm$ 0.17 & Most distinct \\
+Tabula--HyperFast & 0.12 $\pm$ 0.15 & Most distinct \\
+\bottomrule
+\end{tabular}
+\end{table}

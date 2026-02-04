@@ -1,0 +1,27 @@
+\begin{table}[t]
+\centering
+\caption{Geometric similarity between TabPFN (192d) and TabICL (512d) across
+42 TabArena classification datasets (9 regression datasets excluded due to
+TabPFN's 10-class limit). CKA score ranges from 0 (unrelated) to 1 (identical
+geometry); Procrustes distance from 0 (identical after alignment) to $\sqrt{2}$
+(orthogonal). All values reported as mean $\pm$ std.}
+\label{tab:tabarena_geometry}
+\smallskip
+\begin{tabular}{llccc}
+\toprule
+Comparison & Metric & CKA Score & Procrustes Dist. & Cosine Sim. \\
+\midrule
+\multicolumn{5}{l}{\textit{Cross-model: TabPFN vs TabICL}} \\
+Internal repr. & $n=42$ & $0.784 \pm 0.173$ & $0.611 \pm 0.163$ & $0.361 \pm 0.243$ \\
+Output probs & $n=42$ & $0.843 \pm 0.209$ & $0.347 \pm 0.253$ & $0.987 \pm 0.037$ \\
+\midrule
+\multicolumn{5}{l}{\textit{Cross-model: internal vs output (asymmetric)}} \\
+TabPFN int.~vs TabICL out. & $n=42$ & $0.688 \pm 0.191$ & $0.697 \pm 0.178$ & $-0.019 \pm 0.216$ \\
+TabPFN out.~vs TabICL int. & $n=42$ & $0.720 \pm 0.222$ & $0.644 \pm 0.218$ & $-0.016 \pm 0.245$ \\
+\midrule
+\multicolumn{5}{l}{\textit{Within-model: internal vs output probabilities}} \\
+TabPFN & $n=42$ & $0.741 \pm 0.199$ & $0.653 \pm 0.185$ & $-0.016 \pm 0.222$ \\
+TabICL & $n=51$ & $0.733 \pm 0.208$ & $0.624 \pm 0.203$ & $-0.022 \pm 0.225$ \\
+\bottomrule
+\end{tabular}
+\end{table}
