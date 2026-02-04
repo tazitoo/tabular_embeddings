@@ -147,40 +147,247 @@ def extract_mitra_all_layers(
     X_query: np.ndarray,
     device: str = "cuda",
 ) -> Dict[str, np.ndarray]:
-    """Extract embeddings from all Mitra transformer layers."""
-    from autogluon.tabular.models.mitra.mitra_model import MitraModel
+    """Extract embeddings from all Mitra Tab2D transformer layers (12 layers)."""
+    from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
 
-    # Create and fit Mitra
-    import pandas as pd
-    import tempfile
+    clf = MitraClassifier(device=device, n_estimators=1, fine_tune=False)
+    clf.fit(X_context, y_context)
 
-    df_train = pd.DataFrame(X_context)
-    df_train['target'] = y_context
-    df_query = pd.DataFrame(X_query)
+    n_query = len(X_query)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        model = MitraModel(
-            path=tmpdir,
-            name="mitra_layerwise",
-            problem_type="binary",
-        )
-        model.fit(train_data=df_train, label='target')
+    # Access the Tab2D model through trainers
+    trainer = clf.trainers[0]
+    tab2d_model = trainer.model
 
-        # Access the underlying transformer
-        inner_model = model.model.model
+    # Find all transformer layers
+    # Tab2D has: x_embedding -> layers (ModuleList of Tab2DLayer) -> final_layer_norm -> final_layer
+    layers = tab2d_model.layers
+    n_layers = len(layers)
+    print(f"Mitra has {n_layers} Tab2D transformer layers")
 
-        # Mitra uses a different architecture - need to inspect
-        print(f"Mitra model structure: {type(inner_model)}")
+    # Register hooks for all layers
+    captured = {}
+    handles = []
 
-        # For now, just extract from available hooks
-        # This needs more investigation into Mitra's specific architecture
+    for i, layer in enumerate(layers):
+        def make_hook(layer_idx):
+            def hook_fn(module, input, output):
+                if isinstance(output, torch.Tensor):
+                    captured[f"layer_{layer_idx}"] = output.detach().cpu().numpy()
+            return hook_fn
+        handle = layer.register_forward_hook(make_hook(i))
+        handles.append(handle)
 
-    return {}
+    # Also hook final_layer_norm
+    def final_norm_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["final_norm"] = output.detach().cpu().numpy()
+    handles.append(tab2d_model.final_layer_norm.register_forward_hook(final_norm_hook))
+
+    # Forward pass
+    try:
+        with torch.no_grad():
+            _ = clf.predict_proba(X_query)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    # Process captured activations
+    layer_embeddings = {}
+    for key, act in captured.items():
+        # Mitra shapes vary based on flash_attn path
+        if act.ndim == 2:
+            # (n_valid_samples, dim) - flash_attn path
+            if act.shape[0] >= n_query:
+                emb = act[-n_query:]
+        elif act.ndim == 4:
+            # (batch, n_samples, n_features+1, dim)
+            y_token = act[:, :, 0, :]  # Take y-token position
+            emb = y_token.mean(axis=0)[-n_query:]
+        elif act.ndim == 3:
+            # (batch, n_samples, dim)
+            emb = act.mean(axis=0)[-n_query:]
+        else:
+            continue
+        layer_embeddings[key] = emb
+
+    return layer_embeddings
+
+
+def extract_tabicl_all_layers(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    device: str = "cuda",
+) -> Dict[str, np.ndarray]:
+    """Extract embeddings from all TabICL transformer layers."""
+    from tabicl import TabICLClassifier
+
+    clf = TabICLClassifier(device=device)
+    clf.fit(X_context, y_context)
+
+    n_query = len(X_query)
+    model = clf.model_
+
+    # TabICL architecture: col_embedder -> row_interactor -> icl_predictor
+    # ICL predictor has tf_icl.blocks (transformer blocks)
+    icl_blocks = model.icl_predictor.tf_icl.blocks
+    n_blocks = len(icl_blocks)
+    print(f"TabICL has {n_blocks} ICL transformer blocks")
+
+    # Register hooks for all ICL blocks
+    captured = {}
+    handles = []
+
+    for i, block in enumerate(icl_blocks):
+        def make_hook(block_idx):
+            def hook_fn(module, input, output):
+                if isinstance(output, torch.Tensor):
+                    captured[f"layer_{block_idx}"] = output.detach().cpu().numpy()
+            return hook_fn
+        handle = block.register_forward_hook(make_hook(i))
+        handles.append(handle)
+
+    # Also hook row_interactor output
+    def row_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["row_output"] = output.detach().cpu().numpy()
+    handles.append(model.row_interactor.out_ln.register_forward_hook(row_hook))
+
+    # Forward pass
+    try:
+        with torch.no_grad():
+            _ = clf.predict_proba(X_query)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    # Process captured activations
+    layer_embeddings = {}
+    for key, act in captured.items():
+        # Shape: (n_ensemble, n_ctx+n_query, dim) or (n_ensemble, n_ctx+n_query, n_struct, dim)
+        if act.ndim == 3:
+            query_act = act[:, -n_query:, :]  # (ensemble, n_query, dim)
+            emb = query_act.mean(axis=0)  # (n_query, dim)
+        elif act.ndim == 4:
+            query_act = act[:, -n_query:, :, :]  # (ensemble, n_query, struct, dim)
+            emb = query_act.mean(axis=(0, 2))  # (n_query, dim)
+        else:
+            continue
+        layer_embeddings[key] = emb
+
+    return layer_embeddings
+
+
+def extract_hyperfast_all_layers(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    device: str = "cuda",
+) -> Dict[str, np.ndarray]:
+    """
+    Extract embeddings from all layers of HyperFast's GENERATED network.
+
+    HyperFast generates a task-specific MLP from context data. The generated
+    network has residual linear layers. We need to intercept the forward pass
+    of the generated network to capture activations at each layer.
+    """
+    from hyperfast import HyperFastClassifier
+    from hyperfast.hyperfast import transform_data_for_main_network
+    import os
+
+    # Load model
+    worker_path = "/data/models/tabular_fm/hyperfast/hyperfast.ckpt"
+    custom_path = worker_path if os.path.exists(worker_path) else None
+
+    clf = HyperFastClassifier(device=device, n_ensemble=16, custom_path=custom_path)
+    clf.fit(X_context, y_context)
+
+    n_query = len(X_query)
+
+    # Get generated network structure
+    main_network = clf._main_networks[0]  # First ensemble member
+    print(f"HyperFast generated network keys: {list(main_network.keys())}")
+
+    # The generated network is a dict of weight tensors, not nn.Module
+    # We need to manually forward through each layer to capture activations
+    # Let's inspect the structure
+    n_layers = sum(1 for k in main_network.keys() if k.startswith('linear_layers'))
+    print(f"HyperFast generated network has ~{n_layers // 2} linear layers")
+
+    # Custom forward pass through generated network, capturing each layer
+    X_tensor = torch.from_numpy(X_query.astype(np.float32)).to(device)
+
+    all_layer_activations = {f"layer_{i}": [] for i in range(n_layers // 2 + 1)}
+
+    with torch.no_grad():
+        for jj in range(len(clf._main_networks)):
+            main_net = clf._move_to_device(clf._main_networks[jj])
+            rf = clf._move_to_device(clf._rfs[jj])
+            pca = clf._move_to_device(clf._pcas[jj])
+
+            if clf.feature_bagging:
+                X_b = X_tensor[:, clf.selected_features[jj]]
+            else:
+                X_b = X_tensor
+
+            X_transformed = transform_data_for_main_network(
+                X=X_b, cfg=clf._cfg, rf=rf, pca=pca
+            )
+
+            # Manual forward through generated network
+            x = X_transformed
+            all_layer_activations["layer_0"].append(x.cpu().numpy())
+
+            layer_idx = 1
+            for i in range(0, len([k for k in main_net.keys() if 'linear_layers' in k]), 2):
+                weight_key = f'linear_layers.{i}.weight'
+                bias_key = f'linear_layers.{i}.bias'
+                if weight_key in main_net and bias_key in main_net:
+                    weight = main_net[weight_key]
+                    bias = main_net[bias_key]
+                    x_new = torch.nn.functional.linear(x, weight, bias)
+                    x_new = torch.nn.functional.relu(x_new)
+
+                    # Residual connection if dimensions match
+                    if x_new.shape == x.shape:
+                        x = x + x_new
+                    else:
+                        x = x_new
+
+                    all_layer_activations[f"layer_{layer_idx}"].append(x.cpu().numpy())
+                    layer_idx += 1
+
+    # Average across ensemble
+    layer_embeddings = {}
+    for key, acts in all_layer_activations.items():
+        if acts:
+            stacked = np.stack(acts, axis=0)  # (n_ensemble, n_query, dim)
+            layer_embeddings[key] = stacked.mean(axis=0)  # (n_query, dim)
+
+    return layer_embeddings
+
+
+def sort_layer_names(names: List[str]) -> List[str]:
+    """Sort layer names, handling both 'layer_N' and special names like 'row_output'."""
+    def sort_key(name):
+        if name.startswith('layer_'):
+            try:
+                return (0, int(name.split('_')[1]))
+            except (ValueError, IndexError):
+                return (1, name)
+        elif name == 'row_output':
+            return (-1, 0)  # Before layer_0
+        elif name == 'final_norm':
+            return (2, 0)  # After all layers
+        else:
+            return (1, name)
+    return sorted(names, key=sort_key)
 
 
 def compute_layerwise_cka(layer_embeddings: Dict[str, np.ndarray]) -> Tuple[np.ndarray, List[str]]:
     """Compute pairwise CKA between all layers."""
-    layer_names = sorted(layer_embeddings.keys(), key=lambda x: int(x.split('_')[1]))
+    layer_names = sort_layer_names(list(layer_embeddings.keys()))
     n_layers = len(layer_names)
 
     cka_matrix = np.zeros((n_layers, n_layers))
@@ -278,7 +485,7 @@ def plot_cka_by_distance(cka_matrix: np.ndarray, output_path: Path, model_name: 
 def main():
     parser = argparse.ArgumentParser(description="Layer-wise CKA analysis")
     parser.add_argument("--model", type=str, default="tabpfn",
-                        choices=["tabpfn", "mitra"],
+                        choices=["tabpfn", "mitra", "tabicl", "hyperfast"],
                         help="Model to analyze")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device to use")
@@ -321,6 +528,14 @@ def main():
         )
     elif args.model == "mitra":
         layer_embeddings = extract_mitra_all_layers(
+            X_context, y_context, X_query, device=args.device
+        )
+    elif args.model == "tabicl":
+        layer_embeddings = extract_tabicl_all_layers(
+            X_context, y_context, X_query, device=args.device
+        )
+    elif args.model == "hyperfast":
+        layer_embeddings = extract_hyperfast_all_layers(
             X_context, y_context, X_query, device=args.device
         )
     else:
