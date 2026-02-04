@@ -132,21 +132,22 @@ class TabDPTEmbeddingExtractor(EmbeddingExtractor):
                 probs = self._model.predict_proba(X_query)
                 layer_embeddings["final_probs"] = probs
 
-        # Pseudo-embedding fallback
-        if not any(k != "final_probs" for k in layer_embeddings):
-            probs = layer_embeddings.get("final_probs", self._model.predict_proba(X_query))
-            layer_embeddings["transformer_hidden"] = np.hstack([
-                probs,
-                np.log(probs + 1e-8),
-                probs * (1 - probs),
-            ])
+        # Select primary embedding: prefer last transformer encoder block output
+        # Look for patterns like "transformer_encoder.15" (block outputs, not sublayers)
+        encoder_blocks = sorted([
+            k for k in layer_embeddings
+            if k.startswith("transformer_encoder.") and k.count(".") == 1
+        ], key=lambda x: int(x.split(".")[-1]))
 
-        # Select primary embedding
-        for key in ["transformer_hidden", "final_probs"]:
-            if key in layer_embeddings:
-                primary_embedding = layer_embeddings[key]
-                extraction_point = key
-                break
+        if encoder_blocks:
+            # Use the last transformer encoder block
+            extraction_point = encoder_blocks[-1]
+            primary_embedding = layer_embeddings[extraction_point]
+            layer_embeddings["transformer_hidden"] = primary_embedding
+        elif "final_probs" in layer_embeddings:
+            # Fallback to final probs
+            extraction_point = "final_probs"
+            primary_embedding = layer_embeddings["final_probs"]
         else:
             primary_embedding = list(layer_embeddings.values())[0]
             extraction_point = list(layer_embeddings.keys())[0]
