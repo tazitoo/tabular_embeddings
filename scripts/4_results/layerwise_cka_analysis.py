@@ -816,5 +816,253 @@ def main():
         print(f"2/3 depth would be layer: L{int(n_layers * 2 / 3)}")
 
 
+def compute_critical_depth(cka_matrix: np.ndarray, threshold: float = 0.5) -> dict:
+    """
+    Compute metrics about layer depth from CKA matrix.
+
+    Returns:
+        - critical_layer: First layer where CKA with L0 drops below threshold
+        - critical_depth_frac: critical_layer / total_layers
+        - final_cka: CKA between first and last layer
+        - half_cka_layer: Layer where CKA with L0 reaches ~0.5 of initial
+    """
+    n_layers = cka_matrix.shape[0]
+    l0_cka = cka_matrix[0, :]  # CKA of each layer with layer 0
+
+    # Find first layer below threshold
+    critical_layer = n_layers - 1  # Default to last
+    for i in range(1, n_layers):
+        if l0_cka[i] < threshold:
+            critical_layer = i
+            break
+
+    # Find layer where CKA drops to ~half
+    initial_cka = l0_cka[1] if n_layers > 1 else 1.0
+    half_target = initial_cka * 0.5
+    half_cka_layer = n_layers - 1
+    for i in range(1, n_layers):
+        if l0_cka[i] < half_target:
+            half_cka_layer = i
+            break
+
+    return {
+        'n_layers': n_layers,
+        'critical_layer': critical_layer,
+        'critical_depth_frac': critical_layer / n_layers,
+        'half_cka_layer': half_cka_layer,
+        'half_cka_depth_frac': half_cka_layer / n_layers,
+        'final_cka': cka_matrix[0, -1],
+        'l0_cka_profile': l0_cka.tolist(),
+    }
+
+
+def batch_analyze(model: str, datasets: List[str], device: str = "cuda",
+                  n_samples: int = 500, output_dir: Path = None) -> dict:
+    """Run layer-wise CKA analysis across multiple datasets."""
+    if output_dir is None:
+        output_dir = PROJECT_ROOT / "output"
+
+    results = {}
+
+    for dataset_name in datasets:
+        print(f"\n{'='*60}")
+        print(f"Processing {model} on {dataset_name}")
+        print('='*60)
+
+        try:
+            # Load dataset
+            X_context, y_context, X_query, _ = load_dataset(dataset_name, max_samples=n_samples)
+
+            # Extract embeddings
+            if model == "tabpfn":
+                layer_embeddings = extract_tabpfn_all_layers(
+                    X_context, y_context, X_query, device=device
+                )
+            elif model == "tabicl":
+                layer_embeddings = extract_tabicl_all_layers(
+                    X_context, y_context, X_query, device=device
+                )
+            elif model == "mitra":
+                layer_embeddings = extract_mitra_all_layers(
+                    X_context, y_context, X_query, device=device
+                )
+            elif model == "tabdpt":
+                layer_embeddings = extract_tabdpt_all_layers(
+                    X_context, y_context, X_query, device=device
+                )
+            elif model == "hyperfast":
+                layer_embeddings = extract_hyperfast_all_layers(
+                    X_context, y_context, X_query, device=device
+                )
+            elif model == "carte":
+                layer_embeddings = extract_carte_all_layers(
+                    X_context, y_context, X_query, device=device
+                )
+            else:
+                raise ValueError(f"Unknown model: {model}")
+
+            if not layer_embeddings:
+                print(f"  No embeddings extracted for {dataset_name}")
+                continue
+
+            # Compute CKA
+            cka_matrix, layer_names = compute_layerwise_cka(layer_embeddings)
+
+            # Compute depth metrics
+            depth_metrics = compute_critical_depth(cka_matrix)
+            depth_metrics['dataset'] = dataset_name
+            depth_metrics['model'] = model
+            depth_metrics['layer_names'] = layer_names
+
+            results[dataset_name] = depth_metrics
+
+            # Save individual result
+            suffix = f"{model}_{dataset_name}"
+            np.savez(
+                output_dir / f"layerwise_cka_{suffix}.npz",
+                cka_matrix=cka_matrix,
+                layer_names=layer_names,
+                dataset=dataset_name,
+            )
+
+            print(f"  Layers: {depth_metrics['n_layers']}")
+            print(f"  Critical layer (CKA<0.5): L{depth_metrics['critical_layer']} ({depth_metrics['critical_depth_frac']:.1%})")
+            print(f"  Final CKA with L0: {depth_metrics['final_cka']:.3f}")
+
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    return results
+
+
+def plot_depth_distribution(results: dict, output_path: Path, model_name: str):
+    """Plot distribution of critical depth across datasets."""
+    import matplotlib.pyplot as plt
+
+    depths = [r['critical_depth_frac'] for r in results.values()]
+    half_depths = [r['half_cka_depth_frac'] for r in results.values()]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Panel A: Distribution of critical depth
+    ax = axes[0]
+    ax.hist(depths, bins=10, edgecolor='black', alpha=0.7)
+    ax.axvline(x=2/3, color='red', linestyle='--', linewidth=2, label='2/3 depth')
+    ax.axvline(x=np.mean(depths), color='blue', linestyle='-', linewidth=2,
+               label=f'Mean: {np.mean(depths):.2f}')
+    ax.set_xlabel('Critical Depth (fraction)', fontsize=12)
+    ax.set_ylabel('Count', fontsize=12)
+    ax.set_title(f'{model_name}: Critical Depth Distribution\n(layer where CKA with L0 < 0.5)', fontsize=12)
+    ax.legend()
+    ax.set_xlim(0, 1)
+
+    # Panel B: Individual dataset profiles
+    ax = axes[1]
+    datasets = list(results.keys())
+    for i, (dataset, r) in enumerate(results.items()):
+        profile = r['l0_cka_profile']
+        n_layers = len(profile)
+        x_norm = np.arange(n_layers) / (n_layers - 1) if n_layers > 1 else [0]
+        ax.plot(x_norm, profile, alpha=0.5, linewidth=1)
+
+    ax.axvline(x=2/3, color='red', linestyle='--', linewidth=2, label='2/3 depth')
+    ax.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5, label='CKA=0.5')
+    ax.set_xlabel('Normalized Depth (0=input, 1=output)', fontsize=12)
+    ax.set_ylabel('CKA with Layer 0', fontsize=12)
+    ax.set_title(f'{model_name}: CKA Drift Profiles\n({len(results)} datasets)', fontsize=12)
+    ax.legend(loc='lower left')
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.05)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"Saved: {output_path}")
+    plt.close()
+
+    # Print summary statistics
+    print(f"\n{'='*60}")
+    print(f"{model_name} DEPTH ANALYSIS SUMMARY ({len(results)} datasets)")
+    print('='*60)
+    print(f"Critical depth (CKA<0.5 with L0):")
+    print(f"  Mean: {np.mean(depths):.3f}")
+    print(f"  Std:  {np.std(depths):.3f}")
+    print(f"  Min:  {np.min(depths):.3f}")
+    print(f"  Max:  {np.max(depths):.3f}")
+    print(f"  2/3 reference: 0.667")
+    print(f"\nHalf-CKA depth (where CKA drops to 50% of L1):")
+    print(f"  Mean: {np.mean(half_depths):.3f}")
+    print(f"  Std:  {np.std(half_depths):.3f}")
+
+
+def batch_main():
+    """Entry point for batch analysis."""
+    parser = argparse.ArgumentParser(description="Batch layer-wise CKA analysis across TabArena")
+    parser.add_argument("--model", type=str, default="tabpfn",
+                        choices=["tabpfn", "mitra", "tabicl", "hyperfast", "tabdpt", "carte"],
+                        help="Model to analyze")
+    parser.add_argument("--device", type=str, default="cuda",
+                        help="Device to use")
+    parser.add_argument("--n-samples", type=int, default=500,
+                        help="Number of samples per dataset")
+    parser.add_argument("--max-datasets", type=int, default=15,
+                        help="Maximum number of datasets to process")
+    parser.add_argument("--output-dir", type=str, default=None,
+                        help="Output directory")
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir) if args.output_dir else PROJECT_ROOT / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    np.random.seed(42)
+
+    # Get TabArena datasets
+    import openml
+    suite = openml.study.get_suite(457)
+    datasets = []
+    for did in list(suite.data)[:args.max_datasets * 2]:  # Get extra in case some fail
+        try:
+            d = openml.datasets.get_dataset(did, download_data=False)
+            datasets.append(d.name)
+        except:
+            pass
+        if len(datasets) >= args.max_datasets:
+            break
+
+    print(f"Running batch analysis for {args.model} on {len(datasets)} datasets")
+    print(f"Datasets: {datasets}")
+
+    # Run batch analysis
+    results = batch_analyze(
+        model=args.model,
+        datasets=datasets,
+        device=args.device,
+        n_samples=args.n_samples,
+        output_dir=output_dir
+    )
+
+    # Save aggregated results
+    import json
+    results_path = output_dir / f"layerwise_depth_analysis_{args.model}.json"
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=2)
+    print(f"\nSaved aggregated results: {results_path}")
+
+    # Plot distribution
+    if results:
+        plot_depth_distribution(
+            results,
+            output_dir / f"layerwise_depth_distribution_{args.model}.png",
+            args.model.upper()
+        )
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--batch" in sys.argv:
+        sys.argv.remove("--batch")
+        batch_main()
+    else:
+        main()
