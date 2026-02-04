@@ -54,7 +54,11 @@ def load_model_embeddings(npz_files: List[Path]) -> Dict[str, np.ndarray]:
     for f in npz_files:
         dataset_name = f.stem
         data = np.load(str(f), allow_pickle=True)
-        embeddings[dataset_name] = data["embeddings"]
+        emb = data["embeddings"]
+        # Cast to float32 for linalg compatibility (float16 not supported)
+        if emb.dtype == np.float16:
+            emb = emb.astype(np.float32)
+        embeddings[dataset_name] = emb
     return embeddings
 
 
