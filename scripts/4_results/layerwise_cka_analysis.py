@@ -12,7 +12,7 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import torch
@@ -22,6 +22,57 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from analysis.similarity import centered_kernel_alignment
+
+
+def load_dataset(dataset_name: str, max_samples: int = 1000) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load a dataset from TabArena or OpenML."""
+    import openml
+
+    # TabArena suite ID
+    TABARENA_SUITE_ID = 457
+
+    # Get dataset from OpenML
+    try:
+        dataset = openml.datasets.get_dataset(dataset_name, download_data=True)
+    except:
+        # Try by ID if name doesn't work
+        suite = openml.study.get_suite(TABARENA_SUITE_ID)
+        # Find dataset in suite
+        for did in suite.data:
+            d = openml.datasets.get_dataset(did, download_data=False)
+            if d.name == dataset_name:
+                dataset = openml.datasets.get_dataset(did, download_data=True)
+                break
+        else:
+            raise ValueError(f"Dataset {dataset_name} not found")
+
+    X, y, _, _ = dataset.get_data(target=dataset.default_target_attribute)
+
+    # Convert to numpy
+    X = X.values.astype(np.float32)
+    y = y.values
+
+    # Handle NaNs
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Encode labels if needed
+    if y.dtype == object:
+        from sklearn.preprocessing import LabelEncoder
+        y = LabelEncoder().fit_transform(y)
+
+    # Limit samples
+    if len(X) > max_samples * 2:
+        indices = np.random.permutation(len(X))[:max_samples * 2]
+        X = X[indices]
+        y = y[indices]
+
+    # Split into context and query
+    n = len(X)
+    split = n // 2
+    X_context, X_query = X[:split], X[split:]
+    y_context, y_query = y[:split], y[split:]
+
+    return X_context, y_context, X_query, y_query
 
 
 def extract_tabpfn_all_layers(
@@ -227,6 +278,8 @@ def main():
                         help="Device to use")
     parser.add_argument("--n-samples", type=int, default=500,
                         help="Number of samples for analysis")
+    parser.add_argument("--dataset", type=str, default=None,
+                        help="Dataset name from TabArena/OpenML (use synthetic if not specified)")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory")
     args = parser.parse_args()
@@ -234,17 +287,26 @@ def main():
     output_dir = Path(args.output_dir) if args.output_dir else PROJECT_ROOT / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate synthetic data for analysis
     np.random.seed(42)
-    n_features = 20
-    n_context = args.n_samples
-    n_query = args.n_samples
 
-    X_context = np.random.randn(n_context, n_features).astype(np.float32)
-    y_context = (np.random.rand(n_context) > 0.5).astype(int)
-    X_query = np.random.randn(n_query, n_features).astype(np.float32)
+    if args.dataset:
+        # Load real dataset
+        print(f"Loading dataset: {args.dataset}")
+        X_context, y_context, X_query, _ = load_dataset(args.dataset, max_samples=args.n_samples)
+        dataset_name = args.dataset
+    else:
+        # Generate synthetic data for analysis
+        n_features = 20
+        n_context = args.n_samples
+        n_query = args.n_samples
+
+        X_context = np.random.randn(n_context, n_features).astype(np.float32)
+        y_context = (np.random.rand(n_context) > 0.5).astype(int)
+        X_query = np.random.randn(n_query, n_features).astype(np.float32)
+        dataset_name = "synthetic"
 
     print(f"Extracting layer-wise embeddings from {args.model}...")
+    print(f"  Dataset: {dataset_name}")
     print(f"  Context: {X_context.shape}, Query: {X_query.shape}")
 
     if args.model == "tabpfn":
@@ -270,27 +332,32 @@ def main():
     print("\nComputing layer-wise CKA...")
     cka_matrix, layer_names = compute_layerwise_cka(layer_embeddings)
 
+    # Build output filename suffix
+    suffix = f"{args.model}_{dataset_name}"
+
     # Save results
     np.savez(
-        output_dir / f"layerwise_cka_{args.model}.npz",
+        output_dir / f"layerwise_cka_{suffix}.npz",
         cka_matrix=cka_matrix,
         layer_names=layer_names,
+        dataset=dataset_name,
     )
-    print(f"Saved: {output_dir / f'layerwise_cka_{args.model}.npz'}")
+    print(f"Saved: {output_dir / f'layerwise_cka_{suffix}.npz'}")
 
     # Plot heatmap
+    title = f"{args.model.upper()} Layer-wise CKA ({dataset_name})"
     plot_layerwise_cka(
         cka_matrix,
         layer_names,
-        output_dir / f"layerwise_cka_heatmap_{args.model}",
-        args.model.upper()
+        output_dir / f"layerwise_cka_heatmap_{suffix}",
+        title
     )
 
     # Plot CKA by distance
     plot_cka_by_distance(
         cka_matrix,
-        output_dir / f"layerwise_cka_distance_{args.model}.png",
-        args.model.upper()
+        output_dir / f"layerwise_cka_distance_{suffix}.png",
+        title
     )
 
     # Print summary
