@@ -92,10 +92,10 @@ class EmbeddingExtractor(ABC):
     def _register_hook(self, module, name: str):
         """Register a forward hook to capture activations."""
         def hook(module, input, output):
-            if isinstance(output, tuple):
-                self._activations[name] = output[0].detach().cpu().numpy()
-            else:
-                self._activations[name] = output.detach().cpu().numpy()
+            tensor = output[0] if isinstance(output, tuple) else output
+            # Convert BFloat16/Float16 to Float32 for numpy compatibility
+            tensor = tensor.detach().float().cpu().numpy()
+            self._activations[name] = tensor
 
         handle = module.register_forward_hook(hook)
         self._hooks.append(handle)
