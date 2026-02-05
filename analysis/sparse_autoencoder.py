@@ -38,8 +38,22 @@ class SAEConfig:
 
     # Sparsity
     sparsity_penalty: float = 1e-3  # L1 coefficient
-    sparsity_type: str = "l1"  # "l1", "topk", or "gated"
+    sparsity_type: str = "l1"  # "l1", "topk", "gated", "matryoshka", or "archetypal"
     topk: int = 32  # For topk sparsity
+
+    # Matryoshka settings (nested representation learning)
+    matryoshka_dims: List[int] = field(default_factory=lambda: [32, 64, 128, 256])
+    matryoshka_weights: List[float] = None  # Weights for each scale (default: equal)
+
+    # Archetypal settings (convex hull constraints)
+    archetypal_n_archetypes: int = None  # If None, uses hidden_dim
+    archetypal_simplex_temp: float = 1.0  # Temperature for softmax projection
+
+    # Dead neuron revival (auxiliary loss)
+    use_aux_loss: bool = True  # Enable dead neuron revival
+    aux_loss_coef: float = 1e-2  # Coefficient for auxiliary loss
+    dead_threshold: int = 10000  # Steps without activation to consider dead
+    aux_topk: int = 512  # Number of dead neurons to revive per batch
 
     # Training
     learning_rate: float = 1e-3
@@ -85,6 +99,13 @@ class SparseAutoencoder(nn.Module):
         decoder: h -> W_dec @ h + b_dec        [reconstruction]
 
     The encoder weights W_enc columns are the "concepts" or dictionary elements.
+
+    Supported sparsity types:
+        - "l1": Standard L1 penalty on activations
+        - "topk": Keep only top-k activations per sample
+        - "gated": Learnable gates for sparsity (Anthropic style)
+        - "matryoshka": Nested representations valid at multiple scales
+        - "archetypal": Dictionary elements as convex hull vertices
     """
 
     def __init__(self, config: SAEConfig):
@@ -107,8 +128,30 @@ class SparseAutoencoder(nn.Module):
             self.gate = nn.Parameter(torch.randn(config.hidden_dim, config.input_dim) * 0.01)
             self.gate_bias = nn.Parameter(torch.zeros(config.hidden_dim))
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode input to sparse hidden representation."""
+        # For archetypal SAE - learnable archetype coefficients
+        if config.sparsity_type == "archetypal":
+            n_arch = config.archetypal_n_archetypes or config.hidden_dim
+            # Archetype mixing weights (will be projected to simplex)
+            self.archetype_logits = nn.Parameter(torch.randn(config.hidden_dim, n_arch) * 0.01)
+
+        # Dead neuron tracking for auxiliary loss
+        if config.use_aux_loss:
+            # Register buffer to track steps since last activation
+            self.register_buffer('steps_since_active', torch.zeros(config.hidden_dim, dtype=torch.long))
+            self.register_buffer('total_steps', torch.tensor(0, dtype=torch.long))
+
+    def encode(self, x: torch.Tensor, return_pre_act: bool = False) -> torch.Tensor:
+        """
+        Encode input to sparse hidden representation.
+
+        Args:
+            x: Input tensor (batch_size, input_dim)
+            return_pre_act: If True, also return pre-activation for aux loss
+
+        Returns:
+            h: Sparse activations (batch_size, hidden_dim)
+            pre_act: (optional) Pre-activation values
+        """
         # Pre-activation
         pre_act = F.linear(x, self.W_enc, self.b_enc)
 
@@ -126,28 +169,113 @@ class SparseAutoencoder(nn.Module):
             gate = torch.sigmoid(gate_pre)
             h = F.relu(pre_act) * gate
 
+        elif self.config.sparsity_type == "matryoshka":
+            # Matryoshka: standard ReLU, loss handles nesting
+            h = F.relu(pre_act)
+
+        elif self.config.sparsity_type == "archetypal":
+            # Archetypal: activations represent archetype memberships
+            # Project to simplex (each sample is convex combination of archetypes)
+            h = F.softmax(pre_act / self.config.archetypal_simplex_temp, dim=-1)
+
         else:
             # Standard L1: just ReLU
             h = F.relu(pre_act)
 
+        if return_pre_act:
+            return h, pre_act
         return h
 
-    def decode(self, h: torch.Tensor) -> torch.Tensor:
-        """Decode sparse representation back to input space."""
+    def decode(self, h: torch.Tensor, max_dim: int = None) -> torch.Tensor:
+        """
+        Decode sparse representation back to input space.
+
+        Args:
+            h: Hidden activations (batch_size, hidden_dim)
+            max_dim: For Matryoshka, only use first max_dim features
+
+        Returns:
+            x_hat: Reconstruction (batch_size, input_dim)
+        """
+        if max_dim is not None:
+            h = h[:, :max_dim]
+
         if self.config.tied_weights:
-            # W_enc is (hidden_dim, input_dim), so W_enc.T is (input_dim, hidden_dim)
-            # F.linear computes h @ W.T, so we need W of shape (input_dim, hidden_dim)
-            return F.linear(h, self.W_enc.T, self.b_dec)
+            W = self.W_enc[:max_dim] if max_dim else self.W_enc
+            return F.linear(h, W.T, self.b_dec)
         else:
-            # W_dec is (input_dim, hidden_dim)
-            # F.linear computes h @ W_dec.T = h @ (hidden_dim, input_dim) = correct
-            return F.linear(h, self.W_dec, self.b_dec)
+            W = self.W_dec[:, :max_dim] if max_dim else self.W_dec
+            return F.linear(h, W, self.b_dec)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (reconstruction, hidden_activations)."""
         h = self.encode(x)
         x_hat = self.decode(h)
         return x_hat, h
+
+    def forward_matryoshka(self, x: torch.Tensor) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        """
+        Forward pass for Matryoshka SAE returning reconstructions at multiple scales.
+
+        Returns:
+            reconstructions: List of reconstructions at each Matryoshka dimension
+            h: Full hidden activations
+        """
+        h = self.encode(x)
+        reconstructions = []
+        for dim in self.config.matryoshka_dims:
+            if dim <= self.config.hidden_dim:
+                x_hat = self.decode(h, max_dim=dim)
+                reconstructions.append(x_hat)
+        return reconstructions, h
+
+    def compute_aux_loss(self, x: torch.Tensor, h: torch.Tensor, pre_act: torch.Tensor) -> torch.Tensor:
+        """
+        Compute auxiliary loss to revive dead neurons.
+
+        Based on Anthropic's approach: encourage dead neurons to activate on
+        samples with high reconstruction error.
+
+        Args:
+            x: Original input
+            h: Current activations
+            pre_act: Pre-activation values
+
+        Returns:
+            aux_loss: Auxiliary loss term
+        """
+        if not self.config.use_aux_loss:
+            return torch.tensor(0.0, device=x.device)
+
+        # Update dead neuron tracking
+        with torch.no_grad():
+            active_mask = (h > 0).any(dim=0)  # Which neurons fired this batch
+            self.steps_since_active[active_mask] = 0
+            self.steps_since_active[~active_mask] += 1
+            self.total_steps += 1
+
+        # Find dead neurons (haven't fired in dead_threshold steps)
+        dead_mask = self.steps_since_active > self.config.dead_threshold
+
+        if not dead_mask.any():
+            return torch.tensor(0.0, device=x.device)
+
+        # Compute reconstruction error per sample
+        x_hat = self.decode(h)
+        recon_error = (x - x_hat).pow(2).sum(dim=-1)  # (batch_size,)
+
+        # Get top-k samples with highest reconstruction error
+        n_samples = min(self.config.aux_topk, len(x))
+        _, high_error_idx = torch.topk(recon_error, n_samples)
+
+        # Get pre-activations of dead neurons on high-error samples
+        dead_pre_act = pre_act[high_error_idx][:, dead_mask]  # (n_samples, n_dead)
+
+        # Auxiliary loss: encourage dead neurons to have positive pre-activation
+        # on high-error samples (so they'll fire after ReLU)
+        aux_loss = F.relu(-dead_pre_act + 0.1).mean()  # Encourage pre_act > 0.1
+
+        return self.config.aux_loss_coef * aux_loss
 
     def get_dictionary(self) -> np.ndarray:
         """Get learned dictionary (encoder weights)."""
@@ -175,6 +303,12 @@ def train_sae(
     """
     Train a Sparse Autoencoder on embeddings.
 
+    Supports multiple SAE variants:
+    - Standard L1/TopK/Gated sparsity
+    - Matryoshka: nested loss at multiple scales
+    - Archetypal: convex hull constraints
+    - Auxiliary loss: dead neuron revival
+
     Args:
         embeddings: (n_samples, embedding_dim) input embeddings
         config: SAE configuration
@@ -198,33 +332,84 @@ def train_sae(
     model = SparseAutoencoder(config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
+    # For Matryoshka, setup dimension weights
+    if config.sparsity_type == "matryoshka":
+        mat_dims = [d for d in config.matryoshka_dims if d <= config.hidden_dim]
+        if config.matryoshka_weights is None:
+            mat_weights = [1.0 / len(mat_dims)] * len(mat_dims)
+        else:
+            mat_weights = config.matryoshka_weights[:len(mat_dims)]
+            mat_weights = [w / sum(mat_weights) for w in mat_weights]  # Normalize
+
     # Training loop
-    history = {"recon_loss": [], "sparsity_loss": [], "total_loss": []}
+    history = {"recon_loss": [], "sparsity_loss": [], "aux_loss": [], "total_loss": []}
 
     for epoch in range(config.n_epochs):
         epoch_recon = 0.0
         epoch_sparse = 0.0
+        epoch_aux = 0.0
         n_batches = 0
 
         for (batch,) in loader:
             batch = batch.to(device)
 
-            # Forward
-            x_hat, h = model(batch)
+            # Forward pass depends on SAE type
+            pre_act = None  # Initialize for aux loss check
 
-            # Reconstruction loss
-            recon_loss = F.mse_loss(x_hat, batch)
-
-            # Sparsity loss
-            if config.sparsity_type == "l1":
+            if config.sparsity_type == "matryoshka":
+                # Matryoshka: compute loss at multiple scales
+                # Get pre_act for aux loss if needed
+                if config.use_aux_loss:
+                    h, pre_act = model.encode(batch, return_pre_act=True)
+                else:
+                    h = model.encode(batch)
+                reconstructions = []
+                for dim in mat_dims:
+                    x_hat = model.decode(h, max_dim=dim)
+                    reconstructions.append(x_hat)
+                recon_loss = torch.tensor(0.0, device=device)
+                for x_hat, weight in zip(reconstructions, mat_weights):
+                    recon_loss = recon_loss + weight * F.mse_loss(x_hat, batch)
+                # Sparsity on full activations
                 sparsity_loss = config.sparsity_penalty * h.abs().mean()
-            elif config.sparsity_type == "topk":
-                # TopK has implicit sparsity, small L1 for dead feature prevention
-                sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
+
+            elif config.sparsity_type == "archetypal":
+                # Archetypal: activations are simplex-constrained
+                h, pre_act = model.encode(batch, return_pre_act=True)
+                x_hat = model.decode(h)
+                recon_loss = F.mse_loss(x_hat, batch)
+                # Entropy regularization to encourage sparse archetype usage
+                entropy = -(h * torch.log(h + 1e-8)).sum(dim=-1).mean()
+                sparsity_loss = -config.sparsity_penalty * entropy  # Minimize entropy = more peaked
+
             else:
-                sparsity_loss = config.sparsity_penalty * h.abs().mean()
+                # Standard forward
+                if config.use_aux_loss:
+                    h, pre_act = model.encode(batch, return_pre_act=True)
+                    x_hat = model.decode(h)
+                else:
+                    x_hat, h = model(batch)
+                    pre_act = None
+                recon_loss = F.mse_loss(x_hat, batch)
 
-            loss = recon_loss + sparsity_loss
+                # Sparsity loss
+                if config.sparsity_type == "l1":
+                    sparsity_loss = config.sparsity_penalty * h.abs().mean()
+                elif config.sparsity_type == "topk":
+                    # TopK has implicit sparsity, small L1 for dead feature prevention
+                    sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
+                elif config.sparsity_type == "gated":
+                    sparsity_loss = config.sparsity_penalty * h.abs().mean()
+                else:
+                    sparsity_loss = config.sparsity_penalty * h.abs().mean()
+
+            # Auxiliary loss for dead neuron revival
+            if config.use_aux_loss and pre_act is not None:
+                aux_loss = model.compute_aux_loss(batch, h, pre_act)
+            else:
+                aux_loss = torch.tensor(0.0, device=device)
+
+            loss = recon_loss + sparsity_loss + aux_loss
 
             # Backward
             optimizer.zero_grad()
@@ -237,17 +422,28 @@ def train_sae(
 
             epoch_recon += recon_loss.item()
             epoch_sparse += sparsity_loss.item()
+            epoch_aux += aux_loss.item() if torch.is_tensor(aux_loss) else aux_loss
             n_batches += 1
 
         epoch_recon /= n_batches
         epoch_sparse /= n_batches
+        epoch_aux /= n_batches
         history["recon_loss"].append(epoch_recon)
         history["sparsity_loss"].append(epoch_sparse)
-        history["total_loss"].append(epoch_recon + epoch_sparse)
+        history["aux_loss"].append(epoch_aux)
+        history["total_loss"].append(epoch_recon + epoch_sparse + epoch_aux)
+
+        # Log dead neuron count if using aux loss
+        if config.use_aux_loss and hasattr(model, 'steps_since_active'):
+            n_dead = (model.steps_since_active > config.dead_threshold).sum().item()
+        else:
+            n_dead = 0
 
         if verbose and (epoch + 1) % 20 == 0:
-            print(f"  Epoch {epoch+1}/{config.n_epochs}: "
-                  f"recon={epoch_recon:.6f}, sparsity={epoch_sparse:.6f}")
+            msg = f"  Epoch {epoch+1}/{config.n_epochs}: recon={epoch_recon:.6f}, sparsity={epoch_sparse:.6f}"
+            if config.use_aux_loss:
+                msg += f", aux={epoch_aux:.6f}, dead={n_dead}"
+            print(msg)
 
     # Compute final statistics
     model.eval()
@@ -499,8 +695,10 @@ def analyze_feature_geometry(
 
 
 if __name__ == "__main__":
-    # Demo with random embeddings
-    print("Testing Sparse Autoencoder module...\n")
+    # Demo with random embeddings - test all SAE variants
+    print("=" * 60)
+    print("Testing Sparse Autoencoder Module - All Variants")
+    print("=" * 60)
 
     np.random.seed(42)
     torch.manual_seed(42)
@@ -510,37 +708,79 @@ if __name__ == "__main__":
     embedding_dim = 64
     embeddings = np.random.randn(n_samples, embedding_dim).astype(np.float32)
 
-    # Configure SAE
-    config = SAEConfig(
-        input_dim=embedding_dim,
-        hidden_dim=256,  # 4x overcomplete
-        sparsity_penalty=1e-3,
-        sparsity_type="l1",
-        n_epochs=50,
-    )
+    # Test configurations for each SAE type
+    sae_configs = {
+        "L1 + Aux Loss": SAEConfig(
+            input_dim=embedding_dim,
+            hidden_dim=256,
+            sparsity_penalty=1e-3,
+            sparsity_type="l1",
+            use_aux_loss=True,
+            n_epochs=50,
+        ),
+        "TopK": SAEConfig(
+            input_dim=embedding_dim,
+            hidden_dim=256,
+            sparsity_penalty=1e-3,
+            sparsity_type="topk",
+            topk=32,
+            use_aux_loss=True,
+            n_epochs=50,
+        ),
+        "Matryoshka": SAEConfig(
+            input_dim=embedding_dim,
+            hidden_dim=256,
+            sparsity_penalty=1e-3,
+            sparsity_type="matryoshka",
+            matryoshka_dims=[32, 64, 128, 256],
+            use_aux_loss=True,
+            n_epochs=50,
+        ),
+        "Archetypal": SAEConfig(
+            input_dim=embedding_dim,
+            hidden_dim=64,  # Fewer archetypes
+            sparsity_penalty=1e-2,
+            sparsity_type="archetypal",
+            archetypal_simplex_temp=0.5,
+            use_aux_loss=False,  # Not applicable for archetypal
+            n_epochs=50,
+        ),
+    }
 
-    print(f"Training SAE: {embedding_dim}D -> {config.hidden_dim}D")
-    print(f"Sparsity: {config.sparsity_type}, penalty={config.sparsity_penalty}")
+    results_summary = {}
 
-    model, result = train_sae(embeddings, config, verbose=True)
+    for name, config in sae_configs.items():
+        print(f"\n{'='*60}")
+        print(f"Training: {name}")
+        print(f"  hidden_dim={config.hidden_dim}, sparsity={config.sparsity_type}")
+        print("=" * 60)
 
-    print(f"\nResults:")
-    print(f"  Reconstruction loss: {result.reconstruction_loss:.6f}")
-    print(f"  Sparsity loss: {result.sparsity_loss:.6f}")
-    print(f"  Alive features: {result.alive_features}/{config.hidden_dim}")
-    print(f"  Mean active per sample: {result.mean_active_features:.1f}")
+        model, result = train_sae(embeddings, config, verbose=True)
 
-    # Richness analysis
-    richness = measure_dictionary_richness(result)
-    print(f"\nRichness Metrics:")
-    for k, v in richness.items():
-        print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+        print(f"\nResults for {name}:")
+        print(f"  Reconstruction loss: {result.reconstruction_loss:.6f}")
+        print(f"  Sparsity loss: {result.sparsity_loss:.6f}")
+        print(f"  Alive features: {result.alive_features}/{config.hidden_dim}")
+        print(f"  Mean active per sample: {result.mean_active_features:.1f}")
 
-    # Geometry analysis
-    geometry = analyze_feature_geometry(result.dictionary, result.feature_activations)
-    print(f"\nGeometry Metrics:")
-    print(f"  Power law alpha: {geometry['power_law_alpha']:.3f}")
-    print(f"  Mean clustering: {geometry['mean_clustering']:.3f}")
-    print(f"  Mean co-activation: {geometry['mean_coactivation']:.3f}")
+        # Richness analysis
+        richness = measure_dictionary_richness(result)
+        print(f"  Richness score: {richness['richness_score']:.4f}")
+        print(f"  Dictionary diversity: {richness['dictionary_diversity']:.4f}")
+
+        results_summary[name] = {
+            "recon_loss": result.reconstruction_loss,
+            "alive_ratio": result.alive_features / config.hidden_dim,
+            "richness": richness['richness_score'],
+        }
+
+    # Summary comparison
+    print(f"\n{'='*60}")
+    print("SUMMARY COMPARISON")
+    print("=" * 60)
+    print(f"{'SAE Type':<20} {'Recon Loss':>12} {'Alive Ratio':>12} {'Richness':>10}")
+    print("-" * 60)
+    for name, metrics in results_summary.items():
+        print(f"{name:<20} {metrics['recon_loss']:>12.6f} {metrics['alive_ratio']:>12.2%} {metrics['richness']:>10.4f}")
 
     print("\nSAE module test complete!")
