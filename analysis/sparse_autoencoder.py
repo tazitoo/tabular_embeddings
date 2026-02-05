@@ -178,6 +178,30 @@ class SparseAutoencoder(nn.Module):
             # Project to simplex (each sample is convex combination of archetypes)
             h = F.softmax(pre_act / self.config.archetypal_simplex_temp, dim=-1)
 
+        elif self.config.sparsity_type == "matryoshka_archetypal":
+            # Combined Matryoshka-Archetypal: nested simplex structure
+            # Each Matryoshka scale has its own simplex (convex combination)
+            # This gives granularity (can truncate) + interpretability (simplex)
+            h = torch.zeros_like(pre_act)
+            mat_dims = self.config.matryoshka_dims
+            temp = self.config.archetypal_simplex_temp
+
+            # Apply softmax within each nested scale
+            prev_dim = 0
+            for dim in mat_dims:
+                if dim <= self.config.hidden_dim:
+                    # Softmax over features [prev_dim:dim] for this scale
+                    h[:, prev_dim:dim] = F.softmax(
+                        pre_act[:, prev_dim:dim] / temp, dim=-1
+                    ) * (dim - prev_dim)  # Scale to preserve magnitude
+                    prev_dim = dim
+
+            # Handle remaining dimensions if any
+            if prev_dim < self.config.hidden_dim:
+                h[:, prev_dim:] = F.softmax(
+                    pre_act[:, prev_dim:] / temp, dim=-1
+                ) * (self.config.hidden_dim - prev_dim)
+
         else:
             # Standard L1: just ReLU
             h = F.relu(pre_act)
@@ -332,8 +356,8 @@ def train_sae(
     model = SparseAutoencoder(config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
-    # For Matryoshka, setup dimension weights
-    if config.sparsity_type == "matryoshka":
+    # For Matryoshka and Matryoshka-Archetypal, setup dimension weights
+    if config.sparsity_type in ("matryoshka", "matryoshka_archetypal"):
         mat_dims = [d for d in config.matryoshka_dims if d <= config.hidden_dim]
         if config.matryoshka_weights is None:
             mat_weights = [1.0 / len(mat_dims)] * len(mat_dims)
@@ -381,6 +405,33 @@ def train_sae(
                 # Entropy regularization to encourage sparse archetype usage
                 entropy = -(h * torch.log(h + 1e-8)).sum(dim=-1).mean()
                 sparsity_loss = -config.sparsity_penalty * entropy  # Minimize entropy = more peaked
+
+            elif config.sparsity_type == "matryoshka_archetypal":
+                # Combined: Matryoshka multi-scale loss + Archetypal simplex structure
+                h, pre_act = model.encode(batch, return_pre_act=True)
+
+                # Multi-scale reconstruction loss (Matryoshka)
+                reconstructions = []
+                for dim in mat_dims:
+                    x_hat = model.decode(h, max_dim=dim)
+                    reconstructions.append(x_hat)
+                recon_loss = torch.tensor(0.0, device=device)
+                for x_hat, weight in zip(reconstructions, mat_weights):
+                    recon_loss = recon_loss + weight * F.mse_loss(x_hat, batch)
+
+                # Entropy regularization within each scale (Archetypal)
+                # Encourages peaked/sparse archetype usage at each granularity
+                total_entropy = torch.tensor(0.0, device=device)
+                prev_dim = 0
+                for dim in mat_dims:
+                    if dim <= config.hidden_dim:
+                        h_scale = h[:, prev_dim:dim]
+                        # Normalize to get probabilities for this scale
+                        h_norm = h_scale / (h_scale.sum(dim=-1, keepdim=True) + 1e-8)
+                        entropy = -(h_norm * torch.log(h_norm + 1e-8)).sum(dim=-1).mean()
+                        total_entropy = total_entropy + entropy
+                        prev_dim = dim
+                sparsity_loss = -config.sparsity_penalty * total_entropy / len(mat_dims)
 
             else:
                 # Standard forward

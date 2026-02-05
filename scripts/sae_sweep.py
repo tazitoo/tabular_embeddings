@@ -341,6 +341,7 @@ def run_test():
         {"sae_type": "topk", "expansion_factor": 4, "sparsity_penalty": 1e-3, "topk": 32, "use_aux_loss": True, "n_epochs": 30},
         {"sae_type": "matryoshka", "expansion_factor": 4, "sparsity_penalty": 1e-3, "use_aux_loss": True, "n_epochs": 30},
         {"sae_type": "archetypal", "expansion_factor": 2, "sparsity_penalty": 1e-2, "archetypal_temp": 0.5, "n_epochs": 30},
+        {"sae_type": "matryoshka_archetypal", "expansion_factor": 4, "sparsity_penalty": 1e-2, "archetypal_temp": 0.5, "n_epochs": 30},
     ]
 
     results = []
@@ -374,7 +375,7 @@ def create_optuna_objective(embeddings: np.ndarray, device: str = "cuda"):
     """
     def objective(trial: "optuna.Trial") -> float:
         # Sample hyperparameters
-        sae_type = trial.suggest_categorical("sae_type", ["l1", "topk", "matryoshka", "archetypal"])
+        sae_type = trial.suggest_categorical("sae_type", ["l1", "topk", "matryoshka", "archetypal", "matryoshka_archetypal"])
         expansion_factor = trial.suggest_categorical("expansion_factor", [4, 8, 16])
         sparsity_penalty = trial.suggest_float("sparsity_penalty", 1e-4, 1e-2, log=True)
         use_aux_loss = trial.suggest_categorical("use_aux_loss", [True, False])
@@ -387,9 +388,10 @@ def create_optuna_objective(embeddings: np.ndarray, device: str = "cuda"):
         else:
             topk = 32
 
-        if sae_type == "archetypal":
+        if sae_type == "archetypal" or sae_type == "matryoshka_archetypal":
             archetypal_temp = trial.suggest_float("archetypal_temp", 0.1, 2.0)
-            use_aux_loss = False  # Not applicable for archetypal
+            if sae_type == "archetypal":
+                use_aux_loss = False  # Not applicable for pure archetypal
         else:
             archetypal_temp = 1.0
 

@@ -301,12 +301,19 @@ def plot_pareto_from_study(
     # Panel A: L0 vs R² with Pareto frontier
     ax = axes[0]
 
-    # Color by SAE type
-    colors = {"l1": "C0", "topk": "C1", "matryoshka": "C2", "archetypal": "C3"}
+    # Color by SAE type (architecture variant)
+    colors = {"l1": "C0", "topk": "C1", "matryoshka": "C2", "archetypal": "C3", "matryoshka_archetypal": "C4"}
+    labels = {
+        "l1": "L1-penalty SAE",
+        "topk": "TopK SAE",
+        "matryoshka": "Matryoshka SAE",
+        "archetypal": "Archetypal SAE",
+        "matryoshka_archetypal": "Matryoshka-Archetypal SAE"
+    }
     for sae_type in np.unique(sae_types):
         mask = sae_types == sae_type
         ax.scatter(l0_values[mask], r2_values[mask],
-                   c=colors.get(sae_type, "gray"), label=sae_type,
+                   c=colors.get(sae_type, "gray"), label=labels.get(sae_type, sae_type),
                    alpha=0.6, s=50)
 
     # Plot Pareto frontier
@@ -329,7 +336,7 @@ def plot_pareto_from_study(
     for sae_type in np.unique(sae_types):
         mask = sae_types == sae_type
         ax.scatter(l0_values[mask], richness_values[mask],
-                   c=colors.get(sae_type, "gray"), label=sae_type,
+                   c=colors.get(sae_type, "gray"), label=labels.get(sae_type, sae_type),
                    alpha=0.6, s=50)
 
     ax.scatter([l0_values[best_idx]], [richness_values[best_idx]],
