@@ -120,6 +120,7 @@ def extract_tabpfn_embeddings(
     X_context, X_query = X[:split], X[split:]
     y_context, y_query = y[:split], y[split:]
 
+    n_query = len(X_query)
     print(f"  Context: {X_context.shape}, Query: {X_query.shape}")
 
     # Extract embeddings with hooks
@@ -136,21 +137,11 @@ def extract_tabpfn_embeddings(
     clf = TabPFNClassifier(**kwargs)
     clf.fit(X_context, y_context)
 
-    # Get model
+    # Get model - TabPFN uses transformer_encoder
     model = clf.model_
     model.eval()
 
-    # Find transformer layers
-    encoder = None
-    for name, module in model.named_modules():
-        if 'encoder' in name.lower() and hasattr(module, 'layers'):
-            encoder = module
-            break
-
-    if encoder is None:
-        raise ValueError("Could not find transformer encoder")
-
-    n_layers = len(encoder.layers)
+    n_layers = len(model.transformer_encoder.layers)
     print(f"  TabPFN has {n_layers} transformer layers, extracting layer {layer_idx}")
 
     # Hook to capture activations
@@ -164,10 +155,9 @@ def extract_tabpfn_embeddings(
         if isinstance(out, torch.Tensor):
             captured['embeddings'] = out.detach().float().cpu().numpy()
 
-    handle = encoder.layers[layer_idx].register_forward_hook(hook_fn)
+    handle = model.transformer_encoder.layers[layer_idx].register_forward_hook(hook_fn)
 
     try:
-        X_query_tensor = torch.tensor(X_query, dtype=torch.float32).to(device)
         with torch.no_grad():
             _ = clf.predict_proba(X_query)
     finally:
@@ -177,10 +167,16 @@ def extract_tabpfn_embeddings(
     if embeddings is None:
         raise ValueError("Failed to capture embeddings")
 
-    # Handle shape - TabPFN returns (batch, seq, hidden)
-    if embeddings.ndim == 3:
-        # Take query token embeddings (last in sequence typically)
-        embeddings = embeddings[:, -1, :]
+    # Handle shape - TabPFN returns (1, n_ctx+n_query+thinking, n_structure, hidden_dim)
+    # Query samples are the last n_query along dim 1
+    if embeddings.ndim == 4:
+        # Shape: (1, seq, n_structure, hidden)
+        query_act = embeddings[0, -n_query:, :, :]  # (n_query, n_structure, hidden)
+        # Mean-pool over structure dimension
+        embeddings = query_act.mean(axis=1)  # (n_query, hidden)
+    elif embeddings.ndim == 3:
+        # Shape: (1, seq, hidden)
+        embeddings = embeddings[0, -n_query:, :]  # (n_query, hidden)
 
     print(f"  Extracted embeddings: {embeddings.shape}")
     return embeddings
