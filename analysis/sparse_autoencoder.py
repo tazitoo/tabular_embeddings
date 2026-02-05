@@ -551,13 +551,24 @@ def measure_dictionary_richness(
 
     Metrics:
     - Alive features: Non-dead dictionary elements
-    - Effective dimensions: Entropy-based count of independent features
-    - Specialization: How focused features are (vs uniform)
-    - Coverage: How well dictionary spans input space
+    - Effective dimensions: Entropy-based count of independent features (perplexity)
+    - L0 sparsity: Mean number of active features per sample
+    - Explained variance: R² between input and reconstruction
+    - Dictionary diversity: Mean pairwise orthogonality of features
+
+    References:
+    - Effective dimensions via entropy/perplexity: Shannon (1948), "A Mathematical
+      Theory of Communication". Perplexity = exp(entropy) gives the effective number
+      of equiprobable outcomes.
+    - Dictionary diversity/coherence: Newman & Mimno (2010), "Automatic Evaluation
+      of Topic Coherence". Low mean pairwise similarity indicates diverse features.
+    - L0 sparsity: Anthropic (2024), "Scaling Monosemanticity". Standard metric
+      for SAE interpretability - fewer active features = more monosemantic.
+    - Explained variance (R²): Standard regression metric. 1 - MSE/Var(X).
 
     Args:
         sae_result: SAE training result
-        input_features: Optional original input features for coverage analysis
+        input_features: Original input features for explained variance computation
 
     Returns:
         Dict with richness metrics
@@ -570,16 +581,22 @@ def measure_dictionary_richness(
     alive = sae_result.alive_features
     total = len(freqs)
 
-    # 2. Effective dimensions via entropy
+    # 2. Effective dimensions via entropy (perplexity)
     # Normalize frequencies to probabilities
     freq_norm = freqs / (freqs.sum() + 1e-8)
     entropy = -np.sum(freq_norm * np.log(freq_norm + 1e-8))
     effective_dims = np.exp(entropy)  # Perplexity
 
-    # 3. Specialization: average sparsity of activations
-    sparsity = (activations == 0).mean()
+    # 3. L0 sparsity: mean number of non-zero activations per sample
+    # Following Anthropic's "Scaling Monosemanticity" convention
+    l0_per_sample = (activations != 0).sum(axis=1)  # (n_samples,)
+    l0_sparsity = float(l0_per_sample.mean())
+    l0_sparsity_frac = l0_sparsity / total  # As fraction of dictionary size
 
-    # 4. Dictionary diversity: average pairwise distance
+    # 4. Activation sparsity: fraction of zero activations overall
+    activation_sparsity = (activations == 0).mean()
+
+    # 5. Dictionary diversity: average pairwise distance (1 - cosine similarity)
     dict_norm = dictionary / (np.linalg.norm(dictionary, axis=1, keepdims=True) + 1e-8)
     pairwise_sim = dict_norm @ dict_norm.T
     # Exclude diagonal
@@ -587,14 +604,24 @@ def measure_dictionary_richness(
     mean_pairwise_sim = pairwise_sim.sum() / (len(dictionary) * (len(dictionary) - 1))
     diversity = 1 - mean_pairwise_sim  # Higher = more diverse
 
-    # 5. Reconstruction quality (implicit from loss)
+    # 6. Reconstruction quality (implicit from loss)
     recon_quality = 1 / (1 + sae_result.reconstruction_loss)
 
-    # 6. Composite richness score
+    # 7. Explained variance ratio (R²) - requires original inputs
+    explained_variance = None
+    if input_features is not None:
+        # Reconstruct: X_hat = activations @ dictionary
+        reconstructions = activations @ dictionary
+        # R² = 1 - SS_res / SS_tot
+        ss_res = np.sum((input_features - reconstructions) ** 2)
+        ss_tot = np.sum((input_features - input_features.mean(axis=0)) ** 2)
+        explained_variance = float(1 - ss_res / (ss_tot + 1e-8))
+
+    # 8. Composite richness score
     # Normalize components to [0, 1] and combine
     alive_score = alive / total
     diversity_score = diversity
-    sparsity_score = sparsity  # Higher sparsity = more interpretable
+    sparsity_score = activation_sparsity  # Higher sparsity = more interpretable
 
     richness_score = (
         0.3 * alive_score +
@@ -603,17 +630,25 @@ def measure_dictionary_richness(
         0.2 * recon_quality
     )
 
-    return {
+    result = {
         "alive_features": alive,
         "dead_features": total - alive,
         "alive_ratio": alive_score,
         "effective_dimensions": float(effective_dims),
-        "sparsity": float(sparsity),
+        "sparsity": float(activation_sparsity),
         "dictionary_diversity": float(diversity),
         "reconstruction_quality": float(recon_quality),
         "richness_score": float(richness_score),
         "mean_active_per_sample": sae_result.mean_active_features,
+        # New metrics
+        "l0_sparsity": l0_sparsity,  # Mean active features per sample (count)
+        "l0_sparsity_frac": l0_sparsity_frac,  # As fraction of dictionary
     }
+
+    if explained_variance is not None:
+        result["explained_variance"] = explained_variance
+
+    return result
 
 
 def analyze_feature_geometry(

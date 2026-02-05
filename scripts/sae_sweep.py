@@ -216,8 +216,8 @@ def run_sae_training(config: Dict, embeddings: np.ndarray, device: str = "cpu") 
     # Train
     model, result = train_sae(embeddings, sae_config, device=device, verbose=True)
 
-    # Compute metrics
-    richness = measure_dictionary_richness(result)
+    # Compute metrics - pass embeddings for explained variance
+    richness = measure_dictionary_richness(result, input_features=embeddings)
     geometry = analyze_feature_geometry(result.dictionary, result.feature_activations)
 
     metrics = {
@@ -235,6 +235,10 @@ def run_sae_training(config: Dict, embeddings: np.ndarray, device: str = "cpu") 
         "dictionary_diversity": richness["dictionary_diversity"],
         "effective_dimensions": richness["effective_dimensions"],
         "sparsity": richness["sparsity"],
+        # New standardized metrics
+        "l0_sparsity": richness["l0_sparsity"],  # Mean active features per sample
+        "l0_sparsity_frac": richness["l0_sparsity_frac"],  # As fraction
+        "explained_variance": richness.get("explained_variance", 0.0),  # R²
         # Geometry metrics
         "power_law_alpha": geometry["power_law_alpha"],
         "mean_clustering": geometry["mean_clustering"],
@@ -587,6 +591,13 @@ def generate_optuna_plots(study: "optuna.Study", output_dir: Path, study_name: s
     except Exception as e:
         print(f"  Failed summary figure: {e}")
 
+    # 7. L0 sparsity and explained variance metrics figure
+    try:
+        create_metrics_figure(study, plots_dir, study_name)
+        print(f"  Saved: metrics figure (L0 sparsity, explained variance)")
+    except Exception as e:
+        print(f"  Failed metrics figure: {e}")
+
     print(f"\nPlots saved to: {plots_dir}")
 
 
@@ -686,6 +697,132 @@ def create_summary_figure(study: "optuna.Study", output_dir: Path, study_name: s
     plt.tight_layout()
     plt.savefig(output_dir / f"{study_name}_summary.png", dpi=300, bbox_inches='tight')
     plt.savefig(output_dir / f"{study_name}_summary.pdf", dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def create_metrics_figure(study: "optuna.Study", output_dir: Path, study_name: str):
+    """
+    Create response surface plots for L0 sparsity and explained variance.
+
+    These are standard metrics from the SAE interpretability literature:
+    - L0 sparsity: Anthropic (2024), "Scaling Monosemanticity"
+    - Explained variance: Standard R² metric
+    """
+    import matplotlib.pyplot as plt
+    from scipy.interpolate import griddata
+
+    # Extract trial data
+    trials_data = []
+    for t in study.trials:
+        if t.value is not None and t.user_attrs:
+            trials_data.append({
+                'sparsity_penalty': t.params.get('sparsity_penalty'),
+                'expansion_factor': t.params.get('expansion_factor'),
+                'sae_type': t.params.get('sae_type'),
+                'richness': t.value,
+                'l0_sparsity': t.user_attrs.get('l0_sparsity', 0),
+                'explained_variance': t.user_attrs.get('explained_variance', 0),
+                'alive_ratio': t.user_attrs.get('alive_ratio', 0),
+            })
+
+    if not trials_data:
+        print("No trials with user_attrs found")
+        return
+
+    import pandas as pd
+    df = pd.DataFrame(trials_data)
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+
+    # Row 1: L0 sparsity analysis
+    # Panel A: L0 vs richness (Pareto front)
+    ax = axes[0, 0]
+    for sae_type in df['sae_type'].unique():
+        mask = df['sae_type'] == sae_type
+        ax.scatter(df[mask]['l0_sparsity'], df[mask]['richness'],
+                   label=sae_type, alpha=0.7, s=50)
+    ax.set_xlabel('L0 Sparsity (mean active features)')
+    ax.set_ylabel('Richness Score')
+    ax.set_title('(A) L0 Sparsity vs Richness')
+    ax.legend(loc='lower right')
+    ax.grid(True, alpha=0.3)
+
+    # Panel B: L0 by SAE type
+    ax = axes[0, 1]
+    sae_types = df['sae_type'].unique()
+    l0_by_type = [df[df['sae_type'] == t]['l0_sparsity'].values for t in sae_types]
+    bp = ax.boxplot(l0_by_type, tick_labels=sae_types, patch_artist=True)
+    colors = plt.cm.Set2(np.linspace(0, 1, len(sae_types)))
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+    ax.set_ylabel('L0 Sparsity')
+    ax.set_title('(B) L0 Sparsity by SAE Type')
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Panel C: L0 vs expansion factor
+    ax = axes[0, 2]
+    for exp in sorted(df['expansion_factor'].unique()):
+        mask = df['expansion_factor'] == exp
+        ax.scatter(df[mask]['sparsity_penalty'], df[mask]['l0_sparsity'],
+                   label=f'{exp}x', alpha=0.7, s=50)
+    ax.set_xscale('log')
+    ax.set_xlabel('Sparsity Penalty')
+    ax.set_ylabel('L0 Sparsity')
+    ax.set_title('(C) L0 vs Sparsity Penalty')
+    ax.legend(title='Expansion')
+    ax.grid(True, alpha=0.3)
+
+    # Row 2: Explained variance analysis
+    # Panel D: Explained variance vs richness
+    ax = axes[1, 0]
+    for sae_type in df['sae_type'].unique():
+        mask = df['sae_type'] == sae_type
+        ax.scatter(df[mask]['explained_variance'], df[mask]['richness'],
+                   label=sae_type, alpha=0.7, s=50)
+    ax.set_xlabel('Explained Variance (R²)')
+    ax.set_ylabel('Richness Score')
+    ax.set_title('(D) Explained Variance vs Richness')
+    ax.legend(loc='lower right')
+    ax.grid(True, alpha=0.3)
+
+    # Panel E: Explained variance by SAE type
+    ax = axes[1, 1]
+    ev_by_type = [df[df['sae_type'] == t]['explained_variance'].values for t in sae_types]
+    bp = ax.boxplot(ev_by_type, tick_labels=sae_types, patch_artist=True)
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+    ax.set_ylabel('Explained Variance (R²)')
+    ax.set_title('(E) Explained Variance by SAE Type')
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Panel F: Summary statistics table
+    ax = axes[1, 2]
+    ax.axis('off')
+
+    # Compute summary stats
+    text = "Metric Summary by SAE Type\n" + "=" * 35 + "\n\n"
+    text += f"{'Type':<12} {'L0':>8} {'R²':>8} {'Rich':>8}\n"
+    text += "-" * 35 + "\n"
+    for sae_type in sae_types:
+        mask = df['sae_type'] == sae_type
+        l0_mean = df[mask]['l0_sparsity'].mean()
+        ev_mean = df[mask]['explained_variance'].mean()
+        rich_mean = df[mask]['richness'].mean()
+        text += f"{sae_type:<12} {l0_mean:>8.1f} {ev_mean:>8.3f} {rich_mean:>8.3f}\n"
+
+    text += "\n" + "=" * 35 + "\n"
+    text += "\nReferences:\n"
+    text += "- L0: Anthropic (2024)\n"
+    text += "- R²: Standard metric\n"
+
+    ax.text(0.05, 0.95, text, transform=ax.transAxes, fontsize=10,
+            verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.3))
+    ax.set_title('(F) Summary Statistics')
+
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{study_name}_metrics.png", dpi=300, bbox_inches='tight')
+    plt.savefig(output_dir / f"{study_name}_metrics.pdf", dpi=300, bbox_inches='tight')
     plt.close()
 
 
