@@ -543,6 +543,7 @@ def compare_dictionaries(
 def measure_dictionary_richness(
     sae_result: SAEResult,
     input_features: Optional[np.ndarray] = None,
+    sae_model: Optional["SparseAutoencoder"] = None,
 ) -> Dict:
     """
     Measure the "richness" of a learned dictionary.
@@ -608,11 +609,22 @@ def measure_dictionary_richness(
     recon_quality = 1 / (1 + sae_result.reconstruction_loss)
 
     # 7. Explained variance ratio (R²) - requires original inputs
+    # Uses model.decode() for proper reconstruction (handles tied/untied weights)
     explained_variance = None
-    if input_features is not None:
-        # Reconstruct: X_hat = activations @ dictionary
-        reconstructions = activations @ dictionary
+    if input_features is not None and sae_model is not None:
+        import torch
+        device = next(sae_model.parameters()).device
+        with torch.no_grad():
+            h = torch.tensor(activations, dtype=torch.float32, device=device)
+            x_hat = sae_model.decode(h).cpu().numpy()
         # R² = 1 - SS_res / SS_tot
+        ss_res = np.sum((input_features - x_hat) ** 2)
+        ss_tot = np.sum((input_features - input_features.mean(axis=0)) ** 2)
+        explained_variance = float(1 - ss_res / (ss_tot + 1e-8))
+    elif input_features is not None:
+        # Fallback: assume tied weights (dictionary is decoder)
+        # This may be inaccurate for untied weight SAEs
+        reconstructions = activations @ dictionary
         ss_res = np.sum((input_features - reconstructions) ** 2)
         ss_tot = np.sum((input_features - input_features.mean(axis=0)) ** 2)
         explained_variance = float(1 - ss_res / (ss_tot + 1e-8))

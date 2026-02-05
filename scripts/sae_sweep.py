@@ -216,8 +216,8 @@ def run_sae_training(config: Dict, embeddings: np.ndarray, device: str = "cpu") 
     # Train
     model, result = train_sae(embeddings, sae_config, device=device, verbose=True)
 
-    # Compute metrics - pass embeddings for explained variance
-    richness = measure_dictionary_richness(result, input_features=embeddings)
+    # Compute metrics - pass embeddings and model for proper explained variance
+    richness = measure_dictionary_richness(result, input_features=embeddings, sae_model=model)
     geometry = analyze_feature_geometry(result.dictionary, result.feature_activations)
 
     metrics = {
