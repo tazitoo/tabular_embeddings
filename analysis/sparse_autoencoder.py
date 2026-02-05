@@ -609,14 +609,16 @@ def measure_dictionary_richness(
     recon_quality = 1 / (1 + sae_result.reconstruction_loss)
 
     # 7. Explained variance ratio (R²) - requires original inputs
-    # Uses model.decode() for proper reconstruction (handles tied/untied weights)
+    # Re-encode and decode to get proper reconstruction (handles tied/untied weights)
     explained_variance = None
     if input_features is not None and sae_model is not None:
         import torch
         device = next(sae_model.parameters()).device
+        sae_model.eval()
         with torch.no_grad():
-            h = torch.tensor(activations, dtype=torch.float32, device=device)
-            x_hat = sae_model.decode(h).cpu().numpy()
+            x = torch.tensor(input_features, dtype=torch.float32, device=device)
+            x_hat, _ = sae_model(x)  # Forward pass: encode then decode
+            x_hat = x_hat.cpu().numpy()
         # R² = 1 - SS_res / SS_tot
         ss_res = np.sum((input_features - x_hat) ** 2)
         ss_tot = np.sum((input_features - input_features.mean(axis=0)) ** 2)
