@@ -179,28 +179,33 @@ class SparseAutoencoder(nn.Module):
             h = F.softmax(pre_act / self.config.archetypal_simplex_temp, dim=-1)
 
         elif self.config.sparsity_type == "matryoshka_archetypal":
-            # Combined Matryoshka-Archetypal: nested simplex structure
-            # Each Matryoshka scale has its own simplex (convex combination)
-            # This gives granularity (can truncate) + interpretability (simplex)
+            # Combined Matryoshka-Archetypal: nested SPARSE simplex structure
+            # Uses JumpReLU + normalization for sparse simplex activations
+            # This gives granularity (can truncate) + interpretability (sparse simplex)
             h = torch.zeros_like(pre_act)
             mat_dims = self.config.matryoshka_dims
-            temp = self.config.archetypal_simplex_temp
 
-            # Apply softmax within each nested scale
+            # JumpReLU threshold (learnable or fixed)
+            threshold = self.config.archetypal_simplex_temp  # Repurpose temp as threshold
+
+            # Apply JumpReLU + normalize within each nested scale
             prev_dim = 0
             for dim in mat_dims:
                 if dim <= self.config.hidden_dim:
-                    # Softmax over features [prev_dim:dim] for this scale
-                    h[:, prev_dim:dim] = F.softmax(
-                        pre_act[:, prev_dim:dim] / temp, dim=-1
-                    ) * (dim - prev_dim)  # Scale to preserve magnitude
+                    scale_act = pre_act[:, prev_dim:dim]
+                    # JumpReLU: zero out values below threshold
+                    sparse_act = F.relu(scale_act - threshold)
+                    # Normalize to simplex (sum to 1 per sample within this scale)
+                    scale_sum = sparse_act.sum(dim=-1, keepdim=True) + 1e-8
+                    h[:, prev_dim:dim] = sparse_act / scale_sum * (dim - prev_dim)
                     prev_dim = dim
 
             # Handle remaining dimensions if any
             if prev_dim < self.config.hidden_dim:
-                h[:, prev_dim:] = F.softmax(
-                    pre_act[:, prev_dim:] / temp, dim=-1
-                ) * (self.config.hidden_dim - prev_dim)
+                scale_act = pre_act[:, prev_dim:]
+                sparse_act = F.relu(scale_act - threshold)
+                scale_sum = sparse_act.sum(dim=-1, keepdim=True) + 1e-8
+                h[:, prev_dim:] = sparse_act / scale_sum * (self.config.hidden_dim - prev_dim)
 
         else:
             # Standard L1: just ReLU
