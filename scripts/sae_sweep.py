@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SAE Hyperparameter Sweep on TabPFN Embeddings.
+SAE Hyperparameter Sweep on TabPFN Embeddings using Optuna.
 
 Sweeps over:
 - SAE type: L1, TopK, Matryoshka, Archetypal
@@ -8,17 +8,20 @@ Sweeps over:
 - Sparsity penalty: 1e-4 to 1e-2
 - With/without auxiliary loss
 
-Uses wandb for experiment tracking.
+Uses Optuna for Bayesian optimization (works offline).
 
 Usage:
     # Single run (for testing)
     python scripts/sae_sweep.py --test
 
-    # Full sweep with wandb
-    python scripts/sae_sweep.py --sweep
+    # Run Optuna sweep (50 trials by default)
+    python scripts/sae_sweep.py --optuna --n-trials 50
 
-    # Resume sweep
-    python scripts/sae_sweep.py --sweep --sweep-id <id>
+    # Resume existing study
+    python scripts/sae_sweep.py --optuna --study-name my_study
+
+    # Generate response surface plots
+    python scripts/sae_sweep.py --plot --study-name my_study
 """
 
 import argparse
@@ -43,31 +46,27 @@ from analysis.sparse_autoencoder import (
     analyze_feature_geometry,
 )
 
-# Check for wandb
+# Check for optuna
+try:
+    import optuna
+    from optuna.visualization import (
+        plot_optimization_history,
+        plot_param_importances,
+        plot_contour,
+        plot_parallel_coordinate,
+        plot_slice,
+    )
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
+    print("Warning: optuna not installed. Install with: pip install optuna")
+
+# Optional wandb for logging
 try:
     import wandb
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
-    print("Warning: wandb not installed. Install with: pip install wandb")
-
-
-# Sweep configuration
-SWEEP_CONFIG = {
-    "method": "bayes",  # Bayesian optimization
-    "metric": {"name": "richness_score", "goal": "maximize"},
-    "parameters": {
-        "sae_type": {"values": ["l1", "topk", "matryoshka", "archetypal"]},
-        "expansion_factor": {"values": [4, 8, 16]},
-        "sparsity_penalty": {"distribution": "log_uniform_values", "min": 1e-4, "max": 1e-2},
-        "use_aux_loss": {"values": [True, False]},
-        "topk": {"values": [16, 32, 64]},  # For topk SAE
-        "archetypal_temp": {"distribution": "uniform", "min": 0.1, "max": 2.0},
-        "learning_rate": {"distribution": "log_uniform_values", "min": 1e-4, "max": 1e-2},
-        "n_epochs": {"value": 100},
-        "batch_size": {"values": [128, 256, 512]},
-    },
-}
 
 
 def extract_tabpfn_embeddings(
@@ -363,8 +362,81 @@ def run_test():
               f"{r['richness_score']:>10.4f} {r['dictionary_diversity']:>10.4f}")
 
 
-def run_grid_search(output_dir: Path = None):
-    """Run a grid search without wandb (for environments without internet)."""
+def create_optuna_objective(embeddings: np.ndarray, device: str = "cuda"):
+    """
+    Create an Optuna objective function for SAE hyperparameter optimization.
+
+    Uses TPE (Tree-structured Parzen Estimator) for Bayesian optimization.
+    """
+    def objective(trial: "optuna.Trial") -> float:
+        # Sample hyperparameters
+        sae_type = trial.suggest_categorical("sae_type", ["l1", "topk", "matryoshka", "archetypal"])
+        expansion_factor = trial.suggest_categorical("expansion_factor", [4, 8, 16])
+        sparsity_penalty = trial.suggest_float("sparsity_penalty", 1e-4, 1e-2, log=True)
+        use_aux_loss = trial.suggest_categorical("use_aux_loss", [True, False])
+        learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
+        batch_size = trial.suggest_categorical("batch_size", [128, 256, 512])
+
+        # Type-specific parameters
+        if sae_type == "topk":
+            topk = trial.suggest_categorical("topk", [16, 32, 64])
+        else:
+            topk = 32
+
+        if sae_type == "archetypal":
+            archetypal_temp = trial.suggest_float("archetypal_temp", 0.1, 2.0)
+            use_aux_loss = False  # Not applicable for archetypal
+        else:
+            archetypal_temp = 1.0
+
+        config = {
+            "sae_type": sae_type,
+            "expansion_factor": expansion_factor,
+            "sparsity_penalty": sparsity_penalty,
+            "use_aux_loss": use_aux_loss,
+            "learning_rate": learning_rate,
+            "batch_size": batch_size,
+            "topk": topk,
+            "archetypal_temp": archetypal_temp,
+            "n_epochs": 100,
+        }
+
+        try:
+            metrics, _, _ = run_sae_training(config, embeddings, device=device)
+
+            # Store all metrics as user attributes
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)):
+                    trial.set_user_attr(key, value)
+
+            # Primary objective: maximize richness score
+            return metrics["richness_score"]
+
+        except Exception as e:
+            print(f"Trial failed: {e}")
+            return 0.0  # Return worst possible score
+
+    return objective
+
+
+def run_optuna_sweep(
+    study_name: str = "sae_sweep",
+    n_trials: int = 50,
+    output_dir: Path = None,
+    device: str = "cuda",
+):
+    """
+    Run Optuna hyperparameter sweep with Bayesian optimization.
+
+    Args:
+        study_name: Name for the Optuna study (used for persistence)
+        n_trials: Number of trials to run
+        output_dir: Output directory for results and plots
+        device: Device to use for training
+    """
+    if not OPTUNA_AVAILABLE:
+        raise RuntimeError("optuna not available. Install with: pip install optuna")
+
     if output_dir is None:
         output_dir = PROJECT_ROOT / "output" / "sae_sweep"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -372,74 +444,301 @@ def run_grid_search(output_dir: Path = None):
     # Load embeddings
     embeddings_path = PROJECT_ROOT / "output" / "tabpfn_embeddings_adult_L17.npy"
     if embeddings_path.exists():
+        print(f"Loading cached embeddings from {embeddings_path}")
         embeddings = np.load(embeddings_path)
     else:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print("Extracting embeddings...")
         embeddings = extract_tabpfn_embeddings(device=device)
+        embeddings_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(embeddings_path, embeddings)
+        print(f"Cached embeddings to {embeddings_path}")
 
-    # Grid
-    grid = {
-        "sae_type": ["l1", "topk", "matryoshka"],
-        "expansion_factor": [4, 8, 16],
-        "sparsity_penalty": [1e-4, 1e-3, 1e-2],
-        "use_aux_loss": [True, False],
-    }
+    print(f"Embeddings shape: {embeddings.shape}")
 
-    # Generate all combinations
-    from itertools import product
-    keys = list(grid.keys())
-    all_configs = [dict(zip(keys, v)) for v in product(*grid.values())]
+    # Create or load study with SQLite storage for persistence
+    storage_path = output_dir / f"{study_name}.db"
+    storage = f"sqlite:///{storage_path}"
 
-    print(f"Running grid search with {len(all_configs)} configurations")
+    study = optuna.create_study(
+        study_name=study_name,
+        storage=storage,
+        direction="maximize",  # Maximize richness score
+        load_if_exists=True,
+        sampler=optuna.samplers.TPESampler(seed=42),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=20),
+    )
 
-    all_results = []
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    for i, config in enumerate(all_configs):
-        print(f"\n[{i+1}/{len(all_configs)}] {config}")
-        config["n_epochs"] = 50
-        config["topk"] = 32
-
-        try:
-            metrics, _, _ = run_sae_training(config, embeddings, device=device)
-            metrics["config"] = config
-            all_results.append(metrics)
-
-            # Save incrementally
-            with open(output_dir / "grid_results.json", "w") as f:
-                json.dump(all_results, f, indent=2, default=str)
-
-        except Exception as e:
-            print(f"Error: {e}")
-
-    # Final summary
     print(f"\n{'='*60}")
-    print(f"Grid search complete. Results saved to {output_dir / 'grid_results.json'}")
+    print(f"Optuna Study: {study_name}")
+    print(f"Storage: {storage_path}")
+    print(f"Existing trials: {len(study.trials)}")
+    print(f"Running {n_trials} new trials...")
+    print("=" * 60)
 
-    # Find best config
-    if all_results:
-        best = max(all_results, key=lambda x: x["richness_score"])
-        print(f"\nBest config (richness={best['richness_score']:.4f}):")
-        print(f"  {best['config']}")
+    # Create objective function
+    objective = create_optuna_objective(embeddings, device=device)
+
+    # Run optimization
+    study.optimize(
+        objective,
+        n_trials=n_trials,
+        show_progress_bar=True,
+        gc_after_trial=True,
+    )
+
+    # Print results
+    print(f"\n{'='*60}")
+    print("OPTIMIZATION COMPLETE")
+    print("=" * 60)
+    print(f"Total trials: {len(study.trials)}")
+    print(f"Best trial: #{study.best_trial.number}")
+    print(f"Best richness score: {study.best_value:.4f}")
+    print(f"\nBest hyperparameters:")
+    for key, value in study.best_params.items():
+        print(f"  {key}: {value}")
+
+    # Save best config
+    best_config = {
+        "params": study.best_params,
+        "value": study.best_value,
+        "trial_number": study.best_trial.number,
+        "user_attrs": study.best_trial.user_attrs,
+    }
+    with open(output_dir / f"{study_name}_best.json", "w") as f:
+        json.dump(best_config, f, indent=2)
+
+    # Generate plots
+    print("\nGenerating response surface plots...")
+    generate_optuna_plots(study, output_dir, study_name)
+
+    return study
+
+
+def generate_optuna_plots(study: "optuna.Study", output_dir: Path, study_name: str):
+    """
+    Generate response surface and other visualization plots for the Optuna study.
+
+    Creates publication-ready figures for the appendix.
+    """
+    if not OPTUNA_AVAILABLE:
+        print("Optuna not available, skipping plots")
+        return
+
+    import matplotlib.pyplot as plt
+
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Optimization history
+    try:
+        fig = plot_optimization_history(study)
+        fig.write_image(str(plots_dir / f"{study_name}_optimization_history.png"), scale=2)
+        fig.write_html(str(plots_dir / f"{study_name}_optimization_history.html"))
+        print(f"  Saved: optimization_history")
+    except Exception as e:
+        print(f"  Failed optimization_history: {e}")
+
+    # 2. Parameter importances
+    try:
+        fig = plot_param_importances(study)
+        fig.write_image(str(plots_dir / f"{study_name}_param_importances.png"), scale=2)
+        fig.write_html(str(plots_dir / f"{study_name}_param_importances.html"))
+        print(f"  Saved: param_importances")
+    except Exception as e:
+        print(f"  Failed param_importances: {e}")
+
+    # 3. Parallel coordinate plot
+    try:
+        fig = plot_parallel_coordinate(study)
+        fig.write_image(str(plots_dir / f"{study_name}_parallel_coordinate.png"), scale=2)
+        fig.write_html(str(plots_dir / f"{study_name}_parallel_coordinate.html"))
+        print(f"  Saved: parallel_coordinate")
+    except Exception as e:
+        print(f"  Failed parallel_coordinate: {e}")
+
+    # 4. Contour plots (response surfaces) for key parameter pairs
+    param_pairs = [
+        ("sparsity_penalty", "expansion_factor"),
+        ("sparsity_penalty", "learning_rate"),
+        ("expansion_factor", "learning_rate"),
+    ]
+
+    for param1, param2 in param_pairs:
+        try:
+            fig = plot_contour(study, params=[param1, param2])
+            fig.write_image(str(plots_dir / f"{study_name}_contour_{param1}_{param2}.png"), scale=2)
+            print(f"  Saved: contour_{param1}_{param2}")
+        except Exception as e:
+            print(f"  Failed contour_{param1}_{param2}: {e}")
+
+    # 5. Slice plots for each parameter
+    try:
+        fig = plot_slice(study)
+        fig.write_image(str(plots_dir / f"{study_name}_slice.png"), scale=2)
+        fig.write_html(str(plots_dir / f"{study_name}_slice.html"))
+        print(f"  Saved: slice")
+    except Exception as e:
+        print(f"  Failed slice: {e}")
+
+    # 6. Custom matplotlib summary figure
+    try:
+        create_summary_figure(study, plots_dir, study_name)
+        print(f"  Saved: summary figure")
+    except Exception as e:
+        print(f"  Failed summary figure: {e}")
+
+    print(f"\nPlots saved to: {plots_dir}")
+
+
+def create_summary_figure(study: "optuna.Study", output_dir: Path, study_name: str):
+    """Create a matplotlib summary figure for the paper appendix."""
+    import matplotlib.pyplot as plt
+
+    # Extract data from trials
+    trials_df = study.trials_dataframe()
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+
+    # Panel A: Optimization history
+    ax = axes[0, 0]
+    values = [t.value for t in study.trials if t.value is not None]
+    best_values = [max(values[:i+1]) for i in range(len(values))]
+    ax.plot(values, 'o', alpha=0.5, markersize=4, label='Trial value')
+    ax.plot(best_values, '-', linewidth=2, color='red', label='Best so far')
+    ax.set_xlabel('Trial')
+    ax.set_ylabel('Richness Score')
+    ax.set_title('(A) Optimization History')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Panel B: SAE type comparison
+    ax = axes[0, 1]
+    sae_types = trials_df['params_sae_type'].unique()
+    sae_scores = [trials_df[trials_df['params_sae_type'] == t]['value'].mean() for t in sae_types]
+    sae_stds = [trials_df[trials_df['params_sae_type'] == t]['value'].std() for t in sae_types]
+    bars = ax.bar(sae_types, sae_scores, yerr=sae_stds, capsize=5, alpha=0.7)
+    ax.set_ylabel('Richness Score')
+    ax.set_title('(B) SAE Type Comparison')
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Panel C: Expansion factor effect
+    ax = axes[0, 2]
+    exp_factors = sorted(trials_df['params_expansion_factor'].unique())
+    exp_scores = [trials_df[trials_df['params_expansion_factor'] == e]['value'].mean() for e in exp_factors]
+    exp_stds = [trials_df[trials_df['params_expansion_factor'] == e]['value'].std() for e in exp_factors]
+    ax.errorbar(exp_factors, exp_scores, yerr=exp_stds, fmt='o-', capsize=5, markersize=8)
+    ax.set_xlabel('Expansion Factor')
+    ax.set_ylabel('Richness Score')
+    ax.set_title('(C) Expansion Factor Effect')
+    ax.grid(True, alpha=0.3)
+
+    # Panel D: Sparsity penalty vs richness (scatter)
+    ax = axes[1, 0]
+    valid_trials = trials_df[trials_df['value'].notna()]
+    scatter = ax.scatter(
+        valid_trials['params_sparsity_penalty'],
+        valid_trials['value'],
+        c=valid_trials['params_expansion_factor'],
+        cmap='viridis',
+        alpha=0.6,
+        s=50
+    )
+    ax.set_xscale('log')
+    ax.set_xlabel('Sparsity Penalty')
+    ax.set_ylabel('Richness Score')
+    ax.set_title('(D) Sparsity Penalty Effect')
+    plt.colorbar(scatter, ax=ax, label='Expansion Factor')
+    ax.grid(True, alpha=0.3)
+
+    # Panel E: Aux loss effect
+    ax = axes[1, 1]
+    aux_true = trials_df[trials_df['params_use_aux_loss'] == True]['value']
+    aux_false = trials_df[trials_df['params_use_aux_loss'] == False]['value']
+    ax.boxplot([aux_false.dropna(), aux_true.dropna()], labels=['No Aux Loss', 'With Aux Loss'])
+    ax.set_ylabel('Richness Score')
+    ax.set_title('(E) Auxiliary Loss Effect')
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Panel F: Best configuration summary
+    ax = axes[1, 2]
+    ax.axis('off')
+    best = study.best_trial
+    text = f"Best Configuration\n" + "=" * 30 + "\n\n"
+    text += f"Richness Score: {best.value:.4f}\n\n"
+    text += "Parameters:\n"
+    for key, value in best.params.items():
+        if isinstance(value, float):
+            text += f"  {key}: {value:.4e}\n"
+        else:
+            text += f"  {key}: {value}\n"
+
+    if best.user_attrs:
+        text += "\nMetrics:\n"
+        for key in ['reconstruction_loss', 'alive_ratio', 'dictionary_diversity']:
+            if key in best.user_attrs:
+                text += f"  {key}: {best.user_attrs[key]:.4f}\n"
+
+    ax.text(0.1, 0.9, text, transform=ax.transAxes, fontsize=10,
+            verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    ax.set_title('(F) Best Configuration')
+
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{study_name}_summary.png", dpi=300, bbox_inches='tight')
+    plt.savefig(output_dir / f"{study_name}_summary.pdf", dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def load_and_plot_study(study_name: str, output_dir: Path = None):
+    """Load an existing study and generate plots."""
+    if output_dir is None:
+        output_dir = PROJECT_ROOT / "output" / "sae_sweep"
+
+    storage_path = output_dir / f"{study_name}.db"
+    if not storage_path.exists():
+        raise FileNotFoundError(f"Study not found: {storage_path}")
+
+    storage = f"sqlite:///{storage_path}"
+    study = optuna.load_study(study_name=study_name, storage=storage)
+
+    print(f"Loaded study: {study_name}")
+    print(f"Total trials: {len(study.trials)}")
+    print(f"Best value: {study.best_value:.4f}")
+
+    generate_optuna_plots(study, output_dir, study_name)
+    return study
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SAE Hyperparameter Sweep")
-    parser.add_argument("--test", action="store_true", help="Run single test without wandb")
-    parser.add_argument("--sweep", action="store_true", help="Run wandb sweep")
-    parser.add_argument("--grid", action="store_true", help="Run grid search without wandb")
-    parser.add_argument("--sweep-id", type=str, default=None, help="Resume existing sweep")
-    parser.add_argument("--count", type=int, default=50, help="Number of sweep runs")
+    parser = argparse.ArgumentParser(description="SAE Hyperparameter Sweep with Optuna")
+    parser.add_argument("--test", action="store_true", help="Run single test training")
+    parser.add_argument("--optuna", action="store_true", help="Run Optuna hyperparameter sweep")
+    parser.add_argument("--plot", action="store_true", help="Generate plots from existing study")
+    parser.add_argument("--study-name", type=str, default="sae_sweep", help="Optuna study name")
+    parser.add_argument("--n-trials", type=int, default=50, help="Number of Optuna trials")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
+    # Legacy options
+    parser.add_argument("--sweep", action="store_true", help="(Legacy) Run wandb sweep")
+    parser.add_argument("--grid", action="store_true", help="(Legacy) Run grid search")
     args = parser.parse_args()
 
     if args.test:
         run_test()
+    elif args.optuna:
+        run_optuna_sweep(
+            study_name=args.study_name,
+            n_trials=args.n_trials,
+            device=args.device,
+        )
+    elif args.plot:
+        load_and_plot_study(args.study_name)
     elif args.sweep:
-        run_sweep(sweep_id=args.sweep_id, count=args.count)
+        print("Note: Use --optuna instead of --sweep for Bayesian optimization")
+        run_sweep(count=args.n_trials)
     elif args.grid:
-        run_grid_search()
+        print("Note: Use --optuna instead of --grid for more efficient search")
+        print("Grid search is deprecated. Running Optuna instead.")
+        run_optuna_sweep(study_name=args.study_name, n_trials=args.n_trials)
     else:
         parser.print_help()
 
