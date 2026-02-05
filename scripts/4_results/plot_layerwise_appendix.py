@@ -55,6 +55,129 @@ def compute_distance_cka(matrix: np.ndarray) -> tuple:
     return np.array(avg_cka), np.array(std_cka)
 
 
+def plot_single_model_appendix(model_name: str, matrix: np.ndarray, output_path: Path):
+    """
+    Generate 3-panel appendix figure for a single model.
+
+    Panel A: Layer-wise CKA heatmap
+    Panel B: CKA vs layer distance
+    Panel C: Representation drift from first layer
+    """
+    n_layers = matrix.shape[0]
+
+    fig = plt.figure(figsize=(14, 4.5))
+
+    # Panel A: Heatmap
+    ax1 = fig.add_subplot(131)
+
+    # Determine tick spacing based on number of layers
+    if n_layers <= 6:
+        tick_step = 1
+    elif n_layers <= 15:
+        tick_step = 2
+    else:
+        tick_step = 4
+
+    tick_positions = list(range(0, n_layers, tick_step))
+    tick_labels = [f'L{i}' for i in tick_positions]
+
+    im = ax1.imshow(matrix, cmap='RdYlBu_r', vmin=0, vmax=1, aspect='equal')
+    ax1.set_xticks(tick_positions)
+    ax1.set_xticklabels(tick_labels, fontsize=9)
+    ax1.set_yticks(tick_positions)
+    ax1.set_yticklabels(tick_labels, fontsize=9)
+    ax1.set_xlabel('Layer', fontsize=11)
+    ax1.set_ylabel('Layer', fontsize=11)
+    ax1.set_title(f'(A) {model_name} Layer-wise CKA', fontsize=12)
+
+    cbar = plt.colorbar(im, ax=ax1, shrink=0.8)
+    cbar.set_label('CKA', fontsize=10)
+
+    # Panel B: CKA vs layer distance
+    ax2 = fig.add_subplot(132)
+
+    avg_cka, std_cka = compute_distance_cka(matrix)
+    distances = np.arange(1, len(avg_cka) + 1)
+
+    ax2.plot(distances, avg_cka, 'o-', color='#1f77b4', markersize=6, linewidth=2)
+    ax2.fill_between(distances, avg_cka - std_cka, avg_cka + std_cka,
+                     alpha=0.2, color='#1f77b4')
+
+    # Mark 2/3 depth
+    two_thirds = int(n_layers * 2 / 3)
+    if two_thirds > 0 and two_thirds < n_layers:
+        ax2.axvline(x=two_thirds, color='red', linestyle='--', alpha=0.7,
+                    linewidth=2, label=f'2/3 depth ({two_thirds} layers)')
+        ax2.legend(loc='lower left', fontsize=9)
+
+    ax2.set_xlabel('Layer Distance', fontsize=11)
+    ax2.set_ylabel('Average CKA', fontsize=11)
+    ax2.set_title('(B) CKA Decay with Distance', fontsize=12)
+    ax2.set_ylim(0, 1.05)
+    ax2.set_xlim(0, n_layers)
+    ax2.grid(True, alpha=0.3)
+
+    # Panel C: Representation drift from first layer
+    ax3 = fig.add_subplot(133)
+
+    l0_cka = matrix[0, :]
+    layers = np.arange(n_layers)
+
+    ax3.plot(layers, l0_cka, 'o-', color='#2ca02c', markersize=6, linewidth=2)
+
+    # Mark 2/3 depth
+    if two_thirds > 0 and two_thirds < n_layers:
+        ax3.axvline(x=two_thirds, color='red', linestyle='--', alpha=0.7,
+                    linewidth=2, label=f'2/3 depth (L{two_thirds})')
+        ax3.legend(loc='lower left', fontsize=9)
+
+    # Annotate first and last CKA values
+    ax3.annotate(f'{l0_cka[0]:.2f}', (0, l0_cka[0]), textcoords="offset points",
+                 xytext=(5, 5), fontsize=9)
+    ax3.annotate(f'{l0_cka[-1]:.2f}', (n_layers-1, l0_cka[-1]), textcoords="offset points",
+                 xytext=(-20, 5), fontsize=9)
+
+    ax3.set_xlabel('Layer', fontsize=11)
+    ax3.set_ylabel('CKA with Layer 0', fontsize=11)
+    ax3.set_title('(C) Representation Drift from Input', fontsize=12)
+    ax3.set_ylim(0, 1.05)
+    ax3.set_xlim(-0.5, n_layers - 0.5)
+    ax3.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    # Save
+    plt.savefig(output_path.with_suffix('.pdf'), dpi=300, bbox_inches='tight')
+    plt.savefig(output_path.with_suffix('.png'), dpi=300, bbox_inches='tight')
+    print(f"Saved: {output_path.with_suffix('.png')}")
+    plt.close()
+
+
+def plot_all_model_appendix_figures():
+    """Generate individual appendix figures for all models."""
+    # Model configurations: (file_pattern, display_name)
+    models = {
+        'tabpfn_adult': 'TabPFN',
+        'tabicl_adult': 'TabICL',
+        'mitra_adult': 'Mitra',
+        'hyperfast_adult': 'HyperFast',
+        'tabdpt_adult': 'TabDPT',
+        'carte_SpeedDating': 'CARTE',
+    }
+
+    for file_key, display_name in models.items():
+        npz_path = OUTPUT_DIR / f"layerwise_cka_{file_key}.npz"
+        if not npz_path.exists():
+            print(f"Skipping {display_name}: {npz_path} not found")
+            continue
+
+        data = np.load(npz_path)
+        matrix = data['cka_matrix']
+
+        output_path = OUTPUT_DIR / f"layerwise_cka_appendix_{file_key}"
+        plot_single_model_appendix(display_name, matrix, output_path)
+
+
 def plot_appendix_figure():
     """Create the appendix figure."""
     # Load data
@@ -375,7 +498,143 @@ def plot_model_comparison():
     plt.close()
 
 
+def plot_combined_all_models():
+    """
+    Create the 'one ring' figure: all 6 models in a single comprehensive visualization.
+
+    Panel A: All CKA drift profiles overlaid (normalized depth)
+    Panel B: Optimal depth summary with error bars
+    """
+    import json
+
+    # Model configurations
+    models = {
+        'tabpfn': {'name': 'TabPFN', 'color': '#1f77b4', 'marker': 'o'},
+        'tabicl': {'name': 'TabICL', 'color': '#ff7f0e', 'marker': 's'},
+        'mitra': {'name': 'Mitra', 'color': '#2ca02c', 'marker': '^'},
+        'hyperfast': {'name': 'HyperFast', 'color': '#d62728', 'marker': 'D'},
+        'tabdpt': {'name': 'TabDPT', 'color': '#9467bd', 'marker': 'v'},
+        'carte': {'name': 'CARTE', 'color': '#8c564b', 'marker': 'P'},
+    }
+
+    # Load aggregated results for each model
+    all_results = {}
+    for model_key, config in models.items():
+        json_path = OUTPUT_DIR / f"layerwise_depth_analysis_{model_key}.json"
+        if json_path.exists():
+            with open(json_path) as f:
+                all_results[model_key] = json.load(f)
+
+    if not all_results:
+        print("No results found. Run batch analysis first.")
+        return
+
+    # Create figure
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Panel A: All CKA drift profiles overlaid
+    ax = axes[0]
+
+    for model_key, config in models.items():
+        if model_key not in all_results:
+            continue
+
+        results = all_results[model_key]
+        color = config['color']
+        name = config['name']
+
+        # Plot each dataset's profile with low alpha
+        for dataset, r in results.items():
+            profile = r['l0_cka_profile']
+            n_layers = len(profile)
+            x_norm = np.arange(n_layers) / (n_layers - 1) if n_layers > 1 else [0]
+            ax.plot(x_norm, profile, color=color, alpha=0.15, linewidth=1)
+
+        # Compute and plot mean profile
+        # Interpolate all profiles to common x-axis
+        x_common = np.linspace(0, 1, 50)
+        interpolated = []
+        for dataset, r in results.items():
+            profile = np.array(r['l0_cka_profile'])
+            n_layers = len(profile)
+            x_orig = np.arange(n_layers) / (n_layers - 1) if n_layers > 1 else [0]
+            interp = np.interp(x_common, x_orig, profile)
+            interpolated.append(interp)
+
+        if interpolated:
+            mean_profile = np.mean(interpolated, axis=0)
+            ax.plot(x_common, mean_profile, color=color, linewidth=2.5,
+                    label=f'{name} (n={len(results)})', marker=config['marker'],
+                    markevery=5, markersize=6)
+
+    ax.axvline(x=2/3, color='red', linestyle='--', linewidth=2, alpha=0.7, label='2/3 depth')
+    ax.axvline(x=0.75, color='blue', linestyle=':', linewidth=2, alpha=0.7, label='3/4 depth')
+    ax.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5)
+
+    ax.set_xlabel('Normalized Depth (0=input, 1=output)', fontsize=12)
+    ax.set_ylabel('CKA with Layer 0', fontsize=12)
+    ax.set_title('(A) Representation Drift: All Models Across TabArena', fontsize=13)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.05)
+    ax.legend(loc='lower left', fontsize=9, ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    # Panel B: Optimal depth summary
+    ax = axes[1]
+
+    model_names = []
+    depths_mean = []
+    depths_std = []
+    n_datasets = []
+    colors_list = []
+
+    for model_key, config in models.items():
+        if model_key not in all_results:
+            continue
+        results = all_results[model_key]
+        depths = [r['critical_depth_frac'] for r in results.values()]
+
+        model_names.append(config['name'])
+        depths_mean.append(np.mean(depths))
+        depths_std.append(np.std(depths))
+        n_datasets.append(len(depths))
+        colors_list.append(config['color'])
+
+    x = np.arange(len(model_names))
+    bars = ax.bar(x, depths_mean, yerr=depths_std, capsize=5,
+                  color=colors_list, edgecolor='black', linewidth=1, alpha=0.8)
+
+    # Add reference lines
+    ax.axhline(y=2/3, color='red', linestyle='--', linewidth=2, alpha=0.7, label='2/3 depth (0.67)')
+    ax.axhline(y=0.75, color='blue', linestyle=':', linewidth=2, alpha=0.7, label='3/4 depth (0.75)')
+
+    # Add value labels
+    for i, (bar, mean, std, n) in enumerate(zip(bars, depths_mean, depths_std, n_datasets)):
+        ax.annotate(f'{mean:.0%}\n(n={n})',
+                    xy=(bar.get_x() + bar.get_width()/2, bar.get_height() + std + 0.02),
+                    ha='center', va='bottom', fontsize=10, fontweight='bold')
+
+    ax.set_ylabel('Critical Depth (fraction)', fontsize=12)
+    ax.set_title('(B) Optimal Layer Depth by Model\n(where CKA with L0 < 0.5)', fontsize=13)
+    ax.set_xticks(x)
+    ax.set_xticklabels(model_names, fontsize=11)
+    ax.set_ylim(0, 1.15)
+    ax.legend(loc='upper right', fontsize=10)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    plt.tight_layout()
+
+    output_path = OUTPUT_DIR / "layerwise_depth_all_models_combined"
+    plt.savefig(output_path.with_suffix('.pdf'), dpi=300, bbox_inches='tight')
+    plt.savefig(output_path.with_suffix('.png'), dpi=300, bbox_inches='tight')
+    print(f"Saved: {output_path.with_suffix('.pdf')}")
+    print(f"Saved: {output_path.with_suffix('.png')}")
+    plt.close()
+
+
 if __name__ == "__main__":
     plot_appendix_figure()
     plot_compact_figure()
     plot_model_comparison()
+    plot_all_model_appendix_figures()
+    plot_combined_all_models()
