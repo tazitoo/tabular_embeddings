@@ -48,6 +48,8 @@ class SAEConfig:
     # Archetypal settings (convex hull constraints)
     archetypal_n_archetypes: int = None  # If None, uses hidden_dim
     archetypal_simplex_temp: float = 1.0  # Temperature for softmax projection
+    archetypal_relaxation: float = 0.0  # δ for RA-SAE: 0 = strict A-SAE, >0 = relaxed
+    archetypal_use_centroids: bool = True  # Use K-means centroids (paper) vs raw data
 
     # Dead neuron revival (auxiliary loss)
     use_aux_loss: bool = True  # Enable dead neuron revival
@@ -128,11 +130,17 @@ class SparseAutoencoder(nn.Module):
             self.gate = nn.Parameter(torch.randn(config.hidden_dim, config.input_dim) * 0.01)
             self.gate_bias = nn.Parameter(torch.zeros(config.hidden_dim))
 
-        # For archetypal SAE - learnable archetype coefficients
-        if config.sparsity_type == "archetypal":
-            n_arch = config.archetypal_n_archetypes or config.hidden_dim
-            # Archetype mixing weights (will be projected to simplex)
-            self.archetype_logits = nn.Parameter(torch.randn(config.hidden_dim, n_arch) * 0.01)
+        # For archetypal SAE - dictionary atoms are convex combos of reference data
+        # This anchors the dictionary to data geometry for training stability
+        if config.sparsity_type in ("archetypal", "matryoshka_archetypal"):
+            # Reference data (or centroids) will be set via set_reference_data()
+            self.register_buffer('reference_data', None)
+            # Archetypal coefficients: softmax gives convex combination
+            # Shape: (n_reference, hidden_dim) -> each dictionary atom is combo of refs
+            self.archetype_logits = None  # Initialized when reference data is set
+            # RA-SAE: deviation matrix Λ for relaxed archetypal
+            # D = WC + Λ, where ||Λ||₂² ≤ δ
+            self.archetype_deviation = None  # Initialized when reference data is set
 
         # Dead neuron tracking for auxiliary loss
         if config.use_aux_loss:
@@ -152,7 +160,9 @@ class SparseAutoencoder(nn.Module):
             h: Sparse activations (batch_size, hidden_dim)
             pre_act: (optional) Pre-activation values
         """
-        # Pre-activation
+        # For Archetypal SAE, the constraint is on the DECODER only
+        # Encoder uses standard learned weights W_enc
+        # (Decoder uses dictionary = convex combo of reference data)
         pre_act = F.linear(x, self.W_enc, self.b_enc)
 
         if self.config.sparsity_type == "topk":
@@ -174,9 +184,15 @@ class SparseAutoencoder(nn.Module):
             h = F.relu(pre_act)
 
         elif self.config.sparsity_type == "archetypal":
-            # Archetypal: activations represent archetype memberships
-            # Project to simplex (each sample is convex combination of archetypes)
-            h = F.softmax(pre_act / self.config.archetypal_simplex_temp, dim=-1)
+            # Archetypal SAE: dictionary atoms are constrained to convex hull of data
+            # Apply ReLU, then optionally TopK for sparsity
+            h = F.relu(pre_act)
+            # Apply TopK if specified (must match training behavior)
+            if self.config.topk and self.config.topk < self.config.hidden_dim:
+                topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
+                mask = torch.zeros_like(h)
+                mask.scatter_(-1, topk_idx, 1.0)
+                h = h * mask
 
         elif self.config.sparsity_type == "matryoshka_archetypal":
             # Combined Matryoshka-Archetypal: nested SPARSE simplex structure
@@ -229,7 +245,15 @@ class SparseAutoencoder(nn.Module):
         if max_dim is not None:
             h = h[:, :max_dim]
 
-        if self.config.tied_weights:
+        # For Archetypal SAE, use dictionary derived from reference data
+        if self.config.sparsity_type == "archetypal" and self.archetype_logits is not None:
+            # Dictionary is convex combo of reference points: (hidden_dim, input_dim)
+            W_dec = self.get_archetypal_dictionary()  # (hidden_dim, input_dim)
+            if max_dim is not None:
+                W_dec = W_dec[:max_dim]
+            # Decode: h @ W_dec -> (batch, hidden) @ (hidden, input) = (batch, input)
+            return F.linear(h, W_dec.T, self.b_dec)  # W_dec.T is (input, hidden)
+        elif self.config.tied_weights:
             W = self.W_enc[:max_dim] if max_dim else self.W_enc
             return F.linear(h, W.T, self.b_dec)
         else:
@@ -308,7 +332,12 @@ class SparseAutoencoder(nn.Module):
 
     def get_dictionary(self) -> np.ndarray:
         """Get learned dictionary (encoder weights)."""
-        W = self.W_enc.detach().cpu().numpy()
+        # For Archetypal SAE, dictionary is convex combo of reference data
+        if self.config.sparsity_type == "archetypal" and self.archetype_logits is not None:
+            W = self.get_archetypal_dictionary().detach().cpu().numpy()
+        else:
+            W = self.W_enc.detach().cpu().numpy()
+
         if self.config.normalize_encoder:
             # Normalize to unit vectors
             norms = np.linalg.norm(W, axis=1, keepdims=True)
@@ -321,6 +350,96 @@ class SparseAutoencoder(nn.Module):
             with torch.no_grad():
                 norms = self.W_dec.norm(dim=0, keepdim=True)
                 self.W_dec.data = self.W_dec.data / (norms + 1e-8)
+
+    def set_reference_data(self, reference_data: torch.Tensor, n_ref: int = None):
+        """
+        Set reference data for Archetypal SAE.
+
+        For A-SAE: Dictionary atoms are strict convex combinations of reference points.
+        For RA-SAE: Dictionary = convex_combo + bounded_deviation (controlled by δ).
+
+        Args:
+            reference_data: (n_samples, input_dim) training data
+            n_ref: Number of reference points/centroids (default: min(1000, n_samples))
+        """
+        if n_ref is None:
+            n_ref = min(1000, len(reference_data))
+
+        device = reference_data.device
+
+        # Use K-means centroids (paper's approach) or raw data subsample
+        if self.config.archetypal_use_centroids and len(reference_data) > n_ref:
+            # K-means clustering to find centroids
+            from sklearn.cluster import KMeans
+            data_np = reference_data.cpu().numpy()
+            kmeans = KMeans(n_clusters=n_ref, random_state=42, n_init=10)
+            kmeans.fit(data_np)
+            centroids = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32, device=device)
+            self.reference_data = centroids  # (n_ref, input_dim)
+        else:
+            # Subsample raw data
+            if len(reference_data) > n_ref:
+                idx = torch.randperm(len(reference_data))[:n_ref]
+                reference_data = reference_data[idx]
+            self.reference_data = reference_data  # (n_ref, input_dim)
+
+        n_ref = len(self.reference_data)
+
+        # Initialize archetypal coefficients: (n_ref, hidden_dim)
+        # Each column will be softmaxed to give convex weights for one dictionary atom
+        # Use peaked initialization: each atom starts by selecting 1-3 centroids
+        # This ensures the initial dictionary spans the data space
+        init_logits = torch.zeros(n_ref, self.config.hidden_dim, device=device)
+        for i in range(self.config.hidden_dim):
+            # Each dictionary atom initially points to a random subset of centroids
+            n_active = np.random.randint(1, min(4, n_ref + 1))
+            active_idx = np.random.choice(n_ref, n_active, replace=False)
+            init_logits[active_idx, i] = 5.0  # High value -> after softmax, these dominate
+        self.archetype_logits = nn.Parameter(init_logits)
+
+        # RA-SAE: deviation matrix Λ (initialized to zero)
+        # D = WC + Λ, where ||Λ||₂² ≤ δ
+        if self.config.archetypal_relaxation > 0:
+            self.archetype_deviation = nn.Parameter(
+                torch.zeros(self.config.hidden_dim, self.config.input_dim, device=device)
+            )
+
+    def get_archetypal_dictionary(self) -> torch.Tensor:
+        """
+        Compute dictionary as convex combinations of reference data.
+
+        For A-SAE (δ=0): D = WC (strict convex hull)
+        For RA-SAE (δ>0): D = WC + Λ (relaxed with bounded deviation)
+
+        Returns:
+            Dictionary (hidden_dim, input_dim) where each row is a convex combo
+            of reference points (plus optional deviation for RA-SAE).
+        """
+        if self.reference_data is None or self.archetype_logits is None:
+            raise RuntimeError("Must call set_reference_data() first for Archetypal SAE")
+
+        # Softmax over reference points gives convex weights
+        # Shape: (n_ref, hidden_dim)
+        weights = F.softmax(self.archetype_logits / self.config.archetypal_simplex_temp, dim=0)
+
+        # Dictionary = reference_data.T @ weights
+        # (input_dim, n_ref) @ (n_ref, hidden_dim) = (input_dim, hidden_dim)
+        dictionary = self.reference_data.T @ weights
+        dictionary = dictionary.T  # (hidden_dim, input_dim)
+
+        # RA-SAE: add bounded deviation
+        if self.config.archetypal_relaxation > 0 and self.archetype_deviation is not None:
+            # Project deviation to satisfy ||Λ||₂² ≤ δ
+            delta = self.config.archetypal_relaxation
+            deviation_norm = self.archetype_deviation.norm()
+            if deviation_norm > delta:
+                # Scale down to satisfy constraint
+                deviation = self.archetype_deviation * (delta / deviation_norm)
+            else:
+                deviation = self.archetype_deviation
+            dictionary = dictionary + deviation
+
+        return dictionary
 
 
 def train_sae(
@@ -359,6 +478,13 @@ def train_sae(
 
     # Initialize model
     model = SparseAutoencoder(config).to(device)
+
+    # For Archetypal SAE, set reference data (dictionary atoms = convex combos of refs)
+    if config.sparsity_type == "archetypal":
+        # Use centered training data as reference points
+        n_ref = config.archetypal_n_archetypes or min(1000, len(X_centered))
+        model.set_reference_data(X_centered.to(device), n_ref=n_ref)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
     # For Matryoshka and Matryoshka-Archetypal, setup dimension weights
@@ -403,13 +529,14 @@ def train_sae(
                 sparsity_loss = config.sparsity_penalty * h.abs().mean()
 
             elif config.sparsity_type == "archetypal":
-                # Archetypal: activations are simplex-constrained
+                # Archetypal SAE: dictionary atoms are constrained to convex hull of data
+                # (via archetype_logits -> softmax -> weighted sum of reference points)
+                # TopK sparsity is handled in encode() if config.topk is set
                 h, pre_act = model.encode(batch, return_pre_act=True)
                 x_hat = model.decode(h)
                 recon_loss = F.mse_loss(x_hat, batch)
-                # Entropy regularization to encourage sparse archetype usage
-                entropy = -(h * torch.log(h + 1e-8)).sum(dim=-1).mean()
-                sparsity_loss = -config.sparsity_penalty * entropy  # Minimize entropy = more peaked
+                # Small L1 for regularization
+                sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
 
             elif config.sparsity_type == "matryoshka_archetypal":
                 # Combined: Matryoshka multi-scale loss + Archetypal simplex structure
