@@ -38,10 +38,11 @@ class SAEConfig:
 
     # Sparsity
     sparsity_penalty: float = 1e-3  # L1 coefficient
-    sparsity_type: str = "l1"  # "l1", "topk", "gated", "matryoshka", or "archetypal"
-    topk: int = 32  # For topk sparsity
+    sparsity_type: str = "l1"  # "l1", "topk", "matryoshka", "archetypal", or "matryoshka_archetypal"
+    topk: int = 32  # For topk sparsity (also used with archetypal/matryoshka_archetypal)
 
     # Matryoshka settings (nested representation learning)
+    # Used by "matryoshka" and "matryoshka_archetypal" types
     matryoshka_dims: List[int] = field(default_factory=lambda: [32, 64, 128, 256])
     matryoshka_weights: List[float] = None  # Weights for each scale (default: equal)
 
@@ -195,33 +196,18 @@ class SparseAutoencoder(nn.Module):
                 h = h * mask
 
         elif self.config.sparsity_type == "matryoshka_archetypal":
-            # Combined Matryoshka-Archetypal: nested SPARSE simplex structure
-            # Uses JumpReLU + normalization for sparse simplex activations
-            # This gives granularity (can truncate) + interpretability (sparse simplex)
-            h = torch.zeros_like(pre_act)
-            mat_dims = self.config.matryoshka_dims
-
-            # JumpReLU threshold (learnable or fixed)
-            threshold = self.config.archetypal_simplex_temp  # Repurpose temp as threshold
-
-            # Apply JumpReLU + normalize within each nested scale
-            prev_dim = 0
-            for dim in mat_dims:
-                if dim <= self.config.hidden_dim:
-                    scale_act = pre_act[:, prev_dim:dim]
-                    # JumpReLU: zero out values below threshold
-                    sparse_act = F.relu(scale_act - threshold)
-                    # Normalize to simplex (sum to 1 per sample within this scale)
-                    scale_sum = sparse_act.sum(dim=-1, keepdim=True) + 1e-8
-                    h[:, prev_dim:dim] = sparse_act / scale_sum * (dim - prev_dim)
-                    prev_dim = dim
-
-            # Handle remaining dimensions if any
-            if prev_dim < self.config.hidden_dim:
-                scale_act = pre_act[:, prev_dim:]
-                sparse_act = F.relu(scale_act - threshold)
-                scale_sum = sparse_act.sum(dim=-1, keepdim=True) + 1e-8
-                h[:, prev_dim:] = sparse_act / scale_sum * (self.config.hidden_dim - prev_dim)
+            # Matryoshka-Archetypal: combines nested loss + archetypal decoder
+            # - Encoder: standard learned weights (like archetypal)
+            # - Decoder: convex combo of K-means centroids (archetypal constraint)
+            # - Activations: ReLU + TopK sparsity
+            # - Loss: multi-scale reconstruction at Matryoshka dims (handled in train_sae)
+            h = F.relu(pre_act)
+            # Apply TopK for sparse, interpretable activations
+            if self.config.topk and self.config.topk < self.config.hidden_dim:
+                topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
+                mask = torch.zeros_like(h)
+                mask.scatter_(-1, topk_idx, 1.0)
+                h = h * mask
 
         else:
             # Standard L1: just ReLU
@@ -245,8 +231,8 @@ class SparseAutoencoder(nn.Module):
         if max_dim is not None:
             h = h[:, :max_dim]
 
-        # For Archetypal SAE, use dictionary derived from reference data
-        if self.config.sparsity_type == "archetypal" and self.archetype_logits is not None:
+        # For Archetypal/Matryoshka-Archetypal SAE, use dictionary derived from reference data
+        if self.config.sparsity_type in ("archetypal", "matryoshka_archetypal") and self.archetype_logits is not None:
             # Dictionary is convex combo of reference points: (hidden_dim, input_dim)
             W_dec = self.get_archetypal_dictionary()  # (hidden_dim, input_dim)
             if max_dim is not None:
@@ -331,9 +317,9 @@ class SparseAutoencoder(nn.Module):
         return self.config.aux_loss_coef * aux_loss
 
     def get_dictionary(self) -> np.ndarray:
-        """Get learned dictionary (encoder weights)."""
-        # For Archetypal SAE, dictionary is convex combo of reference data
-        if self.config.sparsity_type == "archetypal" and self.archetype_logits is not None:
+        """Get learned dictionary (decoder weights for reconstruction)."""
+        # For Archetypal/Matryoshka-Archetypal SAE, dictionary is convex combo of reference data
+        if self.config.sparsity_type in ("archetypal", "matryoshka_archetypal") and self.archetype_logits is not None:
             W = self.get_archetypal_dictionary().detach().cpu().numpy()
         else:
             W = self.W_enc.detach().cpu().numpy()
@@ -479,8 +465,8 @@ def train_sae(
     # Initialize model
     model = SparseAutoencoder(config).to(device)
 
-    # For Archetypal SAE, set reference data (dictionary atoms = convex combos of refs)
-    if config.sparsity_type == "archetypal":
+    # For Archetypal/Matryoshka-Archetypal SAE, set reference data (dictionary atoms = convex combos of refs)
+    if config.sparsity_type in ("archetypal", "matryoshka_archetypal"):
         # Use centered training data as reference points
         n_ref = config.archetypal_n_archetypes or min(1000, len(X_centered))
         model.set_reference_data(X_centered.to(device), n_ref=n_ref)
@@ -539,31 +525,21 @@ def train_sae(
                 sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
 
             elif config.sparsity_type == "matryoshka_archetypal":
-                # Combined: Matryoshka multi-scale loss + Archetypal simplex structure
+                # Matryoshka-Archetypal: combines two key ideas
+                # 1. Archetypal decoder: dictionary atoms = convex combos of K-means centroids (stability)
+                # 2. Matryoshka loss: multi-scale reconstruction at nested truncation points (hierarchy)
+                # 3. TopK sparsity: handled in encode() for interpretable sparse activations
                 h, pre_act = model.encode(batch, return_pre_act=True)
 
                 # Multi-scale reconstruction loss (Matryoshka)
-                reconstructions = []
-                for dim in mat_dims:
-                    x_hat = model.decode(h, max_dim=dim)
-                    reconstructions.append(x_hat)
+                # Loss at each scale ensures features are ordered by importance
                 recon_loss = torch.tensor(0.0, device=device)
-                for x_hat, weight in zip(reconstructions, mat_weights):
+                for dim, weight in zip(mat_dims, mat_weights):
+                    x_hat = model.decode(h, max_dim=dim)
                     recon_loss = recon_loss + weight * F.mse_loss(x_hat, batch)
 
-                # Entropy regularization within each scale (Archetypal)
-                # Encourages peaked/sparse archetype usage at each granularity
-                total_entropy = torch.tensor(0.0, device=device)
-                prev_dim = 0
-                for dim in mat_dims:
-                    if dim <= config.hidden_dim:
-                        h_scale = h[:, prev_dim:dim]
-                        # Normalize to get probabilities for this scale
-                        h_norm = h_scale / (h_scale.sum(dim=-1, keepdim=True) + 1e-8)
-                        entropy = -(h_norm * torch.log(h_norm + 1e-8)).sum(dim=-1).mean()
-                        total_entropy = total_entropy + entropy
-                        prev_dim = dim
-                sparsity_loss = -config.sparsity_penalty * total_entropy / len(mat_dims)
+                # Small L1 regularization (TopK sparsity is main constraint from encode())
+                sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
 
             else:
                 # Standard forward

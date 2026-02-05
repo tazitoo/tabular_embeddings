@@ -143,16 +143,65 @@ def pool_embeddings(
     return pooled, dataset_counts
 
 
-def compute_stability(embeddings: np.ndarray, config: SAEConfig, n_runs: int = 2) -> float:
-    """Train SAE twice and measure dictionary stability."""
+def compute_stability(
+    embeddings: np.ndarray,
+    config: SAEConfig,
+    n_runs: int = 2,
+    return_per_scale: bool = False,
+) -> float:
+    """
+    Train SAE twice and measure dictionary stability.
+
+    For Matryoshka SAEs, also measures stability at each nested scale.
+
+    Args:
+        embeddings: Training data
+        config: SAE configuration
+        n_runs: Number of training runs
+        return_per_scale: If True, return dict with per-scale stability (Matryoshka only)
+
+    Returns:
+        Overall stability score (or dict with per-scale if return_per_scale=True)
+    """
     dicts = []
     for seed in [123, 456][:n_runs]:
         torch.manual_seed(seed)
+        np.random.seed(seed)
         model, result = train_sae(embeddings, config, verbose=False)
         dicts.append(result.dictionary)
 
     comp = compare_dictionaries(dicts[0], dicts[1])
-    return comp['mean_best_match_a']
+    overall_stability = comp['mean_best_match_a']
+
+    # For Matryoshka, compute per-scale stability
+    if config.sparsity_type == "matryoshka" and return_per_scale:
+        mat_dims = config.matryoshka_dims or [32, 64, 128, 256]
+        mat_dims = [d for d in mat_dims if d <= config.hidden_dim]
+
+        per_scale = {}
+        prev_dim = 0
+        for dim in mat_dims:
+            # Compare features in this scale only
+            scale_dict1 = dicts[0][prev_dim:dim]
+            scale_dict2 = dicts[1][prev_dim:dim]
+            if len(scale_dict1) > 0:
+                scale_comp = compare_dictionaries(scale_dict1, scale_dict2)
+                per_scale[f"scale_{prev_dim}_{dim}"] = scale_comp['mean_best_match_a']
+            prev_dim = dim
+
+        # Remaining features
+        if prev_dim < config.hidden_dim:
+            scale_dict1 = dicts[0][prev_dim:]
+            scale_dict2 = dicts[1][prev_dim:]
+            scale_comp = compare_dictionaries(scale_dict1, scale_dict2)
+            per_scale[f"scale_{prev_dim}_{config.hidden_dim}"] = scale_comp['mean_best_match_a']
+
+        return {
+            "overall": overall_stability,
+            "per_scale": per_scale,
+        }
+
+    return overall_stability
 
 
 def run_sae_trial(
@@ -182,7 +231,7 @@ def run_sae_trial(
         archetypal_simplex_temp=archetypal_temp,
         archetypal_relaxation=archetypal_relaxation,
         archetypal_use_centroids=True,
-        use_aux_loss=(sae_type not in ["archetypal"]),
+        use_aux_loss=(sae_type not in ["archetypal", "matryoshka_archetypal"]),
         n_epochs=n_epochs,
         batch_size=128,
         learning_rate=learning_rate,
@@ -223,12 +272,12 @@ def create_optuna_objective(embeddings: np.ndarray, sae_type: str):
         learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
 
         # Type-specific parameters
-        if sae_type == "topk":
+        if sae_type in ("topk", "matryoshka_archetypal"):
             topk = trial.suggest_categorical("topk", [16, 32, 64, 128])
         else:
             topk = 32
 
-        if sae_type == "archetypal":
+        if sae_type in ("archetypal", "matryoshka_archetypal"):
             archetypal_temp = trial.suggest_float("archetypal_temp", 0.05, 0.5, log=True)
             archetypal_n = trial.suggest_categorical("archetypal_n", [256, 512, 1000])
             archetypal_relax = trial.suggest_float("archetypal_relaxation", 0.0, 2.0)
@@ -310,7 +359,7 @@ def run_sweep(
         json.dump(split_info, f, indent=2)
 
     # Run sweep for each SAE type
-    sae_types = ["l1", "topk", "matryoshka", "archetypal"]
+    sae_types = ["l1", "topk", "matryoshka", "archetypal", "matryoshka_archetypal"]
     best_configs = {}
 
     for sae_type in sae_types:
