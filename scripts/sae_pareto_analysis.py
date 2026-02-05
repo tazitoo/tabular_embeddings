@@ -185,11 +185,11 @@ def sweep_l0_for_optimal(
             actual_l0 = (h != 0).float().sum(dim=1).mean().item()
 
         results.append({
-            "target_l0": target_l0,
-            "actual_l0": actual_l0,
-            "s_n_dec": s_n_dec,
-            "r2": r2,
-            "recon_loss": result.reconstruction_loss,
+            "target_l0": int(target_l0),
+            "actual_l0": float(actual_l0),
+            "s_n_dec": float(s_n_dec),
+            "r2": float(r2),
+            "recon_loss": float(result.reconstruction_loss),
         })
 
         print(f"  Actual L0: {actual_l0:.1f}, s_n^dec: {s_n_dec:.4f}, R²: {r2:.4f}")
@@ -203,9 +203,54 @@ def sweep_l0_for_optimal(
 
     return {
         "results": results,
-        "optimal_l0": optimal_l0,
-        "optimal_idx": optimal_idx,
+        "optimal_l0": int(optimal_l0),
+        "optimal_idx": int(optimal_idx),
     }
+
+
+def plot_l0_sweep_results(
+    sweep_results: Dict,
+    output_dir: Path,
+    model_name: str = "tabpfn",
+):
+    """Plot s_n^dec and R² vs L0 from sweep."""
+    results = sweep_results["results"]
+    optimal_l0 = sweep_results["optimal_l0"]
+
+    l0_values = [r["actual_l0"] for r in results]
+    s_n_values = [r["s_n_dec"] for r in results]
+    r2_values = [r["r2"] for r in results]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Panel A: s_n^dec vs L0
+    ax = axes[0]
+    ax.plot(l0_values, s_n_values, 'o-', markersize=8, linewidth=2)
+    ax.axvline(optimal_l0, color='red', linestyle='--', label=f'Optimal L0={optimal_l0}')
+    ax.set_xlabel('L0 Sparsity', fontsize=12)
+    ax.set_ylabel('s_n^dec (lower is better)', fontsize=12)
+    ax.set_title(f'(A) Decoder Projection Score vs L0 - {model_name}', fontsize=14)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Panel B: R² vs L0
+    ax = axes[1]
+    ax.plot(l0_values, r2_values, 'o-', markersize=8, linewidth=2, color='C1')
+    ax.axvline(optimal_l0, color='red', linestyle='--', label=f'Optimal L0={optimal_l0}')
+    ax.set_xlabel('L0 Sparsity', fontsize=12)
+    ax.set_ylabel('Explained Variance (R²)', fontsize=12)
+    ax.set_title(f'(B) Reconstruction Quality vs L0 - {model_name}', fontsize=14)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0.95, 1.0)
+
+    plt.tight_layout()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_dir / f"l0_sweep_sndec_{model_name}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(output_dir / f"l0_sweep_sndec_{model_name}.pdf", dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"Saved L0 sweep plot to {output_dir}")
 
 
 def plot_pareto_from_study(
@@ -359,6 +404,9 @@ def main():
             # Save results
             with open(model_dir / "optimal_l0_sweep.json", "w") as f:
                 json.dump(sweep_result, f, indent=2)
+
+            # Plot sweep results
+            plot_l0_sweep_results(sweep_result, model_dir / "plots", args.model)
 
 
 if __name__ == "__main__":
