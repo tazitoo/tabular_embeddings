@@ -609,26 +609,30 @@ def measure_dictionary_richness(
     recon_quality = 1 / (1 + sae_result.reconstruction_loss)
 
     # 7. Explained variance ratio (R²) - requires original inputs
-    # Re-encode and decode to get proper reconstruction (handles tied/untied weights)
+    # Note: SAE is trained on centered data (X - mean), so we must center before computing R²
     explained_variance = None
     if input_features is not None and sae_model is not None:
         import torch
         device = next(sae_model.parameters()).device
         sae_model.eval()
+        # Center data (same as train_sae does)
+        x_mean = input_features.mean(axis=0, keepdims=True)
+        x_centered = input_features - x_mean
         with torch.no_grad():
-            x = torch.tensor(input_features, dtype=torch.float32, device=device)
+            x = torch.tensor(x_centered, dtype=torch.float32, device=device)
             x_hat, _ = sae_model(x)  # Forward pass: encode then decode
             x_hat = x_hat.cpu().numpy()
-        # R² = 1 - SS_res / SS_tot
-        ss_res = np.sum((input_features - x_hat) ** 2)
-        ss_tot = np.sum((input_features - input_features.mean(axis=0)) ** 2)
+        # R² = 1 - SS_res / SS_tot (on centered data)
+        ss_res = np.sum((x_centered - x_hat) ** 2)
+        ss_tot = np.sum(x_centered ** 2)  # Centered data, so mean is 0
         explained_variance = float(1 - ss_res / (ss_tot + 1e-8))
     elif input_features is not None:
         # Fallback: assume tied weights (dictionary is decoder)
         # This may be inaccurate for untied weight SAEs
+        x_centered = input_features - input_features.mean(axis=0, keepdims=True)
         reconstructions = activations @ dictionary
-        ss_res = np.sum((input_features - reconstructions) ** 2)
-        ss_tot = np.sum((input_features - input_features.mean(axis=0)) ** 2)
+        ss_res = np.sum((x_centered - reconstructions) ** 2)
+        ss_tot = np.sum(x_centered ** 2)
         explained_variance = float(1 - ss_res / (ss_tot + 1e-8))
 
     # 8. Composite richness score
