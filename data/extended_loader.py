@@ -776,7 +776,7 @@ def load_tabarena_dataset(
         task = info["task"]
 
         data = fetch_openml(data_id=dataset_id, as_frame=True, parser="auto")
-        X = data.data
+        X = data.data.copy()  # Copy to avoid SettingWithCopyWarning
         y = data.target
 
         # Handle categorical features

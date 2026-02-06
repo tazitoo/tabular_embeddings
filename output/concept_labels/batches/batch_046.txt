@@ -1,0 +1,12 @@
+F236|C29|act=0.171|n_numeric:+0.98|n_cols_total:+0.98|row_entropy:-0.83|nearest_neighbor_dist:+0.80|centroid_distance:+0.80|ds=blood-transfusion-service-center,Bioresponse,QSAR-TID-11
+F443|C29|act=0.114|n_numeric:+1.15|n_cols_total:+1.15|row_entropy:-0.92|nearest_neighbor_dist:+0.89|centroid_distance:+0.88|ds=Bioresponse,NATICUSdroid,blood-transfusion-service-center
+F606|C29|act=0.110|centroid_distance:+0.99|n_numeric:+0.98|n_cols_total:+0.98|nearest_neighbor_dist:+0.97|row_entropy:-0.76|ds=blood-transfusion-service-center,MIC,Bioresponse
+F577|C29|act=0.090|row_entropy:-1.05|frac_zeros:+0.82|row_uniformity:+0.69|n_numeric:+0.62|n_cols_total:+0.62|ds=NATICUSdroid,Food_Delivery_Time,Bioresponse
+F1305|C29|act=0.077|pca_residual:-0.91|n_distinct_values:-0.91|n_numeric:+0.90|n_cols_total:+0.90|row_entropy:-0.76|ds=blood-transfusion-service-center,Food_Delivery_Time,Bioresponse
+F1395|C29|act=0.074|n_numeric:+1.19|n_cols_total:+1.19|row_entropy:-1.00|pca_residual:-0.96|nearest_neighbor_dist:+0.95|ds=blood-transfusion-service-center,Bioresponse,APSFailure
+F307|C29|act=0.074|n_numeric:+1.30|n_cols_total:+1.30|row_entropy:-1.06|centroid_distance:+0.82|nearest_neighbor_dist:+0.80|ds=Bioresponse,blood-transfusion-service-center,NATICUSdroid
+F1029|C29|act=0.071|n_numeric:+1.16|n_cols_total:+1.16|row_entropy:-0.75|centroid_distance:+0.68|nearest_neighbor_dist:+0.62|ds=blood-transfusion-service-center,Bioresponse,Food_Delivery_Time
+F780|C29|act=0.069|n_numeric:+1.96|n_cols_total:+1.96|nearest_neighbor_dist:+1.59|centroid_distance:+1.57|row_entropy:-1.10|ds=Bioresponse,blood-transfusion-service-center,Food_Delivery_Time
+F564|C29|act=0.065|n_numeric:+1.06|n_cols_total:+1.06|numeric_correlation_mean:+0.78|row_entropy:-0.78|pca_residual:-0.64|ds=blood-transfusion-service-center,Bioresponse,Food_Delivery_Time
+F1071|C29|act=0.062|pca_residual:-0.74|numeric_correlation_mean:+0.67|numeric_kurtosis:+0.65|row_entropy:-0.65|n_distinct_values:-0.56|ds=blood-transfusion-service-center,APSFailure,Bioresponse
+F624|C29|act=0.061|n_numeric:+1.50|n_cols_total:+1.50|centroid_distance:+1.02|nearest_neighbor_dist:+1.02|row_entropy:-0.99|ds=blood-transfusion-service-center,Bioresponse,Food_Delivery_Time

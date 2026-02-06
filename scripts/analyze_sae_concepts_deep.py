@@ -24,6 +24,36 @@ import pandas as pd
 import torch
 from scipy import stats
 
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        elif isinstance(obj, (np.floating,)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
+def convert_keys_to_native(obj):
+    """Recursively convert dict keys from numpy types to native Python types."""
+    if isinstance(obj, dict):
+        return {
+            (int(k) if isinstance(k, np.integer) else str(k) if not isinstance(k, (str, int, float, bool, type(None))) else k): convert_keys_to_native(v)
+            for k, v in obj.items()
+        }
+    elif isinstance(obj, list):
+        return [convert_keys_to_native(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -84,6 +114,14 @@ class RowMetaFeatures:
     n_cols_total: int                # Total columns
     dataset_sparsity: float          # Overall dataset missing rate
     numeric_correlation_mean: float  # Mean absolute correlation between numeric cols
+
+    # === Scale/Magnitude Patterns ===
+    log_magnitude_mean: float        # Mean of log10(|x|+1) - captures value scale
+    log_magnitude_std: float         # Std of log magnitudes - spans many orders?
+    frac_very_small: float           # Fraction with |x| < 0.01
+    frac_very_large: float           # Fraction with |x| > 1000
+    frac_integers: float             # Fraction that are integers (x == int(x))
+    frac_round_tens: float           # Fraction divisible by 10
 
     # === Target-Related (if available) ===
     target_is_minority: float        # 1 if minority class, 0 otherwise (classification)
@@ -279,6 +317,24 @@ def compute_row_meta_features(
             row_uniformity = 1.0
             n_distinct_values = 0
 
+        # === Scale/Magnitude Patterns ===
+        if raw_values:
+            abs_vals = [abs(v) for v in raw_values]
+            log_mags = [np.log10(v + 1) for v in abs_vals]
+            log_magnitude_mean = np.mean(log_mags)
+            log_magnitude_std = np.std(log_mags) if len(log_mags) > 1 else 0.0
+            frac_very_small = np.mean([v < 0.01 for v in abs_vals])
+            frac_very_large = np.mean([v > 1000 for v in abs_vals])
+            frac_integers = np.mean([v == int(v) for v in raw_values])
+            frac_round_tens = np.mean([v != 0 and v % 10 == 0 for v in raw_values])
+        else:
+            log_magnitude_mean = 0.0
+            log_magnitude_std = 0.0
+            frac_very_small = 0.0
+            frac_very_large = 0.0
+            frac_integers = 0.0
+            frac_round_tens = 0.0
+
         meta_features.append(RowMetaFeatures(
             # Missing patterns
             missing_rate=missing_rate,
@@ -321,6 +377,13 @@ def compute_row_meta_features(
             n_cols_total=n_cols,
             dataset_sparsity=dataset_sparsity,
             numeric_correlation_mean=numeric_corr_mean,
+            # Scale/Magnitude
+            log_magnitude_mean=log_magnitude_mean,
+            log_magnitude_std=log_magnitude_std,
+            frac_very_small=frac_very_small,
+            frac_very_large=frac_very_large,
+            frac_integers=frac_integers,
+            frac_round_tens=frac_round_tens,
             # Target
             target_is_minority=float(is_minority[idx]),
             target_zscore=float(target_zscores[idx]),
@@ -593,6 +656,427 @@ def analyze_feature_triggers(
     }
 
 
+def format_raw_data_for_llm(
+    raw_samples: List[Dict],
+    baseline_samples: List[Dict],
+    feature_id: int,
+    activation_stats: Dict,
+) -> str:
+    """
+    Format raw data samples for LLM analysis.
+
+    Returns a prompt that shows:
+    1. The top-activating raw data samples
+    2. Some baseline samples for comparison
+    3. Statistical summary of differences
+    """
+    # Build prompt
+    lines = []
+    lines.append(f"=== SAE Feature {feature_id} Analysis ===")
+    lines.append(f"Mean activation: {activation_stats['mean']:.3f}")
+    lines.append(f"Max activation: {activation_stats['max']:.3f}")
+    lines.append("")
+
+    # Show top-activating raw samples
+    lines.append("TOP-ACTIVATING SAMPLES (raw values from original data):")
+    lines.append("-" * 60)
+    for i, sample in enumerate(raw_samples[:10]):
+        lines.append(f"Sample {i+1} (activation={sample['activation']:.3f}, dataset={sample['dataset']}):")
+        # Show non-missing values
+        values = sample['values']
+        if len(values) > 15:
+            # Show first 15 columns
+            value_str = ", ".join([f"{k}={v}" for k, v in list(values.items())[:15]])
+            lines.append(f"  {value_str}, ...")
+        else:
+            value_str = ", ".join([f"{k}={v}" for k, v in values.items()])
+            lines.append(f"  {value_str}")
+        lines.append("")
+
+    lines.append("\nBASELINE SAMPLES (random samples for comparison):")
+    lines.append("-" * 60)
+    for i, sample in enumerate(baseline_samples[:5]):
+        lines.append(f"Baseline {i+1} (activation={sample['activation']:.3f}, dataset={sample['dataset']}):")
+        values = sample['values']
+        if len(values) > 15:
+            value_str = ", ".join([f"{k}={v}" for k, v in list(values.items())[:15]])
+            lines.append(f"  {value_str}, ...")
+        else:
+            value_str = ", ".join([f"{k}={v}" for k, v in values.items()])
+            lines.append(f"  {value_str}")
+        lines.append("")
+
+    # Add statistical comparison
+    lines.append("\nSTATISTICAL DIFFERENCES (top-activating vs baseline):")
+    lines.append("-" * 60)
+
+    # Collect all numeric values across samples for statistical comparison
+    top_numeric_stats = {}
+    baseline_numeric_stats = {}
+
+    for sample in raw_samples:
+        for k, v in sample['values'].items():
+            if isinstance(v, (int, float)) and not np.isnan(v):
+                if k not in top_numeric_stats:
+                    top_numeric_stats[k] = []
+                top_numeric_stats[k].append(v)
+
+    for sample in baseline_samples:
+        for k, v in sample['values'].items():
+            if isinstance(v, (int, float)) and not np.isnan(v):
+                if k not in baseline_numeric_stats:
+                    baseline_numeric_stats[k] = []
+                baseline_numeric_stats[k].append(v)
+
+    # Find significant differences
+    significant_diffs = []
+    for col in set(top_numeric_stats.keys()) & set(baseline_numeric_stats.keys()):
+        top_vals = top_numeric_stats[col]
+        base_vals = baseline_numeric_stats[col]
+        if len(top_vals) >= 5 and len(base_vals) >= 5:
+            top_mean = np.mean(top_vals)
+            base_mean = np.mean(base_vals)
+            pooled_std = np.sqrt((np.var(top_vals) + np.var(base_vals)) / 2)
+            if pooled_std > 1e-8:
+                d = (top_mean - base_mean) / pooled_std
+                if abs(d) > 0.5:
+                    significant_diffs.append((col, d, top_mean, base_mean))
+
+    significant_diffs.sort(key=lambda x: -abs(x[1]))
+    for col, d, top_mean, base_mean in significant_diffs[:10]:
+        direction = "higher" if d > 0 else "lower"
+        lines.append(f"  {col}: {direction} in top samples (d={d:.2f}, top_mean={top_mean:.2f}, base_mean={base_mean:.2f})")
+
+    return "\n".join(lines)
+
+
+def load_api_key() -> Optional[str]:
+    """Load Anthropic API key from .env file or environment."""
+    import os
+
+    # Check environment first
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if key:
+        return key
+
+    # Try .env file
+    env_path = PROJECT_ROOT / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            name, _, value = line.partition("=")
+            value = value.strip().strip('"').strip("'")
+            if name.strip() in ("ANTHROPIC_API_KEY", "ANTHROPIC_KEY"):
+                return value
+
+    return None
+
+
+def query_llm_for_concept_label(
+    raw_data_prompt: str,
+    meta_feature_summary: str,
+    client=None,
+) -> Optional[str]:
+    """
+    Query an LLM to generate a concept label based on raw data patterns.
+
+    Uses the Anthropic API with Haiku for speed/cost at scale.
+    """
+    if client is None:
+        return None
+
+    system_prompt = """You are an expert at analyzing tabular data patterns.
+You are helping identify concepts that a Sparse Autoencoder (SAE) has learned from tabular foundation model embeddings.
+
+For each SAE feature, you'll see:
+1. Raw data samples that maximally activate this feature
+2. Baseline samples for comparison
+3. Statistical differences between top-activating and baseline samples
+
+Your task: Identify what tabular pattern causes this feature to activate.
+Focus on patterns that are:
+- Universal (not specific to one dataset)
+- About data properties (not semantics)
+- Concise (2-5 words max)
+
+Examples of good concept labels:
+- "extreme outliers"
+- "sparse rows"
+- "negative-skewed values"
+- "high feature correlation"
+- "isolated points"
+- "uniform distribution"
+- "large magnitude"
+- "integer values"
+
+Respond with ONLY the concept label (2-5 words). Do not explain."""
+
+    user_prompt = f"""{raw_data_prompt}
+
+Meta-feature analysis:
+{meta_feature_summary}
+
+What is the concept this feature detects? (2-5 words only)"""
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=50,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}]
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        print(f"  LLM query failed: {e}")
+        return None
+
+
+def collect_raw_activating_samples(
+    model: SparseAutoencoder,
+    datasets: List[str],
+    train_std: np.ndarray,
+    train_mean: np.ndarray,
+    feature_ids: List[int],
+    n_samples_per_feature: int = 100,
+    n_baseline_samples: int = 50,
+    max_samples_per_dataset: int = 200,
+) -> Dict:
+    """
+    Collect raw data samples that maximally activate each feature.
+
+    Returns a dict mapping feature_id -> {
+        'top_samples': List of raw data dicts,
+        'baseline_samples': List of random baseline dicts,
+        'activation_stats': {mean, max, std}
+    }
+    """
+    emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / "tabpfn"
+
+    # Collect all samples with their raw data, activations, and dataset info
+    all_raw_samples = []  # List of dicts with raw values
+    all_activations = []  # Corresponding activation vectors
+
+    print(f"\nCollecting raw data for {len(datasets)} datasets...")
+
+    for ds_name in datasets:
+        # Load embeddings
+        emb_path = emb_dir / f"tabarena_{ds_name}.npz"
+        if not emb_path.exists():
+            continue
+
+        emb_data = np.load(emb_path, allow_pickle=True)
+        embeddings = emb_data['embeddings'].astype(np.float32)
+
+        # Subsample if needed
+        if len(embeddings) > max_samples_per_dataset:
+            np.random.seed(42)
+            idx = np.random.choice(len(embeddings), max_samples_per_dataset, replace=False)
+            embeddings = embeddings[idx]
+            sample_indices = idx
+        else:
+            sample_indices = np.arange(len(embeddings))
+
+        # Load original tabular data
+        try:
+            X, y, dataset_info = load_tabarena_dataset(ds_name)
+            if hasattr(X, 'iloc'):
+                df = X
+            else:
+                df = pd.DataFrame(X)
+
+            # Subset to same samples
+            df = df.iloc[sample_indices].reset_index(drop=True)
+
+        except Exception as e:
+            print(f"  Skipping {ds_name}: {e}")
+            continue
+
+        # Compute SAE activations
+        emb_norm = embeddings / train_std
+        emb_centered = emb_norm - train_mean
+
+        with torch.no_grad():
+            x = torch.tensor(emb_centered, dtype=torch.float32)
+            h = model.encode(x).numpy()
+
+        # Store raw data with activations
+        for i in range(len(df)):
+            row = df.iloc[i]
+            raw_values = {col: row[col] for col in df.columns if pd.notna(row[col])}
+
+            # Convert numpy types to Python types for JSON serialization
+            clean_values = {}
+            for k, v in raw_values.items():
+                if isinstance(v, (np.integer,)):
+                    clean_values[str(k)] = int(v)
+                elif isinstance(v, (np.floating,)):
+                    clean_values[str(k)] = float(v)
+                else:
+                    clean_values[str(k)] = str(v)
+
+            all_raw_samples.append({
+                'dataset': ds_name,
+                'values': clean_values,
+                'n_values': len(clean_values),
+            })
+
+        all_activations.append(h)
+        print(f"  {ds_name}: {len(df)} samples, {len(df.columns)} columns")
+
+    if not all_activations:
+        return {}
+
+    all_activations = np.concatenate(all_activations, axis=0)
+    print(f"Total: {len(all_raw_samples)} samples")
+
+    # Collect samples for each feature
+    results = {}
+
+    for feat_id in feature_ids:
+        feat_acts = all_activations[:, feat_id]
+
+        # Skip dead features
+        if feat_acts.max() < 0.001:
+            continue
+
+        # Get top-activating samples
+        top_indices = np.argsort(feat_acts)[-n_samples_per_feature:]
+        top_samples = []
+        for idx in reversed(top_indices):  # Highest first
+            sample = all_raw_samples[idx].copy()
+            sample['activation'] = float(feat_acts[idx])
+            top_samples.append(sample)
+
+        # Get random baseline samples (with low activation)
+        low_mask = feat_acts < np.percentile(feat_acts, 25)
+        low_indices = np.where(low_mask)[0]
+        if len(low_indices) >= n_baseline_samples:
+            np.random.seed(feat_id)  # Reproducible baseline
+            baseline_indices = np.random.choice(low_indices, n_baseline_samples, replace=False)
+        else:
+            baseline_indices = low_indices
+
+        baseline_samples = []
+        for idx in baseline_indices:
+            sample = all_raw_samples[idx].copy()
+            sample['activation'] = float(feat_acts[idx])
+            baseline_samples.append(sample)
+
+        results[feat_id] = {
+            'top_samples': top_samples,
+            'baseline_samples': baseline_samples,
+            'activation_stats': {
+                'mean': float(feat_acts.mean()),
+                'max': float(feat_acts.max()),
+                'std': float(feat_acts.std()),
+            }
+        }
+
+    return results
+
+
+def generate_concept_labels_with_llm(
+    raw_sample_data: Dict,
+    feature_analysis: Dict,
+    use_llm: bool = True,
+) -> Dict:
+    """
+    Generate concept labels for ALL features using LLM + statistical fallback.
+
+    Returns dict mapping feature_id -> {
+        'label': str,
+        'method': 'llm' or 'statistical',
+        'confidence': float,
+    }
+    """
+    labels = {}
+
+    # Initialize LLM client once
+    client = None
+    if use_llm:
+        api_key = load_api_key()
+        if api_key:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=api_key)
+                print("  LLM client initialized (Haiku 4.5)")
+            except ImportError:
+                print("  Warning: anthropic package not installed, using statistical labels only")
+        else:
+            print("  Warning: No API key found, using statistical labels only")
+
+    # Label ALL features, sorted by activation magnitude
+    sorted_features = sorted(
+        raw_sample_data.keys(),
+        key=lambda x: raw_sample_data[x]['activation_stats']['mean'],
+        reverse=True
+    )
+
+    n_total = len(sorted_features)
+    n_llm = 0
+    n_stat = 0
+    n_fail = 0
+
+    print(f"\nGenerating labels for all {n_total} features...")
+
+    for i, feat_id in enumerate(sorted_features):
+        data = raw_sample_data[feat_id]
+        analysis = feature_analysis.get(feat_id, feature_analysis.get(str(feat_id), {}))
+
+        # Get meta-feature summary
+        if 'effect_sizes' in analysis:
+            sorted_effects = sorted(analysis['effect_sizes'].items(), key=lambda x: -abs(x[1]))
+            top_effects = [(n, d) for n, d in sorted_effects if abs(d) > 0.3][:5]
+            meta_summary = "\n".join([f"  {n}: d={d:.2f}" for n, d in top_effects])
+        else:
+            meta_summary = "No meta-feature analysis available"
+
+        # Format raw data for LLM
+        raw_prompt = format_raw_data_for_llm(
+            data['top_samples'],
+            data['baseline_samples'],
+            feat_id,
+            data['activation_stats'],
+        )
+
+        # Try LLM
+        llm_label = None
+        if client is not None:
+            llm_label = query_llm_for_concept_label(raw_prompt, meta_summary, client=client)
+
+        if llm_label:
+            labels[feat_id] = {
+                'label': llm_label,
+                'method': 'llm',
+                'confidence': 0.8,
+            }
+            n_llm += 1
+        elif analysis.get('interpretation'):
+            interp = analysis['interpretation']
+            short_label = " ".join(interp.split()[:5])
+            labels[feat_id] = {
+                'label': short_label,
+                'method': 'statistical',
+                'confidence': 0.5,
+            }
+            n_stat += 1
+        else:
+            labels[feat_id] = {
+                'label': 'unknown',
+                'method': 'none',
+                'confidence': 0.0,
+            }
+            n_fail += 1
+
+        # Progress every 50 features
+        if (i + 1) % 50 == 0 or (i + 1) == n_total:
+            print(f"  [{i+1}/{n_total}] LLM: {n_llm}, statistical: {n_stat}, failed: {n_fail}")
+
+    return labels
+
+
 def interpret_pattern(patterns: List[Tuple[str, float]]) -> str:
     """Generate human-readable interpretation of dominant patterns."""
     if not patterns:
@@ -764,6 +1248,9 @@ def main():
     parser.add_argument("--top-k-features", type=int, default=None, help="Number of features (None=all alive)")
     parser.add_argument("--samples-per-feature", type=int, default=100, help="Top samples per feature")
     parser.add_argument("--n-clusters", type=int, default=25, help="Number of concept clusters")
+    parser.add_argument("--label-concepts", action="store_true", help="Generate concept labels using LLM")
+    parser.add_argument("--n-labels", type=int, default=50, help="Number of features to label with LLM")
+    parser.add_argument("--no-llm", action="store_true", help="Skip LLM and use only statistical labels")
     args = parser.parse_args()
 
     print("Loading SAE checkpoint...")
@@ -805,7 +1292,7 @@ def main():
 
     feature_means = h.mean(axis=0)
     feature_max = h.max(axis=0)
-    alive_mask = feature_max > 0.01  # Feature fires on at least some samples
+    alive_mask = feature_max > 0.001  # Feature fires on at least some samples (lowered from 0.01)
     alive_features = np.where(alive_mask)[0].tolist()
 
     print(f"  Total features: {config.hidden_dim}")
@@ -908,10 +1395,58 @@ def main():
     print(f"  Meta-features with strong coverage: {sum(1 for c in coverage.values() if c['coverage_score'] > 1.0)}")
     print(f"  Meta-features with weak coverage: {sum(1 for c in coverage.values() if c['coverage_score'] < 0.5)}")
 
+    # Concept labeling with LLM
+    if args.label_concepts:
+        print("\n" + "="*60)
+        print("CONCEPT LABELING (Raw Data + LLM)")
+        print("="*60)
+
+        # Collect raw data samples for top features
+        raw_sample_data = collect_raw_activating_samples(
+            model=model,
+            datasets=all_datasets,
+            train_std=train_std,
+            train_mean=train_mean,
+            feature_ids=top_features,
+            n_samples_per_feature=args.samples_per_feature,
+            n_baseline_samples=50,
+        )
+
+        # Generate labels for ALL features
+        concept_labels = generate_concept_labels_with_llm(
+            raw_sample_data=raw_sample_data,
+            feature_analysis=results['features'],
+            use_llm=not args.no_llm,
+        )
+
+        results['concept_labels'] = concept_labels
+
+        # Print labeled concepts
+        print("\n" + "-"*60)
+        print("LABELED CONCEPTS:")
+        print("-"*60)
+
+        # Sort by confidence then by feature ID
+        sorted_labels = sorted(
+            concept_labels.items(),
+            key=lambda x: (-x[1]['confidence'], x[0])
+        )
+
+        for feat_id, label_info in sorted_labels[:30]:
+            method_tag = "🤖" if label_info['method'] == 'llm' else "📊"
+            print(f"  F{feat_id:4d}: {label_info['label']:30s} {method_tag}")
+
+        # Summary stats
+        n_llm = sum(1 for l in concept_labels.values() if l['method'] == 'llm')
+        n_stat = sum(1 for l in concept_labels.values() if l['method'] == 'statistical')
+        print(f"\n  LLM labels: {n_llm}, Statistical labels: {n_stat}")
+
     # Save results
     if args.output:
+        # Convert numpy keys to native Python types
+        results_clean = convert_keys_to_native(results)
         with open(args.output, 'w') as f:
-            json.dump(results, f, indent=2)
+            json.dump(results_clean, f, indent=2, cls=NumpyEncoder)
         print(f"\nResults saved to {args.output}")
 
 

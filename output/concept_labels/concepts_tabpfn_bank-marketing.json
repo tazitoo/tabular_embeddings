@@ -1,0 +1,195 @@
+{
+  "model": "tabpfn",
+  "dataset": "bank-marketing",
+  "sae_config": {
+    "type": "archetypal",
+    "hidden_dim": 768,
+    "r2": -13.73795223236084
+  },
+  "concepts": [
+    {
+      "idx": 251,
+      "label": "Low V12",
+      "description": "Activates for samples with low values of V12, also correlates with V12, V6, V13.",
+      "activation_freq": 0.43,
+      "activation_range": [
+        0.41188326478004456,
+        12.41555404663086
+      ],
+      "activation_iqr": [
+        1.7299247980117798,
+        7.767279624938965
+      ],
+      "target_correlation": -0.1160075086796001,
+      "target_pvalue": 0.25040117722153044,
+      "top_feature_correlations": {
+        "V12": -0.15131912018206292,
+        "V6": -0.13325314460346682,
+        "V13": -0.1298536063299194,
+        "V7": 0.10738096035191158,
+        "V5": -0.09423523110236268
+      }
+    },
+    {
+      "idx": 239,
+      "label": "Low V3",
+      "description": "Activates for samples with low values of V3, also correlates with V3, V7, V1.",
+      "activation_freq": 0.47,
+      "activation_range": [
+        0.09512480348348618,
+        13.907648086547852
+      ],
+      "activation_iqr": [
+        1.1631855964660645,
+        5.225018501281738
+      ],
+      "target_correlation": 0.12895266088964416,
+      "target_pvalue": 0.20101677914529797,
+      "top_feature_correlations": {
+        "V3": -0.22431353771865026,
+        "V7": 0.17973481805836203,
+        "V1": 0.1237794931913995,
+        "V8": -0.1094573444509789,
+        "V5": -0.08671985657021823
+      }
+    },
+    {
+      "idx": 378,
+      "label": "Low V3",
+      "description": "Activates for samples with low values of V3, also correlates with V3, V12, V8.",
+      "activation_freq": 0.44,
+      "activation_range": [
+        0.06590457260608673,
+        9.072750091552734
+      ],
+      "activation_iqr": [
+        1.863157033920288,
+        4.358933925628662
+      ],
+      "target_correlation": 0.02270806553374221,
+      "target_pvalue": 0.8225592052266767,
+      "top_feature_correlations": {
+        "V3": -0.15512454060020275,
+        "V12": 0.1299506273558256,
+        "V8": -0.12713070907477408,
+        "V7": 0.11627170539145529,
+        "V2": 0.1110542582969255
+      }
+    },
+    {
+      "idx": 151,
+      "label": "High V3",
+      "description": "Activates for samples with high values of V3, also correlates with V3, V6, V7.",
+      "activation_freq": 0.7,
+      "activation_range": [
+        0.0012009124038740993,
+        6.479659557342529
+      ],
+      "activation_iqr": [
+        1.5347801446914673,
+        3.1361494064331055
+      ],
+      "target_correlation": -0.1777118227084527,
+      "target_pvalue": 0.0769132209139036,
+      "top_feature_correlations": {
+        "V3": 0.16089193834293566,
+        "V6": -0.15928295261565023,
+        "V7": -0.12284186777557644,
+        "V13": -0.11800947388292496,
+        "V12": -0.07834185137298945
+      }
+    },
+    {
+      "idx": 387,
+      "label": "High V6",
+      "description": "Activates for samples with high values of V6, also correlates with V6, V3, V8.",
+      "activation_freq": 0.55,
+      "activation_range": [
+        0.003951710648834705,
+        8.372081756591797
+      ],
+      "activation_iqr": [
+        1.4612863063812256,
+        4.099961280822754
+      ],
+      "target_correlation": 0.2099575598392247,
+      "target_pvalue": 0.036028249860740914,
+      "top_feature_correlations": {
+        "V6": 0.20215141979186205,
+        "V3": -0.18452334946929244,
+        "V8": -0.14258248380146446,
+        "V7": 0.12548497738073072,
+        "V13": 0.09142559669837444
+      }
+    },
+    {
+      "idx": 90,
+      "label": "High V13",
+      "description": "Activates for samples with high values of V13, also correlates with V13, V6, V12.",
+      "activation_freq": 0.56,
+      "activation_range": [
+        0.04614324867725372,
+        5.785801887512207
+      ],
+      "activation_iqr": [
+        1.2506393194198608,
+        3.911195755004883
+      ],
+      "target_correlation": 0.27437672059273,
+      "target_pvalue": 0.005736087667076481,
+      "top_feature_correlations": {
+        "V13": 0.18669705788934102,
+        "V6": 0.15588835295714135,
+        "V12": 0.1061957510618304,
+        "V5": 0.10346322444963918,
+        "V8": -0.08879232883736388
+      }
+    },
+    {
+      "idx": 136,
+      "label": "High V3",
+      "description": "Activates for samples with high values of V3, also correlates with V3, V12, V1.",
+      "activation_freq": 0.58,
+      "activation_range": [
+        0.06514059752225876,
+        6.526236057281494
+      ],
+      "activation_iqr": [
+        0.6196889281272888,
+        2.214656352996826
+      ],
+      "target_correlation": -0.11653936890174535,
+      "target_pvalue": 0.2482210047743018,
+      "top_feature_correlations": {
+        "V3": 0.23520697010025554,
+        "V12": 0.13889277413287604,
+        "V1": -0.12323434931741788,
+        "V2": -0.10350427427682093,
+        "V13": -0.09760758346085671
+      }
+    },
+    {
+      "idx": 113,
+      "label": "High V12",
+      "description": "Activates for samples with high values of V12, also correlates with V12, V6, V3.",
+      "activation_freq": 0.57,
+      "activation_range": [
+        0.0667734295129776,
+        8.556873321533203
+      ],
+      "activation_iqr": [
+        1.3947443962097168,
+        3.521516799926758
+      ],
+      "target_correlation": 0.23169662790342654,
+      "target_pvalue": 0.020368244929588847,
+      "top_feature_correlations": {
+        "V12": 0.18138216259187295,
+        "V6": 0.17350464710068864,
+        "V3": -0.1196412975236308,
+        "V4": -0.11509160665909593,
+        "V8": -0.09996341402343491
+      }
+    }
+  ]
+}

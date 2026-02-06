@@ -1,0 +1,80 @@
+{
+  "model": "tabpfn",
+  "dataset": "credit-g",
+  "sae_config": {
+    "type": "archetypal",
+    "hidden_dim": 768,
+    "r2": -10.657861709594727
+  },
+  "concepts": [
+    {
+      "idx": 35,
+      "label": "[DRY RUN]",
+      "description": "[DRY RUN]",
+      "activation_freq": 0.47,
+      "activation_range": [
+        0.18842940032482147,
+        12.564087867736816
+      ],
+      "activation_iqr": [
+        2.7082009315490723,
+        9.00320053100586
+      ],
+      "target_correlation": 0.06106543660786404,
+      "target_pvalue": 0.5461491277822722,
+      "top_feature_correlations": {
+        "foreign_worker": -0.3662081858641171,
+        "duration": -0.17655873471822597,
+        "employment": 0.15989666052666748,
+        "age": 0.15109041403767448,
+        "personal_status": 0.1259070910419493
+      }
+    },
+    {
+      "idx": 191,
+      "label": "[DRY RUN]",
+      "description": "[DRY RUN]",
+      "activation_freq": 0.45,
+      "activation_range": [
+        0.16416193544864655,
+        13.897967338562012
+      ],
+      "activation_iqr": [
+        2.268240213394165,
+        7.189371109008789
+      ],
+      "target_correlation": -0.05122747261237173,
+      "target_pvalue": 0.6127396270552358,
+      "top_feature_correlations": {
+        "savings_status": 0.1948839968715142,
+        "duration": 0.19094744931559504,
+        "checking_status": 0.1684834647516515,
+        "credit_history": -0.11545943213763611,
+        "credit_amount": 0.10395443897601937
+      }
+    },
+    {
+      "idx": 420,
+      "label": "[DRY RUN]",
+      "description": "[DRY RUN]",
+      "activation_freq": 0.5,
+      "activation_range": [
+        0.06323366612195969,
+        9.70271110534668
+      ],
+      "activation_iqr": [
+        3.4848504066467285,
+        6.2488932609558105
+      ],
+      "target_correlation": 0.13658532767487103,
+      "target_pvalue": 0.17540454714919876,
+      "top_feature_correlations": {
+        "duration": -0.26900019426673977,
+        "credit_history": -0.1868644902925337,
+        "savings_status": -0.160271295606206,
+        "foreign_worker": -0.15885536977955497,
+        "own_telephone": -0.1576059036818334
+      }
+    }
+  ]
+}

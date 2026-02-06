@@ -1,0 +1,9296 @@
+{
+  "n_features": 497,
+  "n_clusters": 25,
+  "features": {
+    "0": {
+      "cluster": 8,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -1.34,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -1.34
+        ],
+        [
+          "pca_residual",
+          -1.27
+        ],
+        [
+          "row_uniformity",
+          -0.96
+        ]
+      ]
+    },
+    "1": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.84,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.84
+        ],
+        [
+          "frac_zeros",
+          -0.64
+        ],
+        [
+          "n_distinct_values",
+          -0.58
+        ]
+      ]
+    },
+    "2": {
+      "cluster": 7,
+      "top_pattern": "row_entropy",
+      "effect_d": -1.31,
+      "patterns": [
+        [
+          "row_entropy",
+          -1.31
+        ],
+        [
+          "row_uniformity",
+          1.26
+        ],
+        [
+          "pca_residual",
+          0.91
+        ]
+      ]
+    },
+    "3": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.53,
+      "patterns": [
+        [
+          "frac_negative",
+          1.53
+        ],
+        [
+          "numeric_skewness",
+          -0.56
+        ],
+        [
+          "row_uniformity",
+          0.36
+        ]
+      ]
+    },
+    "4": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 1.25,
+      "patterns": [
+        [
+          "pca_residual",
+          1.25
+        ],
+        [
+          "nearest_neighbor_dist",
+          0.89
+        ],
+        [
+          "row_uniformity",
+          0.86
+        ]
+      ]
+    },
+    "5": {
+      "cluster": 12,
+      "top_pattern": "n_numeric",
+      "effect_d": 4.12,
+      "patterns": [
+        [
+          "n_numeric",
+          4.12
+        ],
+        [
+          "n_cols_total",
+          4.12
+        ],
+        [
+          "nearest_neighbor_dist",
+          3.64
+        ]
+      ]
+    },
+    "6": {
+      "cluster": 3,
+      "top_pattern": "row_entropy",
+      "effect_d": 0.39,
+      "patterns": [
+        [
+          "row_entropy",
+          0.39
+        ],
+        [
+          "numeric_min_zscore",
+          -0.38
+        ],
+        [
+          "frac_negative",
+          0.36
+        ]
+      ]
+    },
+    "7": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.59,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.59
+        ],
+        [
+          "n_distinct_values",
+          -0.53
+        ],
+        [
+          "numeric_min_zscore",
+          0.38
+        ]
+      ]
+    },
+    "8": {
+      "cluster": 9,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.07,
+      "patterns": [
+        [
+          "frac_negative",
+          1.07
+        ],
+        [
+          "n_distinct_values",
+          0.54
+        ],
+        [
+          "numeric_min_zscore",
+          -0.48
+        ]
+      ]
+    },
+    "9": {
+      "cluster": 5,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.6,
+      "patterns": [
+        [
+          "frac_negative",
+          0.6
+        ],
+        [
+          "frac_zeros",
+          -0.58
+        ],
+        [
+          "row_entropy",
+          0.45
+        ]
+      ]
+    },
+    "10": {
+      "cluster": 2,
+      "top_pattern": "numeric_mean_zscore",
+      "effect_d": -0.74,
+      "patterns": [
+        [
+          "numeric_mean_zscore",
+          -0.74
+        ],
+        [
+          "numeric_min_zscore",
+          -0.73
+        ],
+        [
+          "row_uniformity",
+          0.73
+        ]
+      ]
+    },
+    "11": {
+      "cluster": 2,
+      "top_pattern": "row_uniformity",
+      "effect_d": 0.83,
+      "patterns": [
+        [
+          "row_uniformity",
+          0.83
+        ],
+        [
+          "numeric_skewness",
+          0.81
+        ],
+        [
+          "numeric_kurtosis",
+          0.79
+        ]
+      ]
+    },
+    "12": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.57,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.57
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.43
+        ],
+        [
+          "n_distinct_values",
+          -0.41
+        ]
+      ]
+    },
+    "13": {
+      "cluster": 6,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.82,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.82
+        ],
+        [
+          "row_uniformity",
+          1.53
+        ],
+        [
+          "numeric_range",
+          1.24
+        ]
+      ]
+    },
+    "14": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": 1.51,
+      "patterns": [
+        [
+          "pca_residual",
+          1.51
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.79
+        ],
+        [
+          "numeric_iqr",
+          0.61
+        ]
+      ]
+    },
+    "15": {
+      "cluster": 20,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.62,
+      "patterns": [
+        [
+          "frac_negative",
+          0.62
+        ],
+        [
+          "local_density",
+          0.47
+        ],
+        [
+          "n_distinct_values",
+          0.46
+        ]
+      ]
+    },
+    "16": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 3.69,
+      "patterns": [
+        [
+          "frac_negative",
+          3.69
+        ],
+        [
+          "row_entropy",
+          0.79
+        ],
+        [
+          "numeric_correlation_mean",
+          0.77
+        ]
+      ]
+    },
+    "17": {
+      "cluster": 3,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": -0.32,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          -0.32
+        ]
+      ]
+    },
+    "18": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.93,
+      "patterns": [
+        [
+          "pca_residual",
+          0.93
+        ],
+        [
+          "row_entropy",
+          0.56
+        ],
+        [
+          "n_distinct_values",
+          0.55
+        ]
+      ]
+    },
+    "19": {
+      "cluster": 0,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.84,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.84
+        ],
+        [
+          "pca_residual",
+          -0.77
+        ],
+        [
+          "numeric_min_zscore",
+          0.72
+        ]
+      ]
+    },
+    "20": {
+      "cluster": 3,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.7,
+      "patterns": [
+        [
+          "frac_negative",
+          0.7
+        ],
+        [
+          "row_entropy",
+          0.52
+        ],
+        [
+          "numeric_skewness",
+          -0.43
+        ]
+      ]
+    },
+    "21": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.93,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.93
+        ],
+        [
+          "pca_residual",
+          0.71
+        ],
+        [
+          "row_uniformity",
+          0.69
+        ]
+      ]
+    },
+    "22": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 2.41,
+      "patterns": [
+        [
+          "frac_negative",
+          2.41
+        ],
+        [
+          "numeric_correlation_mean",
+          0.65
+        ],
+        [
+          "row_entropy",
+          0.61
+        ]
+      ]
+    },
+    "23": {
+      "cluster": 0,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.54,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.54
+        ],
+        [
+          "numeric_min_zscore",
+          0.51
+        ],
+        [
+          "frac_zeros",
+          -0.51
+        ]
+      ]
+    },
+    "24": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.96,
+      "patterns": [
+        [
+          "frac_negative",
+          0.96
+        ],
+        [
+          "row_uniformity",
+          0.63
+        ],
+        [
+          "numeric_min_zscore",
+          -0.54
+        ]
+      ]
+    },
+    "25": {
+      "cluster": 6,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 1.68,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          1.68
+        ],
+        [
+          "frac_zeros",
+          1.62
+        ],
+        [
+          "centroid_distance",
+          1.61
+        ]
+      ]
+    },
+    "26": {
+      "cluster": 3,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.61,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.61
+        ],
+        [
+          "row_uniformity",
+          -0.51
+        ],
+        [
+          "numeric_skewness",
+          -0.5
+        ]
+      ]
+    },
+    "27": {
+      "cluster": 21,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 2.41,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          2.41
+        ],
+        [
+          "numeric_max_zscore",
+          2.36
+        ],
+        [
+          "centroid_distance",
+          2.29
+        ]
+      ]
+    },
+    "28": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.92,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.92
+        ],
+        [
+          "frac_zeros",
+          -0.68
+        ],
+        [
+          "row_uniformity",
+          -0.59
+        ]
+      ]
+    },
+    "29": {
+      "cluster": 11,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.2,
+      "patterns": [
+        [
+          "n_numeric",
+          1.2
+        ],
+        [
+          "n_cols_total",
+          1.2
+        ],
+        [
+          "nearest_neighbor_dist",
+          1.03
+        ]
+      ]
+    },
+    "30": {
+      "cluster": 12,
+      "top_pattern": "n_numeric",
+      "effect_d": 3.65,
+      "patterns": [
+        [
+          "n_numeric",
+          3.65
+        ],
+        [
+          "n_cols_total",
+          3.65
+        ],
+        [
+          "nearest_neighbor_dist",
+          3.19
+        ]
+      ]
+    },
+    "31": {
+      "cluster": 3,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.51,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.51
+        ],
+        [
+          "row_entropy",
+          0.5
+        ],
+        [
+          "frac_negative",
+          0.48
+        ]
+      ]
+    },
+    "32": {
+      "cluster": 6,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 1.17,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          1.17
+        ],
+        [
+          "numeric_max_zscore",
+          1.12
+        ],
+        [
+          "pca_residual",
+          1.11
+        ]
+      ]
+    },
+    "33": {
+      "cluster": 16,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.48,
+      "patterns": [
+        [
+          "n_numeric",
+          1.48
+        ],
+        [
+          "n_cols_total",
+          1.48
+        ],
+        [
+          "centroid_distance",
+          1.4
+        ]
+      ]
+    },
+    "34": {
+      "cluster": 17,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.4,
+      "patterns": [
+        [
+          "n_numeric",
+          0.4
+        ],
+        [
+          "n_cols_total",
+          0.4
+        ],
+        [
+          "nearest_neighbor_dist",
+          0.39
+        ]
+      ]
+    },
+    "35": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.85,
+      "patterns": [
+        [
+          "frac_negative",
+          0.85
+        ],
+        [
+          "row_entropy",
+          0.72
+        ],
+        [
+          "n_distinct_values",
+          0.68
+        ]
+      ]
+    },
+    "36": {
+      "cluster": 11,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.36,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.36
+        ],
+        [
+          "row_uniformity",
+          1.22
+        ],
+        [
+          "row_entropy",
+          -1.07
+        ]
+      ]
+    },
+    "37": {
+      "cluster": 3,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.42,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.42
+        ],
+        [
+          "row_entropy",
+          0.3
+        ]
+      ]
+    },
+    "38": {
+      "cluster": 21,
+      "top_pattern": "numeric_max_zscore",
+      "effect_d": 2.0,
+      "patterns": [
+        [
+          "numeric_max_zscore",
+          2.0
+        ],
+        [
+          "numeric_kurtosis",
+          1.91
+        ],
+        [
+          "numeric_range",
+          1.83
+        ]
+      ]
+    },
+    "39": {
+      "cluster": 5,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.88,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.88
+        ],
+        [
+          "frac_zeros",
+          -0.85
+        ],
+        [
+          "row_entropy",
+          0.46
+        ]
+      ]
+    },
+    "40": {
+      "cluster": 19,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.48,
+      "patterns": [
+        [
+          "n_numeric",
+          1.48
+        ],
+        [
+          "n_cols_total",
+          1.48
+        ],
+        [
+          "frac_zeros",
+          0.95
+        ]
+      ]
+    },
+    "41": {
+      "cluster": 18,
+      "top_pattern": "numeric_max_zscore",
+      "effect_d": 0.85,
+      "patterns": [
+        [
+          "numeric_max_zscore",
+          0.85
+        ],
+        [
+          "row_entropy",
+          -0.84
+        ],
+        [
+          "numeric_kurtosis",
+          0.83
+        ]
+      ]
+    },
+    "42": {
+      "cluster": 6,
+      "top_pattern": "numeric_kurtosis",
+      "effect_d": 1.5,
+      "patterns": [
+        [
+          "numeric_kurtosis",
+          1.5
+        ],
+        [
+          "numeric_skewness",
+          1.39
+        ],
+        [
+          "row_uniformity",
+          1.07
+        ]
+      ]
+    },
+    "43": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.43,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.43
+        ],
+        [
+          "frac_zeros",
+          -0.37
+        ]
+      ]
+    },
+    "44": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 2.07,
+      "patterns": [
+        [
+          "frac_negative",
+          2.07
+        ],
+        [
+          "n_distinct_values",
+          0.58
+        ],
+        [
+          "row_uniformity",
+          0.33
+        ]
+      ]
+    },
+    "45": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.36,
+      "patterns": [
+        [
+          "pca_residual",
+          0.36
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.31
+        ]
+      ]
+    },
+    "46": {
+      "cluster": 2,
+      "top_pattern": "row_uniformity",
+      "effect_d": 1.0,
+      "patterns": [
+        [
+          "row_uniformity",
+          1.0
+        ],
+        [
+          "frac_zeros",
+          0.9
+        ],
+        [
+          "pca_residual",
+          0.73
+        ]
+      ]
+    },
+    "47": {
+      "cluster": 11,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.16,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.16
+        ],
+        [
+          "row_entropy",
+          -1.06
+        ],
+        [
+          "row_uniformity",
+          0.92
+        ]
+      ]
+    },
+    "48": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.94,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.94
+        ],
+        [
+          "row_uniformity",
+          0.78
+        ],
+        [
+          "pca_residual",
+          0.68
+        ]
+      ]
+    },
+    "49": {
+      "cluster": 11,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.66,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.66
+        ],
+        [
+          "row_uniformity",
+          1.45
+        ],
+        [
+          "row_entropy",
+          -1.3
+        ]
+      ]
+    },
+    "50": {
+      "cluster": 10,
+      "top_pattern": "row_uniformity",
+      "effect_d": 1.08,
+      "patterns": [
+        [
+          "row_uniformity",
+          1.08
+        ],
+        [
+          "row_entropy",
+          -1.03
+        ],
+        [
+          "frac_zeros",
+          0.85
+        ]
+      ]
+    },
+    "51": {
+      "cluster": 5,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.91,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.91
+        ],
+        [
+          "numeric_min_zscore",
+          0.75
+        ],
+        [
+          "n_distinct_values",
+          -0.75
+        ]
+      ]
+    },
+    "52": {
+      "cluster": 6,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 1.54,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          1.54
+        ],
+        [
+          "numeric_max_zscore",
+          1.48
+        ],
+        [
+          "numeric_kurtosis",
+          1.48
+        ]
+      ]
+    },
+    "53": {
+      "cluster": 14,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.21,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.21
+        ],
+        [
+          "row_uniformity",
+          1.1
+        ],
+        [
+          "n_numeric",
+          1.01
+        ]
+      ]
+    },
+    "54": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 1.17,
+      "patterns": [
+        [
+          "pca_residual",
+          1.17
+        ],
+        [
+          "frac_zeros",
+          1.0
+        ],
+        [
+          "row_uniformity",
+          0.9
+        ]
+      ]
+    },
+    "55": {
+      "cluster": 3,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": -0.55,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          -0.55
+        ],
+        [
+          "pca_residual",
+          0.5
+        ]
+      ]
+    },
+    "56": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.22,
+      "patterns": [
+        [
+          "frac_negative",
+          1.22
+        ],
+        [
+          "row_entropy",
+          0.64
+        ],
+        [
+          "numeric_skewness",
+          -0.43
+        ]
+      ]
+    },
+    "57": {
+      "cluster": 21,
+      "top_pattern": "n_numeric",
+      "effect_d": 2.36,
+      "patterns": [
+        [
+          "n_numeric",
+          2.36
+        ],
+        [
+          "n_cols_total",
+          2.36
+        ],
+        [
+          "numeric_max_zscore",
+          2.31
+        ]
+      ]
+    },
+    "58": {
+      "cluster": 6,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.96,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.96
+        ],
+        [
+          "pca_residual",
+          0.91
+        ],
+        [
+          "numeric_skewness",
+          0.78
+        ]
+      ]
+    },
+    "59": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.79,
+      "patterns": [
+        [
+          "pca_residual",
+          0.79
+        ],
+        [
+          "n_distinct_values",
+          0.52
+        ],
+        [
+          "nearest_neighbor_dist",
+          0.43
+        ]
+      ]
+    },
+    "60": {
+      "cluster": 3,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.32,
+      "patterns": [
+        [
+          "frac_negative",
+          0.32
+        ]
+      ]
+    },
+    "61": {
+      "cluster": 18,
+      "top_pattern": "row_uniformity",
+      "effect_d": 1.14,
+      "patterns": [
+        [
+          "row_uniformity",
+          1.14
+        ],
+        [
+          "numeric_kurtosis",
+          0.8
+        ],
+        [
+          "frac_zeros",
+          0.7
+        ]
+      ]
+    },
+    "62": {
+      "cluster": 0,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.41,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.41
+        ],
+        [
+          "row_entropy",
+          0.39
+        ],
+        [
+          "frac_zeros",
+          -0.36
+        ]
+      ]
+    },
+    "63": {
+      "cluster": 21,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 2.59,
+      "patterns": [
+        [
+          "numeric_skewness",
+          2.59
+        ],
+        [
+          "numeric_kurtosis",
+          2.55
+        ],
+        [
+          "numeric_max_zscore",
+          2.52
+        ]
+      ]
+    },
+    "64": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.86,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.86
+        ],
+        [
+          "n_distinct_values",
+          -0.85
+        ],
+        [
+          "frac_zeros",
+          -0.73
+        ]
+      ]
+    },
+    "65": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.11,
+      "patterns": [
+        [
+          "frac_negative",
+          1.11
+        ],
+        [
+          "row_entropy",
+          0.52
+        ],
+        [
+          "numeric_skewness",
+          -0.52
+        ]
+      ]
+    },
+    "66": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 1.13,
+      "patterns": [
+        [
+          "pca_residual",
+          1.13
+        ],
+        [
+          "nearest_neighbor_dist",
+          1.0
+        ],
+        [
+          "centroid_distance",
+          0.88
+        ]
+      ]
+    },
+    "67": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.04,
+      "patterns": [
+        [
+          "frac_negative",
+          1.04
+        ],
+        [
+          "numeric_skewness",
+          -0.41
+        ],
+        [
+          "frac_zeros",
+          -0.35
+        ]
+      ]
+    },
+    "68": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.75,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.75
+        ],
+        [
+          "row_uniformity",
+          -0.74
+        ],
+        [
+          "frac_zeros",
+          -0.54
+        ]
+      ]
+    },
+    "69": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.78,
+      "patterns": [
+        [
+          "pca_residual",
+          0.78
+        ],
+        [
+          "row_uniformity",
+          0.65
+        ],
+        [
+          "frac_zeros",
+          0.44
+        ]
+      ]
+    },
+    "70": {
+      "cluster": 6,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 1.41,
+      "patterns": [
+        [
+          "numeric_skewness",
+          1.41
+        ],
+        [
+          "numeric_kurtosis",
+          1.39
+        ],
+        [
+          "numeric_max_zscore",
+          1.36
+        ]
+      ]
+    },
+    "71": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.34,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.34
+        ],
+        [
+          "row_uniformity",
+          1.33
+        ],
+        [
+          "row_entropy",
+          -1.11
+        ]
+      ]
+    },
+    "72": {
+      "cluster": 19,
+      "top_pattern": "n_numeric",
+      "effect_d": 2.08,
+      "patterns": [
+        [
+          "n_numeric",
+          2.08
+        ],
+        [
+          "n_cols_total",
+          2.08
+        ],
+        [
+          "centroid_distance",
+          1.34
+        ]
+      ]
+    },
+    "73": {
+      "cluster": 13,
+      "top_pattern": "n_numeric",
+      "effect_d": 2.17,
+      "patterns": [
+        [
+          "n_numeric",
+          2.17
+        ],
+        [
+          "n_cols_total",
+          2.17
+        ],
+        [
+          "centroid_distance",
+          1.76
+        ]
+      ]
+    },
+    "74": {
+      "cluster": 6,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 1.43,
+      "patterns": [
+        [
+          "numeric_skewness",
+          1.43
+        ],
+        [
+          "numeric_kurtosis",
+          1.41
+        ],
+        [
+          "row_uniformity",
+          1.25
+        ]
+      ]
+    },
+    "75": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.89,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.89
+        ],
+        [
+          "row_uniformity",
+          -0.85
+        ],
+        [
+          "frac_zeros",
+          -0.76
+        ]
+      ]
+    },
+    "76": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 2.0,
+      "patterns": [
+        [
+          "frac_negative",
+          2.0
+        ],
+        [
+          "numeric_correlation_mean",
+          0.33
+        ],
+        [
+          "n_distinct_values",
+          0.33
+        ]
+      ]
+    },
+    "77": {
+      "cluster": 17,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.64,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.64
+        ],
+        [
+          "numeric_correlation_mean",
+          0.35
+        ],
+        [
+          "numeric_skewness",
+          0.32
+        ]
+      ]
+    },
+    "78": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.73,
+      "patterns": [
+        [
+          "pca_residual",
+          0.73
+        ],
+        [
+          "n_distinct_values",
+          0.65
+        ],
+        [
+          "row_uniformity",
+          0.63
+        ]
+      ]
+    },
+    "79": {
+      "cluster": 0,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.67,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.67
+        ],
+        [
+          "row_uniformity",
+          -0.62
+        ],
+        [
+          "pca_residual",
+          -0.3
+        ]
+      ]
+    },
+    "80": {
+      "cluster": 3,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.46,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.46
+        ],
+        [
+          "numeric_max_zscore",
+          -0.31
+        ]
+      ]
+    },
+    "81": {
+      "cluster": 17,
+      "top_pattern": "row_uniformity",
+      "effect_d": 0.46,
+      "patterns": [
+        [
+          "row_uniformity",
+          0.46
+        ],
+        [
+          "target_is_minority",
+          0.4
+        ],
+        [
+          "pca_residual",
+          0.36
+        ]
+      ]
+    },
+    "82": {
+      "cluster": 2,
+      "top_pattern": "row_uniformity",
+      "effect_d": 0.6,
+      "patterns": [
+        [
+          "row_uniformity",
+          0.6
+        ],
+        [
+          "numeric_skewness",
+          0.53
+        ],
+        [
+          "numeric_max_zscore",
+          0.49
+        ]
+      ]
+    },
+    "83": {
+      "cluster": 3,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.43,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.43
+        ],
+        [
+          "row_uniformity",
+          -0.35
+        ],
+        [
+          "numeric_range",
+          -0.34
+        ]
+      ]
+    },
+    "84": {
+      "cluster": 6,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 1.34,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          1.34
+        ],
+        [
+          "centroid_distance",
+          1.29
+        ],
+        [
+          "numeric_max_zscore",
+          1.23
+        ]
+      ]
+    },
+    "85": {
+      "cluster": 0,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.95,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.95
+        ],
+        [
+          "pca_residual",
+          -0.74
+        ],
+        [
+          "frac_zeros",
+          -0.61
+        ]
+      ]
+    },
+    "86": {
+      "cluster": 3,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.3,
+      "patterns": [
+        [
+          "frac_negative",
+          0.3
+        ]
+      ]
+    },
+    "87": {
+      "cluster": 21,
+      "top_pattern": "numeric_max_zscore",
+      "effect_d": 1.97,
+      "patterns": [
+        [
+          "numeric_max_zscore",
+          1.97
+        ],
+        [
+          "numeric_kurtosis",
+          1.96
+        ],
+        [
+          "numeric_skewness",
+          1.85
+        ]
+      ]
+    },
+    "88": {
+      "cluster": 9,
+      "top_pattern": "row_uniformity",
+      "effect_d": 0.75,
+      "patterns": [
+        [
+          "row_uniformity",
+          0.75
+        ],
+        [
+          "frac_zeros",
+          0.74
+        ],
+        [
+          "row_entropy",
+          -0.7
+        ]
+      ]
+    },
+    "89": {
+      "cluster": 0,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.65,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.65
+        ],
+        [
+          "numeric_min_zscore",
+          0.61
+        ],
+        [
+          "pca_residual",
+          -0.53
+        ]
+      ]
+    },
+    "90": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.34,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.34
+        ],
+        [
+          "nearest_neighbor_dist",
+          -0.32
+        ],
+        [
+          "centroid_distance",
+          -0.3
+        ]
+      ]
+    },
+    "91": {
+      "cluster": 17,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.88,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.88
+        ],
+        [
+          "n_distinct_values",
+          -0.49
+        ],
+        [
+          "row_entropy",
+          -0.43
+        ]
+      ]
+    },
+    "92": {
+      "cluster": 3,
+      "top_pattern": "row_entropy",
+      "effect_d": 0.65,
+      "patterns": [
+        [
+          "row_entropy",
+          0.65
+        ],
+        [
+          "pca_residual",
+          0.64
+        ],
+        [
+          "n_distinct_values",
+          0.58
+        ]
+      ]
+    },
+    "93": {
+      "cluster": 14,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.65,
+      "patterns": [
+        [
+          "n_numeric",
+          1.65
+        ],
+        [
+          "n_cols_total",
+          1.65
+        ],
+        [
+          "nearest_neighbor_dist",
+          1.5
+        ]
+      ]
+    },
+    "94": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 1.17,
+      "patterns": [
+        [
+          "pca_residual",
+          1.17
+        ],
+        [
+          "row_uniformity",
+          1.04
+        ],
+        [
+          "frac_zeros",
+          0.82
+        ]
+      ]
+    },
+    "95": {
+      "cluster": 5,
+      "top_pattern": "row_uniformity",
+      "effect_d": -1.06,
+      "patterns": [
+        [
+          "row_uniformity",
+          -1.06
+        ],
+        [
+          "pca_residual",
+          -1.06
+        ],
+        [
+          "n_distinct_values",
+          -0.79
+        ]
+      ]
+    },
+    "96": {
+      "cluster": 24,
+      "top_pattern": "frac_negative_outliers",
+      "effect_d": 0.25,
+      "patterns": []
+    },
+    "97": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.57,
+      "patterns": [
+        [
+          "pca_residual",
+          0.57
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.5
+        ],
+        [
+          "n_distinct_values",
+          0.35
+        ]
+      ]
+    },
+    "98": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.91,
+      "patterns": [
+        [
+          "frac_negative",
+          1.91
+        ],
+        [
+          "row_entropy",
+          0.81
+        ],
+        [
+          "frac_zeros",
+          -0.7
+        ]
+      ]
+    },
+    "99": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.37,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.37
+        ],
+        [
+          "frac_zeros",
+          -0.36
+        ]
+      ]
+    },
+    "100": {
+      "cluster": 17,
+      "top_pattern": "row_entropy",
+      "effect_d": 0.4,
+      "patterns": [
+        [
+          "row_entropy",
+          0.4
+        ],
+        [
+          "frac_zeros",
+          -0.31
+        ]
+      ]
+    },
+    "101": {
+      "cluster": 2,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.66,
+      "patterns": [
+        [
+          "n_numeric",
+          0.66
+        ],
+        [
+          "n_cols_total",
+          0.66
+        ],
+        [
+          "centroid_distance",
+          0.65
+        ]
+      ]
+    },
+    "102": {
+      "cluster": 3,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.54,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.54
+        ],
+        [
+          "n_distinct_values",
+          -0.38
+        ],
+        [
+          "pca_residual",
+          -0.35
+        ]
+      ]
+    },
+    "103": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.53,
+      "patterns": [
+        [
+          "pca_residual",
+          0.53
+        ],
+        [
+          "numeric_skewness",
+          -0.44
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.43
+        ]
+      ]
+    },
+    "104": {
+      "cluster": 6,
+      "top_pattern": "numeric_max_zscore",
+      "effect_d": 0.97,
+      "patterns": [
+        [
+          "numeric_max_zscore",
+          0.97
+        ],
+        [
+          "nearest_neighbor_dist",
+          0.96
+        ],
+        [
+          "numeric_kurtosis",
+          0.94
+        ]
+      ]
+    },
+    "105": {
+      "cluster": 3,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.48,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.48
+        ],
+        [
+          "numeric_range",
+          -0.47
+        ],
+        [
+          "numeric_max_zscore",
+          -0.43
+        ]
+      ]
+    },
+    "106": {
+      "cluster": 5,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.84,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.84
+        ],
+        [
+          "pca_residual",
+          -0.65
+        ],
+        [
+          "n_distinct_values",
+          -0.6
+        ]
+      ]
+    },
+    "107": {
+      "cluster": 17,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.66,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.66
+        ],
+        [
+          "row_entropy",
+          -0.38
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.35
+        ]
+      ]
+    },
+    "108": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.87,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.87
+        ],
+        [
+          "frac_zeros",
+          -0.65
+        ],
+        [
+          "numeric_correlation_mean",
+          0.6
+        ]
+      ]
+    },
+    "109": {
+      "cluster": 11,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.98,
+      "patterns": [
+        [
+          "pca_residual",
+          0.98
+        ],
+        [
+          "frac_zeros",
+          0.97
+        ],
+        [
+          "numeric_skewness",
+          0.89
+        ]
+      ]
+    },
+    "110": {
+      "cluster": 5,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.69,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.69
+        ],
+        [
+          "n_distinct_values",
+          -0.65
+        ],
+        [
+          "row_uniformity",
+          -0.64
+        ]
+      ]
+    },
+    "111": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.81,
+      "patterns": [
+        [
+          "pca_residual",
+          0.81
+        ],
+        [
+          "frac_zeros",
+          0.74
+        ],
+        [
+          "row_uniformity",
+          0.63
+        ]
+      ]
+    },
+    "112": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.55,
+      "patterns": [
+        [
+          "pca_residual",
+          0.55
+        ],
+        [
+          "row_entropy",
+          0.46
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.37
+        ]
+      ]
+    },
+    "113": {
+      "cluster": 0,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.57,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.57
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.51
+        ],
+        [
+          "row_uniformity",
+          -0.47
+        ]
+      ]
+    },
+    "114": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.94,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.94
+        ],
+        [
+          "row_uniformity",
+          -0.86
+        ],
+        [
+          "n_distinct_values",
+          -0.65
+        ]
+      ]
+    },
+    "115": {
+      "cluster": 11,
+      "top_pattern": "row_uniformity",
+      "effect_d": 1.18,
+      "patterns": [
+        [
+          "row_uniformity",
+          1.18
+        ],
+        [
+          "frac_zeros",
+          1.15
+        ],
+        [
+          "numeric_skewness",
+          1.15
+        ]
+      ]
+    },
+    "116": {
+      "cluster": 11,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.28,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.28
+        ],
+        [
+          "row_uniformity",
+          1.11
+        ],
+        [
+          "row_entropy",
+          -0.94
+        ]
+      ]
+    },
+    "117": {
+      "cluster": 17,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.8,
+      "patterns": [
+        [
+          "pca_residual",
+          0.8
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.61
+        ],
+        [
+          "frac_zeros",
+          0.43
+        ]
+      ]
+    },
+    "118": {
+      "cluster": 6,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.61,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.61
+        ],
+        [
+          "row_uniformity",
+          1.43
+        ],
+        [
+          "numeric_range",
+          1.27
+        ]
+      ]
+    },
+    "119": {
+      "cluster": 12,
+      "top_pattern": "numeric_max_zscore",
+      "effect_d": 3.0,
+      "patterns": [
+        [
+          "numeric_max_zscore",
+          3.0
+        ],
+        [
+          "numeric_skewness",
+          2.95
+        ],
+        [
+          "numeric_kurtosis",
+          2.92
+        ]
+      ]
+    },
+    "120": {
+      "cluster": 6,
+      "top_pattern": "numeric_max_zscore",
+      "effect_d": 1.56,
+      "patterns": [
+        [
+          "numeric_max_zscore",
+          1.56
+        ],
+        [
+          "numeric_range",
+          1.55
+        ],
+        [
+          "nearest_neighbor_dist",
+          1.47
+        ]
+      ]
+    },
+    "121": {
+      "cluster": 11,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.88,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.88
+        ],
+        [
+          "row_uniformity",
+          1.43
+        ],
+        [
+          "n_numeric",
+          1.27
+        ]
+      ]
+    },
+    "122": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.55,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.55
+        ],
+        [
+          "numeric_mean_zscore",
+          0.37
+        ],
+        [
+          "frac_negative_outliers",
+          0.3
+        ]
+      ]
+    },
+    "123": {
+      "cluster": 5,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.82,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.82
+        ],
+        [
+          "row_entropy",
+          0.72
+        ],
+        [
+          "numeric_correlation_mean",
+          0.56
+        ]
+      ]
+    },
+    "124": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.86,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.86
+        ],
+        [
+          "frac_zeros",
+          -0.73
+        ],
+        [
+          "row_uniformity",
+          -0.66
+        ]
+      ]
+    },
+    "125": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.01,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.01
+        ],
+        [
+          "row_uniformity",
+          -0.86
+        ],
+        [
+          "numeric_min_zscore",
+          0.63
+        ]
+      ]
+    },
+    "126": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.91,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.91
+        ],
+        [
+          "row_uniformity",
+          -0.68
+        ],
+        [
+          "n_distinct_values",
+          -0.5
+        ]
+      ]
+    },
+    "127": {
+      "cluster": 2,
+      "top_pattern": "numeric_kurtosis",
+      "effect_d": 1.01,
+      "patterns": [
+        [
+          "numeric_kurtosis",
+          1.01
+        ],
+        [
+          "numeric_skewness",
+          0.92
+        ],
+        [
+          "row_uniformity",
+          0.9
+        ]
+      ]
+    },
+    "128": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.88,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.88
+        ],
+        [
+          "frac_zeros",
+          -0.74
+        ],
+        [
+          "numeric_correlation_mean",
+          0.72
+        ]
+      ]
+    },
+    "129": {
+      "cluster": 3,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.38,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.38
+        ],
+        [
+          "row_entropy",
+          0.38
+        ],
+        [
+          "pca_residual",
+          0.38
+        ]
+      ]
+    },
+    "130": {
+      "cluster": 12,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 2.94,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          2.94
+        ],
+        [
+          "n_numeric",
+          2.89
+        ],
+        [
+          "n_cols_total",
+          2.89
+        ]
+      ]
+    },
+    "131": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.6,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.6
+        ],
+        [
+          "row_uniformity",
+          1.18
+        ],
+        [
+          "pca_residual",
+          0.81
+        ]
+      ]
+    },
+    "132": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.87,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.87
+        ],
+        [
+          "row_uniformity",
+          -0.64
+        ],
+        [
+          "frac_zeros",
+          -0.56
+        ]
+      ]
+    },
+    "133": {
+      "cluster": 23,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -1.49,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -1.49
+        ],
+        [
+          "pca_residual",
+          -1.3
+        ],
+        [
+          "numeric_correlation_mean",
+          1.0
+        ]
+      ]
+    },
+    "134": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.49,
+      "patterns": [
+        [
+          "pca_residual",
+          0.49
+        ],
+        [
+          "row_entropy",
+          0.4
+        ],
+        [
+          "frac_zeros",
+          -0.38
+        ]
+      ]
+    },
+    "135": {
+      "cluster": 24,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.65,
+      "patterns": [
+        [
+          "pca_residual",
+          0.65
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.41
+        ],
+        [
+          "n_distinct_values",
+          0.38
+        ]
+      ]
+    },
+    "136": {
+      "cluster": 0,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.65,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.65
+        ],
+        [
+          "n_distinct_values",
+          -0.54
+        ],
+        [
+          "pca_residual",
+          -0.51
+        ]
+      ]
+    },
+    "137": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.61,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.61
+        ],
+        [
+          "frac_zeros",
+          -0.55
+        ],
+        [
+          "pca_residual",
+          -0.51
+        ]
+      ]
+    },
+    "138": {
+      "cluster": 17,
+      "top_pattern": "row_uniformity",
+      "effect_d": 0.47,
+      "patterns": [
+        [
+          "row_uniformity",
+          0.47
+        ],
+        [
+          "numeric_correlation_mean",
+          0.44
+        ],
+        [
+          "numeric_min_zscore",
+          -0.32
+        ]
+      ]
+    },
+    "139": {
+      "cluster": 21,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 2.28,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          2.28
+        ],
+        [
+          "numeric_max_zscore",
+          2.22
+        ],
+        [
+          "centroid_distance",
+          2.18
+        ]
+      ]
+    },
+    "141": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.58,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.58
+        ],
+        [
+          "row_uniformity",
+          1.18
+        ],
+        [
+          "row_entropy",
+          -0.79
+        ]
+      ]
+    },
+    "142": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.38,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.38
+        ],
+        [
+          "numeric_skewness",
+          -0.38
+        ],
+        [
+          "row_uniformity",
+          -0.37
+        ]
+      ]
+    },
+    "143": {
+      "cluster": 8,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 1.36,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          1.36
+        ],
+        [
+          "pca_residual",
+          -0.61
+        ],
+        [
+          "row_uniformity",
+          0.47
+        ]
+      ]
+    },
+    "144": {
+      "cluster": 3,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.4,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.4
+        ],
+        [
+          "row_entropy",
+          0.38
+        ],
+        [
+          "numeric_range",
+          -0.36
+        ]
+      ]
+    },
+    "145": {
+      "cluster": 9,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.84,
+      "patterns": [
+        [
+          "frac_negative",
+          0.84
+        ],
+        [
+          "numeric_skewness",
+          -0.39
+        ],
+        [
+          "numeric_correlation_mean",
+          0.32
+        ]
+      ]
+    },
+    "146": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.96,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.96
+        ],
+        [
+          "frac_zeros",
+          -0.73
+        ],
+        [
+          "n_distinct_values",
+          -0.72
+        ]
+      ]
+    },
+    "147": {
+      "cluster": 3,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.47,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.47
+        ],
+        [
+          "target_is_minority",
+          0.4
+        ],
+        [
+          "frac_zeros",
+          -0.36
+        ]
+      ]
+    },
+    "148": {
+      "cluster": 0,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.57,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.57
+        ],
+        [
+          "n_distinct_values",
+          -0.55
+        ],
+        [
+          "pca_residual",
+          -0.41
+        ]
+      ]
+    },
+    "149": {
+      "cluster": 24,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.49,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.49
+        ],
+        [
+          "row_entropy",
+          0.39
+        ],
+        [
+          "numeric_skewness",
+          -0.36
+        ]
+      ]
+    },
+    "150": {
+      "cluster": 3,
+      "top_pattern": "row_entropy",
+      "effect_d": 0.39,
+      "patterns": [
+        [
+          "row_entropy",
+          0.39
+        ],
+        [
+          "frac_zeros",
+          -0.32
+        ]
+      ]
+    },
+    "151": {
+      "cluster": 5,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.83,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.83
+        ],
+        [
+          "row_uniformity",
+          -0.67
+        ],
+        [
+          "n_distinct_values",
+          -0.55
+        ]
+      ]
+    },
+    "152": {
+      "cluster": 5,
+      "top_pattern": "row_uniformity",
+      "effect_d": -1.1,
+      "patterns": [
+        [
+          "row_uniformity",
+          -1.1
+        ],
+        [
+          "numeric_min_zscore",
+          0.91
+        ],
+        [
+          "pca_residual",
+          -0.61
+        ]
+      ]
+    },
+    "153": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.98,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.98
+        ],
+        [
+          "row_uniformity",
+          -0.84
+        ],
+        [
+          "n_distinct_values",
+          -0.68
+        ]
+      ]
+    },
+    "154": {
+      "cluster": 20,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.76,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.76
+        ],
+        [
+          "local_density",
+          0.72
+        ],
+        [
+          "pca_residual",
+          -0.56
+        ]
+      ]
+    },
+    "155": {
+      "cluster": 24,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.56,
+      "patterns": [
+        [
+          "pca_residual",
+          0.56
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.49
+        ],
+        [
+          "row_uniformity",
+          0.46
+        ]
+      ]
+    },
+    "156": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.04,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.04
+        ],
+        [
+          "row_uniformity",
+          0.86
+        ],
+        [
+          "row_entropy",
+          -0.82
+        ]
+      ]
+    },
+    "157": {
+      "cluster": 24,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.68,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.68
+        ],
+        [
+          "frac_negative",
+          0.47
+        ],
+        [
+          "pca_residual",
+          0.42
+        ]
+      ]
+    },
+    "158": {
+      "cluster": 24,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.69,
+      "patterns": [
+        [
+          "pca_residual",
+          0.69
+        ],
+        [
+          "numeric_skewness",
+          -0.53
+        ],
+        [
+          "row_uniformity",
+          0.44
+        ]
+      ]
+    },
+    "159": {
+      "cluster": 24,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.49,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.49
+        ],
+        [
+          "frac_zeros",
+          -0.48
+        ]
+      ]
+    },
+    "160": {
+      "cluster": 3,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.53,
+      "patterns": [
+        [
+          "frac_negative",
+          0.53
+        ],
+        [
+          "pca_residual",
+          0.38
+        ]
+      ]
+    },
+    "161": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.77,
+      "patterns": [
+        [
+          "frac_negative",
+          0.77
+        ],
+        [
+          "numeric_correlation_mean",
+          0.53
+        ],
+        [
+          "row_entropy",
+          0.39
+        ]
+      ]
+    },
+    "162": {
+      "cluster": 24,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.44,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.44
+        ],
+        [
+          "pca_residual",
+          -0.34
+        ]
+      ]
+    },
+    "163": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.82,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.82
+        ],
+        [
+          "row_uniformity",
+          1.38
+        ],
+        [
+          "row_entropy",
+          -1.21
+        ]
+      ]
+    },
+    "164": {
+      "cluster": 18,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.9,
+      "patterns": [
+        [
+          "row_entropy",
+          -0.9
+        ],
+        [
+          "frac_zeros",
+          0.62
+        ],
+        [
+          "numeric_max_zscore",
+          0.57
+        ]
+      ]
+    },
+    "165": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 2.11,
+      "patterns": [
+        [
+          "frac_negative",
+          2.11
+        ],
+        [
+          "frac_zeros",
+          -0.63
+        ],
+        [
+          "numeric_correlation_mean",
+          0.62
+        ]
+      ]
+    },
+    "166": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.6,
+      "patterns": [
+        [
+          "pca_residual",
+          0.6
+        ],
+        [
+          "n_distinct_values",
+          0.49
+        ],
+        [
+          "row_entropy",
+          0.46
+        ]
+      ]
+    },
+    "167": {
+      "cluster": 15,
+      "top_pattern": "row_uniformity",
+      "effect_d": 0.59,
+      "patterns": [
+        [
+          "row_uniformity",
+          0.59
+        ],
+        [
+          "frac_zeros",
+          0.46
+        ],
+        [
+          "numeric_skewness",
+          0.37
+        ]
+      ]
+    },
+    "168": {
+      "cluster": 3,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.54,
+      "patterns": [
+        [
+          "frac_negative",
+          0.54
+        ]
+      ]
+    },
+    "169": {
+      "cluster": 6,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.92,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.92
+        ],
+        [
+          "centroid_distance",
+          1.5
+        ],
+        [
+          "nearest_neighbor_dist",
+          1.5
+        ]
+      ]
+    },
+    "170": {
+      "cluster": 3,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": -0.47,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          -0.47
+        ],
+        [
+          "numeric_skewness",
+          -0.43
+        ],
+        [
+          "row_uniformity",
+          -0.4
+        ]
+      ]
+    },
+    "171": {
+      "cluster": 17,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": -0.54,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          -0.54
+        ],
+        [
+          "pca_residual",
+          0.37
+        ],
+        [
+          "target_is_minority",
+          0.35
+        ]
+      ]
+    },
+    "172": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.51,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.51
+        ],
+        [
+          "numeric_mean_zscore",
+          0.37
+        ],
+        [
+          "frac_zeros",
+          -0.33
+        ]
+      ]
+    },
+    "173": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.84,
+      "patterns": [
+        [
+          "frac_negative",
+          0.84
+        ],
+        [
+          "row_uniformity",
+          0.56
+        ],
+        [
+          "pca_residual",
+          0.51
+        ]
+      ]
+    },
+    "174": {
+      "cluster": 5,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.86,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.86
+        ],
+        [
+          "numeric_min_zscore",
+          0.76
+        ],
+        [
+          "pca_residual",
+          -0.74
+        ]
+      ]
+    },
+    "175": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.38,
+      "patterns": [
+        [
+          "pca_residual",
+          0.38
+        ],
+        [
+          "numeric_iqr",
+          0.36
+        ],
+        [
+          "row_entropy",
+          0.33
+        ]
+      ]
+    },
+    "176": {
+      "cluster": 1,
+      "top_pattern": "row_uniformity",
+      "effect_d": 0.4,
+      "patterns": [
+        [
+          "row_uniformity",
+          0.4
+        ],
+        [
+          "frac_negative",
+          0.4
+        ],
+        [
+          "pca_residual",
+          0.35
+        ]
+      ]
+    },
+    "177": {
+      "cluster": 6,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 1.23,
+      "patterns": [
+        [
+          "numeric_skewness",
+          1.23
+        ],
+        [
+          "numeric_kurtosis",
+          1.18
+        ],
+        [
+          "numeric_max_zscore",
+          1.1
+        ]
+      ]
+    },
+    "178": {
+      "cluster": 7,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.78,
+      "patterns": [
+        [
+          "row_entropy",
+          -0.78
+        ],
+        [
+          "numeric_skewness",
+          -0.72
+        ],
+        [
+          "n_distinct_values",
+          -0.41
+        ]
+      ]
+    },
+    "179": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.76,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.76
+        ],
+        [
+          "frac_zeros",
+          -0.75
+        ],
+        [
+          "numeric_correlation_mean",
+          0.61
+        ]
+      ]
+    },
+    "180": {
+      "cluster": 2,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.94,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.94
+        ],
+        [
+          "row_uniformity",
+          0.64
+        ],
+        [
+          "numeric_skewness",
+          0.53
+        ]
+      ]
+    },
+    "181": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.65,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.65
+        ],
+        [
+          "row_uniformity",
+          1.2
+        ],
+        [
+          "pca_residual",
+          0.82
+        ]
+      ]
+    },
+    "182": {
+      "cluster": 16,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.26,
+      "patterns": [
+        [
+          "n_numeric",
+          1.26
+        ],
+        [
+          "n_cols_total",
+          1.26
+        ],
+        [
+          "centroid_distance",
+          1.21
+        ]
+      ]
+    },
+    "183": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.94,
+      "patterns": [
+        [
+          "frac_negative",
+          0.94
+        ],
+        [
+          "n_distinct_values",
+          0.63
+        ],
+        [
+          "row_uniformity",
+          0.43
+        ]
+      ]
+    },
+    "184": {
+      "cluster": 0,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.57,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.57
+        ],
+        [
+          "row_uniformity",
+          -0.52
+        ],
+        [
+          "n_distinct_values",
+          -0.46
+        ]
+      ]
+    },
+    "185": {
+      "cluster": 5,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.63,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.63
+        ],
+        [
+          "row_uniformity",
+          -0.5
+        ],
+        [
+          "numeric_min_zscore",
+          0.47
+        ]
+      ]
+    },
+    "186": {
+      "cluster": 20,
+      "top_pattern": "local_density",
+      "effect_d": 0.47,
+      "patterns": [
+        [
+          "local_density",
+          0.47
+        ]
+      ]
+    },
+    "187": {
+      "cluster": 3,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.33,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.33
+        ],
+        [
+          "frac_zeros",
+          -0.33
+        ],
+        [
+          "pca_residual",
+          -0.31
+        ]
+      ]
+    },
+    "188": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.72,
+      "patterns": [
+        [
+          "pca_residual",
+          0.72
+        ],
+        [
+          "numeric_min_zscore",
+          -0.54
+        ],
+        [
+          "row_uniformity",
+          0.47
+        ]
+      ]
+    },
+    "189": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.43,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.43
+        ],
+        [
+          "row_uniformity",
+          -0.31
+        ],
+        [
+          "numeric_kurtosis",
+          -0.31
+        ]
+      ]
+    },
+    "190": {
+      "cluster": 7,
+      "top_pattern": "row_entropy",
+      "effect_d": -1.27,
+      "patterns": [
+        [
+          "row_entropy",
+          -1.27
+        ],
+        [
+          "row_uniformity",
+          0.83
+        ],
+        [
+          "numeric_skewness",
+          -0.72
+        ]
+      ]
+    },
+    "191": {
+      "cluster": 0,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.78,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.78
+        ],
+        [
+          "n_distinct_values",
+          -0.48
+        ],
+        [
+          "row_uniformity",
+          -0.47
+        ]
+      ]
+    },
+    "192": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.63,
+      "patterns": [
+        [
+          "pca_residual",
+          0.63
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.54
+        ],
+        [
+          "n_distinct_values",
+          0.36
+        ]
+      ]
+    },
+    "193": {
+      "cluster": 8,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -1.28,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -1.28
+        ],
+        [
+          "pca_residual",
+          -1.19
+        ],
+        [
+          "numeric_correlation_mean",
+          0.86
+        ]
+      ]
+    },
+    "194": {
+      "cluster": 0,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.67,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.67
+        ],
+        [
+          "pca_residual",
+          -0.64
+        ],
+        [
+          "numeric_min_zscore",
+          0.59
+        ]
+      ]
+    },
+    "195": {
+      "cluster": 11,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.29,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.29
+        ],
+        [
+          "row_uniformity",
+          1.23
+        ],
+        [
+          "row_entropy",
+          -1.2
+        ]
+      ]
+    },
+    "196": {
+      "cluster": 9,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.99,
+      "patterns": [
+        [
+          "n_numeric",
+          0.99
+        ],
+        [
+          "n_cols_total",
+          0.99
+        ],
+        [
+          "numeric_kurtosis",
+          0.86
+        ]
+      ]
+    },
+    "197": {
+      "cluster": 17,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.64,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.64
+        ],
+        [
+          "row_uniformity",
+          0.41
+        ],
+        [
+          "row_entropy",
+          -0.38
+        ]
+      ]
+    },
+    "198": {
+      "cluster": 17,
+      "top_pattern": "target_is_minority",
+      "effect_d": 0.35,
+      "patterns": [
+        [
+          "target_is_minority",
+          0.35
+        ]
+      ]
+    },
+    "199": {
+      "cluster": 0,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.5,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.5
+        ],
+        [
+          "frac_negative",
+          0.49
+        ],
+        [
+          "numeric_range",
+          -0.4
+        ]
+      ]
+    },
+    "200": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.45,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.45
+        ],
+        [
+          "n_distinct_values",
+          -1.3
+        ],
+        [
+          "numeric_correlation_mean",
+          0.92
+        ]
+      ]
+    },
+    "201": {
+      "cluster": 3,
+      "top_pattern": "row_entropy",
+      "effect_d": 0.39,
+      "patterns": [
+        [
+          "row_entropy",
+          0.39
+        ],
+        [
+          "frac_zeros",
+          -0.35
+        ]
+      ]
+    },
+    "202": {
+      "cluster": 3,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.43,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.43
+        ],
+        [
+          "row_entropy",
+          0.38
+        ],
+        [
+          "numeric_mean_zscore",
+          0.32
+        ]
+      ]
+    },
+    "203": {
+      "cluster": 5,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.89,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.89
+        ],
+        [
+          "row_entropy",
+          0.73
+        ],
+        [
+          "pca_residual",
+          -0.71
+        ]
+      ]
+    },
+    "204": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.95,
+      "patterns": [
+        [
+          "frac_negative",
+          1.95
+        ],
+        [
+          "row_entropy",
+          0.54
+        ],
+        [
+          "n_distinct_values",
+          0.46
+        ]
+      ]
+    },
+    "205": {
+      "cluster": 16,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.71,
+      "patterns": [
+        [
+          "n_numeric",
+          0.71
+        ],
+        [
+          "n_cols_total",
+          0.71
+        ],
+        [
+          "centroid_distance",
+          0.66
+        ]
+      ]
+    },
+    "206": {
+      "cluster": 2,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.78,
+      "patterns": [
+        [
+          "n_numeric",
+          0.78
+        ],
+        [
+          "n_cols_total",
+          0.78
+        ],
+        [
+          "numeric_range",
+          0.77
+        ]
+      ]
+    },
+    "207": {
+      "cluster": 14,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.97,
+      "patterns": [
+        [
+          "n_numeric",
+          0.97
+        ],
+        [
+          "n_cols_total",
+          0.97
+        ],
+        [
+          "nearest_neighbor_dist",
+          0.95
+        ]
+      ]
+    },
+    "208": {
+      "cluster": 3,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": -0.32,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          -0.32
+        ]
+      ]
+    },
+    "209": {
+      "cluster": 17,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.68,
+      "patterns": [
+        [
+          "pca_residual",
+          0.68
+        ],
+        [
+          "n_distinct_values",
+          0.5
+        ],
+        [
+          "row_uniformity",
+          0.4
+        ]
+      ]
+    },
+    "210": {
+      "cluster": 13,
+      "top_pattern": "n_numeric",
+      "effect_d": 2.27,
+      "patterns": [
+        [
+          "n_numeric",
+          2.27
+        ],
+        [
+          "n_cols_total",
+          2.27
+        ],
+        [
+          "centroid_distance",
+          2.22
+        ]
+      ]
+    },
+    "211": {
+      "cluster": 11,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 1.4,
+      "patterns": [
+        [
+          "numeric_skewness",
+          1.4
+        ],
+        [
+          "numeric_kurtosis",
+          1.38
+        ],
+        [
+          "numeric_max_zscore",
+          1.33
+        ]
+      ]
+    },
+    "212": {
+      "cluster": 0,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.62,
+      "patterns": [
+        [
+          "frac_negative",
+          0.62
+        ],
+        [
+          "frac_zeros",
+          -0.58
+        ],
+        [
+          "pca_residual",
+          -0.53
+        ]
+      ]
+    },
+    "213": {
+      "cluster": 17,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.78,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.78
+        ],
+        [
+          "row_uniformity",
+          0.41
+        ],
+        [
+          "numeric_range",
+          -0.34
+        ]
+      ]
+    },
+    "214": {
+      "cluster": 14,
+      "top_pattern": "n_numeric",
+      "effect_d": 2.01,
+      "patterns": [
+        [
+          "n_numeric",
+          2.01
+        ],
+        [
+          "n_cols_total",
+          2.01
+        ],
+        [
+          "centroid_distance",
+          1.58
+        ]
+      ]
+    },
+    "215": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.46,
+      "patterns": [
+        [
+          "frac_negative",
+          1.46
+        ],
+        [
+          "n_distinct_values",
+          0.39
+        ],
+        [
+          "numeric_min_zscore",
+          -0.31
+        ]
+      ]
+    },
+    "216": {
+      "cluster": 5,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.7,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.7
+        ],
+        [
+          "pca_residual",
+          -0.67
+        ],
+        [
+          "row_uniformity",
+          -0.52
+        ]
+      ]
+    },
+    "217": {
+      "cluster": 2,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.63,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.63
+        ],
+        [
+          "pca_residual",
+          0.59
+        ],
+        [
+          "row_uniformity",
+          0.51
+        ]
+      ]
+    },
+    "218": {
+      "cluster": 16,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 1.21,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          1.21
+        ],
+        [
+          "n_numeric",
+          1.19
+        ],
+        [
+          "n_cols_total",
+          1.19
+        ]
+      ]
+    },
+    "219": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.63,
+      "patterns": [
+        [
+          "pca_residual",
+          0.63
+        ],
+        [
+          "frac_zeros",
+          0.54
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.46
+        ]
+      ]
+    },
+    "220": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.29,
+      "patterns": []
+    },
+    "221": {
+      "cluster": 0,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.57,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.57
+        ],
+        [
+          "numeric_skewness",
+          -0.55
+        ],
+        [
+          "pca_residual",
+          -0.5
+        ]
+      ]
+    },
+    "222": {
+      "cluster": 14,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.48,
+      "patterns": [
+        [
+          "n_numeric",
+          1.48
+        ],
+        [
+          "n_cols_total",
+          1.48
+        ],
+        [
+          "nearest_neighbor_dist",
+          1.3
+        ]
+      ]
+    },
+    "223": {
+      "cluster": 2,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 0.7,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          0.7
+        ],
+        [
+          "centroid_distance",
+          0.66
+        ],
+        [
+          "numeric_max_zscore",
+          0.63
+        ]
+      ]
+    },
+    "224": {
+      "cluster": 5,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.83,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.83
+        ],
+        [
+          "frac_zeros",
+          -0.75
+        ],
+        [
+          "numeric_min_zscore",
+          0.66
+        ]
+      ]
+    },
+    "225": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.27,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.27
+        ],
+        [
+          "n_distinct_values",
+          -1.04
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ]
+      ]
+    },
+    "226": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.84,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.84
+        ],
+        [
+          "row_uniformity",
+          -0.8
+        ],
+        [
+          "numeric_min_zscore",
+          0.79
+        ]
+      ]
+    },
+    "227": {
+      "cluster": 5,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.6,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.6
+        ],
+        [
+          "pca_residual",
+          -0.57
+        ],
+        [
+          "frac_zeros",
+          -0.42
+        ]
+      ]
+    },
+    "228": {
+      "cluster": 2,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.92,
+      "patterns": [
+        [
+          "pca_residual",
+          0.92
+        ],
+        [
+          "row_uniformity",
+          0.71
+        ],
+        [
+          "frac_zeros",
+          0.61
+        ]
+      ]
+    },
+    "229": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.28,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.28
+        ],
+        [
+          "row_uniformity",
+          0.98
+        ],
+        [
+          "n_distinct_values",
+          0.65
+        ]
+      ]
+    },
+    "230": {
+      "cluster": 5,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.86,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.86
+        ],
+        [
+          "n_distinct_values",
+          -0.79
+        ],
+        [
+          "pca_residual",
+          -0.75
+        ]
+      ]
+    },
+    "231": {
+      "cluster": 5,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.83,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.83
+        ],
+        [
+          "pca_residual",
+          -0.82
+        ],
+        [
+          "numeric_min_zscore",
+          0.73
+        ]
+      ]
+    },
+    "232": {
+      "cluster": 3,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.44,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.44
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.33
+        ]
+      ]
+    },
+    "233": {
+      "cluster": 16,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 1.03,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          1.03
+        ],
+        [
+          "centroid_distance",
+          1.0
+        ],
+        [
+          "n_numeric",
+          0.82
+        ]
+      ]
+    },
+    "234": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.15,
+      "patterns": [
+        [
+          "frac_negative",
+          1.15
+        ],
+        [
+          "row_entropy",
+          0.74
+        ],
+        [
+          "n_distinct_values",
+          0.6
+        ]
+      ]
+    },
+    "235": {
+      "cluster": 5,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.82,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.82
+        ],
+        [
+          "row_uniformity",
+          -0.73
+        ],
+        [
+          "row_entropy",
+          0.73
+        ]
+      ]
+    },
+    "236": {
+      "cluster": 18,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.98,
+      "patterns": [
+        [
+          "n_numeric",
+          0.98
+        ],
+        [
+          "n_cols_total",
+          0.98
+        ],
+        [
+          "row_entropy",
+          -0.83
+        ]
+      ]
+    },
+    "237": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.52,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.52
+        ],
+        [
+          "frac_zeros",
+          -0.48
+        ],
+        [
+          "row_uniformity",
+          -0.41
+        ]
+      ]
+    },
+    "238": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.12,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.12
+        ],
+        [
+          "row_uniformity",
+          0.85
+        ],
+        [
+          "pca_residual",
+          0.7
+        ]
+      ]
+    },
+    "239": {
+      "cluster": 2,
+      "top_pattern": "numeric_kurtosis",
+      "effect_d": 0.73,
+      "patterns": [
+        [
+          "numeric_kurtosis",
+          0.73
+        ],
+        [
+          "row_uniformity",
+          0.62
+        ],
+        [
+          "numeric_skewness",
+          0.52
+        ]
+      ]
+    },
+    "240": {
+      "cluster": 24,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.45,
+      "patterns": [
+        [
+          "row_entropy",
+          -0.45
+        ]
+      ]
+    },
+    "241": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.57,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.57
+        ],
+        [
+          "frac_negative",
+          0.42
+        ]
+      ]
+    },
+    "242": {
+      "cluster": 9,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.48,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.48
+        ],
+        [
+          "numeric_skewness",
+          -0.46
+        ],
+        [
+          "row_uniformity",
+          -0.39
+        ]
+      ]
+    },
+    "243": {
+      "cluster": 14,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.88,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.88
+        ],
+        [
+          "nearest_neighbor_dist",
+          1.77
+        ],
+        [
+          "centroid_distance",
+          1.75
+        ]
+      ]
+    },
+    "244": {
+      "cluster": 5,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.29,
+      "patterns": []
+    },
+    "245": {
+      "cluster": 8,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -1.51,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -1.51
+        ],
+        [
+          "pca_residual",
+          -1.41
+        ],
+        [
+          "numeric_correlation_mean",
+          1.16
+        ]
+      ]
+    },
+    "246": {
+      "cluster": 9,
+      "top_pattern": "frac_negative",
+      "effect_d": 1.0,
+      "patterns": [
+        [
+          "frac_negative",
+          1.0
+        ],
+        [
+          "n_distinct_values",
+          0.48
+        ],
+        [
+          "pca_residual",
+          0.43
+        ]
+      ]
+    },
+    "247": {
+      "cluster": 0,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.43,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.43
+        ],
+        [
+          "n_distinct_values",
+          -0.4
+        ],
+        [
+          "nearest_neighbor_dist",
+          -0.31
+        ]
+      ]
+    },
+    "248": {
+      "cluster": 0,
+      "top_pattern": "row_uniformity",
+      "effect_d": -0.59,
+      "patterns": [
+        [
+          "row_uniformity",
+          -0.59
+        ],
+        [
+          "numeric_min_zscore",
+          0.42
+        ],
+        [
+          "numeric_skewness",
+          -0.39
+        ]
+      ]
+    },
+    "249": {
+      "cluster": 5,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.98,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.98
+        ],
+        [
+          "pca_residual",
+          -0.85
+        ],
+        [
+          "n_distinct_values",
+          -0.83
+        ]
+      ]
+    },
+    "250": {
+      "cluster": 2,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 0.94,
+      "patterns": [
+        [
+          "numeric_skewness",
+          0.94
+        ],
+        [
+          "numeric_kurtosis",
+          0.92
+        ],
+        [
+          "row_uniformity",
+          0.79
+        ]
+      ]
+    },
+    "251": {
+      "cluster": 1,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.82,
+      "patterns": [
+        [
+          "frac_negative",
+          0.82
+        ],
+        [
+          "numeric_min_zscore",
+          -0.49
+        ],
+        [
+          "n_distinct_values",
+          0.48
+        ]
+      ]
+    },
+    "252": {
+      "cluster": 17,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.42,
+      "patterns": [
+        [
+          "row_entropy",
+          -0.42
+        ],
+        [
+          "frac_zeros",
+          0.41
+        ],
+        [
+          "n_distinct_values",
+          -0.39
+        ]
+      ]
+    },
+    "253": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.43,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.43
+        ],
+        [
+          "n_distinct_values",
+          -1.25
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ]
+      ]
+    },
+    "254": {
+      "cluster": 16,
+      "top_pattern": "nearest_neighbor_dist",
+      "effect_d": 1.09,
+      "patterns": [
+        [
+          "nearest_neighbor_dist",
+          1.09
+        ],
+        [
+          "centroid_distance",
+          1.07
+        ],
+        [
+          "n_numeric",
+          0.86
+        ]
+      ]
+    },
+    "255": {
+      "cluster": 3,
+      "top_pattern": "frac_negative",
+      "effect_d": 0.85,
+      "patterns": [
+        [
+          "frac_negative",
+          0.85
+        ],
+        [
+          "numeric_skewness",
+          -0.51
+        ],
+        [
+          "frac_zeros",
+          -0.39
+        ]
+      ]
+    },
+    "258": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.15,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.15
+        ],
+        [
+          "numeric_correlation_mean",
+          1.11
+        ],
+        [
+          "n_distinct_values",
+          -1.05
+        ]
+      ]
+    },
+    "261": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.26,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.26
+        ],
+        [
+          "n_distinct_values",
+          -1.12
+        ],
+        [
+          "numeric_min_zscore",
+          0.85
+        ]
+      ]
+    },
+    "262": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.83,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.83
+        ],
+        [
+          "numeric_correlation_mean",
+          0.65
+        ],
+        [
+          "frac_zeros",
+          -0.62
+        ]
+      ]
+    },
+    "263": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.35,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.35
+        ],
+        [
+          "n_distinct_values",
+          -1.22
+        ],
+        [
+          "numeric_correlation_mean",
+          0.85
+        ]
+      ]
+    },
+    "266": {
+      "cluster": 24,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.74,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.74
+        ],
+        [
+          "n_numeric",
+          0.71
+        ],
+        [
+          "n_cols_total",
+          0.71
+        ]
+      ]
+    },
+    "268": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.25,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.25
+        ],
+        [
+          "n_distinct_values",
+          -1.2
+        ],
+        [
+          "numeric_min_zscore",
+          0.85
+        ]
+      ]
+    },
+    "270": {
+      "cluster": 18,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.3,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.3
+        ],
+        [
+          "row_entropy",
+          -1.21
+        ],
+        [
+          "row_uniformity",
+          0.92
+        ]
+      ]
+    },
+    "282": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.42,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.42
+        ],
+        [
+          "n_distinct_values",
+          -1.28
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ]
+      ]
+    },
+    "285": {
+      "cluster": 4,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.58,
+      "patterns": [
+        [
+          "row_entropy",
+          -0.58
+        ],
+        [
+          "numeric_mean_zscore",
+          -0.39
+        ],
+        [
+          "numeric_iqr",
+          -0.37
+        ]
+      ]
+    },
+    "286": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.24,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.24
+        ],
+        [
+          "n_distinct_values",
+          -1.06
+        ],
+        [
+          "numeric_correlation_mean",
+          0.77
+        ]
+      ]
+    },
+    "290": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.94,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.94
+        ],
+        [
+          "numeric_correlation_mean",
+          0.84
+        ],
+        [
+          "n_distinct_values",
+          -0.78
+        ]
+      ]
+    },
+    "304": {
+      "cluster": 19,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.9,
+      "patterns": [
+        [
+          "n_numeric",
+          1.9
+        ],
+        [
+          "n_cols_total",
+          1.9
+        ],
+        [
+          "centroid_distance",
+          1.18
+        ]
+      ]
+    },
+    "319": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.42,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.42
+        ],
+        [
+          "numeric_correlation_mean",
+          1.2
+        ],
+        [
+          "n_distinct_values",
+          -1.19
+        ]
+      ]
+    },
+    "330": {
+      "cluster": 4,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.65,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.65
+        ],
+        [
+          "pca_residual",
+          -0.62
+        ],
+        [
+          "row_entropy",
+          -0.59
+        ]
+      ]
+    },
+    "339": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.75,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.75
+        ],
+        [
+          "n_distinct_values",
+          -0.73
+        ],
+        [
+          "frac_zeros",
+          -0.62
+        ]
+      ]
+    },
+    "341": {
+      "cluster": 4,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -1.01,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -1.01
+        ],
+        [
+          "pca_residual",
+          -0.91
+        ],
+        [
+          "numeric_range",
+          -0.55
+        ]
+      ]
+    },
+    "342": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.83,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.83
+        ],
+        [
+          "numeric_correlation_mean",
+          0.8
+        ],
+        [
+          "frac_zeros",
+          -0.76
+        ]
+      ]
+    },
+    "353": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.38,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.38
+        ],
+        [
+          "n_distinct_values",
+          -1.27
+        ],
+        [
+          "numeric_min_zscore",
+          0.85
+        ]
+      ]
+    },
+    "355": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.06,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.06
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ],
+        [
+          "n_distinct_values",
+          -0.78
+        ]
+      ]
+    },
+    "367": {
+      "cluster": 8,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 1.98,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          1.98
+        ],
+        [
+          "pca_residual",
+          -1.13
+        ],
+        [
+          "n_distinct_values",
+          -0.6
+        ]
+      ]
+    },
+    "372": {
+      "cluster": 18,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 1.22,
+      "patterns": [
+        [
+          "numeric_skewness",
+          1.22
+        ],
+        [
+          "row_uniformity",
+          1.13
+        ],
+        [
+          "numeric_kurtosis",
+          1.11
+        ]
+      ]
+    },
+    "399": {
+      "cluster": 8,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 1.46,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          1.46
+        ],
+        [
+          "pca_residual",
+          -1.37
+        ],
+        [
+          "n_distinct_values",
+          -0.92
+        ]
+      ]
+    },
+    "400": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.35,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.35
+        ],
+        [
+          "n_distinct_values",
+          -1.24
+        ],
+        [
+          "numeric_correlation_mean",
+          0.83
+        ]
+      ]
+    },
+    "401": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.78,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.78
+        ],
+        [
+          "n_distinct_values",
+          -0.72
+        ],
+        [
+          "numeric_correlation_mean",
+          0.61
+        ]
+      ]
+    },
+    "402": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.21,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.21
+        ],
+        [
+          "n_distinct_values",
+          -1.13
+        ],
+        [
+          "numeric_min_zscore",
+          0.81
+        ]
+      ]
+    },
+    "404": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.14,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.14
+        ],
+        [
+          "n_distinct_values",
+          -1.12
+        ],
+        [
+          "numeric_min_zscore",
+          0.73
+        ]
+      ]
+    },
+    "420": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.34,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.34
+        ],
+        [
+          "n_distinct_values",
+          -1.17
+        ],
+        [
+          "numeric_correlation_mean",
+          0.86
+        ]
+      ]
+    },
+    "421": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.19,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.19
+        ],
+        [
+          "numeric_correlation_mean",
+          0.94
+        ],
+        [
+          "n_distinct_values",
+          -0.86
+        ]
+      ]
+    },
+    "424": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.38,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.38
+        ],
+        [
+          "n_distinct_values",
+          -1.28
+        ],
+        [
+          "numeric_min_zscore",
+          0.89
+        ]
+      ]
+    },
+    "426": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.24,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.24
+        ],
+        [
+          "n_distinct_values",
+          -1.16
+        ],
+        [
+          "numeric_min_zscore",
+          0.79
+        ]
+      ]
+    },
+    "440": {
+      "cluster": 15,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.88,
+      "patterns": [
+        [
+          "n_numeric",
+          0.88
+        ],
+        [
+          "n_cols_total",
+          0.88
+        ],
+        [
+          "row_entropy",
+          -0.81
+        ]
+      ]
+    },
+    "444": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.35,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.35
+        ],
+        [
+          "n_distinct_values",
+          -1.24
+        ],
+        [
+          "numeric_correlation_mean",
+          0.89
+        ]
+      ]
+    },
+    "458": {
+      "cluster": 2,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.5,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.5
+        ],
+        [
+          "row_uniformity",
+          0.44
+        ],
+        [
+          "row_entropy",
+          -0.37
+        ]
+      ]
+    },
+    "465": {
+      "cluster": 15,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -1.0,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -1.0
+        ],
+        [
+          "pca_residual",
+          -1.0
+        ],
+        [
+          "numeric_correlation_mean",
+          0.74
+        ]
+      ]
+    },
+    "466": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.23,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.23
+        ],
+        [
+          "n_distinct_values",
+          -1.12
+        ],
+        [
+          "numeric_min_zscore",
+          0.84
+        ]
+      ]
+    },
+    "472": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.93,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.93
+        ],
+        [
+          "numeric_correlation_mean",
+          0.73
+        ],
+        [
+          "n_distinct_values",
+          -0.65
+        ]
+      ]
+    },
+    "477": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.96,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.96
+        ],
+        [
+          "n_distinct_values",
+          -0.9
+        ],
+        [
+          "numeric_correlation_mean",
+          0.6
+        ]
+      ]
+    },
+    "480": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.44,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.44
+        ],
+        [
+          "n_distinct_values",
+          -1.36
+        ],
+        [
+          "numeric_correlation_mean",
+          0.97
+        ]
+      ]
+    },
+    "481": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.47,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.47
+        ],
+        [
+          "numeric_correlation_mean",
+          1.26
+        ],
+        [
+          "n_distinct_values",
+          -1.23
+        ]
+      ]
+    },
+    "489": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.33,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.33
+        ],
+        [
+          "n_distinct_values",
+          -1.19
+        ],
+        [
+          "numeric_correlation_mean",
+          0.82
+        ]
+      ]
+    },
+    "491": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.16,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.16
+        ],
+        [
+          "n_distinct_values",
+          -1.01
+        ],
+        [
+          "numeric_min_zscore",
+          0.78
+        ]
+      ]
+    },
+    "494": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.94,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.94
+        ],
+        [
+          "n_distinct_values",
+          -0.9
+        ],
+        [
+          "numeric_min_zscore",
+          0.59
+        ]
+      ]
+    },
+    "504": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.34,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.34
+        ],
+        [
+          "n_distinct_values",
+          -1.17
+        ],
+        [
+          "numeric_correlation_mean",
+          0.89
+        ]
+      ]
+    },
+    "509": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.15,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.15
+        ],
+        [
+          "n_distinct_values",
+          -0.97
+        ],
+        [
+          "frac_zeros",
+          -0.85
+        ]
+      ]
+    },
+    "510": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.35,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.35
+        ],
+        [
+          "n_distinct_values",
+          -1.13
+        ],
+        [
+          "numeric_correlation_mean",
+          1.0
+        ]
+      ]
+    },
+    "511": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.07,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.07
+        ],
+        [
+          "n_distinct_values",
+          -1.04
+        ],
+        [
+          "numeric_correlation_mean",
+          0.73
+        ]
+      ]
+    },
+    "515": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.31,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.31
+        ],
+        [
+          "row_uniformity",
+          1.03
+        ],
+        [
+          "pca_residual",
+          0.74
+        ]
+      ]
+    },
+    "518": {
+      "cluster": 23,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -1.1,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -1.1
+        ],
+        [
+          "pca_residual",
+          -1.05
+        ],
+        [
+          "numeric_range",
+          -0.71
+        ]
+      ]
+    },
+    "523": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.3,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.3
+        ],
+        [
+          "n_distinct_values",
+          -1.19
+        ],
+        [
+          "numeric_correlation_mean",
+          0.82
+        ]
+      ]
+    },
+    "529": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.88,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.88
+        ],
+        [
+          "n_distinct_values",
+          -0.77
+        ],
+        [
+          "numeric_correlation_mean",
+          0.65
+        ]
+      ]
+    },
+    "530": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.04,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.04
+        ],
+        [
+          "n_distinct_values",
+          -0.99
+        ],
+        [
+          "numeric_min_zscore",
+          0.68
+        ]
+      ]
+    },
+    "533": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.4,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.4
+        ],
+        [
+          "n_distinct_values",
+          -1.24
+        ],
+        [
+          "numeric_correlation_mean",
+          0.91
+        ]
+      ]
+    },
+    "536": {
+      "cluster": 24,
+      "top_pattern": "row_uniformity",
+      "effect_d": 0.52,
+      "patterns": [
+        [
+          "row_uniformity",
+          0.52
+        ],
+        [
+          "numeric_kurtosis",
+          0.44
+        ],
+        [
+          "numeric_skewness",
+          0.4
+        ]
+      ]
+    },
+    "543": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.12,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.12
+        ],
+        [
+          "n_distinct_values",
+          -0.92
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ]
+      ]
+    },
+    "545": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.33,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.33
+        ],
+        [
+          "n_distinct_values",
+          -1.17
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ]
+      ]
+    },
+    "554": {
+      "cluster": 11,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.85,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.85
+        ],
+        [
+          "row_uniformity",
+          0.84
+        ],
+        [
+          "row_entropy",
+          -0.6
+        ]
+      ]
+    },
+    "559": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.11,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.11
+        ],
+        [
+          "n_distinct_values",
+          -0.94
+        ],
+        [
+          "numeric_correlation_mean",
+          0.87
+        ]
+      ]
+    },
+    "561": {
+      "cluster": 19,
+      "top_pattern": "n_numeric",
+      "effect_d": 2.24,
+      "patterns": [
+        [
+          "n_numeric",
+          2.24
+        ],
+        [
+          "n_cols_total",
+          2.24
+        ],
+        [
+          "row_entropy",
+          -1.25
+        ]
+      ]
+    },
+    "565": {
+      "cluster": 17,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.45,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.45
+        ],
+        [
+          "row_entropy",
+          -0.32
+        ],
+        [
+          "target_is_minority",
+          0.3
+        ]
+      ]
+    },
+    "576": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.47,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.47
+        ],
+        [
+          "n_distinct_values",
+          -0.45
+        ],
+        [
+          "numeric_min_zscore",
+          0.38
+        ]
+      ]
+    },
+    "577": {
+      "cluster": 18,
+      "top_pattern": "row_entropy",
+      "effect_d": -1.05,
+      "patterns": [
+        [
+          "row_entropy",
+          -1.05
+        ],
+        [
+          "frac_zeros",
+          0.82
+        ],
+        [
+          "row_uniformity",
+          0.69
+        ]
+      ]
+    },
+    "579": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.26,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.26
+        ],
+        [
+          "n_distinct_values",
+          -1.17
+        ],
+        [
+          "numeric_min_zscore",
+          0.79
+        ]
+      ]
+    },
+    "583": {
+      "cluster": 17,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.72,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.72
+        ],
+        [
+          "row_uniformity",
+          0.6
+        ],
+        [
+          "row_entropy",
+          -0.5
+        ]
+      ]
+    },
+    "595": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.14,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.14
+        ],
+        [
+          "n_distinct_values",
+          -0.94
+        ],
+        [
+          "numeric_correlation_mean",
+          0.71
+        ]
+      ]
+    },
+    "596": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.16,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.16
+        ],
+        [
+          "numeric_correlation_mean",
+          1.1
+        ],
+        [
+          "n_distinct_values",
+          -0.9
+        ]
+      ]
+    },
+    "602": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.55,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.55
+        ],
+        [
+          "n_distinct_values",
+          -0.4
+        ],
+        [
+          "numeric_correlation_mean",
+          0.35
+        ]
+      ]
+    },
+    "608": {
+      "cluster": 11,
+      "top_pattern": "frac_zeros",
+      "effect_d": 2.1,
+      "patterns": [
+        [
+          "frac_zeros",
+          2.1
+        ],
+        [
+          "n_numeric",
+          1.76
+        ],
+        [
+          "n_cols_total",
+          1.76
+        ]
+      ]
+    },
+    "613": {
+      "cluster": 18,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 0.97,
+      "patterns": [
+        [
+          "numeric_skewness",
+          0.97
+        ],
+        [
+          "row_uniformity",
+          0.93
+        ],
+        [
+          "numeric_kurtosis",
+          0.88
+        ]
+      ]
+    },
+    "621": {
+      "cluster": 7,
+      "top_pattern": "frac_negative_outliers",
+      "effect_d": 0.44,
+      "patterns": [
+        [
+          "frac_negative_outliers",
+          0.44
+        ]
+      ]
+    },
+    "636": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.74,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.74
+        ],
+        [
+          "n_distinct_values",
+          -0.73
+        ],
+        [
+          "numeric_correlation_mean",
+          0.53
+        ]
+      ]
+    },
+    "637": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.36,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.36
+        ],
+        [
+          "n_distinct_values",
+          -1.23
+        ],
+        [
+          "numeric_min_zscore",
+          0.94
+        ]
+      ]
+    },
+    "639": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.25,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.25
+        ],
+        [
+          "n_distinct_values",
+          -1.13
+        ],
+        [
+          "numeric_min_zscore",
+          0.86
+        ]
+      ]
+    },
+    "642": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.97,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.97
+        ],
+        [
+          "n_distinct_values",
+          -0.82
+        ],
+        [
+          "numeric_correlation_mean",
+          0.7
+        ]
+      ]
+    },
+    "643": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.8,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.8
+        ],
+        [
+          "n_distinct_values",
+          -0.77
+        ],
+        [
+          "numeric_min_zscore",
+          0.63
+        ]
+      ]
+    },
+    "644": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.26,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.26
+        ],
+        [
+          "n_distinct_values",
+          -1.16
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ]
+      ]
+    },
+    "647": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.2,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.2
+        ],
+        [
+          "numeric_correlation_mean",
+          0.91
+        ],
+        [
+          "n_distinct_values",
+          -0.88
+        ]
+      ]
+    },
+    "648": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.33,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.33
+        ],
+        [
+          "n_distinct_values",
+          -1.14
+        ],
+        [
+          "frac_zeros",
+          -0.86
+        ]
+      ]
+    },
+    "656": {
+      "cluster": 2,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.67,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.67
+        ],
+        [
+          "pca_residual",
+          0.33
+        ],
+        [
+          "row_uniformity",
+          0.32
+        ]
+      ]
+    },
+    "657": {
+      "cluster": 24,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.38,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.38
+        ],
+        [
+          "n_numeric",
+          0.32
+        ],
+        [
+          "n_cols_total",
+          0.32
+        ]
+      ]
+    },
+    "663": {
+      "cluster": 18,
+      "top_pattern": "row_uniformity",
+      "effect_d": 1.35,
+      "patterns": [
+        [
+          "row_uniformity",
+          1.35
+        ],
+        [
+          "frac_zeros",
+          1.33
+        ],
+        [
+          "numeric_skewness",
+          1.25
+        ]
+      ]
+    },
+    "673": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.32,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.32
+        ],
+        [
+          "n_distinct_values",
+          -1.22
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ]
+      ]
+    },
+    "678": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.43,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.43
+        ],
+        [
+          "n_distinct_values",
+          -1.35
+        ],
+        [
+          "numeric_correlation_mean",
+          0.95
+        ]
+      ]
+    },
+    "683": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.74,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.74
+        ],
+        [
+          "n_distinct_values",
+          -0.72
+        ],
+        [
+          "n_numeric",
+          0.56
+        ]
+      ]
+    },
+    "693": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.3,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.3
+        ],
+        [
+          "n_distinct_values",
+          -1.1
+        ],
+        [
+          "numeric_correlation_mean",
+          0.97
+        ]
+      ]
+    },
+    "694": {
+      "cluster": 8,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -1.06,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -1.06
+        ],
+        [
+          "pca_residual",
+          -1.03
+        ],
+        [
+          "numeric_correlation_mean",
+          0.68
+        ]
+      ]
+    },
+    "695": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.29,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.29
+        ],
+        [
+          "n_distinct_values",
+          -1.19
+        ],
+        [
+          "numeric_min_zscore",
+          0.82
+        ]
+      ]
+    },
+    "697": {
+      "cluster": 22,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.41,
+      "patterns": [
+        [
+          "n_numeric",
+          1.41
+        ],
+        [
+          "n_cols_total",
+          1.41
+        ],
+        [
+          "centroid_distance",
+          0.86
+        ]
+      ]
+    },
+    "705": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.23,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.23
+        ],
+        [
+          "n_distinct_values",
+          -1.13
+        ],
+        [
+          "numeric_correlation_mean",
+          0.81
+        ]
+      ]
+    },
+    "713": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.43,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.43
+        ],
+        [
+          "n_distinct_values",
+          -1.31
+        ],
+        [
+          "frac_zeros",
+          -0.89
+        ]
+      ]
+    },
+    "714": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.15,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.15
+        ],
+        [
+          "n_distinct_values",
+          -1.01
+        ],
+        [
+          "numeric_correlation_mean",
+          0.73
+        ]
+      ]
+    },
+    "717": {
+      "cluster": 4,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.68,
+      "patterns": [
+        [
+          "row_entropy",
+          -0.68
+        ],
+        [
+          "n_distinct_values",
+          -0.53
+        ],
+        [
+          "numeric_min_zscore",
+          0.44
+        ]
+      ]
+    },
+    "719": {
+      "cluster": 18,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.98,
+      "patterns": [
+        [
+          "row_entropy",
+          -0.98
+        ],
+        [
+          "frac_zeros",
+          0.93
+        ],
+        [
+          "row_uniformity",
+          0.65
+        ]
+      ]
+    },
+    "721": {
+      "cluster": 3,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.59,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.59
+        ],
+        [
+          "row_entropy",
+          0.57
+        ],
+        [
+          "numeric_skewness",
+          -0.38
+        ]
+      ]
+    },
+    "725": {
+      "cluster": 3,
+      "top_pattern": "row_entropy",
+      "effect_d": 0.27,
+      "patterns": []
+    },
+    "727": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.09,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.09
+        ],
+        [
+          "n_distinct_values",
+          -0.84
+        ],
+        [
+          "numeric_correlation_mean",
+          0.78
+        ]
+      ]
+    },
+    "730": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.86,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.86
+        ],
+        [
+          "n_distinct_values",
+          -0.79
+        ],
+        [
+          "frac_zeros",
+          -0.62
+        ]
+      ]
+    },
+    "731": {
+      "cluster": 7,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.42,
+      "patterns": [
+        [
+          "pca_residual",
+          0.42
+        ],
+        [
+          "frac_negative_outliers",
+          0.39
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.32
+        ]
+      ]
+    },
+    "732": {
+      "cluster": 9,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.45,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.45
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.37
+        ],
+        [
+          "row_entropy",
+          -0.31
+        ]
+      ]
+    },
+    "738": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.42,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.42
+        ],
+        [
+          "n_distinct_values",
+          -1.27
+        ],
+        [
+          "numeric_correlation_mean",
+          0.96
+        ]
+      ]
+    },
+    "739": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.41,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.41
+        ],
+        [
+          "n_distinct_values",
+          -1.28
+        ],
+        [
+          "numeric_correlation_mean",
+          0.9
+        ]
+      ]
+    },
+    "740": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.18,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.18
+        ],
+        [
+          "n_distinct_values",
+          -1.06
+        ],
+        [
+          "frac_zeros",
+          -0.78
+        ]
+      ]
+    },
+    "765": {
+      "cluster": 4,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.77,
+      "patterns": [
+        [
+          "row_entropy",
+          -0.77
+        ],
+        [
+          "n_distinct_values",
+          -0.65
+        ],
+        [
+          "numeric_min_zscore",
+          0.54
+        ]
+      ]
+    },
+    "767": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.91,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.91
+        ],
+        [
+          "n_distinct_values",
+          -0.82
+        ],
+        [
+          "frac_zeros",
+          -0.7
+        ]
+      ]
+    },
+    "770": {
+      "cluster": 17,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.35,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.35
+        ],
+        [
+          "frac_zeros",
+          0.31
+        ],
+        [
+          "row_uniformity",
+          -0.3
+        ]
+      ]
+    },
+    "777": {
+      "cluster": 24,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.5,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.5
+        ],
+        [
+          "numeric_max_zscore",
+          -0.3
+        ]
+      ]
+    },
+    "781": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.35,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.35
+        ],
+        [
+          "n_distinct_values",
+          -1.24
+        ],
+        [
+          "numeric_correlation_mean",
+          0.92
+        ]
+      ]
+    },
+    "783": {
+      "cluster": 8,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 1.99,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          1.99
+        ],
+        [
+          "pca_residual",
+          -0.97
+        ],
+        [
+          "target_is_minority",
+          0.45
+        ]
+      ]
+    },
+    "789": {
+      "cluster": 15,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.87,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.87
+        ],
+        [
+          "n_distinct_values",
+          -0.82
+        ],
+        [
+          "numeric_correlation_mean",
+          0.61
+        ]
+      ]
+    },
+    "793": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.73,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.73
+        ],
+        [
+          "row_uniformity",
+          1.24
+        ],
+        [
+          "row_entropy",
+          -0.8
+        ]
+      ]
+    },
+    "795": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.13,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.13
+        ],
+        [
+          "n_distinct_values",
+          -0.97
+        ],
+        [
+          "numeric_correlation_mean",
+          0.72
+        ]
+      ]
+    },
+    "796": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.37,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.37
+        ],
+        [
+          "n_distinct_values",
+          -1.24
+        ],
+        [
+          "frac_zeros",
+          -0.84
+        ]
+      ]
+    },
+    "800": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.38,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.38
+        ],
+        [
+          "n_distinct_values",
+          -1.22
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ]
+      ]
+    },
+    "801": {
+      "cluster": 24,
+      "top_pattern": "frac_negative",
+      "effect_d": -0.23,
+      "patterns": []
+    },
+    "804": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.04,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.04
+        ],
+        [
+          "numeric_correlation_mean",
+          0.9
+        ],
+        [
+          "n_distinct_values",
+          -0.75
+        ]
+      ]
+    },
+    "808": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.34,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.34
+        ],
+        [
+          "numeric_correlation_mean",
+          1.17
+        ],
+        [
+          "n_distinct_values",
+          -1.15
+        ]
+      ]
+    },
+    "812": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.29,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.29
+        ],
+        [
+          "n_distinct_values",
+          -1.16
+        ],
+        [
+          "numeric_correlation_mean",
+          0.85
+        ]
+      ]
+    },
+    "819": {
+      "cluster": 17,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": -0.49,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          -0.49
+        ]
+      ]
+    },
+    "822": {
+      "cluster": 4,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.71,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.71
+        ],
+        [
+          "pca_residual",
+          -0.7
+        ],
+        [
+          "numeric_min_zscore",
+          0.53
+        ]
+      ]
+    },
+    "823": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.19,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.19
+        ],
+        [
+          "n_distinct_values",
+          -1.08
+        ],
+        [
+          "numeric_correlation_mean",
+          0.79
+        ]
+      ]
+    },
+    "824": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.79,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.79
+        ],
+        [
+          "n_distinct_values",
+          -0.7
+        ],
+        [
+          "frac_zeros",
+          -0.61
+        ]
+      ]
+    },
+    "827": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.8,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.8
+        ],
+        [
+          "frac_zeros",
+          -0.73
+        ],
+        [
+          "row_uniformity",
+          -0.59
+        ]
+      ]
+    },
+    "830": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.59,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.59
+        ],
+        [
+          "row_entropy",
+          -0.58
+        ],
+        [
+          "n_distinct_values",
+          -0.56
+        ]
+      ]
+    },
+    "837": {
+      "cluster": 15,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.94,
+      "patterns": [
+        [
+          "n_numeric",
+          0.94
+        ],
+        [
+          "n_cols_total",
+          0.94
+        ],
+        [
+          "numeric_kurtosis",
+          0.78
+        ]
+      ]
+    },
+    "841": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.13,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.13
+        ],
+        [
+          "n_distinct_values",
+          -1.0
+        ],
+        [
+          "frac_zeros",
+          -0.81
+        ]
+      ]
+    },
+    "843": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.99,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.99
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ],
+        [
+          "frac_zeros",
+          -0.85
+        ]
+      ]
+    },
+    "852": {
+      "cluster": 24,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.29,
+      "patterns": []
+    },
+    "862": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.03,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.03
+        ],
+        [
+          "n_distinct_values",
+          -0.85
+        ],
+        [
+          "frac_zeros",
+          -0.75
+        ]
+      ]
+    },
+    "867": {
+      "cluster": 4,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.86,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.86
+        ],
+        [
+          "pca_residual",
+          -0.8
+        ],
+        [
+          "frac_zeros",
+          -0.61
+        ]
+      ]
+    },
+    "870": {
+      "cluster": 19,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.57,
+      "patterns": [
+        [
+          "n_numeric",
+          1.57
+        ],
+        [
+          "n_cols_total",
+          1.57
+        ],
+        [
+          "row_entropy",
+          -0.97
+        ]
+      ]
+    },
+    "880": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.27,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.27
+        ],
+        [
+          "n_distinct_values",
+          -1.12
+        ],
+        [
+          "frac_zeros",
+          -0.85
+        ]
+      ]
+    },
+    "882": {
+      "cluster": 24,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.46,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.46
+        ],
+        [
+          "frac_zeros",
+          -0.31
+        ]
+      ]
+    },
+    "887": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.01,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.01
+        ],
+        [
+          "n_distinct_values",
+          -0.88
+        ],
+        [
+          "frac_zeros",
+          -0.69
+        ]
+      ]
+    },
+    "888": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.14,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.14
+        ],
+        [
+          "n_distinct_values",
+          -1.0
+        ],
+        [
+          "numeric_correlation_mean",
+          0.99
+        ]
+      ]
+    },
+    "902": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.41,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.41
+        ],
+        [
+          "n_distinct_values",
+          -1.21
+        ],
+        [
+          "numeric_correlation_mean",
+          0.94
+        ]
+      ]
+    },
+    "904": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.03,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.03
+        ],
+        [
+          "n_distinct_values",
+          -1.02
+        ],
+        [
+          "numeric_min_zscore",
+          0.69
+        ]
+      ]
+    },
+    "910": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.08,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.08
+        ],
+        [
+          "n_distinct_values",
+          -0.99
+        ],
+        [
+          "numeric_min_zscore",
+          0.78
+        ]
+      ]
+    },
+    "912": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.3,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.3
+        ],
+        [
+          "n_distinct_values",
+          -1.21
+        ],
+        [
+          "frac_zeros",
+          -0.89
+        ]
+      ]
+    },
+    "925": {
+      "cluster": 8,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 1.53,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          1.53
+        ],
+        [
+          "pca_residual",
+          -1.22
+        ],
+        [
+          "frac_zeros",
+          -0.77
+        ]
+      ]
+    },
+    "926": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.2,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.2
+        ],
+        [
+          "row_uniformity",
+          0.95
+        ],
+        [
+          "pca_residual",
+          0.77
+        ]
+      ]
+    },
+    "930": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.21,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.21
+        ],
+        [
+          "n_distinct_values",
+          -0.92
+        ],
+        [
+          "frac_zeros",
+          -0.87
+        ]
+      ]
+    },
+    "933": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.39,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.39
+        ],
+        [
+          "n_distinct_values",
+          -1.2
+        ],
+        [
+          "numeric_correlation_mean",
+          0.94
+        ]
+      ]
+    },
+    "936": {
+      "cluster": 3,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.46,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.46
+        ],
+        [
+          "frac_zeros",
+          -0.32
+        ],
+        [
+          "centroid_distance",
+          -0.3
+        ]
+      ]
+    },
+    "943": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.38,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.38
+        ],
+        [
+          "n_distinct_values",
+          -1.3
+        ],
+        [
+          "numeric_correlation_mean",
+          0.85
+        ]
+      ]
+    },
+    "956": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.02,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.02
+        ],
+        [
+          "n_distinct_values",
+          -0.99
+        ],
+        [
+          "numeric_min_zscore",
+          0.66
+        ]
+      ]
+    },
+    "957": {
+      "cluster": 7,
+      "top_pattern": "pca_residual",
+      "effect_d": 0.49,
+      "patterns": [
+        [
+          "pca_residual",
+          0.49
+        ],
+        [
+          "row_uniformity",
+          0.49
+        ],
+        [
+          "row_entropy",
+          -0.39
+        ]
+      ]
+    },
+    "960": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.8,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.8
+        ],
+        [
+          "frac_zeros",
+          -0.72
+        ],
+        [
+          "numeric_correlation_mean",
+          0.59
+        ]
+      ]
+    },
+    "962": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.43,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.43
+        ],
+        [
+          "n_distinct_values",
+          -1.22
+        ],
+        [
+          "frac_zeros",
+          -0.91
+        ]
+      ]
+    },
+    "964": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.15,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.15
+        ],
+        [
+          "n_distinct_values",
+          -0.92
+        ],
+        [
+          "numeric_correlation_mean",
+          0.78
+        ]
+      ]
+    },
+    "970": {
+      "cluster": 13,
+      "top_pattern": "n_numeric",
+      "effect_d": 3.42,
+      "patterns": [
+        [
+          "n_numeric",
+          3.42
+        ],
+        [
+          "n_cols_total",
+          3.42
+        ],
+        [
+          "centroid_distance",
+          2.54
+        ]
+      ]
+    },
+    "974": {
+      "cluster": 24,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.49,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.49
+        ],
+        [
+          "frac_zeros",
+          -0.34
+        ]
+      ]
+    },
+    "983": {
+      "cluster": 3,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.54,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.54
+        ],
+        [
+          "numeric_correlation_mean",
+          0.38
+        ],
+        [
+          "numeric_range",
+          -0.36
+        ]
+      ]
+    },
+    "998": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.23,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.23
+        ],
+        [
+          "n_distinct_values",
+          -1.16
+        ],
+        [
+          "numeric_range",
+          -0.77
+        ]
+      ]
+    },
+    "1002": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.41,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.41
+        ],
+        [
+          "n_distinct_values",
+          -1.19
+        ],
+        [
+          "numeric_correlation_mean",
+          0.91
+        ]
+      ]
+    },
+    "1013": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.53,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.53
+        ],
+        [
+          "numeric_correlation_mean",
+          1.3
+        ],
+        [
+          "n_distinct_values",
+          -1.29
+        ]
+      ]
+    },
+    "1015": {
+      "cluster": 4,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.7,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.7
+        ],
+        [
+          "pca_residual",
+          -0.64
+        ],
+        [
+          "numeric_range",
+          -0.58
+        ]
+      ]
+    },
+    "1023": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.32,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.32
+        ],
+        [
+          "numeric_correlation_mean",
+          1.14
+        ],
+        [
+          "n_distinct_values",
+          -1.07
+        ]
+      ]
+    },
+    "1029": {
+      "cluster": 15,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.16,
+      "patterns": [
+        [
+          "n_numeric",
+          1.16
+        ],
+        [
+          "n_cols_total",
+          1.16
+        ],
+        [
+          "row_entropy",
+          -0.75
+        ]
+      ]
+    },
+    "1037": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.32,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.32
+        ],
+        [
+          "n_distinct_values",
+          -1.15
+        ],
+        [
+          "numeric_correlation_mean",
+          0.85
+        ]
+      ]
+    },
+    "1042": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.64,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.64
+        ],
+        [
+          "row_entropy",
+          -0.59
+        ],
+        [
+          "n_distinct_values",
+          -0.56
+        ]
+      ]
+    },
+    "1055": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.41,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.41
+        ],
+        [
+          "n_distinct_values",
+          -1.25
+        ],
+        [
+          "numeric_correlation_mean",
+          0.87
+        ]
+      ]
+    },
+    "1059": {
+      "cluster": 15,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.05,
+      "patterns": [
+        [
+          "n_numeric",
+          1.05
+        ],
+        [
+          "n_cols_total",
+          1.05
+        ],
+        [
+          "row_entropy",
+          -0.87
+        ]
+      ]
+    },
+    "1060": {
+      "cluster": 2,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 0.94,
+      "patterns": [
+        [
+          "numeric_skewness",
+          0.94
+        ],
+        [
+          "numeric_kurtosis",
+          0.82
+        ],
+        [
+          "row_uniformity",
+          0.65
+        ]
+      ]
+    },
+    "1063": {
+      "cluster": 13,
+      "top_pattern": "n_numeric",
+      "effect_d": 3.43,
+      "patterns": [
+        [
+          "n_numeric",
+          3.43
+        ],
+        [
+          "n_cols_total",
+          3.43
+        ],
+        [
+          "centroid_distance",
+          2.62
+        ]
+      ]
+    },
+    "1069": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.46,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.46
+        ],
+        [
+          "n_distinct_values",
+          -1.3
+        ],
+        [
+          "numeric_correlation_mean",
+          0.93
+        ]
+      ]
+    },
+    "1074": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.34,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.34
+        ],
+        [
+          "n_distinct_values",
+          -1.21
+        ],
+        [
+          "numeric_correlation_mean",
+          0.82
+        ]
+      ]
+    },
+    "1083": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.35,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.35
+        ],
+        [
+          "n_distinct_values",
+          -1.22
+        ],
+        [
+          "frac_zeros",
+          -0.84
+        ]
+      ]
+    },
+    "1086": {
+      "cluster": 15,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.84,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.84
+        ],
+        [
+          "pca_residual",
+          -0.79
+        ],
+        [
+          "n_numeric",
+          0.6
+        ]
+      ]
+    },
+    "1101": {
+      "cluster": 24,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.83,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.83
+        ],
+        [
+          "row_uniformity",
+          0.58
+        ],
+        [
+          "frac_zeros",
+          -0.47
+        ]
+      ]
+    },
+    "1103": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.31,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.31
+        ],
+        [
+          "row_uniformity",
+          1.14
+        ],
+        [
+          "numeric_skewness",
+          0.86
+        ]
+      ]
+    },
+    "1110": {
+      "cluster": 13,
+      "top_pattern": "n_numeric",
+      "effect_d": 3.38,
+      "patterns": [
+        [
+          "n_numeric",
+          3.38
+        ],
+        [
+          "n_cols_total",
+          3.38
+        ],
+        [
+          "centroid_distance",
+          2.5
+        ]
+      ]
+    },
+    "1121": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.25,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.25
+        ],
+        [
+          "row_uniformity",
+          1.06
+        ],
+        [
+          "pca_residual",
+          0.84
+        ]
+      ]
+    },
+    "1129": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.06,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.06
+        ],
+        [
+          "n_distinct_values",
+          -0.97
+        ],
+        [
+          "numeric_correlation_mean",
+          0.74
+        ]
+      ]
+    },
+    "1131": {
+      "cluster": 24,
+      "top_pattern": "n_distinct_values",
+      "effect_d": 0.42,
+      "patterns": [
+        [
+          "n_distinct_values",
+          0.42
+        ],
+        [
+          "row_uniformity",
+          0.38
+        ],
+        [
+          "pca_residual",
+          0.38
+        ]
+      ]
+    },
+    "1141": {
+      "cluster": 18,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.65,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.65
+        ],
+        [
+          "row_uniformity",
+          1.41
+        ],
+        [
+          "numeric_skewness",
+          1.24
+        ]
+      ]
+    },
+    "1146": {
+      "cluster": 14,
+      "top_pattern": "n_numeric",
+      "effect_d": 2.17,
+      "patterns": [
+        [
+          "n_numeric",
+          2.17
+        ],
+        [
+          "n_cols_total",
+          2.17
+        ],
+        [
+          "centroid_distance",
+          1.61
+        ]
+      ]
+    },
+    "1159": {
+      "cluster": 8,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 1.43,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          1.43
+        ],
+        [
+          "pca_residual",
+          -1.27
+        ],
+        [
+          "n_distinct_values",
+          -1.05
+        ]
+      ]
+    },
+    "1162": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.3,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.3
+        ],
+        [
+          "n_distinct_values",
+          -1.17
+        ],
+        [
+          "numeric_correlation_mean",
+          0.83
+        ]
+      ]
+    },
+    "1167": {
+      "cluster": 15,
+      "top_pattern": "n_numeric",
+      "effect_d": 0.72,
+      "patterns": [
+        [
+          "n_numeric",
+          0.72
+        ],
+        [
+          "n_cols_total",
+          0.72
+        ],
+        [
+          "row_entropy",
+          -0.69
+        ]
+      ]
+    },
+    "1175": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.35,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.35
+        ],
+        [
+          "row_uniformity",
+          1.0
+        ],
+        [
+          "row_entropy",
+          -0.72
+        ]
+      ]
+    },
+    "1179": {
+      "cluster": 24,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.31,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.31
+        ]
+      ]
+    },
+    "1181": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.35,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.35
+        ],
+        [
+          "n_distinct_values",
+          -1.2
+        ],
+        [
+          "frac_zeros",
+          -0.87
+        ]
+      ]
+    },
+    "1186": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.36,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.36
+        ],
+        [
+          "n_distinct_values",
+          -1.23
+        ],
+        [
+          "numeric_correlation_mean",
+          0.87
+        ]
+      ]
+    },
+    "1196": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.38,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.38
+        ],
+        [
+          "n_distinct_values",
+          -1.24
+        ],
+        [
+          "frac_zeros",
+          -0.85
+        ]
+      ]
+    },
+    "1198": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.28,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.28
+        ],
+        [
+          "n_distinct_values",
+          -1.16
+        ],
+        [
+          "numeric_correlation_mean",
+          0.87
+        ]
+      ]
+    },
+    "1202": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.37,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.37
+        ],
+        [
+          "numeric_correlation_mean",
+          1.28
+        ],
+        [
+          "n_distinct_values",
+          -1.13
+        ]
+      ]
+    },
+    "1206": {
+      "cluster": 17,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.58,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.58
+        ],
+        [
+          "pca_residual",
+          -0.55
+        ],
+        [
+          "row_uniformity",
+          0.38
+        ]
+      ]
+    },
+    "1207": {
+      "cluster": 5,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.9,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.9
+        ],
+        [
+          "row_uniformity",
+          0.58
+        ],
+        [
+          "n_distinct_values",
+          0.47
+        ]
+      ]
+    },
+    "1221": {
+      "cluster": 17,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.51,
+      "patterns": [
+        [
+          "row_entropy",
+          -0.51
+        ],
+        [
+          "frac_zeros",
+          0.47
+        ],
+        [
+          "row_uniformity",
+          0.41
+        ]
+      ]
+    },
+    "1232": {
+      "cluster": 3,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": -0.41,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          -0.41
+        ],
+        [
+          "row_entropy",
+          0.33
+        ],
+        [
+          "pca_residual",
+          0.32
+        ]
+      ]
+    },
+    "1233": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.27,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.27
+        ],
+        [
+          "numeric_correlation_mean",
+          1.13
+        ],
+        [
+          "n_distinct_values",
+          -1.06
+        ]
+      ]
+    },
+    "1235": {
+      "cluster": 8,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.57,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.57
+        ],
+        [
+          "pca_residual",
+          -0.5
+        ]
+      ]
+    },
+    "1240": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.15,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.15
+        ],
+        [
+          "n_distinct_values",
+          -1.02
+        ],
+        [
+          "numeric_correlation_mean",
+          0.84
+        ]
+      ]
+    },
+    "1242": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.14,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.14
+        ],
+        [
+          "n_distinct_values",
+          -1.05
+        ],
+        [
+          "numeric_correlation_mean",
+          0.73
+        ]
+      ]
+    },
+    "1246": {
+      "cluster": 0,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 0.96,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          0.96
+        ],
+        [
+          "pca_residual",
+          -0.7
+        ],
+        [
+          "n_distinct_values",
+          -0.57
+        ]
+      ]
+    },
+    "1256": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.23,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.23
+        ],
+        [
+          "n_distinct_values",
+          -1.13
+        ],
+        [
+          "frac_zeros",
+          -0.81
+        ]
+      ]
+    },
+    "1260": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.18,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.18
+        ],
+        [
+          "n_distinct_values",
+          -1.1
+        ],
+        [
+          "numeric_correlation_mean",
+          0.91
+        ]
+      ]
+    },
+    "1271": {
+      "cluster": 15,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.89,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.89
+        ],
+        [
+          "n_distinct_values",
+          -0.8
+        ],
+        [
+          "numeric_correlation_mean",
+          0.67
+        ]
+      ]
+    },
+    "1276": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.07,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.07
+        ],
+        [
+          "n_distinct_values",
+          -1.07
+        ],
+        [
+          "frac_zeros",
+          -0.79
+        ]
+      ]
+    },
+    "1277": {
+      "cluster": 4,
+      "top_pattern": "numeric_min_zscore",
+      "effect_d": 0.83,
+      "patterns": [
+        [
+          "numeric_min_zscore",
+          0.83
+        ],
+        [
+          "pca_residual",
+          -0.83
+        ],
+        [
+          "n_distinct_values",
+          -0.78
+        ]
+      ]
+    },
+    "1282": {
+      "cluster": 24,
+      "top_pattern": "row_entropy",
+      "effect_d": -0.22,
+      "patterns": []
+    },
+    "1286": {
+      "cluster": 24,
+      "top_pattern": "numeric_skewness",
+      "effect_d": -0.52,
+      "patterns": [
+        [
+          "numeric_skewness",
+          -0.52
+        ],
+        [
+          "frac_zeros",
+          -0.4
+        ]
+      ]
+    },
+    "1287": {
+      "cluster": 17,
+      "top_pattern": "numeric_kurtosis",
+      "effect_d": 0.46,
+      "patterns": [
+        [
+          "numeric_kurtosis",
+          0.46
+        ],
+        [
+          "numeric_correlation_mean",
+          0.37
+        ],
+        [
+          "numeric_skewness",
+          0.36
+        ]
+      ]
+    },
+    "1289": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.46,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.46
+        ],
+        [
+          "n_distinct_values",
+          -1.25
+        ],
+        [
+          "numeric_correlation_mean",
+          1.17
+        ]
+      ]
+    },
+    "1312": {
+      "cluster": 4,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.91,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.91
+        ],
+        [
+          "pca_residual",
+          -0.9
+        ],
+        [
+          "frac_zeros",
+          -0.54
+        ]
+      ]
+    },
+    "1318": {
+      "cluster": 4,
+      "top_pattern": "n_distinct_values",
+      "effect_d": -0.51,
+      "patterns": [
+        [
+          "n_distinct_values",
+          -0.51
+        ],
+        [
+          "numeric_skewness",
+          -0.46
+        ],
+        [
+          "pca_residual",
+          -0.45
+        ]
+      ]
+    },
+    "1320": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.34,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.34
+        ],
+        [
+          "n_distinct_values",
+          -1.19
+        ],
+        [
+          "numeric_min_zscore",
+          0.93
+        ]
+      ]
+    },
+    "1322": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.94,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.94
+        ],
+        [
+          "n_distinct_values",
+          -0.84
+        ],
+        [
+          "frac_zeros",
+          -0.74
+        ]
+      ]
+    },
+    "1327": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.18,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.18
+        ],
+        [
+          "n_distinct_values",
+          -1.02
+        ],
+        [
+          "numeric_correlation_mean",
+          0.82
+        ]
+      ]
+    },
+    "1328": {
+      "cluster": 5,
+      "top_pattern": "frac_zeros",
+      "effect_d": -0.83,
+      "patterns": [
+        [
+          "frac_zeros",
+          -0.83
+        ],
+        [
+          "numeric_correlation_mean",
+          0.74
+        ],
+        [
+          "row_entropy",
+          0.72
+        ]
+      ]
+    },
+    "1335": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.04,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.04
+        ],
+        [
+          "n_distinct_values",
+          -0.91
+        ],
+        [
+          "frac_zeros",
+          -0.78
+        ]
+      ]
+    },
+    "1336": {
+      "cluster": 7,
+      "top_pattern": "frac_negative_outliers",
+      "effect_d": 0.66,
+      "patterns": [
+        [
+          "frac_negative_outliers",
+          0.66
+        ],
+        [
+          "pca_residual",
+          0.64
+        ],
+        [
+          "numeric_correlation_mean",
+          -0.52
+        ]
+      ]
+    },
+    "1338": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.33,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.33
+        ],
+        [
+          "n_distinct_values",
+          -1.16
+        ],
+        [
+          "numeric_correlation_mean",
+          0.97
+        ]
+      ]
+    },
+    "1345": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.11,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.11
+        ],
+        [
+          "numeric_correlation_mean",
+          0.97
+        ],
+        [
+          "n_distinct_values",
+          -0.87
+        ]
+      ]
+    },
+    "1347": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.39,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.39
+        ],
+        [
+          "n_distinct_values",
+          -1.24
+        ],
+        [
+          "numeric_correlation_mean",
+          0.98
+        ]
+      ]
+    },
+    "1348": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.74,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.74
+        ],
+        [
+          "row_uniformity",
+          1.25
+        ],
+        [
+          "row_entropy",
+          -0.81
+        ]
+      ]
+    },
+    "1351": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.39,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.39
+        ],
+        [
+          "n_distinct_values",
+          -1.27
+        ],
+        [
+          "numeric_correlation_mean",
+          0.88
+        ]
+      ]
+    },
+    "1370": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.39,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.39
+        ],
+        [
+          "n_distinct_values",
+          -1.27
+        ],
+        [
+          "numeric_min_zscore",
+          0.86
+        ]
+      ]
+    },
+    "1386": {
+      "cluster": 11,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.19,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.19
+        ],
+        [
+          "n_numeric",
+          1.1
+        ],
+        [
+          "n_cols_total",
+          1.1
+        ]
+      ]
+    },
+    "1388": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.46,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.46
+        ],
+        [
+          "n_distinct_values",
+          -1.22
+        ],
+        [
+          "numeric_correlation_mean",
+          1.11
+        ]
+      ]
+    },
+    "1390": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.15,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.15
+        ],
+        [
+          "n_distinct_values",
+          -1.07
+        ],
+        [
+          "numeric_min_zscore",
+          0.86
+        ]
+      ]
+    },
+    "1391": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.33,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.33
+        ],
+        [
+          "n_distinct_values",
+          -1.25
+        ],
+        [
+          "numeric_min_zscore",
+          0.9
+        ]
+      ]
+    },
+    "1402": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.24,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.24
+        ],
+        [
+          "n_distinct_values",
+          -1.01
+        ],
+        [
+          "frac_zeros",
+          -0.83
+        ]
+      ]
+    },
+    "1409": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.24,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.24
+        ],
+        [
+          "n_distinct_values",
+          -1.07
+        ],
+        [
+          "numeric_correlation_mean",
+          0.99
+        ]
+      ]
+    },
+    "1421": {
+      "cluster": 18,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.56,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.56
+        ],
+        [
+          "row_entropy",
+          -1.41
+        ],
+        [
+          "row_uniformity",
+          1.17
+        ]
+      ]
+    },
+    "1424": {
+      "cluster": 18,
+      "top_pattern": "row_entropy",
+      "effect_d": -1.51,
+      "patterns": [
+        [
+          "row_entropy",
+          -1.51
+        ],
+        [
+          "frac_zeros",
+          1.45
+        ],
+        [
+          "row_uniformity",
+          1.38
+        ]
+      ]
+    },
+    "1428": {
+      "cluster": 22,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.02,
+      "patterns": [
+        [
+          "n_numeric",
+          1.02
+        ],
+        [
+          "n_cols_total",
+          1.02
+        ],
+        [
+          "nearest_neighbor_dist",
+          0.67
+        ]
+      ]
+    },
+    "1429": {
+      "cluster": 15,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.96,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.96
+        ],
+        [
+          "numeric_correlation_mean",
+          0.87
+        ],
+        [
+          "n_distinct_values",
+          -0.85
+        ]
+      ]
+    },
+    "1437": {
+      "cluster": 22,
+      "top_pattern": "n_numeric",
+      "effect_d": 1.45,
+      "patterns": [
+        [
+          "n_numeric",
+          1.45
+        ],
+        [
+          "n_cols_total",
+          1.45
+        ],
+        [
+          "centroid_distance",
+          1.09
+        ]
+      ]
+    },
+    "1442": {
+      "cluster": 8,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.31,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.31
+        ],
+        [
+          "n_distinct_values",
+          -1.19
+        ],
+        [
+          "numeric_correlation_mean",
+          0.83
+        ]
+      ]
+    },
+    "1451": {
+      "cluster": 2,
+      "top_pattern": "row_uniformity",
+      "effect_d": 0.67,
+      "patterns": [
+        [
+          "row_uniformity",
+          0.67
+        ],
+        [
+          "n_distinct_values",
+          0.52
+        ],
+        [
+          "numeric_min_zscore",
+          -0.48
+        ]
+      ]
+    },
+    "1454": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.33,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.33
+        ],
+        [
+          "n_distinct_values",
+          -1.13
+        ],
+        [
+          "numeric_min_zscore",
+          0.88
+        ]
+      ]
+    },
+    "1462": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.3,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.3
+        ],
+        [
+          "n_distinct_values",
+          -1.21
+        ],
+        [
+          "numeric_correlation_mean",
+          0.8
+        ]
+      ]
+    },
+    "1466": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.88,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.88
+        ],
+        [
+          "numeric_correlation_mean",
+          0.72
+        ],
+        [
+          "n_distinct_values",
+          -0.68
+        ]
+      ]
+    },
+    "1477": {
+      "cluster": 10,
+      "top_pattern": "frac_zeros",
+      "effect_d": 1.83,
+      "patterns": [
+        [
+          "frac_zeros",
+          1.83
+        ],
+        [
+          "row_uniformity",
+          1.36
+        ],
+        [
+          "numeric_range",
+          1.03
+        ]
+      ]
+    },
+    "1479": {
+      "cluster": 5,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.91,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.91
+        ],
+        [
+          "row_uniformity",
+          -0.84
+        ],
+        [
+          "frac_zeros",
+          -0.78
+        ]
+      ]
+    },
+    "1497": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.12,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.12
+        ],
+        [
+          "n_distinct_values",
+          -1.01
+        ],
+        [
+          "numeric_correlation_mean",
+          0.95
+        ]
+      ]
+    },
+    "1506": {
+      "cluster": 2,
+      "top_pattern": "numeric_skewness",
+      "effect_d": 0.95,
+      "patterns": [
+        [
+          "numeric_skewness",
+          0.95
+        ],
+        [
+          "row_uniformity",
+          0.91
+        ],
+        [
+          "numeric_kurtosis",
+          0.89
+        ]
+      ]
+    },
+    "1509": {
+      "cluster": 23,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.31,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.31
+        ],
+        [
+          "n_distinct_values",
+          -1.13
+        ],
+        [
+          "numeric_correlation_mean",
+          0.9
+        ]
+      ]
+    },
+    "1515": {
+      "cluster": 4,
+      "top_pattern": "pca_residual",
+      "effect_d": -1.23,
+      "patterns": [
+        [
+          "pca_residual",
+          -1.23
+        ],
+        [
+          "n_distinct_values",
+          -0.99
+        ],
+        [
+          "frac_zeros",
+          -0.77
+        ]
+      ]
+    },
+    "1523": {
+      "cluster": 8,
+      "top_pattern": "numeric_correlation_mean",
+      "effect_d": 1.67,
+      "patterns": [
+        [
+          "numeric_correlation_mean",
+          1.67
+        ],
+        [
+          "pca_residual",
+          -1.21
+        ],
+        [
+          "n_distinct_values",
+          -0.84
+        ]
+      ]
+    },
+    "1525": {
+      "cluster": 17,
+      "top_pattern": "frac_zeros",
+      "effect_d": 0.45,
+      "patterns": [
+        [
+          "frac_zeros",
+          0.45
+        ],
+        [
+          "row_entropy",
+          -0.4
+        ],
+        [
+          "target_is_minority",
+          0.35
+        ]
+      ]
+    },
+    "1526": {
+      "cluster": 0,
+      "top_pattern": "pca_residual",
+      "effect_d": -0.83,
+      "patterns": [
+        [
+          "pca_residual",
+          -0.83
+        ],
+        [
+          "frac_zeros",
+          -0.64
+        ],
+        [
+          "numeric_correlation_mean",
+          0.6
+        ]
+      ]
+    }
+  },
+  "cluster_themes": {
+    "23": {
+      "n_features": 101,
+      "theme": "very low PCA reconstruction error; very low distinct value count; datasets with "
+    },
+    "3": {
+      "n_features": 52,
+      "theme": "low numeric skewness; low fraction of zeros (sparsity); datasets with low numeri"
+    },
+    "4": {
+      "n_features": 38,
+      "theme": "low PCA reconstruction error; low distinct value count; datasets with high featu"
+    },
+    "5": {
+      "n_features": 35,
+      "theme": "low PCA reconstruction error; low row uniformity (repetitiveness); low fraction "
+    },
+    "2": {
+      "n_features": 30,
+      "theme": "high row uniformity (repetitiveness); high PCA reconstruction error; high numeri"
+    },
+    "0": {
+      "n_features": 29,
+      "theme": "low PCA reconstruction error; low distinct value count; high minimum deviation f"
+    },
+    "8": {
+      "n_features": 25,
+      "theme": "very low PCA reconstruction error; datasets with very high feature correlation; "
+    },
+    "17": {
+      "n_features": 22,
+      "theme": "high fraction of zeros (sparsity); high row uniformity (repetitiveness)"
+    },
+    "24": {
+      "n_features": 22,
+      "theme": "low numeric skewness"
+    },
+    "1": {
+      "n_features": 20,
+      "theme": "very high fraction of negative values; high distinct value count; high row compl"
+    },
+    "10": {
+      "n_features": 19,
+      "theme": "very high fraction of zeros (sparsity); very high row uniformity (repetitiveness"
+    },
+    "6": {
+      "n_features": 14,
+      "theme": "very high numeric heavy-tailedness; very high isolation (far from neighbors); ve"
+    },
+    "11": {
+      "n_features": 13,
+      "theme": "very high fraction of zeros (sparsity); very high row uniformity (repetitiveness"
+    },
+    "18": {
+      "n_features": 13,
+      "theme": "very high fraction of zeros (sparsity); high row uniformity (repetitiveness); lo"
+    },
+    "15": {
+      "n_features": 11,
+      "theme": "low row complexity/entropy; datasets with high numeric columns; high total colum"
+    },
+    "7": {
+      "n_features": 7,
+      "theme": "low row complexity/entropy; high row uniformity (repetitiveness); high negative "
+    },
+    "9": {
+      "n_features": 7,
+      "theme": "high fraction of negative values; high row uniformity (repetitiveness); high PCA"
+    },
+    "14": {
+      "n_features": 7,
+      "theme": "datasets with high numeric columns; high total columns; very high distance from "
+    },
+    "16": {
+      "n_features": 6,
+      "theme": "very high distance from centroid (atypical); very high isolation (far from neigh"
+    },
+    "21": {
+      "n_features": 6,
+      "theme": "very high extreme numeric value; very high numeric heavy-tailedness; very high i"
+    },
+    "13": {
+      "n_features": 5,
+      "theme": "datasets with high numeric columns; high total columns; very high distance from "
+    },
+    "19": {
+      "n_features": 5,
+      "theme": "datasets with high numeric columns; high total columns; very high distance from "
+    },
+    "12": {
+      "n_features": 4,
+      "theme": "datasets with high numeric columns; high total columns; very high isolation (far"
+    },
+    "20": {
+      "n_features": 3,
+      "theme": "high local density (crowded region); datasets with high feature correlation; hig"
+    },
+    "22": {
+      "n_features": 3,
+      "theme": "datasets with high numeric columns; high total columns; high distance from centr"
+    }
+  }
+}

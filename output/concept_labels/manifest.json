@@ -1,0 +1,6 @@
+{
+  "n_features": 1162,
+  "n_batches": 47,
+  "batch_size": 25,
+  "batch_dir": "output/concept_labels/batches"
+}

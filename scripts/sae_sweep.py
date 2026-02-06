@@ -202,6 +202,7 @@ def run_sae_training(config: Dict, embeddings: np.ndarray, device: str = "cpu") 
         topk=config.get("topk", 32),
         matryoshka_dims=[hidden_dim // 8, hidden_dim // 4, hidden_dim // 2, hidden_dim],
         archetypal_simplex_temp=config.get("archetypal_temp", 1.0),
+        archetypal_n_archetypes=config.get("archetypal_n_archetypes", None),
         use_aux_loss=config.get("use_aux_loss", True) and sae_type != "archetypal",
         aux_loss_coef=1e-2,
         dead_threshold=5000,
@@ -390,10 +391,14 @@ def create_optuna_objective(embeddings: np.ndarray, device: str = "cuda"):
 
         if sae_type == "archetypal" or sae_type == "matryoshka_archetypal":
             archetypal_temp = trial.suggest_float("archetypal_temp", 0.1, 2.0)
+            # Number of reference points (data samples) for convex hull constraint
+            # More refs = better expressiveness, fewer refs = more stable features
+            archetypal_n_archetypes = trial.suggest_categorical("archetypal_n_archetypes", [256, 512, 1000])
             if sae_type == "archetypal":
                 use_aux_loss = False  # Not applicable for pure archetypal
         else:
             archetypal_temp = 1.0
+            archetypal_n_archetypes = None
 
         config = {
             "sae_type": sae_type,
@@ -404,6 +409,7 @@ def create_optuna_objective(embeddings: np.ndarray, device: str = "cuda"):
             "batch_size": batch_size,
             "topk": topk,
             "archetypal_temp": archetypal_temp,
+            "archetypal_n_archetypes": archetypal_n_archetypes,
             "n_epochs": 100,
         }
 
