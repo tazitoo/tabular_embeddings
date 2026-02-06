@@ -33,7 +33,23 @@ def load_sae_checkpoint(path: Path) -> Tuple[SparseAutoencoder, SAEConfig, Dict]
 
     config = SAEConfig(**checkpoint['config'])
     model = SparseAutoencoder(config)
-    model.load_state_dict(checkpoint['model_state_dict'])
+
+    # For archetypal SAEs, we need to initialize the archetype parameters
+    # before loading state dict
+    state_dict = checkpoint['model_state_dict']
+    if 'reference_data' in state_dict and state_dict['reference_data'] is not None:
+        # Initialize with dummy data, will be overwritten by load_state_dict
+        ref_data = state_dict['reference_data']
+        n_ref = len(ref_data)
+
+        # Register the buffer and parameter with correct shapes
+        model.register_buffer('reference_data', ref_data)
+        if 'archetype_logits' in state_dict:
+            model.archetype_logits = torch.nn.Parameter(state_dict['archetype_logits'])
+        if 'archetype_deviation' in state_dict:
+            model.archetype_deviation = torch.nn.Parameter(state_dict['archetype_deviation'])
+
+    model.load_state_dict(state_dict)
     model.eval()
 
     return model, config, checkpoint
