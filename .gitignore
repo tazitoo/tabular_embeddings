@@ -210,6 +210,7 @@ __marimo__/
 data/*.npy
 data/*.pkl
 data/embeddings/
+data/cache/
 output/*.png
 output/*.pdf
 output/*.csv

@@ -750,12 +750,39 @@ TABARENA_DATASETS = {
 }
 
 
+from pathlib import Path as _Path
+
+_TABARENA_CACHE_DIR = _Path(__file__).parent / "cache" / "tabarena"
+
+
+def _load_tabarena_cached(name: str, info: dict) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Load preprocessed (X, y) from cache, or return None."""
+    cache_path = _TABARENA_CACHE_DIR / f"{name}.npz"
+    if cache_path.exists():
+        data = np.load(cache_path, allow_pickle=True)
+        return data["X"], data["y"]
+    return None
+
+
+def _save_tabarena_cache(name: str, X: np.ndarray, y: np.ndarray, task: str) -> None:
+    """Save preprocessed (X, y) to cache."""
+    _TABARENA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        str(_TABARENA_CACHE_DIR / f"{name}.npz"),
+        X=X, y=y, task=np.array(task),
+    )
+
+
 def load_tabarena_dataset(
     name: str,
     max_samples: int = 10000,
 ) -> Optional[Tuple[np.ndarray, np.ndarray, DatasetMetadata]]:
     """
     Load a dataset from the TabArena benchmark (OpenML suite 457).
+
+    Uses a persistent cache at data/cache/tabarena/ to avoid repeated
+    OpenML downloads. The cache stores the full preprocessed dataset;
+    subsampling is applied after loading.
 
     Args:
         name: Dataset name from TABARENA_DATASETS
@@ -765,48 +792,56 @@ def load_tabarena_dataset(
         (X, y, metadata) tuple or None
     """
     try:
-        from sklearn.datasets import fetch_openml
-
         if name not in TABARENA_DATASETS:
             print(f"Dataset '{name}' not in TABARENA_DATASETS catalog")
             return None
 
         info = TABARENA_DATASETS[name]
-        dataset_id = info["openml_id"]
         task = info["task"]
 
-        data = fetch_openml(data_id=dataset_id, as_frame=True, parser="auto")
-        X = data.data.copy()  # Copy to avoid SettingWithCopyWarning
-        y = data.target
-
-        # Handle categorical features
-        cat_cols = X.select_dtypes(include=["category", "object"]).columns
-        for col in cat_cols:
-            X[col] = X[col].astype("category").cat.codes
-
-        X = X.values.astype(np.float32)
-
-        # Handle target
-        if task == "classification":
-            if y.dtype == "object" or y.dtype.name == "category":
-                y = pd.Categorical(y).codes
-            y = np.asarray(y).astype(int)
+        # Try cache first
+        cached = _load_tabarena_cached(name, info)
+        if cached is not None:
+            X, y = cached
         else:
-            y = np.asarray(y).astype(np.float32)
+            from sklearn.datasets import fetch_openml
 
-        # Remove NaN targets
-        if task == "regression":
-            valid = ~np.isnan(y)
-            X, y = X[valid], y[valid]
+            dataset_id = info["openml_id"]
+            data = fetch_openml(data_id=dataset_id, as_frame=True, parser="auto")
+            X = data.data.copy()
+            y = data.target
+
+            # Handle categorical features
+            cat_cols = X.select_dtypes(include=["category", "object"]).columns
+            for col in cat_cols:
+                X[col] = X[col].astype("category").cat.codes
+
+            X = X.values.astype(np.float32)
+
+            # Handle target
+            if task == "classification":
+                if y.dtype == "object" or y.dtype.name == "category":
+                    y = pd.Categorical(y).codes
+                y = np.asarray(y).astype(int)
+            else:
+                y = np.asarray(y).astype(np.float32)
+
+            # Remove NaN targets
+            if task == "regression":
+                valid = ~np.isnan(y)
+                X, y = X[valid], y[valid]
+
+            # Handle NaN in features
+            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+            # Cache the full preprocessed dataset
+            _save_tabarena_cache(name, X, y, task)
 
         # Subsample
         if len(X) > max_samples:
             rng = np.random.RandomState(42)
             idx = rng.choice(len(X), max_samples, replace=False)
             X, y = X[idx], y[idx]
-
-        # Handle NaN in features
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
         n_classes = len(np.unique(y)) if task == "classification" else None
 

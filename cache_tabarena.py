@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Pre-cache all TabArena datasets from OpenML to local disk."""
+"""Pre-cache all TabArena datasets to data/cache/tabarena/ as .npz files.
+
+After running this, load_tabarena_dataset() loads from cache (~100ms)
+instead of downloading from OpenML (~30-60s per dataset).
+"""
 
 import signal
 import sys
@@ -7,45 +11,44 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data.extended_loader import TABARENA_DATASETS
+from data.extended_loader import TABARENA_DATASETS, load_tabarena_dataset, _TABARENA_CACHE_DIR
 
 
 def timeout_handler(signum, frame):
     raise TimeoutError("Download timed out")
 
 
-def cache_dataset(name: str, info: dict, timeout_sec: int = 120) -> bool:
-    """Download one dataset with a timeout."""
-    from sklearn.datasets import fetch_openml
-
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(timeout_sec)
-    try:
-        data = fetch_openml(data_id=info["openml_id"], as_frame=True, parser="auto")
-        signal.alarm(0)
-        n_rows = len(data.data)
-        n_cols = data.data.shape[1]
-        print(f"  OK ({n_rows} x {n_cols}, {info['task']}, {info['domain']})")
-        return True
-    except TimeoutError:
-        print(f"  TIMEOUT (>{timeout_sec}s)")
-        return False
-    except Exception as e:
-        signal.alarm(0)
-        print(f"  FAILED: {e}")
-        return False
-
-
 def main():
-    print(f"Pre-caching {len(TABARENA_DATASETS)} TabArena datasets from OpenML...\n")
+    print(f"Pre-caching {len(TABARENA_DATASETS)} TabArena datasets")
+    print(f"Cache dir: {_TABARENA_CACHE_DIR}\n")
 
-    ok, fail, timeout = [], [], []
+    ok, fail = [], []
     for i, (name, info) in enumerate(TABARENA_DATASETS.items(), 1):
-        print(f"[{i}/{len(TABARENA_DATASETS)}] {name}...", end="", flush=True)
-        success = cache_dataset(name, info)
-        if success:
+        cache_path = _TABARENA_CACHE_DIR / f"{name}.npz"
+        if cache_path.exists():
+            print(f"[{i}/{len(TABARENA_DATASETS)}] {name}: cached")
             ok.append(name)
-        else:
+            continue
+
+        print(f"[{i}/{len(TABARENA_DATASETS)}] {name}...", end="", flush=True)
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(120)
+        try:
+            result = load_tabarena_dataset(name, max_samples=999_999)
+            signal.alarm(0)
+            if result is not None:
+                X, y, meta = result
+                print(f"  OK ({meta.n_samples} x {meta.n_features}, {info['task']})")
+                ok.append(name)
+            else:
+                print("  FAILED: loader returned None")
+                fail.append(name)
+        except TimeoutError:
+            print("  TIMEOUT (>120s)")
+            fail.append(name)
+        except Exception as e:
+            signal.alarm(0)
+            print(f"  FAILED: {e}")
             fail.append(name)
 
     print(f"\n{'='*50}")

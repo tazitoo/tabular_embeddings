@@ -709,16 +709,21 @@ def main():
     parser = argparse.ArgumentParser(description="SAE TabArena Sweep")
     parser.add_argument("--setup", action="store_true", help="Check data and show splits")
     parser.add_argument("--model", type=str, default="tabpfn", help="Model name")
+    parser.add_argument("--layer", type=int, default=None,
+                        help="Intermediate layer index (e.g. 16 for TabPFN)")
     parser.add_argument("--n-trials", type=int, default=30, help="Trials per SAE type")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate on test set")
     args = parser.parse_args()
 
+    # When --layer is given, embeddings live under {model}_layer{N}
+    effective_model = f"{args.model}_layer{args.layer}" if args.layer is not None else args.model
+
     if args.setup:
-        setup_check(args.model)
+        setup_check(effective_model)
     elif args.evaluate:
-        evaluate_on_test(args.model)
+        evaluate_on_test(effective_model)
     else:
-        run_sweep(args.model, n_trials=args.n_trials)
+        run_sweep(effective_model, n_trials=args.n_trials)
 
 
 if __name__ == "__main__":
