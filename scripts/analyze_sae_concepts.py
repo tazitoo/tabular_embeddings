@@ -36,7 +36,21 @@ from sklearn.decomposition import PCA
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import hashlib
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
+
+
+def get_train_test_split(datasets: List[str]) -> Tuple[List[str], List[str]]:
+    """Deterministic train/test split matching sae_tabarena_sweep.py."""
+    train_datasets = []
+    test_datasets = []
+    for ds in datasets:
+        h = int(hashlib.md5(ds.encode()).hexdigest(), 16)
+        if h % 10 < 7:  # 70% train
+            train_datasets.append(ds)
+        else:
+            test_datasets.append(ds)
+    return train_datasets, test_datasets
 
 
 def load_sae_checkpoint(path: Path) -> Tuple[SparseAutoencoder, SAEConfig, Dict]:
@@ -70,8 +84,14 @@ def load_sae_checkpoint(path: Path) -> Tuple[SparseAutoencoder, SAEConfig, Dict]
 def load_embeddings_by_dataset(
     model_name: str = "tabpfn",
     max_per_dataset: int = 200,
-) -> Dict[str, np.ndarray]:
-    """Load embeddings grouped by dataset."""
+) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+    """
+    Load embeddings grouped by dataset.
+
+    Returns:
+        embeddings: Dict mapping dataset name to embeddings
+        train_std: Per-dimension std from TRAINING datasets only (for normalization)
+    """
     emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / model_name
 
     dataset_embeddings = {}
@@ -87,12 +107,21 @@ def load_embeddings_by_dataset(
 
         dataset_embeddings[ds_name] = emb
 
-    return dataset_embeddings
+    # Compute normalization from training data only (matching sweep script)
+    train_datasets, test_datasets = get_train_test_split(list(dataset_embeddings.keys()))
+    train_emb = np.concatenate([dataset_embeddings[ds] for ds in train_datasets])
+    train_std = train_emb.std(axis=0, keepdims=True)
+    train_std[train_std < 1e-8] = 1.0
+
+    print(f"  Train/test split: {len(train_datasets)}/{len(test_datasets)}")
+
+    return dataset_embeddings, train_std
 
 
 def analyze_feature_activations(
     model: SparseAutoencoder,
     embeddings: Dict[str, np.ndarray],
+    std: np.ndarray,
     top_k: int = 10,
 ) -> Dict:
     """
@@ -103,10 +132,6 @@ def analyze_feature_activations(
     - Activation sparsity
     - Mean/max activation per dataset
     """
-    # Normalize embeddings (same as training)
-    all_emb = np.concatenate(list(embeddings.values()))
-    std = all_emb.std(axis=0, keepdims=True)
-    std[std < 1e-8] = 1.0
 
     # Get activations for each dataset
     dataset_activations = {}
@@ -157,16 +182,15 @@ def analyze_feature_activations(
 def analyze_input_correlations(
     model: SparseAutoencoder,
     embeddings: Dict[str, np.ndarray],
+    std: np.ndarray,
 ) -> np.ndarray:
     """
     Correlate each SAE feature with input embedding dimensions.
 
     Returns: (hidden_dim, input_dim) correlation matrix
     """
-    # Pool and normalize
+    # Pool and normalize using training std
     all_emb = np.concatenate(list(embeddings.values()))
-    std = all_emb.std(axis=0, keepdims=True)
-    std[std < 1e-8] = 1.0
     emb_norm = all_emb / std
 
     # Get activations
@@ -197,6 +221,7 @@ def analyze_input_correlations(
 def analyze_matryoshka_scales(
     model: SparseAutoencoder,
     embeddings: Dict[str, np.ndarray],
+    std: np.ndarray,
     scales: List[int] = None,
 ) -> Dict:
     """
@@ -210,11 +235,6 @@ def analyze_matryoshka_scales(
         hidden_dim = model.config.hidden_dim
         scales = [32, 64, 128, 256, 512, 1024, hidden_dim]
         scales = [s for s in scales if s <= hidden_dim]
-
-    # Pool and normalize
-    all_emb = np.concatenate(list(embeddings.values()))
-    std = all_emb.std(axis=0, keepdims=True)
-    std[std < 1e-8] = 1.0
 
     results = {}
 
@@ -305,6 +325,7 @@ def cluster_features(
 def find_interpretable_features(
     model: SparseAutoencoder,
     embeddings: Dict[str, np.ndarray],
+    std: np.ndarray,
     correlations: np.ndarray,
     top_k: int = 20,
 ) -> List[Dict]:
@@ -314,11 +335,6 @@ def find_interpretable_features(
     2. Strong correlation with specific input dimensions
     3. Clear semantic meaning
     """
-    # Pool and normalize
-    all_emb = np.concatenate(list(embeddings.values()))
-    std = all_emb.std(axis=0, keepdims=True)
-    std[std < 1e-8] = 1.0
-
     # Get activations per dataset
     dataset_mean_acts = {}
     for ds_name, emb in embeddings.items():
@@ -378,7 +394,7 @@ def main():
     print(f"  Input dim: {config.input_dim}")
 
     print("\nLoading embeddings by dataset...")
-    embeddings = load_embeddings_by_dataset()
+    embeddings, train_std = load_embeddings_by_dataset()
     print(f"  Loaded {len(embeddings)} datasets")
     print(f"  Total samples: {sum(len(e) for e in embeddings.values())}")
 
@@ -388,7 +404,7 @@ def main():
 
     # 1. Feature activations
     print("\n1. Analyzing feature activations...")
-    activation_stats = analyze_feature_activations(model, embeddings)
+    activation_stats = analyze_feature_activations(model, embeddings, train_std)
 
     # Summary stats
     sparsities = [f['sparsity'] for f in activation_stats['feature_stats']]
@@ -397,13 +413,13 @@ def main():
 
     # 2. Input correlations
     print("\n2. Computing input correlations...")
-    correlations = analyze_input_correlations(model, embeddings)
+    correlations = analyze_input_correlations(model, embeddings, train_std)
     print(f"  Max absolute correlation: {np.abs(correlations).max():.3f}")
     print(f"  Mean absolute correlation: {np.abs(correlations).mean():.3f}")
 
     # 3. Matryoshka scale analysis
     print("\n3. Analyzing Matryoshka scales...")
-    scale_analysis = analyze_matryoshka_scales(model, embeddings)
+    scale_analysis = analyze_matryoshka_scales(model, embeddings, train_std)
     print("  R² by scale:")
     for scale, stats in scale_analysis['aggregated'].items():
         print(f"    {scale:4d} features: R²={stats['mean_r2']:.3f} ± {stats['std_r2']:.3f}")
@@ -415,7 +431,7 @@ def main():
 
     # 5. Most interpretable features
     print("\n5. Finding most interpretable features...")
-    interpretable = find_interpretable_features(model, embeddings, correlations, top_k=args.top_k)
+    interpretable = find_interpretable_features(model, embeddings, train_std, correlations, top_k=args.top_k)
 
     print(f"\nTop {args.top_k} most interpretable features:")
     print("-"*60)
