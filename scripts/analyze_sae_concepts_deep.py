@@ -661,12 +661,109 @@ def interpret_pattern(patterns: List[Tuple[str, float]]) -> str:
     return "; ".join(interpretations)
 
 
+def cluster_concepts(
+    feature_analysis: Dict,
+    meta_names: List[str],
+    n_clusters: int = 20,
+) -> Dict:
+    """
+    Cluster SAE features by their meta-feature effect profiles.
+
+    This groups features that trigger on similar tabular patterns.
+    """
+    from sklearn.cluster import KMeans, AgglomerativeClustering
+    from sklearn.preprocessing import StandardScaler
+
+    # Build effect size matrix: (n_features, n_meta_features)
+    feature_ids = list(feature_analysis.keys())
+    effect_matrix = np.array([
+        [feature_analysis[fid]['effect_sizes'].get(name, 0.0) for name in meta_names]
+        for fid in feature_ids
+    ])
+
+    # Standardize for clustering
+    scaler = StandardScaler()
+    effect_scaled = scaler.fit_transform(effect_matrix)
+
+    # Hierarchical clustering for interpretable groups
+    clustering = AgglomerativeClustering(n_clusters=n_clusters, linkage='ward')
+    labels = clustering.fit_predict(effect_scaled)
+
+    # Analyze each cluster
+    clusters = {}
+    for cluster_id in range(n_clusters):
+        mask = labels == cluster_id
+        cluster_features = [fid for fid, m in zip(feature_ids, mask) if m]
+
+        if not cluster_features:
+            continue
+
+        # Mean effect sizes for this cluster
+        cluster_effects = effect_matrix[mask].mean(axis=0)
+
+        # Find dominant patterns (top effects by magnitude)
+        effect_dict = {name: float(cluster_effects[i]) for i, name in enumerate(meta_names)}
+        sorted_effects = sorted(effect_dict.items(), key=lambda x: -abs(x[1]))
+        dominant = [(name, d) for name, d in sorted_effects if abs(d) > 0.2][:5]
+
+        clusters[cluster_id] = {
+            'n_features': len(cluster_features),
+            'feature_ids': cluster_features,
+            'mean_effects': effect_dict,
+            'dominant_patterns': dominant,
+            'interpretation': interpret_pattern(dominant),
+        }
+
+    # Sort clusters by size
+    clusters = dict(sorted(clusters.items(), key=lambda x: -x[1]['n_features']))
+
+    return {
+        'n_clusters': n_clusters,
+        'clusters': clusters,
+        'feature_to_cluster': {fid: int(labels[i]) for i, fid in enumerate(feature_ids)},
+    }
+
+
+def compute_concept_coverage(
+    feature_analysis: Dict,
+    meta_names: List[str],
+    threshold: float = 0.3,
+) -> Dict:
+    """
+    Compute which meta-features are covered by the SAE's concepts.
+
+    A meta-feature is "covered" if some SAE feature has strong effect on it.
+    """
+    coverage = {name: {'max_positive': 0.0, 'max_negative': 0.0, 'n_strong': 0}
+                for name in meta_names}
+
+    for fid, analysis in feature_analysis.items():
+        for name in meta_names:
+            d = analysis['effect_sizes'].get(name, 0.0)
+            if d > coverage[name]['max_positive']:
+                coverage[name]['max_positive'] = d
+            if d < coverage[name]['max_negative']:
+                coverage[name]['max_negative'] = d
+            if abs(d) > threshold:
+                coverage[name]['n_strong'] += 1
+
+    # Compute coverage score: max(|max_pos|, |max_neg|)
+    for name in meta_names:
+        coverage[name]['coverage_score'] = max(
+            abs(coverage[name]['max_positive']),
+            abs(coverage[name]['max_negative'])
+        )
+
+    return coverage
+
+
 def main():
     parser = argparse.ArgumentParser(description="Deep SAE concept analysis")
     parser.add_argument("--model-path", type=str, required=True, help="Path to SAE checkpoint")
     parser.add_argument("--output", type=str, default=None, help="Output JSON path")
-    parser.add_argument("--top-k-features", type=int, default=20, help="Number of features to analyze")
+    parser.add_argument("--top-k-features", type=int, default=None, help="Number of features (None=all alive)")
     parser.add_argument("--samples-per-feature", type=int, default=100, help="Top samples per feature")
+    parser.add_argument("--n-clusters", type=int, default=25, help="Number of concept clusters")
     args = parser.parse_args()
 
     print("Loading SAE checkpoint...")
@@ -700,15 +797,29 @@ def main():
     train_norm = train_pooled / train_std
     train_mean = train_norm.mean(axis=0, keepdims=True)
 
-    # Find top features by mean activation
-    print("\nFinding most active features...")
+    # Find all alive features (or top-k if specified)
+    print("\nFinding active features...")
     train_centered = train_norm - train_mean
     with torch.no_grad():
         h = model.encode(torch.tensor(train_centered, dtype=torch.float32)).numpy()
 
     feature_means = h.mean(axis=0)
-    top_features = np.argsort(feature_means)[-args.top_k_features:][::-1].tolist()
-    print(f"  Top {args.top_k_features} features by mean activation: {top_features[:10]}...")
+    feature_max = h.max(axis=0)
+    alive_mask = feature_max > 0.01  # Feature fires on at least some samples
+    alive_features = np.where(alive_mask)[0].tolist()
+
+    print(f"  Total features: {config.hidden_dim}")
+    print(f"  Alive features: {len(alive_features)} ({100*len(alive_features)/config.hidden_dim:.1f}%)")
+
+    if args.top_k_features is not None:
+        # Use top-k by mean activation
+        sorted_features = np.argsort(feature_means)[::-1]
+        top_features = [f for f in sorted_features if f in alive_features][:args.top_k_features]
+        print(f"  Analyzing top {len(top_features)} features")
+    else:
+        # Analyze ALL alive features
+        top_features = alive_features
+        print(f"  Analyzing ALL {len(top_features)} alive features")
 
     # Deep analysis
     print("\n" + "="*60)
@@ -724,19 +835,78 @@ def main():
         samples_per_feature=args.samples_per_feature,
     )
 
-    # Print results
-    print("\n" + "-"*60)
-    print("FEATURE INTERPRETATIONS")
-    print("-"*60)
+    # Meta-feature names for clustering
+    meta_names = [
+        'missing_rate', 'missing_numeric_rate', 'missing_categorical_rate',
+        'numeric_mean_zscore', 'numeric_max_zscore', 'numeric_min_zscore',
+        'numeric_std', 'numeric_skewness', 'numeric_kurtosis',
+        'numeric_range', 'numeric_iqr', 'frac_zeros', 'frac_negative',
+        'frac_positive_outliers', 'frac_negative_outliers',
+        'categorical_rarity', 'categorical_modal_frac', 'n_rare_categories',
+        'n_unique_categories', 'categorical_entropy',
+        'row_entropy', 'row_uniformity', 'n_distinct_values',
+        'centroid_distance', 'nearest_neighbor_dist', 'local_density',
+        'pca_pc1', 'pca_pc2', 'pca_residual',
+        'n_numeric', 'n_categorical', 'n_rows_total', 'n_cols_total',
+        'dataset_sparsity', 'numeric_correlation_mean',
+        'target_is_minority', 'target_zscore',
+    ]
 
-    for feat_idx, analysis in results.get('features', {}).items():
-        print(f"\nFeature {feat_idx}:")
-        print(f"  Interpretation: {analysis['interpretation']}")
-        print(f"  Top datasets: {[d[0] for d in analysis['top_datasets'][:3]]}")
+    # Cluster features by their effect profiles
+    print("\n" + "="*60)
+    print("CONCEPT CLUSTERING")
+    print("="*60)
 
-        # Show top effect sizes
-        effects = sorted(analysis['effect_sizes'].items(), key=lambda x: -abs(x[1]))[:3]
-        print(f"  Top effects: {[(n, f'{d:.2f}') for n, d in effects]}")
+    if len(results.get('features', {})) > args.n_clusters:
+        cluster_results = cluster_concepts(
+            results['features'],
+            meta_names,
+            n_clusters=args.n_clusters,
+        )
+        results['clustering'] = cluster_results
+
+        print(f"\nFound {args.n_clusters} concept clusters:")
+        print("-"*60)
+        for cid, cluster in cluster_results['clusters'].items():
+            print(f"\nCluster {cid} ({cluster['n_features']} features):")
+            print(f"  Interpretation: {cluster['interpretation']}")
+            if cluster['dominant_patterns']:
+                patterns = [(n, f"{d:.2f}") for n, d in cluster['dominant_patterns'][:3]]
+                print(f"  Key patterns: {patterns}")
+
+    # Compute coverage - which meta-features are well-represented?
+    print("\n" + "="*60)
+    print("META-FEATURE COVERAGE")
+    print("="*60)
+
+    coverage = compute_concept_coverage(results['features'], meta_names)
+    results['coverage'] = coverage
+
+    # Sort by coverage score
+    sorted_coverage = sorted(coverage.items(), key=lambda x: -x[1]['coverage_score'])
+
+    print("\nWell-covered meta-features (max |d| > 1.0):")
+    for name, cov in sorted_coverage:
+        if cov['coverage_score'] > 1.0:
+            print(f"  {name}: max_d={cov['coverage_score']:.2f}, n_strong={cov['n_strong']}")
+
+    print("\nPoorly-covered meta-features (max |d| < 0.5):")
+    gaps = []
+    for name, cov in sorted_coverage:
+        if cov['coverage_score'] < 0.5:
+            gaps.append(name)
+            print(f"  {name}: max_d={cov['coverage_score']:.2f}")
+
+    if gaps:
+        print(f"\n⚠ GAPS: The SAE has weak coverage for: {gaps}")
+
+    # Print summary statistics
+    print("\n" + "="*60)
+    print("SUMMARY")
+    print("="*60)
+    print(f"  Total features analyzed: {len(results['features'])}")
+    print(f"  Meta-features with strong coverage: {sum(1 for c in coverage.values() if c['coverage_score'] > 1.0)}")
+    print(f"  Meta-features with weak coverage: {sum(1 for c in coverage.values() if c['coverage_score'] < 0.5)}")
 
     # Save results
     if args.output:
