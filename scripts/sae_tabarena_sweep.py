@@ -42,33 +42,38 @@ from analysis.sparse_autoencoder import (
 # Fixed random seed for reproducible splits
 SPLIT_SEED = 42
 
-# TabArena train/test split (70/30, stratified by size)
-# This is deterministic based on dataset names
-def get_tabarena_splits() -> Tuple[List[str], List[str]]:
+
+def get_available_datasets(model_name: str) -> List[str]:
+    """
+    Discover available embeddings for a model.
+
+    Dynamically finds all extracted embeddings instead of hardcoding.
+    """
+    path = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / model_name
+    if not path.exists():
+        raise ValueError(f"No embeddings directory found: {path}")
+
+    datasets = []
+    for f in path.glob("tabarena_*.npz"):
+        ds_name = f.stem.replace("tabarena_", "")
+        datasets.append(ds_name)
+
+    return sorted(datasets)
+
+
+def get_tabarena_splits(model_name: str = "tabpfn") -> Tuple[List[str], List[str]]:
     """
     Get train/test split of TabArena datasets.
 
     Split is deterministic (based on hash of dataset name).
     Roughly 70% train, 30% test.
+
+    Dynamically discovers available embeddings for the model.
     """
-    all_datasets = [
-        "airfoil_self_noise", "Amazon_employee_access", "anneal",
-        "Another-Dataset-on-used-Fiat-500", "APSFailure", "Bank_Customer_Churn",
-        "bank-marketing", "Bioresponse", "blood-transfusion-service-center",
-        "churn", "coil2000_insurance_policies", "concrete_compressive_strength",
-        "credit_card_clients_default", "credit-g", "customer_satisfaction_in_airline",
-        "diabetes", "Diabetes130US", "diamonds", "E-CommereShippingData",
-        "Fitness_Club", "GiveMeSomeCredit", "healthcare_insurance_expenses",
-        "in_vehicle_coupon_recommendation", "Is-this-a-good-customer",
-        "jasmine", "KDDCup09_appetency", "kdd_ipums_la_97-small",
-        "maternal_health_risk", "MIC", "MiniBooNE", "NATICUSdroid",
-        "national_longitudinal_survey_binary", "ozone-level-8hr",
-        "page_blocks_binary", "particulate_matter_ukair_2017",
-        "phoneme", "PortoSeguro", "profb", "road-safety-drivers-sex",
-        "Satellite", "sick", "taiwanese_bankruptcy_prediction",
-        "tamilnadu_electricity", "telco-customer-churn", "us_crime",
-        "vehicle", "wilt", "wine_quality",
-    ]
+    all_datasets = get_available_datasets(model_name)
+
+    if not all_datasets:
+        raise ValueError(f"No datasets found for {model_name}")
 
     train_datasets = []
     test_datasets = []
@@ -204,7 +209,7 @@ def compute_stability(
     return overall_stability
 
 
-def run_sae_trial(
+def build_sae_config(
     embeddings: np.ndarray,
     sae_type: str,
     expansion: int = 4,
@@ -215,13 +220,12 @@ def run_sae_trial(
     archetypal_temp: float = 0.1,
     archetypal_relaxation: float = 0.0,
     n_epochs: int = 100,
-    measure_stability: bool = True,
-) -> Dict:
-    """Run a single SAE training trial and return metrics."""
+) -> SAEConfig:
+    """Build SAE config from parameters."""
     input_dim = embeddings.shape[1]
     hidden_dim = input_dim * expansion
 
-    config = SAEConfig(
+    return SAEConfig(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
         sparsity_penalty=sparsity_penalty,
@@ -237,8 +241,31 @@ def run_sae_trial(
         learning_rate=learning_rate,
     )
 
+
+def run_sae_trial(
+    embeddings: np.ndarray,
+    sae_type: str,
+    expansion: int = 4,
+    sparsity_penalty: float = 1e-3,
+    learning_rate: float = 1e-3,
+    topk: int = 32,
+    archetypal_n_archetypes: int = 500,
+    archetypal_temp: float = 0.1,
+    archetypal_relaxation: float = 0.0,
+    n_epochs: int = 100,
+    measure_stability: bool = True,
+    return_model: bool = False,
+    seed: int = 42,
+) -> Dict:
+    """Run a single SAE training trial and return metrics (and optionally model)."""
+    config = build_sae_config(
+        embeddings, sae_type, expansion, sparsity_penalty, learning_rate,
+        topk, archetypal_n_archetypes, archetypal_temp, archetypal_relaxation, n_epochs
+    )
+
     # Train and evaluate
-    torch.manual_seed(42)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
     model, result = train_sae(embeddings, config, verbose=False)
     richness = measure_dictionary_richness(result, input_features=embeddings, sae_model=model)
 
@@ -258,7 +285,165 @@ def run_sae_trial(
         stability = compute_stability(embeddings, config, n_runs=2)
         metrics["stability"] = stability
 
+    if return_model:
+        return metrics, model, config
     return metrics
+
+
+def save_sae_model(
+    model,
+    config: SAEConfig,
+    metrics: Dict,
+    params: Dict,
+    save_path: Path,
+):
+    """Save SAE model checkpoint with config and metrics."""
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "config": asdict(config),
+        "metrics": metrics,
+        "params": params,
+    }
+    torch.save(checkpoint, save_path)
+    print(f"  Saved model to {save_path}")
+
+
+def validate_and_save(
+    embeddings: np.ndarray,
+    sae_type: str,
+    study,
+    output_dir: Path,
+    tolerance: float = 0.05,
+    max_retries: int = 5,
+    extra_trials_per_retry: int = 3,
+) -> Tuple[Dict, Optional[Path]]:
+    """
+    Validate best config by retraining, check metrics match, save if valid.
+
+    If validation fails (metrics differ by more than tolerance), adds result
+    as feedback and continues the sweep until convergence.
+
+    Args:
+        embeddings: Training data
+        sae_type: SAE architecture type
+        study: Optuna study object
+        output_dir: Directory to save model
+        tolerance: Max allowed relative difference in score (default 5%)
+        max_retries: Max validation attempts before giving up
+        extra_trials_per_retry: Additional Optuna trials per failed validation
+
+    Returns:
+        (best_config_dict, model_path) - model_path is None if validation failed
+    """
+    import optuna
+
+    objective = create_optuna_objective(embeddings, sae_type)
+
+    for attempt in range(max_retries):
+        best_trial = study.best_trial
+        best_params = study.best_params
+        expected_score = study.best_value
+        expected_r2 = best_trial.user_attrs.get("r2", 0)
+        expected_stability = best_trial.user_attrs.get("stability", 0)
+
+        print(f"\n  Validation attempt {attempt + 1}/{max_retries}")
+        print(f"    Expected: score={expected_score:.4f}, R²={expected_r2:.4f}, stability={expected_stability:.4f}")
+
+        # Extract params for this SAE type
+        expansion = best_params.get("expansion", 4)
+        sparsity_penalty = best_params.get("sparsity_penalty", 1e-3)
+        learning_rate = best_params.get("learning_rate", 1e-3)
+        topk = best_params.get("topk", 32)
+        archetypal_n = best_params.get("archetypal_n", 500)
+        archetypal_temp = best_params.get("archetypal_temp", 0.1)
+        archetypal_relax = best_params.get("archetypal_relaxation", 0.0)
+
+        # Train with a different seed to test robustness
+        validation_seed = 12345 + attempt
+        metrics, model, config = run_sae_trial(
+            embeddings,
+            sae_type=sae_type,
+            expansion=expansion,
+            sparsity_penalty=sparsity_penalty,
+            learning_rate=learning_rate,
+            topk=topk,
+            archetypal_n_archetypes=archetypal_n,
+            archetypal_temp=archetypal_temp,
+            archetypal_relaxation=archetypal_relax,
+            n_epochs=100,
+            measure_stability=True,
+            return_model=True,
+            seed=validation_seed,
+        )
+
+        # Compute validation score
+        val_score = 0.4 * max(0, metrics["r2"]) + 0.6 * metrics["stability"]
+        val_r2 = metrics["r2"]
+        val_stability = metrics["stability"]
+
+        print(f"    Actual:   score={val_score:.4f}, R²={val_r2:.4f}, stability={val_stability:.4f}")
+
+        # Check if within tolerance (relative difference)
+        score_diff = abs(val_score - expected_score) / max(expected_score, 0.01)
+        r2_diff = abs(val_r2 - expected_r2) / max(expected_r2, 0.01)
+        stability_diff = abs(val_stability - expected_stability) / max(expected_stability, 0.01)
+
+        # Primary check: composite score within tolerance
+        # Secondary: neither R² nor stability collapsed
+        converged = (
+            score_diff <= tolerance and
+            r2_diff <= tolerance * 2 and  # Allow slightly more R² variance
+            stability_diff <= tolerance * 2
+        )
+
+        if converged:
+            print(f"    ✓ Validation PASSED (score diff: {score_diff:.1%})")
+
+            # Save the validated model
+            model_path = output_dir / f"sae_{sae_type}_validated.pt"
+            save_sae_model(model, config, metrics, best_params, model_path)
+
+            return {
+                "params": best_params,
+                "score": val_score,
+                "metrics": metrics,
+                "validated": True,
+                "validation_attempts": attempt + 1,
+            }, model_path
+
+        else:
+            print(f"    ✗ Validation FAILED (score diff: {score_diff:.1%}, r2 diff: {r2_diff:.1%}, stability diff: {stability_diff:.1%})")
+
+            # Add this result as a new trial to inform Optuna
+            # This helps the optimizer learn that this HP region has high variance
+            study.add_trial(
+                optuna.trial.create_trial(
+                    params=best_params,
+                    distributions=study.best_trial.distributions,
+                    values=[val_score],
+                    user_attrs=metrics,
+                )
+            )
+
+            # Run additional trials to find more robust HPs
+            print(f"    Running {extra_trials_per_retry} additional trials...")
+            study.optimize(objective, n_trials=extra_trials_per_retry, show_progress_bar=False)
+
+    # Max retries exceeded
+    print(f"  ⚠ Validation did not converge after {max_retries} attempts")
+    print(f"    Using best available config (may have high variance)")
+
+    # Save anyway with warning flag
+    model_path = output_dir / f"sae_{sae_type}_unvalidated.pt"
+    save_sae_model(model, config, metrics, best_params, model_path)
+
+    return {
+        "params": best_params,
+        "score": val_score,
+        "metrics": metrics,
+        "validated": False,
+        "validation_attempts": max_retries,
+    }, model_path
 
 
 def create_optuna_objective(embeddings: np.ndarray, sae_type: str):
@@ -336,8 +521,8 @@ def run_sweep(
         output_dir = PROJECT_ROOT / "output" / "sae_tabarena_sweep" / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get train datasets
-    train_datasets, test_datasets = get_tabarena_splits()
+    # Get train datasets (dynamically discovered from available embeddings)
+    train_datasets, test_datasets = get_tabarena_splits(model_name)
     print(f"Train datasets: {len(train_datasets)}")
     print(f"Test datasets: {len(test_datasets)}")
 
@@ -386,18 +571,27 @@ def run_sweep(
             show_progress_bar=True,
         )
 
-        print(f"\nBest {sae_type}:")
+        print(f"\nBest {sae_type} (before validation):")
         print(f"  Score: {study.best_value:.4f}")
         print(f"  Params: {study.best_params}")
         if study.best_trial.user_attrs:
             print(f"  R²: {study.best_trial.user_attrs.get('r2', 'N/A'):.4f}")
             print(f"  Stability: {study.best_trial.user_attrs.get('stability', 'N/A'):.4f}")
 
-        best_configs[sae_type] = {
-            "params": study.best_params,
-            "score": study.best_value,
-            "metrics": dict(study.best_trial.user_attrs),
-        }
+        # Validation fit: retrain with best HPs and verify metrics are reproducible
+        print(f"\nValidating {sae_type} config...")
+        config_result, model_path = validate_and_save(
+            embeddings=embeddings,
+            sae_type=sae_type,
+            study=study,
+            output_dir=output_dir,
+            tolerance=0.05,  # 5% relative tolerance
+            max_retries=5,
+            extra_trials_per_retry=3,
+        )
+
+        config_result["model_path"] = str(model_path) if model_path else None
+        best_configs[sae_type] = config_result
 
     # Save best configs
     with open(output_dir / "best_configs.json", "w") as f:
@@ -405,15 +599,22 @@ def run_sweep(
 
     # Summary comparison
     print(f"\n{'='*60}")
-    print("ARCHITECTURE COMPARISON")
+    print("ARCHITECTURE COMPARISON (Validated)")
     print('='*60)
-    print(f"{'Type':<12} {'Score':>8} {'R²':>8} {'Stability':>10} {'L0':>8}")
-    print('-'*60)
+    print(f"{'Type':<20} {'Score':>8} {'R²':>8} {'Stability':>10} {'L0':>8} {'Valid':>6}")
+    print('-'*70)
 
     for sae_type, config in best_configs.items():
         m = config["metrics"]
-        print(f"{sae_type:<12} {config['score']:>8.4f} {m.get('r2', 0):>8.4f} "
-              f"{m.get('stability', 0):>10.4f} {m.get('l0_sparsity', 0):>8.1f}")
+        validated = "✓" if config.get("validated", False) else "✗"
+        print(f"{sae_type:<20} {config['score']:>8.4f} {m.get('r2', 0):>8.4f} "
+              f"{m.get('stability', 0):>10.4f} {m.get('l0_sparsity', 0):>8.1f} {validated:>6}")
+
+    # List saved models
+    print(f"\nSaved models:")
+    for sae_type, config in best_configs.items():
+        if config.get("model_path"):
+            print(f"  {sae_type}: {config['model_path']}")
 
     return best_configs
 
@@ -435,7 +636,7 @@ def evaluate_on_test(
         best_configs = json.load(f)
 
     # Get test datasets
-    _, test_datasets = get_tabarena_splits()
+    _, test_datasets = get_tabarena_splits(model_name)
 
     print(f"Evaluating on {len(test_datasets)} test datasets...")
 
@@ -487,7 +688,7 @@ def evaluate_on_test(
 
 def setup_check(model_name: str = "tabpfn"):
     """Check data availability and show split info."""
-    train_datasets, test_datasets = get_tabarena_splits()
+    train_datasets, test_datasets = get_tabarena_splits(model_name)
 
     print("TabArena Train/Test Split")
     print("="*60)
