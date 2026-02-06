@@ -1,0 +1,42 @@
+{
+  "Amazon_employee_access": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9845249112252958,
+    "l0_cka_profile": [
+      1.0,
+      0.9977927023279894,
+      0.9845249112252958
+    ],
+    "dataset": "Amazon_employee_access",
+    "model": "hyperfast",
+    "layer_names": [
+      "layer_0",
+      "layer_1",
+      "layer_2"
+    ]
+  },
+  "anneal": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9245828948661785,
+    "l0_cka_profile": [
+      1.0,
+      0.9953393452671035,
+      0.9245828948661785
+    ],
+    "dataset": "anneal",
+    "model": "hyperfast",
+    "layer_names": [
+      "layer_0",
+      "layer_1",
+      "layer_2"
+    ]
+  }
+}

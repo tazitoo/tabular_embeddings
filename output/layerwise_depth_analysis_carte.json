@@ -1,0 +1,194 @@
+{
+  "Amazon_employee_access": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.5452355348891461,
+    "l0_cka_profile": [
+      0.9999999604127642,
+      0.5045793110441497,
+      0.5019050386723561,
+      0.5014051330343912,
+      0.5452355348891461
+    ],
+    "dataset": "Amazon_employee_access",
+    "model": "carte",
+    "layer_names": [
+      "layer_0_initial",
+      "layer_2_readout",
+      "layer_3_classifier",
+      "layer_6_classifier",
+      "layer_9_classifier"
+    ]
+  },
+  "anneal": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.0008380577315941399,
+    "l0_cka_profile": [
+      0.9999896803555823,
+      0.24821659956313927,
+      0.2797548772326254,
+      0.2697823488233867,
+      0.0008380577315941399
+    ],
+    "dataset": "anneal",
+    "model": "carte",
+    "layer_names": [
+      "layer_0_initial",
+      "layer_2_readout",
+      "layer_3_classifier",
+      "layer_6_classifier",
+      "layer_9_classifier"
+    ]
+  },
+  "bank-marketing": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.05260046846777354,
+    "l0_cka_profile": [
+      0.9999994439595962,
+      0.06223289310616807,
+      0.05599063877729803,
+      0.051930861249135,
+      0.05260046846777354
+    ],
+    "dataset": "bank-marketing",
+    "model": "carte",
+    "layer_names": [
+      "layer_0_initial",
+      "layer_2_readout",
+      "layer_3_classifier",
+      "layer_6_classifier",
+      "layer_9_classifier"
+    ]
+  },
+  "blood-transfusion-service-center": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.10299501585908996,
+    "l0_cka_profile": [
+      0.9999999936921536,
+      0.5598803582652869,
+      0.5658694891636638,
+      0.539118738549663,
+      0.10299501585908996
+    ],
+    "dataset": "blood-transfusion-service-center",
+    "model": "carte",
+    "layer_names": [
+      "layer_0_initial",
+      "layer_2_readout",
+      "layer_3_classifier",
+      "layer_6_classifier",
+      "layer_9_classifier"
+    ]
+  },
+  "churn": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.01917085319195085,
+    "l0_cka_profile": [
+      0.9999998175462563,
+      0.027251584523654976,
+      0.026725784150813028,
+      0.02253732087941002,
+      0.01917085319195085
+    ],
+    "dataset": "churn",
+    "model": "carte",
+    "layer_names": [
+      "layer_0_initial",
+      "layer_2_readout",
+      "layer_3_classifier",
+      "layer_6_classifier",
+      "layer_9_classifier"
+    ]
+  },
+  "coil2000_insurance_policies": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.09190204245997065,
+    "l0_cka_profile": [
+      0.9999980461814554,
+      0.06479504689575011,
+      0.060677048876717224,
+      0.045336824052999394,
+      0.09190204245997065
+    ],
+    "dataset": "coil2000_insurance_policies",
+    "model": "carte",
+    "layer_names": [
+      "layer_0_initial",
+      "layer_2_readout",
+      "layer_3_classifier",
+      "layer_6_classifier",
+      "layer_9_classifier"
+    ]
+  },
+  "credit-g": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.08731103021343554,
+    "l0_cka_profile": [
+      0.9999997809356398,
+      0.09543506405957987,
+      0.09908741141839587,
+      0.09711101971297365,
+      0.08731103021343554
+    ],
+    "dataset": "credit-g",
+    "model": "carte",
+    "layer_names": [
+      "layer_0_initial",
+      "layer_2_readout",
+      "layer_3_classifier",
+      "layer_6_classifier",
+      "layer_9_classifier"
+    ]
+  },
+  "customer_satisfaction_in_airline": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.21912070505753356,
+    "l0_cka_profile": [
+      0.999999977654389,
+      0.20991819151699995,
+      0.21004557445112096,
+      0.21760339737234974,
+      0.21912070505753356
+    ],
+    "dataset": "customer_satisfaction_in_airline",
+    "model": "carte",
+    "layer_names": [
+      "layer_0_initial",
+      "layer_2_readout",
+      "layer_3_classifier",
+      "layer_6_classifier",
+      "layer_9_classifier"
+    ]
+  }
+}
