@@ -239,10 +239,13 @@ def analyze_matryoshka_scales(
     results = {}
 
     for ds_name, emb in embeddings.items():
+        # Normalize by std, then CENTER (matching train_sae preprocessing)
         emb_norm = emb / std
+        emb_mean = emb_norm.mean(axis=0, keepdims=True)
+        emb_centered = emb_norm - emb_mean
 
         with torch.no_grad():
-            x = torch.tensor(emb_norm, dtype=torch.float32)
+            x = torch.tensor(emb_centered, dtype=torch.float32)
             h = model.encode(x)  # (n_samples, hidden_dim)
 
             # Reconstruction at each scale
@@ -256,9 +259,9 @@ def analyze_matryoshka_scales(
                 # This uses both truncated activations AND truncated dictionary
                 x_hat = model.decode(h, max_dim=scale)
 
-                # R² at this scale
+                # R² at this scale (centered data, so mean is ~0)
                 ss_res = ((x - x_hat) ** 2).sum()
-                ss_tot = ((x - x.mean(dim=0)) ** 2).sum()
+                ss_tot = (x ** 2).sum()  # Centered data
                 r2 = 1 - ss_res / ss_tot
 
                 scale_r2[scale] = float(r2)
