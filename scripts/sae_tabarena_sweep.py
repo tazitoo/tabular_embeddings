@@ -157,6 +157,7 @@ def compute_stability(
     config: SAEConfig,
     n_runs: int = 2,
     return_per_scale: bool = False,
+    device: str = "cpu",
 ) -> float:
     """
     Train SAE twice and measure dictionary stability.
@@ -176,7 +177,7 @@ def compute_stability(
     for seed in [123, 456][:n_runs]:
         torch.manual_seed(seed)
         np.random.seed(seed)
-        model, result = train_sae(embeddings, config, verbose=False)
+        model, result = train_sae(embeddings, config, device=device, verbose=False)
         dicts.append(result.dictionary)
 
     comp = compare_dictionaries(dicts[0], dicts[1])
@@ -260,6 +261,7 @@ def run_sae_trial(
     measure_stability: bool = True,
     return_model: bool = False,
     seed: int = 42,
+    device: str = "cpu",
 ) -> Dict:
     """Run a single SAE training trial and return metrics (and optionally model)."""
     config = build_sae_config(
@@ -270,7 +272,7 @@ def run_sae_trial(
     # Train and evaluate
     torch.manual_seed(seed)
     np.random.seed(seed)
-    model, result = train_sae(embeddings, config, verbose=False)
+    model, result = train_sae(embeddings, config, device=device, verbose=False)
     richness = measure_dictionary_richness(result, input_features=embeddings, sae_model=model)
 
     metrics = {
@@ -286,7 +288,7 @@ def run_sae_trial(
     }
 
     if measure_stability:
-        stability = compute_stability(embeddings, config, n_runs=2)
+        stability = compute_stability(embeddings, config, n_runs=2, device=device)
         metrics["stability"] = stability
 
     if return_model:
@@ -320,6 +322,7 @@ def validate_and_save(
     tolerance: float = 0.05,
     max_retries: int = 5,
     extra_trials_per_retry: int = 3,
+    device: str = "cpu",
 ) -> Tuple[Dict, Optional[Path]]:
     """
     Validate best config by retraining, check metrics match, save if valid.
@@ -342,7 +345,7 @@ def validate_and_save(
     import optuna
 
     ctx_keys = sorted(embeddings_by_ctx.keys())
-    objective = create_optuna_objective(embeddings_by_ctx, sae_type)
+    objective = create_optuna_objective(embeddings_by_ctx, sae_type, device=device)
 
     for attempt in range(max_retries):
         best_trial = study.best_trial
@@ -385,6 +388,7 @@ def validate_and_save(
             measure_stability=True,
             return_model=True,
             seed=validation_seed,
+            device=device,
         )
 
         # Compute validation score
@@ -460,6 +464,7 @@ def validate_and_save(
 def create_optuna_objective(
     embeddings_by_ctx: Dict[int, np.ndarray],
     sae_type: str,
+    device: str = "cpu",
 ):
     """Create Optuna objective for a specific SAE type.
 
@@ -515,6 +520,7 @@ def create_optuna_objective(
                 archetypal_relaxation=archetypal_relax,
                 n_epochs=100,
                 measure_stability=True,
+                device=device,
             )
 
             # Store metrics (including context_size for retrieval)
@@ -546,6 +552,7 @@ def run_sweep(
     n_trials: int = 30,
     output_dir: Optional[Path] = None,
     context_sizes: Optional[List[int]] = None,
+    device: str = "cpu",
 ):
     """Run HP sweep for all SAE types on train datasets.
 
@@ -614,7 +621,7 @@ def run_sweep(
             sampler=optuna.samplers.TPESampler(seed=42),
         )
 
-        objective = create_optuna_objective(embeddings_by_ctx, sae_type)
+        objective = create_optuna_objective(embeddings_by_ctx, sae_type, device=device)
 
         study.optimize(
             objective,
@@ -639,6 +646,7 @@ def run_sweep(
             tolerance=0.05,  # 5% relative tolerance
             max_retries=5,
             extra_trials_per_retry=3,
+            device=device,
         )
 
         config_result["model_path"] = str(model_path) if model_path else None
@@ -765,6 +773,8 @@ def main():
     parser.add_argument("--context-sizes", type=str, default=None,
                         help="Comma-separated context sizes to search over (e.g. '200,600,1000'). "
                              "Requires pre-extracted embeddings at each size.")
+    parser.add_argument("--device", type=str, default="cpu",
+                        help="Torch device for SAE training (default: cpu)")
     parser.add_argument("--n-trials", type=int, default=30, help="Trials per SAE type")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate on test set")
     args = parser.parse_args()
@@ -798,6 +808,7 @@ def main():
             base_model,
             n_trials=args.n_trials,
             context_sizes=context_sizes,
+            device=args.device,
         )
 
 
