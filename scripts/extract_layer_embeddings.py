@@ -9,8 +9,12 @@ Output format matches extract_embeddings.py so the SAE sweep can consume them
 directly via the {model}_layer{N} directory convention.
 
 Usage:
-    # Extract TabPFN layer 16 for all available datasets
+    # Extract TabPFN layer 16 at default context size (600)
     python scripts/extract_layer_embeddings.py --model tabpfn --layer 16 --device cuda
+
+    # Extract with custom context/query sizes
+    python scripts/extract_layer_embeddings.py --model tabpfn --layer 16 \
+        --context-size 200 --query-size 100 --device cuda
 
     # Extract for a single dataset (smoke test)
     python scripts/extract_layer_embeddings.py --model tabpfn --layer 16 \
@@ -60,19 +64,26 @@ def get_tabarena_dataset_names() -> list[str]:
 
 def load_context_query(
     dataset_name: str,
-    max_samples: int = 1000,
+    context_size: int = 600,
+    query_size: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Load a TabArena dataset and split into context/query halves.
+    """Load a TabArena dataset and split into context/query sets.
+
+    Matches the convention from extract_embeddings.py: context_size ICL examples
+    followed by query_size evaluation rows.
 
     Returns (X_context, y_context, X_query).
     """
-    result = load_tabarena_dataset(dataset_name, max_samples=max_samples * 2)
+    result = load_tabarena_dataset(dataset_name, max_samples=context_size + query_size)
     if result is None:
         raise ValueError(f"Failed to load dataset: {dataset_name}")
 
     X, y, _ = result
-    split = len(X) // 2
-    return X[:split], y[:split], X[split:]
+    n = len(X)
+    if n < context_size + query_size:
+        context_size = int(n * 0.7)
+        query_size = n - context_size
+    return X[:context_size], y[:context_size], X[context_size:context_size + query_size]
 
 
 def extract_single_layer(
@@ -80,7 +91,8 @@ def extract_single_layer(
     layer: int,
     dataset_name: str,
     device: str = "cuda",
-    n_samples: int = 1000,
+    context_size: int = 600,
+    query_size: int = 100,
 ) -> np.ndarray:
     """Extract embeddings at a specific layer for one dataset.
 
@@ -88,7 +100,9 @@ def extract_single_layer(
     """
     extract_fn = EXTRACT_FN[model]
 
-    X_context, y_context, X_query = load_context_query(dataset_name, max_samples=n_samples)
+    X_context, y_context, X_query = load_context_query(
+        dataset_name, context_size=context_size, query_size=query_size,
+    )
 
     layer_embeddings = extract_fn(X_context, y_context, X_query, device=device)
 
@@ -114,8 +128,10 @@ def main():
                         help="Layer index to extract (e.g. 16 for TabPFN)")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device (default: cuda)")
-    parser.add_argument("--n-samples", type=int, default=1000,
-                        help="Max samples per dataset (split into context/query)")
+    parser.add_argument("--context-size", type=int, default=600,
+                        help="Number of ICL context examples (default: 600)")
+    parser.add_argument("--query-size", type=int, default=100,
+                        help="Number of query rows to embed (default: 100)")
     parser.add_argument("--datasets", nargs="+", default=None,
                         help="Specific dataset names (default: all TabArena)")
     args = parser.parse_args()
@@ -123,12 +139,13 @@ def main():
     datasets = args.datasets or get_tabarena_dataset_names()
     output_dir = (
         PROJECT_ROOT / "output" / "embeddings" / "tabarena"
-        / f"{args.model}_layer{args.layer}"
+        / f"{args.model}_layer{args.layer}_ctx{args.context_size}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Extracting {args.model} layer {args.layer} embeddings")
     print(f"  Output: {output_dir}")
+    print(f"  Context size: {args.context_size}, Query size: {args.query_size}")
     print(f"  Datasets: {len(datasets)}")
     print(f"  Device: {args.device}")
     print()
@@ -146,7 +163,9 @@ def main():
         try:
             emb = extract_single_layer(
                 args.model, args.layer, ds,
-                device=args.device, n_samples=args.n_samples,
+                device=args.device,
+                context_size=args.context_size,
+                query_size=args.query_size,
             )
             np.savez_compressed(
                 str(output_path),

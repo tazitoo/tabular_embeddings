@@ -14,6 +14,10 @@ Usage:
     # Run HP sweep for one model
     python scripts/sae_tabarena_sweep.py --model tabpfn --n-trials 30
 
+    # Run sweep on intermediate layer with context_size as HP
+    python scripts/sae_tabarena_sweep.py --model tabpfn --layer 16 \
+        --context-sizes 200,600,1000 --n-trials 30
+
     # Evaluate on test set
     python scripts/sae_tabarena_sweep.py --model tabpfn --evaluate
 """
@@ -309,7 +313,7 @@ def save_sae_model(
 
 
 def validate_and_save(
-    embeddings: np.ndarray,
+    embeddings_by_ctx: Dict[int, np.ndarray],
     sae_type: str,
     study,
     output_dir: Path,
@@ -324,7 +328,7 @@ def validate_and_save(
     as feedback and continues the sweep until convergence.
 
     Args:
-        embeddings: Training data
+        embeddings_by_ctx: Dict mapping context_size -> pooled embeddings
         sae_type: SAE architecture type
         study: Optuna study object
         output_dir: Directory to save model
@@ -337,7 +341,8 @@ def validate_and_save(
     """
     import optuna
 
-    objective = create_optuna_objective(embeddings, sae_type)
+    ctx_keys = sorted(embeddings_by_ctx.keys())
+    objective = create_optuna_objective(embeddings_by_ctx, sae_type)
 
     for attempt in range(max_retries):
         best_trial = study.best_trial
@@ -348,6 +353,12 @@ def validate_and_save(
 
         print(f"\n  Validation attempt {attempt + 1}/{max_retries}")
         print(f"    Expected: score={expected_score:.4f}, R²={expected_r2:.4f}, stability={expected_stability:.4f}")
+
+        # Select embeddings for this trial's context_size
+        best_ctx = best_params.get("context_size", ctx_keys[0])
+        embeddings = embeddings_by_ctx[best_ctx]
+        if len(ctx_keys) > 1:
+            print(f"    Context size: {best_ctx}")
 
         # Extract params for this SAE type
         expansion = best_params.get("expansion", 4)
@@ -446,11 +457,31 @@ def validate_and_save(
     }, model_path
 
 
-def create_optuna_objective(embeddings: np.ndarray, sae_type: str):
-    """Create Optuna objective for a specific SAE type."""
+def create_optuna_objective(
+    embeddings_by_ctx: Dict[int, np.ndarray],
+    sae_type: str,
+):
+    """Create Optuna objective for a specific SAE type.
+
+    Args:
+        embeddings_by_ctx: Dict mapping context_size -> pooled embeddings.
+            When the dict has a single entry, no context_size HP is added.
+            When multiple entries, context_size becomes a categorical HP.
+        sae_type: SAE architecture type
+    """
     import optuna
 
+    ctx_keys = sorted(embeddings_by_ctx.keys())
+    search_ctx = len(ctx_keys) > 1
+
     def objective(trial: optuna.Trial) -> float:
+        # Context size HP (only when multiple extractions available)
+        if search_ctx:
+            context_size = trial.suggest_categorical("context_size", ctx_keys)
+        else:
+            context_size = ctx_keys[0]
+        embeddings = embeddings_by_ctx[context_size]
+
         # Common hyperparameters
         expansion = trial.suggest_categorical("expansion", [4, 8])
         sparsity_penalty = trial.suggest_float("sparsity_penalty", 1e-4, 1e-2, log=True)
@@ -486,10 +517,11 @@ def create_optuna_objective(embeddings: np.ndarray, sae_type: str):
                 measure_stability=True,
             )
 
-            # Store metrics
+            # Store metrics (including context_size for retrieval)
             for key, val in metrics.items():
                 if isinstance(val, (int, float)):
                     trial.set_user_attr(key, val)
+            trial.set_user_attr("context_size", context_size)
 
             # Objective: balance R² and stability
             # Weight stability higher since that's the key differentiator
@@ -513,32 +545,51 @@ def run_sweep(
     model_name: str,
     n_trials: int = 30,
     output_dir: Optional[Path] = None,
+    context_sizes: Optional[List[int]] = None,
 ):
-    """Run HP sweep for all SAE types on train datasets."""
+    """Run HP sweep for all SAE types on train datasets.
+
+    Args:
+        model_name: Base model name (e.g. 'tabpfn_layer16')
+        n_trials: Number of Optuna trials per SAE type
+        output_dir: Output directory for results
+        context_sizes: If given, search over context sizes as an HP.
+            Requires pre-extracted embeddings at each size (e.g. tabpfn_layer16_ctx200/).
+            When None, uses model_name directory directly.
+    """
     import optuna
 
     if output_dir is None:
         output_dir = PROJECT_ROOT / "output" / "sae_tabarena_sweep" / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get train datasets (dynamically discovered from available embeddings)
-    train_datasets, test_datasets = get_tabarena_splits(model_name)
+    # Pool embeddings for each context size (or just one set if no context_sizes)
+    if context_sizes:
+        effective_names = [f"{model_name}_ctx{c}" for c in context_sizes]
+    else:
+        effective_names = [model_name]
+
+    # Discover train/test split from first available effective model
+    train_datasets, test_datasets = get_tabarena_splits(effective_names[0])
     print(f"Train datasets: {len(train_datasets)}")
     print(f"Test datasets: {len(test_datasets)}")
 
-    # Pool train embeddings
-    print(f"\nPooling {model_name} embeddings from train datasets...")
-    embeddings, counts = pool_embeddings(model_name, train_datasets, max_per_dataset=200)
-    print(f"  Total samples: {len(embeddings)}")
-    print(f"  Embedding dim: {embeddings.shape[1]}")
-    print(f"  Datasets loaded: {len(counts)}")
+    embeddings_by_ctx: Dict[int, np.ndarray] = {}
+    for i, ename in enumerate(effective_names):
+        ctx = context_sizes[i] if context_sizes else 0
+        print(f"\nPooling {ename} embeddings from train datasets...")
+        emb, counts = pool_embeddings(ename, train_datasets, max_per_dataset=200)
+        print(f"  Total samples: {len(emb)}")
+        print(f"  Embedding dim: {emb.shape[1]}")
+        print(f"  Datasets loaded: {len(counts)}")
+        embeddings_by_ctx[ctx] = emb
 
     # Save split info
     split_info = {
         "train_datasets": train_datasets,
         "test_datasets": test_datasets,
-        "train_counts": counts,
-        "total_train_samples": len(embeddings),
+        "context_sizes": context_sizes or [],
+        "total_train_samples": {str(k): len(v) for k, v in embeddings_by_ctx.items()},
     }
     with open(output_dir / "split_info.json", "w") as f:
         json.dump(split_info, f, indent=2)
@@ -563,7 +614,7 @@ def run_sweep(
             sampler=optuna.samplers.TPESampler(seed=42),
         )
 
-        objective = create_optuna_objective(embeddings, sae_type)
+        objective = create_optuna_objective(embeddings_by_ctx, sae_type)
 
         study.optimize(
             objective,
@@ -581,7 +632,7 @@ def run_sweep(
         # Validation fit: retrain with best HPs and verify metrics are reproducible
         print(f"\nValidating {sae_type} config...")
         config_result, model_path = validate_and_save(
-            embeddings=embeddings,
+            embeddings_by_ctx=embeddings_by_ctx,
             sae_type=sae_type,
             study=study,
             output_dir=output_dir,
@@ -711,19 +762,43 @@ def main():
     parser.add_argument("--model", type=str, default="tabpfn", help="Model name")
     parser.add_argument("--layer", type=int, default=None,
                         help="Intermediate layer index (e.g. 16 for TabPFN)")
+    parser.add_argument("--context-sizes", type=str, default=None,
+                        help="Comma-separated context sizes to search over (e.g. '200,600,1000'). "
+                             "Requires pre-extracted embeddings at each size.")
     parser.add_argument("--n-trials", type=int, default=30, help="Trials per SAE type")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate on test set")
     args = parser.parse_args()
 
-    # When --layer is given, embeddings live under {model}_layer{N}
-    effective_model = f"{args.model}_layer{args.layer}" if args.layer is not None else args.model
+    # Parse context sizes
+    context_sizes = None
+    if args.context_sizes:
+        context_sizes = [int(c.strip()) for c in args.context_sizes.split(",")]
+
+    # Build effective model name(s)
+    # When --layer is given, embeddings live under {model}_layer{N}_ctx{C}
+    if args.layer is not None:
+        base_model = f"{args.model}_layer{args.layer}"
+    else:
+        base_model = args.model
+
+    if context_sizes:
+        # With context sizes, directories are {base}_ctx{C}
+        effective_models = [f"{base_model}_ctx{c}" for c in context_sizes]
+    else:
+        effective_models = [base_model]
 
     if args.setup:
-        setup_check(effective_model)
+        for em in effective_models:
+            print(f"\n--- {em} ---")
+            setup_check(em)
     elif args.evaluate:
-        evaluate_on_test(effective_model)
+        evaluate_on_test(effective_models[0])
     else:
-        run_sweep(effective_model, n_trials=args.n_trials)
+        run_sweep(
+            base_model,
+            n_trials=args.n_trials,
+            context_sizes=context_sizes,
+        )
 
 
 if __name__ == "__main__":
