@@ -197,7 +197,7 @@ def analyze_input_correlations(
 def analyze_matryoshka_scales(
     model: SparseAutoencoder,
     embeddings: Dict[str, np.ndarray],
-    scales: List[int] = [32, 64, 128, 256],
+    scales: List[int] = None,
 ) -> Dict:
     """
     Analyze what each Matryoshka scale captures.
@@ -205,6 +205,12 @@ def analyze_matryoshka_scales(
     Hypothesis: Earlier scales capture global/universal concepts,
     later scales capture dataset-specific nuances.
     """
+    # Auto-generate scales if not provided (include full dimension)
+    if scales is None:
+        hidden_dim = model.config.hidden_dim
+        scales = [32, 64, 128, 256, 512, 1024, hidden_dim]
+        scales = [s for s in scales if s <= hidden_dim]
+
     # Pool and normalize
     all_emb = np.concatenate(list(embeddings.values()))
     std = all_emb.std(axis=0, keepdims=True)
