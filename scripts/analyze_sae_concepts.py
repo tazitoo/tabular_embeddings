@@ -16,6 +16,18 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 import torch
 import torch.nn.functional as F
 from sklearn.cluster import KMeans
@@ -437,7 +449,7 @@ def main():
         }
 
         with open(args.output, 'w') as f:
-            json.dump(results, f, indent=2)
+            json.dump(results, f, indent=2, cls=NumpyEncoder)
         print(f"\nResults saved to {args.output}")
 
 
