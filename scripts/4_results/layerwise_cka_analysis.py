@@ -86,20 +86,29 @@ def extract_tabpfn_all_layers(
     y_context: np.ndarray,
     X_query: np.ndarray,
     device: str = "cuda",
+    task: str = "classification",
 ) -> Dict[str, np.ndarray]:
-    """Extract embeddings from all TabPFN transformer layers."""
-    from tabpfn import TabPFNClassifier
+    """Extract embeddings from all TabPFN transformer layers.
 
-    # Check for local checkpoint
-    worker_path = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-classifier-v2.5_real.ckpt"
+    Args:
+        task: "classification" or "regression" — selects the correct model variant.
+    """
     import os
+
+    if task == "regression":
+        from tabpfn import TabPFNRegressor as TabPFNModel
+        worker_path = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-regressor-v2.5_default.ckpt"
+    else:
+        from tabpfn import TabPFNClassifier as TabPFNModel
+        worker_path = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-classifier-v2.5_real.ckpt"
+
     model_path = worker_path if os.path.exists(worker_path) else None
 
     kwargs = dict(device=device, n_estimators=2)
     if model_path:
         kwargs["model_path"] = model_path
 
-    clf = TabPFNClassifier(**kwargs)
+    clf = TabPFNModel(**kwargs)
     clf.fit(X_context, y_context)
 
     model = clf.model_
@@ -123,7 +132,10 @@ def extract_tabpfn_all_layers(
     # Forward pass
     try:
         with torch.no_grad():
-            _ = clf.predict_proba(X_query)
+            if task == "regression":
+                _ = clf.predict(X_query)
+            else:
+                _ = clf.predict_proba(X_query)
     finally:
         for handle in handles:
             handle.remove()

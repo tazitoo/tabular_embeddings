@@ -26,6 +26,7 @@ Usage:
 """
 
 import argparse
+import inspect
 import sys
 import time
 from pathlib import Path
@@ -86,6 +87,12 @@ def load_context_query(
     return X[:context_size], y[:context_size], X[context_size:context_size + query_size]
 
 
+def get_dataset_task(dataset_name: str) -> str:
+    """Look up task type ('classification' or 'regression') from the catalog."""
+    info = TABARENA_DATASETS.get(dataset_name, {})
+    return info.get("task", "classification")
+
+
 def extract_single_layer(
     model: str,
     layer: int,
@@ -104,7 +111,14 @@ def extract_single_layer(
         dataset_name, context_size=context_size, query_size=query_size,
     )
 
-    layer_embeddings = extract_fn(X_context, y_context, X_query, device=device)
+    task = get_dataset_task(dataset_name)
+    # Pass task kwarg for models that support it (e.g. TabPFN)
+    sig = inspect.signature(extract_fn)
+    kwargs = dict(device=device)
+    if "task" in sig.parameters:
+        kwargs["task"] = task
+
+    layer_embeddings = extract_fn(X_context, y_context, X_query, **kwargs)
 
     layer_key = f"layer_{layer}"
     if layer_key not in layer_embeddings:
