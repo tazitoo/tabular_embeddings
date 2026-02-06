@@ -214,12 +214,9 @@ def analyze_matryoshka_scales(
                 if scale > model.config.hidden_dim:
                     break
 
-                # Truncate activations
-                h_trunc = h.clone()
-                h_trunc[:, scale:] = 0
-
-                # Reconstruct
-                x_hat = model.decode(h_trunc)
+                # Proper Matryoshka truncation: decode with only first `scale` dims
+                # This uses both truncated activations AND truncated dictionary
+                x_hat = model.decode(h, max_dim=scale)
 
                 # R² at this scale
                 ss_res = ((x - x_hat) ** 2).sum()
@@ -257,8 +254,10 @@ def cluster_features(
     """
     Cluster dictionary features to find groups of related concepts.
     """
-    # Get the decoder dictionary
-    dictionary = model.get_dictionary().detach().numpy()  # (hidden_dim, input_dim)
+    # Get the decoder dictionary (already numpy from get_dictionary())
+    dictionary = model.get_dictionary()  # (hidden_dim, input_dim)
+    if hasattr(dictionary, 'detach'):
+        dictionary = dictionary.detach().cpu().numpy()
 
     # Cluster
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
