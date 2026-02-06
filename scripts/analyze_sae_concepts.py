@@ -84,13 +84,14 @@ def load_sae_checkpoint(path: Path) -> Tuple[SparseAutoencoder, SAEConfig, Dict]
 def load_embeddings_by_dataset(
     model_name: str = "tabpfn",
     max_per_dataset: int = 200,
-) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray]:
     """
     Load embeddings grouped by dataset.
 
     Returns:
         embeddings: Dict mapping dataset name to embeddings
-        train_std: Per-dimension std from TRAINING datasets only (for normalization)
+        train_std: Per-dimension std from TRAINING pool (for normalization)
+        train_mean: Per-dimension mean from std-normalized TRAINING pool (for centering)
     """
     emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / model_name
 
@@ -110,18 +111,25 @@ def load_embeddings_by_dataset(
     # Compute normalization from training data only (matching sweep script)
     train_datasets, test_datasets = get_train_test_split(list(dataset_embeddings.keys()))
     train_emb = np.concatenate([dataset_embeddings[ds] for ds in train_datasets])
+
+    # Step 1: Compute std for normalization
     train_std = train_emb.std(axis=0, keepdims=True)
     train_std[train_std < 1e-8] = 1.0
 
+    # Step 2: Compute mean AFTER std normalization (matching train_sae centering)
+    train_emb_norm = train_emb / train_std
+    train_mean = train_emb_norm.mean(axis=0, keepdims=True)
+
     print(f"  Train/test split: {len(train_datasets)}/{len(test_datasets)}")
 
-    return dataset_embeddings, train_std
+    return dataset_embeddings, train_std, train_mean
 
 
 def analyze_feature_activations(
     model: SparseAutoencoder,
     embeddings: Dict[str, np.ndarray],
-    std: np.ndarray,
+    train_std: np.ndarray,
+    train_mean: np.ndarray,
     top_k: int = 10,
 ) -> Dict:
     """
@@ -136,9 +144,11 @@ def analyze_feature_activations(
     # Get activations for each dataset
     dataset_activations = {}
     for ds_name, emb in embeddings.items():
-        emb_norm = emb / std
+        # Normalize and center using TRAINING pool stats
+        emb_norm = emb / train_std
+        emb_centered = emb_norm - train_mean
         with torch.no_grad():
-            x = torch.tensor(emb_norm, dtype=torch.float32)
+            x = torch.tensor(emb_centered, dtype=torch.float32)
             h = model.encode(x)  # (n_samples, hidden_dim)
             dataset_activations[ds_name] = h.numpy()
 
@@ -182,34 +192,36 @@ def analyze_feature_activations(
 def analyze_input_correlations(
     model: SparseAutoencoder,
     embeddings: Dict[str, np.ndarray],
-    std: np.ndarray,
+    train_std: np.ndarray,
+    train_mean: np.ndarray,
 ) -> np.ndarray:
     """
     Correlate each SAE feature with input embedding dimensions.
 
     Returns: (hidden_dim, input_dim) correlation matrix
     """
-    # Pool and normalize using training std
+    # Pool, normalize, and center using training stats
     all_emb = np.concatenate(list(embeddings.values()))
-    emb_norm = all_emb / std
+    emb_norm = all_emb / train_std
+    emb_centered = emb_norm - train_mean
 
     # Get activations
     with torch.no_grad():
-        x = torch.tensor(emb_norm, dtype=torch.float32)
+        x = torch.tensor(emb_centered, dtype=torch.float32)
         h = model.encode(x).numpy()  # (n_samples, hidden_dim)
 
     # Compute correlations
-    # Normalize for correlation
-    x_centered = emb_norm - emb_norm.mean(axis=0)
+    # For correlation, re-center (data is already centered, but do it again for numerical precision)
+    x_centered_corr = emb_centered - emb_centered.mean(axis=0)
     h_centered = h - h.mean(axis=0)
 
-    x_std = x_centered.std(axis=0, keepdims=True)
+    x_std = x_centered_corr.std(axis=0, keepdims=True)
     h_std = h_centered.std(axis=0, keepdims=True)
 
     x_std[x_std < 1e-8] = 1.0
     h_std[h_std < 1e-8] = 1.0
 
-    x_normed = x_centered / x_std
+    x_normed = x_centered_corr / x_std
     h_normed = h_centered / h_std
 
     # Correlation: (hidden_dim, input_dim)
@@ -221,7 +233,8 @@ def analyze_input_correlations(
 def analyze_matryoshka_scales(
     model: SparseAutoencoder,
     embeddings: Dict[str, np.ndarray],
-    std: np.ndarray,
+    train_std: np.ndarray,
+    train_mean: np.ndarray,
     scales: List[int] = None,
 ) -> Dict:
     """
@@ -239,10 +252,9 @@ def analyze_matryoshka_scales(
     results = {}
 
     for ds_name, emb in embeddings.items():
-        # Normalize by std, then CENTER (matching train_sae preprocessing)
-        emb_norm = emb / std
-        emb_mean = emb_norm.mean(axis=0, keepdims=True)
-        emb_centered = emb_norm - emb_mean
+        # Normalize and center using TRAINING pool stats (matching train_sae preprocessing)
+        emb_norm = emb / train_std
+        emb_centered = emb_norm - train_mean
 
         with torch.no_grad():
             x = torch.tensor(emb_centered, dtype=torch.float32)
@@ -328,7 +340,8 @@ def cluster_features(
 def find_interpretable_features(
     model: SparseAutoencoder,
     embeddings: Dict[str, np.ndarray],
-    std: np.ndarray,
+    train_std: np.ndarray,
+    train_mean: np.ndarray,
     correlations: np.ndarray,
     top_k: int = 20,
 ) -> List[Dict]:
@@ -341,9 +354,10 @@ def find_interpretable_features(
     # Get activations per dataset
     dataset_mean_acts = {}
     for ds_name, emb in embeddings.items():
-        emb_norm = emb / std
+        emb_norm = emb / train_std
+        emb_centered = emb_norm - train_mean
         with torch.no_grad():
-            x = torch.tensor(emb_norm, dtype=torch.float32)
+            x = torch.tensor(emb_centered, dtype=torch.float32)
             h = model.encode(x).numpy()
             dataset_mean_acts[ds_name] = h.mean(axis=0)
 
@@ -397,7 +411,7 @@ def main():
     print(f"  Input dim: {config.input_dim}")
 
     print("\nLoading embeddings by dataset...")
-    embeddings, train_std = load_embeddings_by_dataset()
+    embeddings, train_std, train_mean = load_embeddings_by_dataset()
     print(f"  Loaded {len(embeddings)} datasets")
     print(f"  Total samples: {sum(len(e) for e in embeddings.values())}")
 
@@ -407,7 +421,7 @@ def main():
 
     # 1. Feature activations
     print("\n1. Analyzing feature activations...")
-    activation_stats = analyze_feature_activations(model, embeddings, train_std)
+    activation_stats = analyze_feature_activations(model, embeddings, train_std, train_mean)
 
     # Summary stats
     sparsities = [f['sparsity'] for f in activation_stats['feature_stats']]
@@ -416,13 +430,13 @@ def main():
 
     # 2. Input correlations
     print("\n2. Computing input correlations...")
-    correlations = analyze_input_correlations(model, embeddings, train_std)
+    correlations = analyze_input_correlations(model, embeddings, train_std, train_mean)
     print(f"  Max absolute correlation: {np.abs(correlations).max():.3f}")
     print(f"  Mean absolute correlation: {np.abs(correlations).mean():.3f}")
 
     # 3. Matryoshka scale analysis
     print("\n3. Analyzing Matryoshka scales...")
-    scale_analysis = analyze_matryoshka_scales(model, embeddings, train_std)
+    scale_analysis = analyze_matryoshka_scales(model, embeddings, train_std, train_mean)
     print("  R² by scale:")
     for scale, stats in scale_analysis['aggregated'].items():
         print(f"    {scale:4d} features: R²={stats['mean_r2']:.3f} ± {stats['std_r2']:.3f}")
@@ -434,7 +448,7 @@ def main():
 
     # 5. Most interpretable features
     print("\n5. Finding most interpretable features...")
-    interpretable = find_interpretable_features(model, embeddings, train_std, correlations, top_k=args.top_k)
+    interpretable = find_interpretable_features(model, embeddings, train_std, train_mean, correlations, top_k=args.top_k)
 
     print(f"\nTop {args.top_k} most interpretable features:")
     print("-"*60)
