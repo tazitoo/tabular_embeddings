@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Matryoshka hierarchy maps to concept abstraction level. Per-feature ICC (intraclass correlation coefficient) decomposes activation variance into between-dataset ($\sigma^2_\text{between}$, same for all rows) vs.\ within-dataset ($\sigma^2_\text{within}$, row-specific) components across 51 TabArena datasets. L0 features encode dataset-level properties (ICC $\to$ 1), while L4 features capture row-specific patterns (ICC $\to$ 0).}
+\label{tab:matryoshka-icc}
+\small
+\begin{tabular}{@{}llrrrrrl@{}}
+\toprule
+Level & Features & Alive & \multicolumn{2}{c}{ICC} & $>$0.5 & Fire & Example Concept \\
+\cmidrule(lr){4-5}
+& & & Mean & Median & & Rate & \\
+\midrule
+L0 & 0--31    &   32 & 0.551 & 0.546 & 56\% & 0.84 & F5: high-dimensional datasets \\
+L1 & 32--63   &   32 & 0.475 & 0.489 & 50\% & 0.86 & F63: right-skewed distributions \\
+L2 & 64--127  &   64 & 0.498 & 0.511 & 55\% & 0.82 & F75: densely correlated features \\
+L3 & 128--255 &  128 & 0.366 & 0.341 & 25\% & 0.74 & F235: diverse, non-sparse rows \\
+L4 & 256--1535 & 1274 & 0.185 & 0.098 & 10\% & 0.13 & F833: rows in linear subspace \\
+\bottomrule
+\end{tabular}
+\end{table}
