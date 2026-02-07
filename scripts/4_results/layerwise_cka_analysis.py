@@ -706,6 +706,9 @@ def main():
                         help="Number of samples for analysis")
     parser.add_argument("--dataset", type=str, default=None,
                         help="Dataset name from TabArena/OpenML (use synthetic if not specified)")
+    parser.add_argument("--task", type=str, default="classification",
+                        choices=["classification", "regression"],
+                        help="Task type (selects correct TabPFN variant)")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory")
     args = parser.parse_args()
@@ -735,9 +738,11 @@ def main():
     print(f"  Dataset: {dataset_name}")
     print(f"  Context: {X_context.shape}, Query: {X_query.shape}")
 
+    task = getattr(args, "task", "classification")
+
     if args.model == "tabpfn":
         layer_embeddings = extract_tabpfn_all_layers(
-            X_context, y_context, X_query, device=args.device
+            X_context, y_context, X_query, device=args.device, task=task
         )
     elif args.model == "mitra":
         layer_embeddings = extract_mitra_all_layers(
@@ -869,7 +874,8 @@ def compute_critical_depth(cka_matrix: np.ndarray, threshold: float = 0.5) -> di
 
 
 def batch_analyze(model: str, datasets: List[str], device: str = "cuda",
-                  n_samples: int = 500, output_dir: Path = None) -> dict:
+                  n_samples: int = 500, output_dir: Path = None,
+                  task: str = "classification") -> dict:
     """Run layer-wise CKA analysis across multiple datasets."""
     if output_dir is None:
         output_dir = PROJECT_ROOT / "output"
@@ -888,7 +894,7 @@ def batch_analyze(model: str, datasets: List[str], device: str = "cuda",
             # Extract embeddings
             if model == "tabpfn":
                 layer_embeddings = extract_tabpfn_all_layers(
-                    X_context, y_context, X_query, device=device
+                    X_context, y_context, X_query, device=device, task=task
                 )
             elif model == "tabicl":
                 layer_embeddings = extract_tabicl_all_layers(
@@ -1033,6 +1039,11 @@ def batch_main():
                         help="Number of samples per dataset")
     parser.add_argument("--max-datasets", type=int, default=15,
                         help="Maximum number of datasets to process")
+    parser.add_argument("--task", type=str, default="classification",
+                        choices=["classification", "regression"],
+                        help="Task type (selects correct TabPFN variant)")
+    parser.add_argument("--datasets", nargs="+", default=None,
+                        help="Specific dataset names (overrides OpenML suite discovery)")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory")
     args = parser.parse_args()
@@ -1042,20 +1053,23 @@ def batch_main():
 
     np.random.seed(42)
 
-    # Get TabArena datasets
-    import openml
-    suite = openml.study.get_suite(457)
-    datasets = []
-    for did in list(suite.data)[:args.max_datasets * 2]:  # Get extra in case some fail
-        try:
-            d = openml.datasets.get_dataset(did, download_data=False)
-            datasets.append(d.name)
-        except:
-            pass
-        if len(datasets) >= args.max_datasets:
-            break
+    # Get datasets
+    if args.datasets:
+        datasets = args.datasets
+    else:
+        import openml
+        suite = openml.study.get_suite(457)
+        datasets = []
+        for did in list(suite.data)[:args.max_datasets * 2]:  # Get extra in case some fail
+            try:
+                d = openml.datasets.get_dataset(did, download_data=False)
+                datasets.append(d.name)
+            except:
+                pass
+            if len(datasets) >= args.max_datasets:
+                break
 
-    print(f"Running batch analysis for {args.model} on {len(datasets)} datasets")
+    print(f"Running batch analysis for {args.model} ({args.task}) on {len(datasets)} datasets")
     print(f"Datasets: {datasets}")
 
     # Run batch analysis
@@ -1064,12 +1078,14 @@ def batch_main():
         datasets=datasets,
         device=args.device,
         n_samples=args.n_samples,
-        output_dir=output_dir
+        output_dir=output_dir,
+        task=args.task,
     )
 
     # Save aggregated results
     import json
-    results_path = output_dir / f"layerwise_depth_analysis_{args.model}.json"
+    suffix = f"{args.model}_{args.task}" if args.task != "classification" else args.model
+    results_path = output_dir / f"layerwise_depth_analysis_{suffix}.json"
     with open(results_path, 'w') as f:
         json.dump(results, f, indent=2)
     print(f"\nSaved aggregated results: {results_path}")
@@ -1078,8 +1094,8 @@ def batch_main():
     if results:
         plot_depth_distribution(
             results,
-            output_dir / f"layerwise_depth_distribution_{args.model}.png",
-            args.model.upper()
+            output_dir / f"layerwise_depth_distribution_{suffix}.png",
+            f"{args.model.upper()} ({args.task})"
         )
 
 

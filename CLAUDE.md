@@ -38,6 +38,7 @@ python compare_embeddings.py --suite relbench
 
 ## Code Conventions
 
+- **Never default to CPU for PyTorch training.** All scripts that call `train_sae`, model extraction, or any torch training loop must accept `--device` and default to `cuda` (or auto-detect). Running on CPU is never acceptable.
 - Embeddings: `(n_samples, embedding_dim)` shape
 - `EmbeddingResult` dataclass for extraction results
 - `SimilarityResult` for pairwise comparisons
@@ -109,3 +110,10 @@ galactus orchestrates (Dask scheduler), workers extract embeddings on GPU, simil
 - [ ] Correlation: embedding geometry vs task performance
 
 See `PROJECT_STATUS.md` for detailed extraction status, blocked items, and next steps.
+
+## Known Pitfalls
+
+- **`train_sae()` defaults to CPU.** The function signature is `device="cpu"`. Any script wrapping it must explicitly pass `device="cuda"` or accept `--device` from the CLI. Easy to miss and silently 25%+ slower.
+- **TabPFN has two model variants with different architectures.** The classifier has 24 transformer layers; the regressor has 18. Layer indices (e.g. layer 16) land at different relative depths (67% vs 89%). Any layer-specific analysis must account for task type.
+- **TabPFN layer extraction requires task type.** `extract_tabpfn_all_layers()` needs `task="regression"` to load `TabPFNRegressor` and call `predict()` instead of `predict_proba()`. Without it, regression and many-class datasets fail silently.
+- **TabArena has mixed task types.** 11 of 51 datasets are regression or many-class. Always check `TABARENA_DATASETS[name]["task"]` rather than assuming classification.
