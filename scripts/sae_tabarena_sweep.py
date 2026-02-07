@@ -585,7 +585,7 @@ def run_sweep(
     for i, ename in enumerate(effective_names):
         ctx = context_sizes[i] if context_sizes else 0
         print(f"\nPooling {ename} embeddings from train datasets...")
-        emb, counts = pool_embeddings(ename, train_datasets, max_per_dataset=200)
+        emb, counts = pool_embeddings(ename, train_datasets, max_per_dataset=500)
         print(f"  Total samples: {len(emb)}")
         print(f"  Embedding dim: {emb.shape[1]}")
         print(f"  Datasets loaded: {len(counts)}")

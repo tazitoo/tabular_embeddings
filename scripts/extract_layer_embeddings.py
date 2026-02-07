@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -47,6 +48,9 @@ from layerwise_cka_analysis import (
     extract_carte_all_layers,
     sort_layer_names,
 )
+
+# Fixed random seed for reproducible splits
+SPLIT_SEED = 42
 
 EXTRACT_FN = {
     "tabpfn": extract_tabpfn_all_layers,
@@ -66,12 +70,13 @@ def get_tabarena_dataset_names() -> list[str]:
 def load_context_query(
     dataset_name: str,
     context_size: int = 600,
-    query_size: int = 100,
+    query_size: int = 500,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load a TabArena dataset and split into context/query sets.
 
-    Matches the convention from extract_embeddings.py: context_size ICL examples
-    followed by query_size evaluation rows.
+    Uses stratified sampling for classification datasets to ensure all classes
+    are represented in both context and query sets, even for highly imbalanced
+    datasets (e.g. QSAR-TID-11 with 0.02% minority class).
 
     Returns (X_context, y_context, X_query).
     """
@@ -84,7 +89,23 @@ def load_context_query(
     if n < context_size + query_size:
         context_size = int(n * 0.7)
         query_size = n - context_size
-    return X[:context_size], y[:context_size], X[context_size:context_size + query_size]
+
+    task = get_dataset_task(dataset_name)
+    if task == "classification":
+        # Stratified split ensures all classes appear in both context and query
+        query_frac = query_size / (context_size + query_size)
+        try:
+            X_ctx, X_q, y_ctx, _ = train_test_split(
+                X, y, test_size=query_frac, random_state=SPLIT_SEED, stratify=y,
+            )
+        except ValueError:
+            # Fallback for classes with too few samples to stratify
+            X_ctx, X_q, y_ctx, _ = train_test_split(
+                X, y, test_size=query_frac, random_state=SPLIT_SEED,
+            )
+        return X_ctx[:context_size], y_ctx[:context_size], X_q[:query_size]
+    else:
+        return X[:context_size], y[:context_size], X[context_size:context_size + query_size]
 
 
 def get_dataset_task(dataset_name: str) -> str:
@@ -99,7 +120,7 @@ def extract_single_layer(
     dataset_name: str,
     device: str = "cuda",
     context_size: int = 600,
-    query_size: int = 100,
+    query_size: int = 500,
 ) -> np.ndarray:
     """Extract embeddings at a specific layer for one dataset.
 
@@ -144,8 +165,8 @@ def main():
                         help="Device (default: cuda)")
     parser.add_argument("--context-size", type=int, default=600,
                         help="Number of ICL context examples (default: 600)")
-    parser.add_argument("--query-size", type=int, default=100,
-                        help="Number of query rows to embed (default: 100)")
+    parser.add_argument("--query-size", type=int, default=500,
+                        help="Number of query rows to embed (default: 500)")
     parser.add_argument("--datasets", nargs="+", default=None,
                         help="Specific dataset names (default: all TabArena)")
     args = parser.parse_args()
