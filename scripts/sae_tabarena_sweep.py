@@ -552,9 +552,10 @@ def run_sweep(
     n_trials: int = 30,
     output_dir: Optional[Path] = None,
     context_sizes: Optional[List[int]] = None,
-    device: str = "cpu",
+    device: str = "cuda",
+    sae_type_filter: Optional[List[str]] = None,
 ):
-    """Run HP sweep for all SAE types on train datasets.
+    """Run HP sweep for SAE types on train datasets.
 
     Args:
         model_name: Base model name (e.g. 'tabpfn_layer16')
@@ -563,6 +564,8 @@ def run_sweep(
         context_sizes: If given, search over context sizes as an HP.
             Requires pre-extracted embeddings at each size (e.g. tabpfn_layer16_ctx200/).
             When None, uses model_name directory directly.
+        device: Torch device for training
+        sae_type_filter: If given, only sweep these SAE types (default: all 5)
     """
     import optuna
 
@@ -602,7 +605,8 @@ def run_sweep(
         json.dump(split_info, f, indent=2)
 
     # Run sweep for each SAE type
-    sae_types = ["l1", "topk", "matryoshka", "archetypal", "matryoshka_archetypal"]
+    all_sae_types = ["l1", "topk", "matryoshka", "archetypal", "matryoshka_archetypal"]
+    sae_types = sae_type_filter if sae_type_filter else all_sae_types
     best_configs = {}
 
     for sae_type in sae_types:
@@ -773,8 +777,11 @@ def main():
     parser.add_argument("--context-sizes", type=str, default=None,
                         help="Comma-separated context sizes to search over (e.g. '200,600,1000'). "
                              "Requires pre-extracted embeddings at each size.")
-    parser.add_argument("--device", type=str, default="cpu",
-                        help="Torch device for SAE training (default: cpu)")
+    parser.add_argument("--sae-types", type=str, default=None,
+                        help="Comma-separated SAE types to sweep (default: all). "
+                             "Options: l1,topk,matryoshka,archetypal,matryoshka_archetypal")
+    parser.add_argument("--device", type=str, default="cuda",
+                        help="Torch device for SAE training (default: cuda)")
     parser.add_argument("--n-trials", type=int, default=30, help="Trials per SAE type")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate on test set")
     args = parser.parse_args()
@@ -804,11 +811,17 @@ def main():
     elif args.evaluate:
         evaluate_on_test(effective_models[0])
     else:
+        # Parse SAE type filter
+        sae_type_filter = None
+        if args.sae_types:
+            sae_type_filter = [s.strip() for s in args.sae_types.split(",")]
+
         run_sweep(
             base_model,
             n_trials=args.n_trials,
             context_sizes=context_sizes,
             device=args.device,
+            sae_type_filter=sae_type_filter,
         )
 
 
