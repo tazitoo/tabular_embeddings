@@ -141,12 +141,16 @@ def extract_single_layer(
 
     layer_embeddings = extract_fn(X_context, y_context, X_query, **kwargs)
 
-    layer_key = f"layer_{layer}"
-    if layer_key not in layer_embeddings:
-        available = sort_layer_names(list(layer_embeddings.keys()))
+    # Use index-based lookup into sorted layer list (matches depth analysis indexing).
+    # Exact name match (layer_14) only works when sorted order == layer numbering,
+    # which breaks for models with extra layers (TabICL's row_output, Mitra's final_norm).
+    available = sort_layer_names(list(layer_embeddings.keys()))
+    if 0 <= layer < len(available):
+        layer_key = available[layer]
+    else:
         raise ValueError(
-            f"Layer {layer} not found for {model}. "
-            f"Available: {available}"
+            f"Layer index {layer} out of range for {model}. "
+            f"Available ({len(available)}): {available}"
         )
 
     return layer_embeddings[layer_key]

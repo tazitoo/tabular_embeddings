@@ -240,7 +240,7 @@ def build_sae_config(
         archetypal_simplex_temp=archetypal_temp,
         archetypal_relaxation=archetypal_relaxation,
         archetypal_use_centroids=True,
-        use_aux_loss=(sae_type not in ["archetypal", "matryoshka_archetypal"]),
+        use_ghost_grads=True,
         n_epochs=n_epochs,
         batch_size=128,
         learning_rate=learning_rate,
@@ -493,7 +493,7 @@ def create_optuna_objective(
         learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
 
         # Type-specific parameters
-        if sae_type in ("topk", "matryoshka_archetypal"):
+        if sae_type in ("topk", "archetypal", "matryoshka_archetypal"):
             topk = trial.suggest_categorical("topk", [16, 32, 64, 128])
         else:
             topk = 32

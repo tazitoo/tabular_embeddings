@@ -436,8 +436,9 @@ def compute_column_stats(df: pd.DataFrame) -> Tuple[List[str], List[str], Dict, 
 
 def load_sae_checkpoint(path: Path) -> Tuple[SparseAutoencoder, SAEConfig, Dict]:
     """Load SAE model from checkpoint."""
-    checkpoint = torch.load(path, map_location='cpu')
-    config = SAEConfig(**checkpoint['config'])
+    checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+    cfg = checkpoint['config']
+    config = cfg if isinstance(cfg, SAEConfig) else SAEConfig(**cfg)
     model = SparseAutoencoder(config)
 
     state_dict = checkpoint['model_state_dict']
@@ -449,7 +450,7 @@ def load_sae_checkpoint(path: Path) -> Tuple[SparseAutoencoder, SAEConfig, Dict]
         if 'archetype_deviation' in state_dict:
             model.archetype_deviation = torch.nn.Parameter(state_dict['archetype_deviation'])
 
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     model.eval()
 
     return model, config, checkpoint
@@ -476,13 +477,15 @@ def analyze_feature_triggers(
     top_features: List[int],
     samples_per_feature: int = 100,
     max_samples_per_dataset: int = 200,
+    emb_dir: Path = None,
 ) -> Dict:
     """
     For each feature, find what tabular patterns trigger it.
 
     Returns per-feature analysis of row meta-features.
     """
-    emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / "tabpfn"
+    if emb_dir is None:
+        emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / "tabpfn"
 
     # Collect all samples with their meta-features and activations
     all_meta = []  # List of RowMetaFeatures
@@ -842,6 +845,7 @@ def collect_raw_activating_samples(
     n_samples_per_feature: int = 100,
     n_baseline_samples: int = 50,
     max_samples_per_dataset: int = 200,
+    emb_dir: Path = None,
 ) -> Dict:
     """
     Collect raw data samples that maximally activate each feature.
@@ -852,7 +856,8 @@ def collect_raw_activating_samples(
         'activation_stats': {mean, max, std}
     }
     """
-    emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / "tabpfn"
+    if emb_dir is None:
+        emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / "tabpfn"
 
     # Collect all samples with their raw data, activations, and dataset info
     all_raw_samples = []  # List of dicts with raw values
@@ -1251,6 +1256,8 @@ def main():
     parser.add_argument("--label-concepts", action="store_true", help="Generate concept labels using LLM")
     parser.add_argument("--n-labels", type=int, default=50, help="Number of features to label with LLM")
     parser.add_argument("--no-llm", action="store_true", help="Skip LLM and use only statistical labels")
+    parser.add_argument("--emb-dir", type=str, default=None,
+                        help="Embedding directory (default: output/embeddings/tabarena/tabpfn)")
     args = parser.parse_args()
 
     print("Loading SAE checkpoint...")
@@ -1259,7 +1266,10 @@ def main():
     print(f"  Hidden dim: {config.hidden_dim}")
 
     # Get datasets and compute training stats
-    emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / "tabpfn"
+    if args.emb_dir:
+        emb_dir = Path(args.emb_dir)
+    else:
+        emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / "tabpfn"
     all_datasets = [f.stem.replace("tabarena_", "") for f in emb_dir.glob("tabarena_*.npz")]
     train_datasets, test_datasets = get_train_test_split(all_datasets)
 
@@ -1320,6 +1330,7 @@ def main():
         train_mean=train_mean,
         top_features=top_features,
         samples_per_feature=args.samples_per_feature,
+        emb_dir=emb_dir,
     )
 
     # Meta-feature names for clustering
@@ -1410,6 +1421,7 @@ def main():
             feature_ids=top_features,
             n_samples_per_feature=args.samples_per_feature,
             n_baseline_samples=50,
+            emb_dir=emb_dir,
         )
 
         # Generate labels for ALL features

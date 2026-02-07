@@ -52,20 +52,43 @@ class SAEConfig:
     archetypal_relaxation: float = 0.0  # δ for RA-SAE: 0 = strict A-SAE, >0 = relaxed
     archetypal_use_centroids: bool = True  # Use K-means centroids (paper) vs raw data
 
-    # Dead neuron revival (auxiliary loss)
-    use_aux_loss: bool = True  # Enable dead neuron revival
-    aux_loss_coef: float = 1e-2  # Coefficient for auxiliary loss
-    dead_threshold: int = 10000  # Steps without activation to consider dead
-    aux_topk: int = 512  # Number of dead neurons to revive per batch
+    # Dead neuron revival (ghost grads)
+    use_ghost_grads: bool = True  # Enable ghost grad dead neuron revival
+    ghost_grad_coef: float = 0.5  # Coefficient for ghost grad loss (relative to recon)
+    dead_threshold: int = 500  # Steps without activation to consider dead (legacy)
+    dead_freq_threshold: float = 1e-3  # EMA activation frequency below which a feature is "dead"
+    ema_decay: float = 0.999  # Decay rate for activation frequency EMA
+
+    # Legacy aliases (map to ghost grads)
+    use_aux_loss: bool = None  # Deprecated: use use_ghost_grads instead
+    aux_loss_coef: float = None  # Deprecated: use ghost_grad_coef instead
+    aux_topk: int = 512  # Unused, kept for checkpoint compat
 
     # Training
     learning_rate: float = 1e-3
     batch_size: int = 256
     n_epochs: int = 100
+    warmup_epochs: int = 3  # Linear LR warmup to prevent early feature death
+    strip_fraction: float = 0.0  # Fraction of most-negative encoder weights to zero per dead neuron (0=disabled)
 
     # Normalization
     normalize_encoder: bool = True  # Unit norm encoder columns
     tied_weights: bool = False  # Decoder = Encoder.T
+
+    def __post_init__(self):
+        """Resolve legacy aux_loss aliases to ghost_grads."""
+        if self.use_aux_loss is not None and self.use_ghost_grads is True:
+            # Legacy checkpoint: use_aux_loss was set explicitly
+            self.use_ghost_grads = self.use_aux_loss
+        if self.aux_loss_coef is not None and self.ghost_grad_coef == 0.5:
+            self.ghost_grad_coef = self.aux_loss_coef
+        # Normalize: ensure booleans are set
+        if self.use_ghost_grads is None:
+            self.use_ghost_grads = True
+        if self.use_aux_loss is None:
+            self.use_aux_loss = self.use_ghost_grads
+        if self.aux_loss_coef is None:
+            self.aux_loss_coef = self.ghost_grad_coef
 
 
 @dataclass
@@ -143,11 +166,13 @@ class SparseAutoencoder(nn.Module):
             # D = WC + Λ, where ||Λ||₂² ≤ δ
             self.archetype_deviation = None  # Initialized when reference data is set
 
-        # Dead neuron tracking for auxiliary loss
-        if config.use_aux_loss:
-            # Register buffer to track steps since last activation
+        # Dead neuron tracking for ghost grads
+        if config.use_ghost_grads:
             self.register_buffer('steps_since_active', torch.zeros(config.hidden_dim, dtype=torch.long))
             self.register_buffer('total_steps', torch.tensor(0, dtype=torch.long))
+            # EMA activation frequency: tracks per-sample firing rate (not batch-level)
+            # Solves the TopK-marginal problem where batch-level any() misses rare features
+            self.register_buffer('activation_freq', torch.zeros(config.hidden_dim))
 
     def encode(self, x: torch.Tensor, return_pre_act: bool = False) -> torch.Tensor:
         """
@@ -268,53 +293,121 @@ class SparseAutoencoder(nn.Module):
                 reconstructions.append(x_hat)
         return reconstructions, h
 
-    def compute_aux_loss(self, x: torch.Tensor, h: torch.Tensor, pre_act: torch.Tensor) -> torch.Tensor:
+    def compute_ghost_grad_loss(
+        self, x: torch.Tensor, h: torch.Tensor, pre_act: torch.Tensor,
+    ) -> torch.Tensor:
         """
-        Compute auxiliary loss to revive dead neurons.
+        Ghost gradient loss for dead neuron revival.
 
-        Based on Anthropic's approach: encourage dead neurons to activate on
-        samples with high reconstruction error.
+        For dead features, computes a secondary forward pass using exp()
+        activation (instead of ReLU) to guarantee gradient flow, then
+        decodes using only dead features and minimizes residual error.
+        This reorients dead features toward the current reconstruction error.
+
+        Reference: Anthropic, "Scaling Monosemanticity" (2024), Appendix B.
 
         Args:
-            x: Original input
-            h: Current activations
-            pre_act: Pre-activation values
+            x: Original input (batch_size, input_dim)
+            h: Current (alive) activations (batch_size, hidden_dim)
+            pre_act: Pre-activation values (batch_size, hidden_dim)
 
         Returns:
-            aux_loss: Auxiliary loss term
+            Ghost grad loss term (scalar)
         """
-        if not self.config.use_aux_loss:
+        if not self.config.use_ghost_grads:
             return torch.tensor(0.0, device=x.device)
 
-        # Update dead neuron tracking
+        # Update dead neuron tracking with EMA of per-sample activation frequency.
+        # Using per-sample mean (not batch-level any()) to properly detect TopK-marginal
+        # features that fire rarely enough to be effectively dead but often enough to
+        # reset a binary step counter.
         with torch.no_grad():
-            active_mask = (h > 0).any(dim=0)  # Which neurons fired this batch
+            batch_freq = (h > 0).float().mean(dim=0)  # Per-sample frequency in this batch
+            decay = self.config.ema_decay
+            self.activation_freq = decay * self.activation_freq + (1 - decay) * batch_freq
+            # Also update legacy step counter for checkpoint compat
+            active_mask = (h > 0).any(dim=0)
             self.steps_since_active[active_mask] = 0
             self.steps_since_active[~active_mask] += 1
             self.total_steps += 1
 
-        # Find dead neurons (haven't fired in dead_threshold steps)
-        dead_mask = self.steps_since_active > self.config.dead_threshold
+        # Use EMA frequency for dead detection (not step counter)
+        dead_mask = self.activation_freq < self.config.dead_freq_threshold
+        n_dead = dead_mask.sum().item()
 
-        if not dead_mask.any():
+        if n_dead == 0:
             return torch.tensor(0.0, device=x.device)
 
-        # Compute reconstruction error per sample
-        x_hat = self.decode(h)
-        recon_error = (x - x_hat).pow(2).sum(dim=-1)  # (batch_size,)
+        # Compute residual error from alive features
+        with torch.no_grad():
+            x_hat = self.decode(h)
+            residual = x - x_hat  # (batch_size, input_dim)
 
-        # Get top-k samples with highest reconstruction error
-        n_samples = min(self.config.aux_topk, len(x))
-        _, high_error_idx = torch.topk(recon_error, n_samples)
+        # Ghost activations: use exp() on dead features' pre-activations
+        # exp() ensures non-zero gradients even for very negative pre-activations,
+        # unlike ReLU which has zero gradient for negative inputs
+        ghost_pre_act = pre_act[:, dead_mask]  # (batch_size, n_dead)
+        ghost_act = torch.exp(ghost_pre_act)
 
-        # Get pre-activations of dead neurons on high-error samples
-        dead_pre_act = pre_act[high_error_idx][:, dead_mask]  # (n_samples, n_dead)
+        # Normalize ghost activations to prevent explosion
+        # Scale to have similar magnitude to alive activations
+        with torch.no_grad():
+            alive_mean_act = h[h > 0].mean() if (h > 0).any() else torch.tensor(1.0, device=x.device)
+            ghost_scale = alive_mean_act / (ghost_act.mean() + 1e-8)
+        ghost_act = ghost_act * ghost_scale
 
-        # Auxiliary loss: encourage dead neurons to have positive pre-activation
-        # on high-error samples (so they'll fire after ReLU)
-        aux_loss = F.relu(-dead_pre_act + 0.1).mean()  # Encourage pre_act > 0.1
+        # Decode using only dead features to reconstruct the residual
+        if self.config.sparsity_type in ("archetypal", "matryoshka_archetypal") and self.archetype_logits is not None:
+            W_dec = self.get_archetypal_dictionary()  # (hidden_dim, input_dim)
+            W_dec_dead = W_dec[dead_mask]  # (n_dead, input_dim)
+        elif self.config.tied_weights:
+            W_dec_dead = self.W_enc[dead_mask]  # (n_dead, input_dim)
+        else:
+            W_dec_dead = self.W_dec[:, dead_mask]  # (input_dim, n_dead)
+            # ghost_recon = ghost_act @ W_dec_dead.T for untied
+            ghost_recon = F.linear(ghost_act, W_dec_dead)
+            ghost_loss = F.mse_loss(ghost_recon, residual)
+            return self.config.ghost_grad_coef * ghost_loss
 
-        return self.config.aux_loss_coef * aux_loss
+        # For archetypal/tied: W_dec_dead is (n_dead, input_dim)
+        ghost_recon = ghost_act @ W_dec_dead  # (batch, n_dead) @ (n_dead, input) = (batch, input)
+        ghost_loss = F.mse_loss(ghost_recon, residual)
+
+        return self.config.ghost_grad_coef * ghost_loss
+
+    def synaptic_strip(self, dead_mask: torch.Tensor, strip_fraction: float = 0.1):
+        """
+        Revive dead neurons by zeroing their most negative encoder weights.
+
+        For each dead neuron, zeros the most negative fraction of incoming
+        weights (W_enc row) and resets the bias to a small positive value.
+        This shifts the pre-activation distribution positive, allowing
+        the neuron to fire again after ReLU.
+
+        Args:
+            dead_mask: Boolean tensor (hidden_dim,) indicating dead neurons
+            strip_fraction: Fraction of most-negative weights to zero (default 0.1)
+        """
+        n_dead = dead_mask.sum().item()
+        if n_dead == 0:
+            return 0
+
+        with torch.no_grad():
+            for idx in torch.where(dead_mask)[0]:
+                w = self.W_enc.data[idx]  # (input_dim,)
+                n_strip = max(1, int(len(w) * strip_fraction))
+                # Find the most negative weights and zero them
+                _, neg_indices = torch.topk(-w, n_strip)  # indices of most negative
+                w[neg_indices] = 0.0
+                # Reset bias to small positive to encourage firing
+                self.b_enc.data[idx] = 0.01
+
+        return n_dead
+
+    # Legacy alias
+    def compute_aux_loss(self, x, h, pre_act):
+        """Deprecated: use compute_ghost_grad_loss instead."""
+        return self.compute_ghost_grad_loss(x, h, pre_act)
 
     def get_dictionary(self) -> np.ndarray:
         """Get learned dictionary (decoder weights for reconstruction)."""
@@ -473,6 +566,17 @@ def train_sae(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
+    # LR warmup scheduler: linear ramp from 0 to learning_rate over warmup_epochs
+    warmup_epochs = getattr(config, 'warmup_epochs', 0)
+    if warmup_epochs > 0:
+        def lr_lambda(epoch):
+            if epoch < warmup_epochs:
+                return (epoch + 1) / warmup_epochs
+            return 1.0
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    else:
+        scheduler = None
+
     # For Matryoshka and Matryoshka-Archetypal, setup dimension weights
     if config.sparsity_type in ("matryoshka", "matryoshka_archetypal"):
         mat_dims = [d for d in config.matryoshka_dims if d <= config.hidden_dim]
@@ -499,8 +603,7 @@ def train_sae(
 
             if config.sparsity_type == "matryoshka":
                 # Matryoshka: compute loss at multiple scales
-                # Get pre_act for aux loss if needed
-                if config.use_aux_loss:
+                if config.use_ghost_grads:
                     h, pre_act = model.encode(batch, return_pre_act=True)
                 else:
                     h = model.encode(batch)
@@ -543,7 +646,7 @@ def train_sae(
 
             else:
                 # Standard forward
-                if config.use_aux_loss:
+                if config.use_ghost_grads:
                     h, pre_act = model.encode(batch, return_pre_act=True)
                     x_hat = model.decode(h)
                 else:
@@ -562,9 +665,9 @@ def train_sae(
                 else:
                     sparsity_loss = config.sparsity_penalty * h.abs().mean()
 
-            # Auxiliary loss for dead neuron revival
-            if config.use_aux_loss and pre_act is not None:
-                aux_loss = model.compute_aux_loss(batch, h, pre_act)
+            # Ghost grad loss for dead neuron revival
+            if config.use_ghost_grads and pre_act is not None:
+                aux_loss = model.compute_ghost_grad_loss(batch, h, pre_act)
             else:
                 aux_loss = torch.tensor(0.0, device=device)
 
@@ -592,16 +695,27 @@ def train_sae(
         history["aux_loss"].append(epoch_aux)
         history["total_loss"].append(epoch_recon + epoch_sparse + epoch_aux)
 
-        # Log dead neuron count if using aux loss
-        if config.use_aux_loss and hasattr(model, 'steps_since_active'):
-            n_dead = (model.steps_since_active > config.dead_threshold).sum().item()
-        else:
-            n_dead = 0
+        # LR warmup step
+        if scheduler is not None:
+            scheduler.step()
+
+        # Dead neuron detection and optional synaptic stripping (after each epoch)
+        strip_fraction = getattr(config, 'strip_fraction', 0.0)
+        n_dead = 0
+        n_stripped = 0
+        if hasattr(model, 'activation_freq'):
+            dead_mask = model.activation_freq < config.dead_freq_threshold
+            n_dead = dead_mask.sum().item()
+            if n_dead > 0 and strip_fraction > 0:
+                n_stripped = model.synaptic_strip(dead_mask, strip_fraction)
 
         if verbose and (epoch + 1) % 20 == 0:
             msg = f"  Epoch {epoch+1}/{config.n_epochs}: recon={epoch_recon:.6f}, sparsity={epoch_sparse:.6f}"
-            if config.use_aux_loss:
-                msg += f", aux={epoch_aux:.6f}, dead={n_dead}"
+            if config.use_ghost_grads:
+                msg += f", ghost={epoch_aux:.6f}"
+            msg += f", dead={n_dead}"
+            if n_stripped > 0:
+                msg += f", stripped={n_stripped}"
             print(msg)
 
     # Compute final statistics
