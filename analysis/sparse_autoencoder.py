@@ -632,7 +632,9 @@ def train_sae(
                 # 1. Archetypal decoder: dictionary atoms = convex combos of K-means centroids (stability)
                 # 2. Matryoshka loss: multi-scale reconstruction at nested truncation points (hierarchy)
                 # 3. TopK sparsity: handled in encode() for interpretable sparse activations
-                h, pre_act = model.encode(batch, return_pre_act=True)
+                # No ghost grads: multi-scale loss already ensures all features stay alive.
+                # Ghost grads destabilize training here (R²→-12804 on CARTE, NaN on TabDPT).
+                h = model.encode(batch)
 
                 # Multi-scale reconstruction loss (Matryoshka)
                 # Loss at each scale ensures features are ordered by importance
