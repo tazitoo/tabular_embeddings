@@ -76,7 +76,7 @@ python compare_embeddings.py --suite relbench
 
 GPU worker pool using the `tfm` conda env (has torch+CUDA+model deps).
 
-- **Workers**: surfer4 (3090), terrax4 (2080 Ti), octo4 (3070), firelord4 (4090)
+- **Workers**: surfer4 (3090), terrax4 (3090), octo4 (3090), firelord4 (4090)
 - **Conda env**: `tfm` on each worker (may need to be created on each worker)
 - **Worker repo path**: `/home/brian/src/tabular_embeddings`
 - **Worker python**: `/home/brian/anaconda3/envs/tfm/bin/python` 
