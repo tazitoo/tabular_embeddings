@@ -534,13 +534,15 @@ def extract_tabula8b_all_layers(
 
     MODEL_ID = "mlfoundations/tabula-8b"
 
-    # Load model and tokenizer (fp16 to fit in 24GB)
-    print(f"Loading Tabula-8B from {MODEL_ID}...")
+    # Load model and tokenizer (8-bit quantized to fit in 24GB with room for KV cache)
+    print(f"Loading Tabula-8B from {MODEL_ID} (8-bit quantized)...")
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID)
     model = transformers.AutoModelForCausalLM.from_pretrained(
-        MODEL_ID, torch_dtype=torch.float16,
+        MODEL_ID,
+        load_in_8bit=True,
+        device_map={"": device},
     )
-    model = model.to(device).eval()
+    model.eval()
 
     # Set pad token if not set (Llama doesn't have one by default)
     if tokenizer.pad_token is None:
