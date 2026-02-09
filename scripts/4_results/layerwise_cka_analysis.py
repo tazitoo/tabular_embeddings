@@ -509,6 +509,158 @@ def extract_carte_all_layers(
     return layer_embeddings
 
 
+def extract_tabula8b_all_layers(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    device: str = "cuda",
+    task: str = "classification",
+    col_names: Optional[List[str]] = None,
+    target_name: str = "target",
+    max_context_rows: int = 32,
+) -> Dict[str, np.ndarray]:
+    """
+    Extract embeddings from all Tabula-8B (Llama-3 8B) transformer layers.
+
+    Tabula-8B is a causal LM fine-tuned on serialized tabular data. Each row is
+    converted to text like "The col_name is value." and fed through the model.
+    We extract the hidden state at the LAST token position for each query row,
+    which captures the model's representation of that row given the few-shot context.
+
+    This requires one forward pass per query row (causal LM limitation), so it's
+    slower than ICL models that process all queries in one pass.
+    """
+    import transformers
+
+    MODEL_ID = "mlfoundations/tabula-8b"
+
+    # Load model and tokenizer (fp16 to fit in 24GB)
+    print(f"Loading Tabula-8B from {MODEL_ID}...")
+    tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID)
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        MODEL_ID, dtype=torch.float16, device_map=device,
+    )
+    model.eval()
+
+    # Set pad token if not set (Llama doesn't have one by default)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    n_query = len(X_query)
+    n_features = X_context.shape[1]
+
+    # Generate column names if not provided
+    if col_names is None:
+        col_names = [f"feature_{i}" for i in range(n_features)]
+
+    # Find transformer layers
+    # Llama-3 architecture: model.model.layers[0..31]
+    llama_model = model.model
+    layers = llama_model.layers
+    n_layers = len(layers)
+    print(f"Tabula-8B has {n_layers} transformer layers (dim={llama_model.config.hidden_size})")
+
+    # Serialize a single row to text
+    def serialize_row(X_row, y_val=None):
+        parts = []
+        for j, col in enumerate(col_names):
+            val = X_row[j]
+            if float(val) == int(val):
+                parts.append(f"The {col} is {int(val)}.")
+            else:
+                parts.append(f"The {col} is {val:.4g}.")
+        text = " ".join(parts)
+        if y_val is not None:
+            text += f" The {target_name} is {y_val}."
+        return text
+
+    # Build few-shot context text (subsample if too many context rows)
+    n_ctx = min(len(X_context), max_context_rows)
+    if n_ctx < len(X_context):
+        rng = np.random.RandomState(42)
+        ctx_idx = rng.choice(len(X_context), n_ctx, replace=False)
+    else:
+        ctx_idx = np.arange(n_ctx)
+
+    context_parts = []
+    for i in ctx_idx:
+        context_parts.append(serialize_row(X_context[i], y_context[i]))
+    context_text = "\n".join(context_parts) + "\n"
+
+    # Tokenize context once (shared prefix)
+    context_tokens = tokenizer.encode(context_text, add_special_tokens=True)
+    print(f"  Context: {n_ctx} rows, {len(context_tokens)} tokens")
+
+    # Register hooks for all layers + final norm
+    captured = {}
+    handles = []
+
+    for i, layer in enumerate(layers):
+        def make_hook(layer_idx):
+            def hook_fn(module, input, output):
+                # Llama layers return (hidden_state, ...) tuple
+                out = output[0] if isinstance(output, tuple) else output
+                captured[f"layer_{layer_idx}"] = out
+            return hook_fn
+        handles.append(layer.register_forward_hook(make_hook(i)))
+
+    # Hook final layer norm
+    def final_norm_hook(module, input, output):
+        captured["final_norm"] = output
+    handles.append(llama_model.norm.register_forward_hook(final_norm_hook))
+
+    # Extract embeddings for each query row
+    all_layer_embs = {f"layer_{i}": [] for i in range(n_layers)}
+    all_layer_embs["final_norm"] = []
+
+    try:
+        with torch.no_grad():
+            for qi in range(n_query):
+                if qi % 50 == 0 or qi == n_query - 1:
+                    print(f"  Query {qi+1}/{n_query}")
+
+                # Serialize query row (no label)
+                query_text = serialize_row(X_query[qi])
+                query_tokens = tokenizer.encode(
+                    query_text, add_special_tokens=False,
+                )
+
+                # Combine context + query
+                input_ids = context_tokens + query_tokens
+                # Truncate from left (drop context rows) if too long
+                max_len = getattr(tokenizer, "model_max_length", 8192)
+                if len(input_ids) > max_len:
+                    input_ids = input_ids[-max_len:]
+
+                input_tensor = torch.tensor([input_ids], device=device)
+
+                # Forward pass
+                _ = model(input_ids=input_tensor)
+
+                # Extract last-token hidden state from each layer
+                for key, act in captured.items():
+                    # act shape: (1, seq_len, hidden_dim)
+                    last_token = act[0, -1, :].float().cpu().numpy()
+                    all_layer_embs[key].append(last_token)
+
+                captured.clear()
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    # Stack into arrays
+    layer_embeddings = {}
+    for key, emb_list in all_layer_embs.items():
+        if emb_list:
+            layer_embeddings[key] = np.stack(emb_list, axis=0)  # (n_query, hidden_dim)
+
+    # Free model memory
+    del model
+    torch.cuda.empty_cache()
+
+    return layer_embeddings
+
+
 def extract_hyperfast_all_layers(
     X_context: np.ndarray,
     y_context: np.ndarray,
@@ -706,7 +858,7 @@ def plot_cka_by_distance(cka_matrix: np.ndarray, output_path: Path, model_name: 
 def main():
     parser = argparse.ArgumentParser(description="Layer-wise CKA analysis")
     parser.add_argument("--model", type=str, default="tabpfn",
-                        choices=["tabpfn", "mitra", "tabicl", "hyperfast", "tabdpt", "carte"],
+                        choices=["tabpfn", "mitra", "tabicl", "hyperfast", "tabdpt", "carte", "tabula8b"],
                         help="Model to analyze")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device to use")
@@ -771,6 +923,10 @@ def main():
     elif args.model == "carte":
         layer_embeddings = extract_carte_all_layers(
             X_context, y_context, X_query, device=args.device
+        )
+    elif args.model == "tabula8b":
+        layer_embeddings = extract_tabula8b_all_layers(
+            X_context, y_context, X_query, device=args.device, task=task
         )
     else:
         raise ValueError(f"Unknown model: {args.model}")
@@ -924,6 +1080,10 @@ def batch_analyze(model: str, datasets: List[str], device: str = "cuda",
                 layer_embeddings = extract_carte_all_layers(
                     X_context, y_context, X_query, device=device
                 )
+            elif model == "tabula8b":
+                layer_embeddings = extract_tabula8b_all_layers(
+                    X_context, y_context, X_query, device=device, task=task
+                )
             else:
                 raise ValueError(f"Unknown model: {model}")
 
@@ -1039,7 +1199,7 @@ def batch_main():
     """Entry point for batch analysis."""
     parser = argparse.ArgumentParser(description="Batch layer-wise CKA analysis across TabArena")
     parser.add_argument("--model", type=str, default="tabpfn",
-                        choices=["tabpfn", "mitra", "tabicl", "hyperfast", "tabdpt", "carte"],
+                        choices=["tabpfn", "mitra", "tabicl", "hyperfast", "tabdpt", "carte", "tabula8b"],
                         help="Model to analyze")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device to use")

@@ -46,6 +46,7 @@ from layerwise_cka_analysis import (
     extract_hyperfast_all_layers,
     extract_tabdpt_all_layers,
     extract_carte_all_layers,
+    extract_tabula8b_all_layers,
     sort_layer_names,
 )
 
@@ -59,6 +60,7 @@ EXTRACT_FN = {
     "hyperfast": extract_hyperfast_all_layers,
     "tabdpt": extract_tabdpt_all_layers,
     "carte": extract_carte_all_layers,
+    "tabula8b": extract_tabula8b_all_layers,
 }
 
 
