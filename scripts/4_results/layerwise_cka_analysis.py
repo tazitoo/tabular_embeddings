@@ -545,7 +545,7 @@ def extract_tabula8b_all_layers(
     task: str = "classification",
     col_names: Optional[List[str]] = None,
     target_name: str = "target",
-    max_context_rows: int = 32,
+    max_context_rows: int = 16,
 ) -> Dict[str, np.ndarray]:
     """
     Extract embeddings from all Tabula-8B (Llama-3 8B) transformer layers.
@@ -601,9 +601,19 @@ def extract_tabula8b_all_layers(
         context_parts.append(serialize_row(X_context[i], y_context[i]))
     context_text = "\n".join(context_parts) + "\n"
 
-    # Tokenize context once (shared prefix)
+    # Tokenize context once (shared prefix), respecting model's context window
+    max_len = min(getattr(model.config, "max_position_embeddings", 4096), 4096)
     context_tokens = tokenizer.encode(context_text, add_special_tokens=True)
-    print(f"  Context: {n_ctx} rows, {len(context_tokens)} tokens")
+
+    # Iteratively reduce context rows if tokens exceed budget (leave 200 for query)
+    while len(context_tokens) > max_len - 200 and n_ctx > 2:
+        n_ctx = n_ctx // 2
+        ctx_idx = ctx_idx[:n_ctx]
+        context_parts = [serialize_row(X_context[i], y_context[i]) for i in ctx_idx]
+        context_text = "\n".join(context_parts) + "\n"
+        context_tokens = tokenizer.encode(context_text, add_special_tokens=True)
+
+    print(f"  Context: {n_ctx} rows, {len(context_tokens)} tokens (max {max_len})")
 
     # Register hooks for all layers + final norm
     captured = {}
@@ -642,7 +652,6 @@ def extract_tabula8b_all_layers(
                 # Combine context + query
                 input_ids = context_tokens + query_tokens
                 # Truncate from left (drop context rows) if too long
-                max_len = getattr(tokenizer, "model_max_length", 8192)
                 if len(input_ids) > max_len:
                     input_ids = input_ids[-max_len:]
 
