@@ -195,7 +195,7 @@ def extract_mitra_all_layers(
                 else:
                     out = output
                 if isinstance(out, torch.Tensor):
-                    captured[f"layer_{layer_idx}"] = out.detach().cpu().numpy()
+                    captured[f"layer_{layer_idx}"] = out.detach().float().cpu().numpy()
             return hook_fn
         handle = layer.register_forward_hook(make_hook(i))
         handles.append(handle)
@@ -203,7 +203,7 @@ def extract_mitra_all_layers(
     # Also hook final_layer_norm
     def final_norm_hook(module, input, output):
         if isinstance(output, torch.Tensor):
-            captured["final_norm"] = output.detach().cpu().numpy()
+            captured["final_norm"] = output.detach().float().cpu().numpy()
     handles.append(tab2d_model.final_layer_norm.register_forward_hook(final_norm_hook))
 
     # Forward pass
