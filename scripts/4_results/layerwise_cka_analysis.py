@@ -538,9 +538,9 @@ def extract_tabula8b_all_layers(
     print(f"Loading Tabula-8B from {MODEL_ID}...")
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID)
     model = transformers.AutoModelForCausalLM.from_pretrained(
-        MODEL_ID, dtype=torch.float16, device_map=device,
+        MODEL_ID, torch_dtype=torch.float16,
     )
-    model.eval()
+    model = model.to(device).eval()
 
     # Set pad token if not set (Llama doesn't have one by default)
     if tokenizer.pad_token is None:
