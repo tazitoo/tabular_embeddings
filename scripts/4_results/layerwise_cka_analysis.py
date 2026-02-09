@@ -158,11 +158,16 @@ def extract_mitra_all_layers(
     y_context: np.ndarray,
     X_query: np.ndarray,
     device: str = "cuda",
+    task: str = "classification",
 ) -> Dict[str, np.ndarray]:
     """Extract embeddings from all Mitra Tab2D transformer layers (12 layers)."""
-    from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
+    if task == "regression":
+        from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
+        clf = MitraRegressor(device=device, n_estimators=1, fine_tune=False)
+    else:
+        from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
+        clf = MitraClassifier(device=device, n_estimators=1, fine_tune=False)
 
-    clf = MitraClassifier(device=device, n_estimators=1, fine_tune=False)
     clf.fit(X_context, y_context)
 
     n_query = len(X_query)
@@ -204,7 +209,10 @@ def extract_mitra_all_layers(
     # Forward pass
     try:
         with torch.no_grad():
-            _ = clf.predict_proba(X_query)
+            if task == "regression":
+                _ = clf.predict(X_query)
+            else:
+                _ = clf.predict_proba(X_query)
     finally:
         for handle in handles:
             handle.remove()
