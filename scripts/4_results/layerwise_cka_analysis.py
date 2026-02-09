@@ -509,6 +509,34 @@ def extract_carte_all_layers(
     return layer_embeddings
 
 
+# Global cache for Tabula-8B model (expensive to load, ~16GB)
+_tabula8b_cache: Dict[str, object] = {}
+
+
+def _get_tabula8b_model(device: str = "cuda"):
+    """Load and cache the Tabula-8B model."""
+    if "model" not in _tabula8b_cache:
+        import transformers
+
+        MODEL_ID = "mlfoundations/tabula-8b"
+        print(f"Loading Tabula-8B from {MODEL_ID} (fp16)...")
+        tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID)
+        model = transformers.AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            low_cpu_mem_usage=True,
+        )
+        model.eval()
+
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        _tabula8b_cache["model"] = model
+        _tabula8b_cache["tokenizer"] = tokenizer
+    return _tabula8b_cache["model"], _tabula8b_cache["tokenizer"]
+
+
 def extract_tabula8b_all_layers(
     X_context: np.ndarray,
     y_context: np.ndarray,
@@ -530,23 +558,7 @@ def extract_tabula8b_all_layers(
     This requires one forward pass per query row (causal LM limitation), so it's
     slower than ICL models that process all queries in one pass.
     """
-    import transformers
-
-    MODEL_ID = "mlfoundations/tabula-8b"
-
-    # Load model and tokenizer (8-bit quantized to fit in 24GB with room for KV cache)
-    print(f"Loading Tabula-8B from {MODEL_ID} (8-bit quantized)...")
-    tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID)
-    model = transformers.AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        load_in_8bit=True,
-        device_map={"": device},
-    )
-    model.eval()
-
-    # Set pad token if not set (Llama doesn't have one by default)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    model, tokenizer = _get_tabula8b_model(device)
 
     n_query = len(X_query)
     n_features = X_context.shape[1]
@@ -655,10 +667,6 @@ def extract_tabula8b_all_layers(
     for key, emb_list in all_layer_embs.items():
         if emb_list:
             layer_embeddings[key] = np.stack(emb_list, axis=0)  # (n_query, hidden_dim)
-
-    # Free model memory
-    del model
-    torch.cuda.empty_cache()
 
     return layer_embeddings
 
