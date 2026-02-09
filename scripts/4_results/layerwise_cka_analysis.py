@@ -615,22 +615,23 @@ def extract_tabula8b_all_layers(
 
     print(f"  Context: {n_ctx} rows, {len(context_tokens)} tokens (max {max_len})")
 
-    # Register hooks for all layers + final norm
+    # Register hooks for all layers + final norm.
+    # IMPORTANT: Extract only the last-token hidden state in each hook to avoid
+    # retaining full (1, seq_len, 4096) tensors for all 33 layers simultaneously,
+    # which causes OOM on 24GB GPUs (model=16GB + KV cache=4GB + hooks=1GB > 24GB).
     captured = {}
     handles = []
 
     for i, layer in enumerate(layers):
         def make_hook(layer_idx):
             def hook_fn(module, input, output):
-                # Llama layers return (hidden_state, ...) tuple
                 out = output[0] if isinstance(output, tuple) else output
-                captured[f"layer_{layer_idx}"] = out
+                captured[f"layer_{layer_idx}"] = out[0, -1, :].float().cpu()
             return hook_fn
         handles.append(layer.register_forward_hook(make_hook(i)))
 
-    # Hook final layer norm
     def final_norm_hook(module, input, output):
-        captured["final_norm"] = output
+        captured["final_norm"] = output[0, -1, :].float().cpu()
     handles.append(llama_model.norm.register_forward_hook(final_norm_hook))
 
     # Extract embeddings for each query row
@@ -651,22 +652,25 @@ def extract_tabula8b_all_layers(
 
                 # Combine context + query
                 input_ids = context_tokens + query_tokens
-                # Truncate from left (drop context rows) if too long
                 if len(input_ids) > max_len:
                     input_ids = input_ids[-max_len:]
 
-                input_tensor = torch.tensor([input_ids], device=device)
+                # With device_map="auto", input goes to the model's first device
+                input_device = next(model.parameters()).device
+                input_tensor = torch.tensor([input_ids], device=input_device)
 
-                # Forward pass
+                # Forward pass — hooks extract last-token hidden states
                 _ = model(input_ids=input_tensor)
 
-                # Extract last-token hidden state from each layer
-                for key, act in captured.items():
-                    # act shape: (1, seq_len, hidden_dim)
-                    last_token = act[0, -1, :].float().cpu().numpy()
-                    all_layer_embs[key].append(last_token)
+                # Hooks already extracted last-token vectors to CPU
+                for key, vec in captured.items():
+                    all_layer_embs[key].append(vec.numpy())
 
                 captured.clear()
+
+                # Free KV cache between query rows
+                if qi % 10 == 0:
+                    torch.cuda.empty_cache()
     finally:
         for handle in handles:
             handle.remove()
