@@ -34,6 +34,9 @@ models = [
 # Distributed execution
 distributed = ["dask[distributed]"]
 
+# Benchmarks and leaderboards
+benchmarks = ["tabarena"]
+
 # Development
 dev = [
     "pytest>=7.0",

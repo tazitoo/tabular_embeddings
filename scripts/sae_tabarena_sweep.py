@@ -230,6 +230,10 @@ def build_sae_config(
     input_dim = embeddings.shape[1]
     hidden_dim = input_dim * expansion
 
+    # Scale batch size and epochs for large hidden dims to stay within GPU memory
+    # and keep training time reasonable (~30 min/trial max target)
+    batch_size = 64 if hidden_dim >= 8192 else 128
+
     return SAEConfig(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
@@ -242,7 +246,7 @@ def build_sae_config(
         archetypal_use_centroids=True,
         use_ghost_grads=True,
         n_epochs=n_epochs,
-        batch_size=128,
+        batch_size=batch_size,
         learning_rate=learning_rate,
     )
 
@@ -487,8 +491,13 @@ def create_optuna_objective(
             context_size = ctx_keys[0]
         embeddings = embeddings_by_ctx[context_size]
 
-        # Common hyperparameters
-        expansion = trial.suggest_categorical("expansion", [4, 8])
+        # Common hyperparameters — scale expansion to input dim to avoid
+        # overparameterized SAEs (4096-dim × 8 = 32768 hidden = 268M params)
+        input_dim = embeddings.shape[1]
+        if input_dim >= 2048:
+            expansion = trial.suggest_categorical("expansion", [2, 4])
+        else:
+            expansion = trial.suggest_categorical("expansion", [4, 8])
         sparsity_penalty = trial.suggest_float("sparsity_penalty", 1e-4, 1e-2, log=True)
         learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
 
