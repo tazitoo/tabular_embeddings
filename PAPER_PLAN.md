@@ -50,10 +50,12 @@ distribution shape, geometric structure, sparsity, feature correlations, scale.
 - [ ] Expand to 5-6 models when Mitra/HyperFast SAEs land
 - [ ] Narrative: partial convergence (transformer cluster exists, CARTE diverges)
 
-**Key findings (37 common datasets, 5 models)**:
-- Transformer cluster: Mitra-TabDPT CKA=0.83, Mitra-TabPFN=0.69, TabPFN-TabDPT=0.67, TabPFN-TabICL=0.65, Mitra-TabICL=0.61, TabDPT-TabICL=0.60
-- CARTE outlier: CKA=0.38-0.51 vs transformers
-- Procrustes: Mitra-TabDPT d²=0.28 (closest), transformer cluster d²=0.42-0.51, CARTE d²=0.68-0.71
+**Key findings (36 common datasets, 6 models)**:
+- Transformer cluster: Mitra-TabDPT CKA=0.83, Mitra-TabPFN=0.68, TabPFN-TabDPT=0.67, TabPFN-TabICL=0.66, Mitra-TabICL=0.62, TabDPT-TabICL=0.61
+- CARTE outlier: CKA=0.39-0.53 vs transformers (GNN architecture)
+- HyperFast outlier: CKA=0.13-0.27 vs all (hypernetwork, lowest in study after Tabula-8B)
+- Tabula-8B: CKA ~0.05 vs all models (LLM architecture, most geometrically distinct)
+- Procrustes: Mitra-TabDPT d²=0.30 (closest), HyperFast d²=0.64-0.77
 
 ---
 
@@ -67,9 +69,10 @@ distribution shape, geometric structure, sparsity, feature correlations, scale.
 - [ ] Add HyperFast (next GPU slot)
 - [ ] Sensitivity analysis on corr_threshold (appendix)
 
-**Key findings**:
-- S1 [0,32): transformer cluster Jaccard 0.53-0.67, CARTE 0.12-0.23
-- S2-S5: rapid decay to 0.05-0.10 (model-specific fine concepts)
+**Key findings (6 models)**:
+- S1 [0,32): transformer cluster Jaccard 0.33-0.52, CARTE 0.19-0.35, HyperFast 0.20-0.31
+- HyperFast has LOW CKA (0.13-0.27) but moderate S1 Jaccard — coarse concepts shared despite different geometry
+- S2-S5: rapid decay to 0.04-0.22 (model-specific fine concepts)
 - corr_threshold=0.15 gives meaningful cross-model clusters
 
 ---
@@ -136,9 +139,9 @@ structure invisible to CKA alone.
 | CARTE | 39 ds | L1/3 (33%) | Validated | Yes | GNN, classification+regression |
 | TabICL | 44 ds | L10/14 (71%) | Validated | Yes | Column-then-row TFM |
 | TabDPT | 51 ds | L14/16 (88%) | Validated | Yes | TFM + retrieval |
-| Mitra | 48 ds | L12/13 (92%) | **Training** | No | 12 TFM layers + final_norm. L12 required for cross-model CKA (L10 too early) |
-| HyperFast | 39 ds | L2/3 (67%) | Validated | No | Score=0.954, R²=0.941, stability=0.963, 5833/6272 alive |
-| Tabula-8B | Not started | TBD/32 | Not started | No | Llama-3 8B fine-tune, LLM-based, 4096 dim |
+| Mitra | 48 ds | L12/13 (92%) | Validated | Yes | Score=0.967. L12 required for cross-model CKA (L10→CKA=0.01) |
+| HyperFast | 39 ds | L2/3 (67%) | Validated | Yes | Score=0.954, R²=0.941, stability=0.963, 5833/6272 alive |
+| Tabula-8B | 51 ds | L21/32 (66%) | **Training** | No | Llama-3 8B, 4096 dim. CKA ~0.05 vs all models. SAE sweep on firelord4 |
 
 ---
 
@@ -146,15 +149,15 @@ structure invisible to CKA alone.
 
 | # | Section | Description | Status | Script |
 |---|---------|-------------|--------|--------|
-| 1 | 4.2 | **Cross-model concept agreement by scale band.** 2×3 Jaccard heatmaps. | Done (4 models) | `scripts/figure1/figure1.py` |
+| 1 | 4.2 | **Cross-model concept agreement by scale band.** 2×3 Jaccard heatmaps. | Done (6 models) | `scripts/figure1/figure1.py` |
 | 2 | 4.3 | **Concept gap vs performance delta.** Scatter per model pair showing SAE-predicted gaps correlate with actual performance differences. THE DIAGNOSTIC FIGURE. | Not started | — |
-| 3 | 4.4 | **CKA vs concept overlap.** Scatter + band-decay panel. | Done | `scripts/figure7/figure7.py` |
+| 3 | 4.4 | **CKA vs concept overlap.** Scatter + band-decay panel. | Done (6 models, 15 pairs) | `scripts/figure7/figure7.py` |
 
 Tables:
 | # | Section | Description | Status | Script |
 |---|---------|-------------|--------|--------|
-| 1 | 4.1 | Pairwise CKA (mean ± std) | Done (4 models) | `scripts/table1/table1.py` |
-| 2 | 4.1 | Procrustes disparity d² | Done (4 models) | `scripts/table2/table2.py` |
+| 1 | 4.1 | Pairwise CKA (mean ± std) | Done (6 models) | `scripts/table1/table1.py` |
+| 2 | 4.1 | Procrustes disparity d² | Done (6 models) | `scripts/table2/table2.py` |
 | 3 | 4.3 | Top diagnostic concepts | Not started | — |
 
 Appendix (supplementary):

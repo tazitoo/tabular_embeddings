@@ -231,8 +231,14 @@ def build_sae_config(
     hidden_dim = input_dim * expansion
 
     # Scale batch size and epochs for large hidden dims to stay within GPU memory
-    # and keep training time reasonable (~30 min/trial max target)
-    batch_size = 64 if hidden_dim >= 8192 else 128
+    # and keep training time reasonable (~30 min/trial max target).
+    # For 4096-dim input: expansion=2 → 8192 hidden → 67M params → 2h+ at 100 epochs.
+    # Reducing to 50 epochs halves training time; SAE convergence is stable by then.
+    if hidden_dim >= 8192:
+        batch_size = 64
+        n_epochs = min(n_epochs, 50)
+    else:
+        batch_size = 128
 
     return SAEConfig(
         input_dim=input_dim,
@@ -495,7 +501,7 @@ def create_optuna_objective(
         # overparameterized SAEs (4096-dim × 8 = 32768 hidden = 268M params)
         input_dim = embeddings.shape[1]
         if input_dim >= 2048:
-            expansion = trial.suggest_categorical("expansion", [2, 4])
+            expansion = trial.suggest_categorical("expansion", [1, 2])
         else:
             expansion = trial.suggest_categorical("expansion", [4, 8])
         sparsity_penalty = trial.suggest_float("sparsity_penalty", 1e-4, 1e-2, log=True)
@@ -509,7 +515,11 @@ def create_optuna_objective(
 
         if sae_type in ("archetypal", "matryoshka_archetypal"):
             archetypal_temp = trial.suggest_float("archetypal_temp", 0.05, 0.5, log=True)
-            archetypal_n = trial.suggest_categorical("archetypal_n", [256, 512, 1000])
+            # K-means on high-dim data is slow; limit centroids for large inputs
+            if input_dim >= 2048:
+                archetypal_n = trial.suggest_categorical("archetypal_n", [128, 256])
+            else:
+                archetypal_n = trial.suggest_categorical("archetypal_n", [256, 512, 1000])
             archetypal_relax = trial.suggest_float("archetypal_relaxation", 0.0, 2.0)
         else:
             archetypal_temp = 0.1
