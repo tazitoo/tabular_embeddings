@@ -240,6 +240,12 @@ def build_sae_config(
     else:
         batch_size = 128
 
+    # Ghost grads should be disabled for Matryoshka-Archetypal SAEs.
+    # Multi-scale loss keeps all features alive; ghost grads fire during
+    # early warmup before features stabilize, creating garbage features
+    # in higher scale bands that actively hurt reconstruction.
+    use_ghost_grads = False if sae_type == "matryoshka_archetypal" else True
+
     return SAEConfig(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
@@ -250,7 +256,7 @@ def build_sae_config(
         archetypal_simplex_temp=archetypal_temp,
         archetypal_relaxation=archetypal_relaxation,
         archetypal_use_centroids=True,
-        use_ghost_grads=True,
+        use_ghost_grads=use_ghost_grads,
         n_epochs=n_epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
