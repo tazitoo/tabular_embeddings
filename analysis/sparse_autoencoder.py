@@ -20,6 +20,7 @@ dictionary of concepts that transfer across domains.
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+import hashlib
 
 import numpy as np
 import torch
@@ -33,6 +34,48 @@ try:
     HAS_WANDB = True
 except ImportError:
     HAS_WANDB = False
+
+
+# Global cache for K-means centroids (key: data hash, value: centroids tensor)
+_KMEANS_CACHE = {}
+
+
+def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> torch.Tensor:
+    """
+    Get K-means centroids with caching to avoid recomputation.
+
+    Uses torch_kmeans package for GPU-accelerated clustering with mini-batch support.
+    Cache key is based on data hash, n_clusters, and seed.
+    Centroids are computed once and reused across trials.
+
+    Args:
+        data: (n_samples, n_features) embeddings on GPU/CPU
+        n_clusters: Number of clusters
+        seed: Random seed
+
+    Returns:
+        centroids: (n_clusters, n_features) cluster centers
+    """
+    from torch_kmeans import KMeans
+
+    # Compute cache key from data hash
+    data_hash = hashlib.sha256(data.cpu().numpy().tobytes()).hexdigest()[:16]
+    cache_key = f"{data_hash}_{n_clusters}_{seed}"
+
+    if cache_key in _KMEANS_CACHE:
+        # Cache hit: return cached centroids on same device
+        cached = _KMEANS_CACHE[cache_key]
+        return cached.to(data.device)
+
+    # Cache miss: compute centroids using torch_kmeans (GPU-accelerated)
+    kmeans = KMeans(n_clusters=n_clusters, seed=seed, verbose=False)
+    _ = kmeans.fit(data)  # Fit returns cluster assignments (not needed)
+    centroids = kmeans.centers  # (n_clusters, n_features)
+
+    # Store in cache (keep on CPU to save GPU memory)
+    _KMEANS_CACHE[cache_key] = centroids.cpu()
+
+    return centroids
 
 
 @dataclass
@@ -588,12 +631,8 @@ class SparseAutoencoder(nn.Module):
 
         # Use K-means centroids (paper's approach) or raw data subsample
         if self.config.archetypal_use_centroids and len(reference_data) > n_ref:
-            # K-means clustering to find centroids
-            from sklearn.cluster import KMeans
-            data_np = reference_data.cpu().numpy()
-            kmeans = KMeans(n_clusters=n_ref, random_state=42, n_init=10)
-            kmeans.fit(data_np)
-            centroids = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32, device=device)
+            # K-means clustering to find centroids (GPU-accelerated with caching)
+            centroids = get_cached_kmeans(reference_data, n_clusters=n_ref, seed=42)
             self.reference_data = centroids  # (n_ref, input_dim)
         else:
             # Subsample raw data
