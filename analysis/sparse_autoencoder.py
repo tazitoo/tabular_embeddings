@@ -44,17 +44,19 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
     """
     Get K-means centroids with caching to avoid recomputation.
 
-    Uses torch_kmeans package for GPU-accelerated clustering with mini-batch support.
+    Uses spherical K-means (cosine similarity) for high-dimensional embeddings.
+    Assumes input data is already normalized. Centroids are constrained to unit sphere.
+
     Cache key is based on data hash, n_clusters, and seed.
     Centroids are computed once and reused across trials.
 
     Args:
-        data: (n_samples, n_features) embeddings on GPU/CPU
+        data: (n_samples, n_features) normalized embeddings on GPU/CPU
         n_clusters: Number of clusters
         seed: Random seed
 
     Returns:
-        centroids: (n_clusters, n_features) cluster centers
+        centroids: (n_clusters, n_features) cluster centers (unit-normalized)
     """
     from torch_kmeans import KMeans
 
@@ -67,10 +69,14 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
         cached = _KMEANS_CACHE[cache_key]
         return cached.to(data.device)
 
-    # Cache miss: compute centroids using torch_kmeans (GPU-accelerated)
-    kmeans = KMeans(n_clusters=n_clusters, seed=seed, verbose=False)
+    # Cache miss: compute centroids using spherical K-means
+    # normalize='unit' ensures centroids stay on unit sphere (cosine distance)
+    kmeans = KMeans(n_clusters=n_clusters, seed=seed, verbose=False, normalize='unit')
     _ = kmeans.fit(data)  # Fit returns cluster assignments (not needed)
     centroids = kmeans.centers  # (n_clusters, n_features)
+
+    # Explicitly normalize centroids (torch_kmeans should do this, but be safe)
+    centroids = F.normalize(centroids, p=2, dim=1)
 
     # Store in cache (keep on CPU to save GPU memory)
     _KMEANS_CACHE[cache_key] = centroids.cpu()
