@@ -9,7 +9,7 @@ with open('/tmp/auxk_trials.json') as f:
     trials = json.load(f)
 
 # Filter to trials with complete data (skip failed trials)
-complete_trials = [t for t in trials if t.get('total_loss', 0) > 0 and 'aux_loss_type' in t]
+complete_trials = [t for t in trials if t.get('total_loss') is not None and t.get('total_loss', 0) > 0 and 'aux_loss_type' in t]
 
 print(f"Loaded {len(complete_trials)} complete trials out of {len(trials)} total")
 

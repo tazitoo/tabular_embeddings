@@ -125,6 +125,7 @@ class SAEResult:
     # Training metrics
     reconstruction_loss: float
     sparsity_loss: float
+    aux_loss: float  # Auxiliary loss component (e.g., AuxK for dead neurons)
     total_loss: float
 
     # Feature statistics
@@ -910,6 +911,7 @@ def train_sae(
         dictionary=model.get_dictionary(),
         reconstruction_loss=history["recon_loss"][-1],
         sparsity_loss=history["sparsity_loss"][-1],
+        aux_loss=history["aux_loss"][-1],
         total_loss=history["total_loss"][-1],
         feature_activations=all_activations,
         feature_frequencies=feature_frequencies,

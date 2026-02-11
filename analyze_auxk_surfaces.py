@@ -11,9 +11,9 @@ with open('/tmp/auxk_trials.json') as f:
 
 # Filter to complete AuxK trials only
 auxk_trials = [t for t in trials
-               if t.get('total_loss', 0) > 0
-               and t.get('aux_loss_type') == 'auxk'
-               and t.get('r2', -999) > -100]  # Filter extreme outliers
+               if t.get('total_loss') is not None
+               and t.get('total_loss', 0) > 0
+               and t.get('aux_loss_type') == 'auxk']
 
 print(f"Loaded {len(auxk_trials)} AuxK trials with valid metrics")
 

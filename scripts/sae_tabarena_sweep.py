@@ -305,6 +305,7 @@ def run_sae_trial(
         "richness_score": richness["richness_score"],
         "reconstruction_loss": result.reconstruction_loss,
         "sparsity_loss": result.sparsity_loss,
+        "aux_loss": result.aux_loss,
         "total_loss": result.total_loss,
         "alive_features": result.alive_features,
     }
