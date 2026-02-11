@@ -178,7 +178,7 @@ class SparseAutoencoder(nn.Module):
             self.register_buffer('activation_freq', torch.zeros(config.hidden_dim))
 
         # BatchTopK inference threshold (EMA of minimum positive activation during training)
-        if config.sparsity_type == "batchtopk":
+        if config.sparsity_type in ("batchtopk", "batchtopk_archetypal", "matryoshka_batchtopk_archetypal"):
             self.register_buffer('inference_threshold', torch.tensor(0.0))
             self.register_buffer('batchtopk_n_updates', torch.tensor(0, dtype=torch.long))
 
