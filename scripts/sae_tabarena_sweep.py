@@ -514,12 +514,12 @@ def create_optuna_objective(
         learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
 
         # Type-specific parameters
-        if sae_type in ("topk", "archetypal", "matryoshka_archetypal"):
+        if sae_type in ("topk", "batchtopk", "archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
             topk = trial.suggest_categorical("topk", [16, 32, 64, 128])
         else:
             topk = 32
 
-        if sae_type in ("archetypal", "matryoshka_archetypal"):
+        if sae_type in ("archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
             archetypal_temp = trial.suggest_float("archetypal_temp", 0.05, 0.5, log=True)
             # K-means on high-dim data is slow; limit centroids for large inputs
             if input_dim >= 2048:
@@ -630,7 +630,7 @@ def run_sweep(
         json.dump(split_info, f, indent=2)
 
     # Run sweep for each SAE type
-    all_sae_types = ["l1", "topk", "matryoshka", "archetypal", "matryoshka_archetypal"]
+    all_sae_types = ["l1", "topk", "matryoshka", "archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"]
     sae_types = sae_type_filter if sae_type_filter else all_sae_types
     best_configs = {}
 
