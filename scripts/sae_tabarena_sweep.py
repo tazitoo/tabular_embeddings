@@ -244,7 +244,7 @@ def build_sae_config(
     # Multi-scale loss keeps all features alive; ghost grads fire during
     # early warmup before features stabilize, creating garbage features
     # in higher scale bands that actively hurt reconstruction.
-    use_ghost_grads = False if sae_type == "matryoshka_archetypal" else True
+    use_ghost_grads = False if sae_type in ("matryoshka_archetypal", "matryoshka_batchtopk_archetypal") else True
 
     return SAEConfig(
         input_dim=input_dim,

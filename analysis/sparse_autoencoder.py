@@ -38,8 +38,8 @@ class SAEConfig:
 
     # Sparsity
     sparsity_penalty: float = 1e-3  # L1 coefficient
-    sparsity_type: str = "l1"  # "l1", "topk", "matryoshka", "archetypal", or "matryoshka_archetypal"
-    topk: int = 32  # For topk sparsity (also used with archetypal/matryoshka_archetypal)
+    sparsity_type: str = "l1"  # "l1", "topk", "batchtopk", "matryoshka", "archetypal", or "matryoshka_archetypal"
+    topk: int = 32  # For topk/batchtopk sparsity (also used with archetypal/matryoshka_archetypal)
 
     # Matryoshka settings (nested representation learning)
     # Used by "matryoshka" and "matryoshka_archetypal" types
@@ -129,9 +129,12 @@ class SparseAutoencoder(nn.Module):
     Supported sparsity types:
         - "l1": Standard L1 penalty on activations
         - "topk": Keep only top-k activations per sample
+        - "batchtopk": Keep top (batch_size × k) activations across batch (adaptive)
         - "gated": Learnable gates for sparsity (Anthropic style)
         - "matryoshka": Nested representations valid at multiple scales
         - "archetypal": Dictionary elements as convex hull vertices
+        - "batchtopk_archetypal": BatchTopK + archetypal decoder
+        - "matryoshka_batchtopk_archetypal": All three combined
     """
 
     def __init__(self, config: SAEConfig):
@@ -174,6 +177,11 @@ class SparseAutoencoder(nn.Module):
             # Solves the TopK-marginal problem where batch-level any() misses rare features
             self.register_buffer('activation_freq', torch.zeros(config.hidden_dim))
 
+        # BatchTopK inference threshold (EMA of minimum positive activation during training)
+        if config.sparsity_type == "batchtopk":
+            self.register_buffer('inference_threshold', torch.tensor(0.0))
+            self.register_buffer('batchtopk_n_updates', torch.tensor(0, dtype=torch.long))
+
     def encode(self, x: torch.Tensor, return_pre_act: bool = False) -> torch.Tensor:
         """
         Encode input to sparse hidden representation.
@@ -192,12 +200,40 @@ class SparseAutoencoder(nn.Module):
         pre_act = F.linear(x, self.W_enc, self.b_enc)
 
         if self.config.sparsity_type == "topk":
-            # TopK sparsity: keep only top k activations
+            # TopK sparsity: keep only top k activations per sample
             h = F.relu(pre_act)
             topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
             mask = torch.zeros_like(h)
             mask.scatter_(-1, topk_idx, 1.0)
             h = h * mask
+
+        elif self.config.sparsity_type == "batchtopk":
+            # BatchTopK sparsity: keep top (batch_size × k) activations across entire batch
+            # Allows variable sparsity per sample (adaptive to sample complexity)
+            # Paper: Bussmann (2024), arXiv:2412.06410
+            h = F.relu(pre_act)
+
+            if self.training:
+                # Training: batch-level selection
+                h_flat = h.flatten()  # (batch_size × hidden_dim)
+                n_keep = h.shape[0] * self.config.topk  # batch_size × k
+                # Find threshold: kth largest value where k = total_activations - n_keep
+                threshold_val = torch.kthvalue(h_flat, len(h_flat) - n_keep + 1).values
+                h = h * (h >= threshold_val).float()
+
+                # Update inference threshold: EMA of minimum positive activation
+                with torch.no_grad():
+                    if (h > 0).any():
+                        min_positive = h[h > 0].min()
+                        # EMA update with decay=0.99 (slow-moving average)
+                        if self.batchtopk_n_updates == 0:
+                            self.inference_threshold = min_positive
+                        else:
+                            self.inference_threshold = 0.99 * self.inference_threshold + 0.01 * min_positive
+                        self.batchtopk_n_updates += 1
+            else:
+                # Inference: use learned threshold (removes batch dependency)
+                h = h * (h >= self.inference_threshold).float()
 
         elif self.config.sparsity_type == "gated":
             # Gated SAE: separate gate for sparsity
@@ -211,28 +247,43 @@ class SparseAutoencoder(nn.Module):
 
         elif self.config.sparsity_type == "archetypal":
             # Archetypal SAE: dictionary atoms are constrained to convex hull of data
-            # Apply ReLU, then optionally TopK for sparsity
+            # Apply ReLU, then optionally TopK/BatchTopK for sparsity
             h = F.relu(pre_act)
-            # Apply TopK if specified (must match training behavior)
-            if self.config.topk and self.config.topk < self.config.hidden_dim:
-                topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
-                mask = torch.zeros_like(h)
-                mask.scatter_(-1, topk_idx, 1.0)
-                h = h * mask
+            # Note: Archetypal doesn't have its own sparsity_type variants
+            # Instead, use "batchtopk_archetypal" or "matryoshka_batchtopk_archetypal"
 
         elif self.config.sparsity_type == "matryoshka_archetypal":
             # Matryoshka-Archetypal: combines nested loss + archetypal decoder
             # - Encoder: standard learned weights (like archetypal)
             # - Decoder: convex combo of K-means centroids (archetypal constraint)
-            # - Activations: ReLU + TopK sparsity
+            # - Activations: ReLU + TopK sparsity (or BatchTopK)
             # - Loss: multi-scale reconstruction at Matryoshka dims (handled in train_sae)
             h = F.relu(pre_act)
-            # Apply TopK for sparse, interpretable activations
-            if self.config.topk and self.config.topk < self.config.hidden_dim:
-                topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
-                mask = torch.zeros_like(h)
-                mask.scatter_(-1, topk_idx, 1.0)
-                h = h * mask
+            # Note: Use "matryoshka_batchtopk_archetypal" for BatchTopK variant
+
+        elif self.config.sparsity_type in ("batchtopk_archetypal", "matryoshka_batchtopk_archetypal"):
+            # Archetypal/Matryoshka-Archetypal + BatchTopK sparsity
+            h = F.relu(pre_act)
+
+            if self.training:
+                # Training: batch-level selection (adaptive sparsity)
+                h_flat = h.flatten()
+                n_keep = h.shape[0] * self.config.topk
+                threshold_val = torch.kthvalue(h_flat, len(h_flat) - n_keep + 1).values
+                h = h * (h >= threshold_val).float()
+
+                # Update inference threshold
+                with torch.no_grad():
+                    if (h > 0).any():
+                        min_positive = h[h > 0].min()
+                        if self.batchtopk_n_updates == 0:
+                            self.inference_threshold = min_positive
+                        else:
+                            self.inference_threshold = 0.99 * self.inference_threshold + 0.01 * min_positive
+                        self.batchtopk_n_updates += 1
+            else:
+                # Inference: learned threshold
+                h = h * (h >= self.inference_threshold).float()
 
         else:
             # Standard L1: just ReLU
@@ -559,7 +610,7 @@ def train_sae(
     model = SparseAutoencoder(config).to(device)
 
     # For Archetypal/Matryoshka-Archetypal SAE, set reference data (dictionary atoms = convex combos of refs)
-    if config.sparsity_type in ("archetypal", "matryoshka_archetypal"):
+    if config.sparsity_type in ("archetypal", "matryoshka_archetypal", "batchtopk_archetypal", "matryoshka_batchtopk_archetypal"):
         # Use centered training data as reference points
         n_ref = config.archetypal_n_archetypes or min(1000, len(X_centered))
         model.set_reference_data(X_centered.to(device), n_ref=n_ref)
@@ -578,7 +629,7 @@ def train_sae(
         scheduler = None
 
     # For Matryoshka and Matryoshka-Archetypal, setup dimension weights
-    if config.sparsity_type in ("matryoshka", "matryoshka_archetypal"):
+    if config.sparsity_type in ("matryoshka", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
         mat_dims = [d for d in config.matryoshka_dims if d <= config.hidden_dim]
         if config.matryoshka_weights is None:
             mat_weights = [1.0 / len(mat_dims)] * len(mat_dims)
@@ -617,17 +668,17 @@ def train_sae(
                 # Sparsity on full activations
                 sparsity_loss = config.sparsity_penalty * h.abs().mean()
 
-            elif config.sparsity_type == "archetypal":
+            elif config.sparsity_type in ("archetypal", "batchtopk_archetypal"):
                 # Archetypal SAE: dictionary atoms are constrained to convex hull of data
                 # (via archetype_logits -> softmax -> weighted sum of reference points)
-                # TopK sparsity is handled in encode() if config.topk is set
+                # TopK/BatchTopK sparsity is handled in encode()
                 h, pre_act = model.encode(batch, return_pre_act=True)
                 x_hat = model.decode(h)
                 recon_loss = F.mse_loss(x_hat, batch)
                 # Small L1 for regularization
                 sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
 
-            elif config.sparsity_type == "matryoshka_archetypal":
+            elif config.sparsity_type in ("matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
                 # Matryoshka-Archetypal: combines two key ideas
                 # 1. Archetypal decoder: dictionary atoms = convex combos of K-means centroids (stability)
                 # 2. Matryoshka loss: multi-scale reconstruction at nested truncation points (hierarchy)
@@ -659,8 +710,8 @@ def train_sae(
                 # Sparsity loss
                 if config.sparsity_type == "l1":
                     sparsity_loss = config.sparsity_penalty * h.abs().mean()
-                elif config.sparsity_type == "topk":
-                    # TopK has implicit sparsity, small L1 for dead feature prevention
+                elif config.sparsity_type in ("topk", "batchtopk"):
+                    # TopK/BatchTopK has implicit sparsity, small L1 for dead feature prevention
                     sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
                 elif config.sparsity_type == "gated":
                     sparsity_loss = config.sparsity_penalty * h.abs().mean()
