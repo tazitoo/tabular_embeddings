@@ -27,6 +27,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
+# Optional wandb for training visualization
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+
 
 @dataclass
 class SAEConfig:
@@ -52,12 +59,17 @@ class SAEConfig:
     archetypal_relaxation: float = 0.0  # δ for RA-SAE: 0 = strict A-SAE, >0 = relaxed
     archetypal_use_centroids: bool = True  # Use K-means centroids (paper) vs raw data
 
-    # Dead neuron revival (ghost grads)
-    use_ghost_grads: bool = True  # Enable ghost grad dead neuron revival
-    ghost_grad_coef: float = 0.5  # Coefficient for ghost grad loss (relative to recon)
+    # Dead neuron revival - auxiliary loss
+    aux_loss_type: str = "none"  # "none", "ghost_grads", or "auxk"
+    aux_loss_alpha: float = 0.03125  # Coefficient α for auxiliary loss (1/32 default for AuxK)
+    aux_loss_warmup_epochs: int = 3  # Epochs to wait before enabling aux loss (allows initial stabilization)
     dead_threshold: int = 500  # Steps without activation to consider dead (legacy)
     dead_freq_threshold: float = 1e-3  # EMA activation frequency below which a feature is "dead"
     ema_decay: float = 0.999  # Decay rate for activation frequency EMA
+
+    # Legacy ghost grads compatibility
+    use_ghost_grads: bool = None  # Deprecated: use aux_loss_type="ghost_grads" instead
+    ghost_grad_coef: float = None  # Deprecated: use aux_loss_alpha instead
 
     # Legacy aliases (map to ghost grads)
     use_aux_loss: bool = None  # Deprecated: use use_ghost_grads instead
@@ -76,10 +88,22 @@ class SAEConfig:
     tied_weights: bool = False  # Decoder = Encoder.T
 
     def __post_init__(self):
-        """Resolve legacy aux_loss aliases to ghost_grads."""
-        if self.use_aux_loss is not None and self.use_ghost_grads is True:
-            # Legacy checkpoint: use_aux_loss was set explicitly
-            self.use_ghost_grads = self.use_aux_loss
+        """Resolve legacy aux_loss fields to new aux_loss_type system."""
+        # Handle legacy use_ghost_grads -> aux_loss_type migration
+        if self.use_ghost_grads is not None:
+            if self.use_ghost_grads and self.aux_loss_type == "none":
+                self.aux_loss_type = "ghost_grads"
+            # Keep use_ghost_grads in sync for compatibility
+            self.use_ghost_grads = (self.aux_loss_type == "ghost_grads")
+
+        # Handle legacy ghost_grad_coef -> aux_loss_alpha migration
+        if self.ghost_grad_coef is not None:
+            self.aux_loss_alpha = self.ghost_grad_coef
+
+        # Handle legacy use_aux_loss alias
+        if self.use_aux_loss is not None:
+            if self.use_aux_loss and self.aux_loss_type == "none":
+                self.aux_loss_type = "ghost_grads"
         if self.aux_loss_coef is not None and self.ghost_grad_coef == 0.5:
             self.ghost_grad_coef = self.aux_loss_coef
         # Normalize: ensure booleans are set
@@ -365,7 +389,7 @@ class SparseAutoencoder(nn.Module):
         Returns:
             Ghost grad loss term (scalar)
         """
-        if not self.config.use_ghost_grads:
+        if self.config.aux_loss_type != "ghost_grads":
             return torch.tensor(0.0, device=x.device)
 
         # Update dead neuron tracking with EMA of per-sample activation frequency.
@@ -418,13 +442,73 @@ class SparseAutoencoder(nn.Module):
             # ghost_recon = ghost_act @ W_dec_dead.T for untied
             ghost_recon = F.linear(ghost_act, W_dec_dead)
             ghost_loss = F.mse_loss(ghost_recon, residual)
-            return self.config.ghost_grad_coef * ghost_loss
+            return self.config.aux_loss_alpha * ghost_loss
 
         # For archetypal/tied: W_dec_dead is (n_dead, input_dim)
         ghost_recon = ghost_act @ W_dec_dead  # (batch, n_dead) @ (n_dead, input) = (batch, input)
         ghost_loss = F.mse_loss(ghost_recon, residual)
 
-        return self.config.ghost_grad_coef * ghost_loss
+        return self.config.aux_loss_alpha * ghost_loss
+
+    def compute_auxk_loss(
+        self, x: torch.Tensor, h: torch.Tensor, x_hat: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        AuxK auxiliary loss for TopK SAEs (Gao et al., 2024).
+
+        Computes reconstruction using ONLY dead latents to ensure they
+        remain useful for feature extraction. The loss encourages dead
+        features to contribute to reducing the reconstruction error.
+
+        ℒ_aux = ‖e − ê‖²₂
+        where:
+            e = x - x̂  (main reconstruction error)
+            ê = x - x̂_aux  (reconstruction using only dead latents)
+
+        Reference: "Scaling and Evaluating Sparse Autoencoders",
+                   Gao et al. (2024), arXiv:2406.04093
+
+        Args:
+            x: Original input (batch_size, input_dim)
+            h: Current activations (batch_size, hidden_dim)
+            x_hat: Main reconstruction (batch_size, input_dim)
+
+        Returns:
+            AuxK loss term (scalar)
+        """
+        if self.config.aux_loss_type != "auxk":
+            return torch.tensor(0.0, device=x.device)
+
+        # Update dead neuron tracking with EMA
+        with torch.no_grad():
+            batch_freq = (h > 0).float().mean(dim=0)
+            decay = self.config.ema_decay
+            self.activation_freq = decay * self.activation_freq + (1 - decay) * batch_freq
+
+        # Identify dead features
+        dead_mask = self.activation_freq < self.config.dead_freq_threshold
+        n_dead = dead_mask.sum().item()
+
+        if n_dead == 0:
+            return torch.tensor(0.0, device=x.device)
+
+        # Main reconstruction error
+        e = x - x_hat  # (batch_size, input_dim)
+
+        # Create auxiliary activations using ONLY dead features
+        h_aux = h.clone()
+        h_aux[:, ~dead_mask] = 0.0  # Zero out alive features
+
+        # Reconstruct using only dead features
+        x_hat_aux = self.decode(h_aux)
+
+        # Auxiliary reconstruction error
+        e_aux = x - x_hat_aux  # (batch_size, input_dim)
+
+        # AuxK loss: MSE between main and auxiliary reconstruction errors
+        auxk_loss = F.mse_loss(e, e_aux)
+
+        return self.config.aux_loss_alpha * auxk_loss
 
     def synaptic_strip(self, dead_mask: torch.Tensor, strip_fraction: float = 0.1):
         """
@@ -577,6 +661,7 @@ def train_sae(
     config: SAEConfig,
     device: str = "cpu",
     verbose: bool = True,
+    use_wandb: bool = False,
 ) -> Tuple[SparseAutoencoder, SAEResult]:
     """
     Train a Sparse Autoencoder on embeddings.
@@ -654,17 +739,27 @@ def train_sae(
 
             if config.sparsity_type == "matryoshka":
                 # Matryoshka: compute loss at multiple scales
-                if config.use_ghost_grads:
+                aux_type = config.aux_loss_type
+                if aux_type == "none" and config.use_ghost_grads:
+                    aux_type = "ghost_grads"
+
+                if aux_type == "ghost_grads":
                     h, pre_act = model.encode(batch, return_pre_act=True)
                 else:
                     h = model.encode(batch)
+
                 reconstructions = []
                 for dim in mat_dims:
-                    x_hat = model.decode(h, max_dim=dim)
-                    reconstructions.append(x_hat)
+                    x_hat_scale = model.decode(h, max_dim=dim)
+                    reconstructions.append(x_hat_scale)
+
                 recon_loss = torch.tensor(0.0, device=device)
-                for x_hat, weight in zip(reconstructions, mat_weights):
-                    recon_loss = recon_loss + weight * F.mse_loss(x_hat, batch)
+                for x_hat_scale, weight in zip(reconstructions, mat_weights):
+                    recon_loss = recon_loss + weight * F.mse_loss(x_hat_scale, batch)
+
+                # Save final scale reconstruction for aux loss
+                x_hat = reconstructions[-1]
+
                 # Sparsity on full activations
                 sparsity_loss = config.sparsity_penalty * h.abs().mean()
 
@@ -683,8 +778,8 @@ def train_sae(
                 # 1. Archetypal decoder: dictionary atoms = convex combos of K-means centroids (stability)
                 # 2. Matryoshka loss: multi-scale reconstruction at nested truncation points (hierarchy)
                 # 3. TopK sparsity: handled in encode() for interpretable sparse activations
-                # No ghost grads: multi-scale loss already ensures all features stay alive.
-                # Ghost grads destabilize training here (R²→-12804 on CARTE, NaN on TabDPT).
+                # Note: Ghost grads destabilize training here (R²→-12804 on CARTE, NaN on TabDPT).
+                #       AuxK is compatible and may help with dead features.
                 h = model.encode(batch)
 
                 # Multi-scale reconstruction loss (Matryoshka)
@@ -693,6 +788,7 @@ def train_sae(
                 for dim, weight in zip(mat_dims, mat_weights):
                     x_hat = model.decode(h, max_dim=dim)
                     recon_loss = recon_loss + weight * F.mse_loss(x_hat, batch)
+                # x_hat now holds the final scale reconstruction
 
                 # Small L1 regularization (TopK sparsity is main constraint from encode())
                 sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
@@ -718,9 +814,20 @@ def train_sae(
                 else:
                     sparsity_loss = config.sparsity_penalty * h.abs().mean()
 
-            # Ghost grad loss for dead neuron revival
-            if config.use_ghost_grads and pre_act is not None:
+            # Auxiliary loss for dead neuron revival
+            # Handle legacy use_ghost_grads config
+            aux_type = config.aux_loss_type
+            if aux_type == "none" and config.use_ghost_grads:
+                aux_type = "ghost_grads"  # Legacy compatibility
+
+            # Delayed startup: skip aux loss during warmup to allow initial stabilization
+            warmup_epochs = getattr(config, 'aux_loss_warmup_epochs', 0)
+            if epoch < warmup_epochs:
+                aux_loss = torch.tensor(0.0, device=device)
+            elif aux_type == "ghost_grads" and pre_act is not None:
                 aux_loss = model.compute_ghost_grad_loss(batch, h, pre_act)
+            elif aux_type == "auxk":
+                aux_loss = model.compute_auxk_loss(batch, h, x_hat)
             else:
                 aux_loss = torch.tensor(0.0, device=device)
 
@@ -756,11 +863,27 @@ def train_sae(
         strip_fraction = getattr(config, 'strip_fraction', 0.0)
         n_dead = 0
         n_stripped = 0
+        n_alive = config.hidden_dim
         if hasattr(model, 'activation_freq'):
             dead_mask = model.activation_freq < config.dead_freq_threshold
             n_dead = dead_mask.sum().item()
+            n_alive = config.hidden_dim - n_dead
             if n_dead > 0 and strip_fraction > 0:
                 n_stripped = model.synaptic_strip(dead_mask, strip_fraction)
+
+        # Log to wandb
+        if use_wandb and HAS_WANDB:
+            wandb.log({
+                "epoch": epoch,
+                "loss/reconstruction": epoch_recon,
+                "loss/sparsity": epoch_sparse,
+                "loss/auxiliary": epoch_aux,
+                "loss/total": epoch_recon + epoch_sparse + epoch_aux,
+                "features/dead": n_dead,
+                "features/alive": n_alive,
+                "features/dead_fraction": n_dead / config.hidden_dim,
+                "lr": scheduler.get_last_lr()[0] if scheduler else config.learning_rate,
+            })
 
         if verbose and (epoch + 1) % 20 == 0:
             msg = f"  Epoch {epoch+1}/{config.n_epochs}: recon={epoch_recon:.6f}, sparsity={epoch_sparse:.6f}"

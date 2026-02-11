@@ -225,6 +225,8 @@ def build_sae_config(
     archetypal_temp: float = 0.1,
     archetypal_relaxation: float = 0.0,
     n_epochs: int = 100,
+    aux_loss_type: str = "none",
+    aux_loss_alpha: float = 0.03125,
 ) -> SAEConfig:
     """Build SAE config from parameters."""
     input_dim = embeddings.shape[1]
@@ -240,12 +242,6 @@ def build_sae_config(
     else:
         batch_size = 128
 
-    # Ghost grads should be disabled for Matryoshka-Archetypal SAEs.
-    # Multi-scale loss keeps all features alive; ghost grads fire during
-    # early warmup before features stabilize, creating garbage features
-    # in higher scale bands that actively hurt reconstruction.
-    use_ghost_grads = False if sae_type in ("matryoshka_archetypal", "matryoshka_batchtopk_archetypal") else True
-
     return SAEConfig(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
@@ -256,7 +252,8 @@ def build_sae_config(
         archetypal_simplex_temp=archetypal_temp,
         archetypal_relaxation=archetypal_relaxation,
         archetypal_use_centroids=True,
-        use_ghost_grads=use_ghost_grads,
+        aux_loss_type=aux_loss_type,
+        aux_loss_alpha=aux_loss_alpha,
         n_epochs=n_epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
@@ -274,21 +271,25 @@ def run_sae_trial(
     archetypal_temp: float = 0.1,
     archetypal_relaxation: float = 0.0,
     n_epochs: int = 100,
+    aux_loss_type: str = "none",
+    aux_loss_alpha: float = 0.03125,
     measure_stability: bool = True,
     return_model: bool = False,
     seed: int = 42,
     device: str = "cpu",
+    use_wandb: bool = False,
 ) -> Dict:
     """Run a single SAE training trial and return metrics (and optionally model)."""
     config = build_sae_config(
         embeddings, sae_type, expansion, sparsity_penalty, learning_rate,
-        topk, archetypal_n_archetypes, archetypal_temp, archetypal_relaxation, n_epochs
+        topk, archetypal_n_archetypes, archetypal_temp, archetypal_relaxation, n_epochs,
+        aux_loss_type, aux_loss_alpha
     )
 
     # Train and evaluate
     torch.manual_seed(seed)
     np.random.seed(seed)
-    model, result = train_sae(embeddings, config, device=device, verbose=False)
+    model, result = train_sae(embeddings, config, device=device, verbose=False, use_wandb=use_wandb)
     richness = measure_dictionary_richness(result, input_features=embeddings, sae_model=model)
 
     metrics = {
@@ -300,6 +301,8 @@ def run_sae_trial(
         "l0_sparsity": richness["l0_sparsity"],
         "richness_score": richness["richness_score"],
         "reconstruction_loss": result.reconstruction_loss,
+        "sparsity_loss": result.sparsity_loss,
+        "total_loss": result.total_loss,
         "alive_features": result.alive_features,
     }
 
@@ -361,17 +364,17 @@ def validate_and_save(
     import optuna
 
     ctx_keys = sorted(embeddings_by_ctx.keys())
-    objective = create_optuna_objective(embeddings_by_ctx, sae_type, device=device)
+    objective = create_optuna_objective(embeddings_by_ctx, sae_type, device=device, use_wandb=use_wandb)
 
     for attempt in range(max_retries):
         best_trial = study.best_trial
         best_params = study.best_params
-        expected_score = study.best_value
+        expected_loss = study.best_value
         expected_r2 = best_trial.user_attrs.get("r2", 0)
         expected_stability = best_trial.user_attrs.get("stability", 0)
 
         print(f"\n  Validation attempt {attempt + 1}/{max_retries}")
-        print(f"    Expected: score={expected_score:.4f}, R²={expected_r2:.4f}, stability={expected_stability:.4f}")
+        print(f"    Expected: loss={expected_loss:.6f}, R²={expected_r2:.4f}, stability={expected_stability:.4f}")
 
         # Select embeddings for this trial's context_size
         best_ctx = best_params.get("context_size", ctx_keys[0])
@@ -387,6 +390,8 @@ def validate_and_save(
         archetypal_n = best_params.get("archetypal_n", 500)
         archetypal_temp = best_params.get("archetypal_temp", 0.1)
         archetypal_relax = best_params.get("archetypal_relaxation", 0.0)
+        aux_loss_type = best_params.get("aux_loss_type", "none")
+        aux_loss_alpha = best_params.get("aux_loss_alpha", 0.03125)
 
         # Train with a different seed to test robustness
         validation_seed = 12345 + attempt
@@ -401,34 +406,35 @@ def validate_and_save(
             archetypal_temp=archetypal_temp,
             archetypal_relaxation=archetypal_relax,
             n_epochs=100,
+            aux_loss_type=aux_loss_type,
+            aux_loss_alpha=aux_loss_alpha,
             measure_stability=True,
             return_model=True,
             seed=validation_seed,
             device=device,
         )
 
-        # Compute validation score
-        val_score = 0.4 * max(0, metrics["r2"]) + 0.6 * metrics["stability"]
+        # Compute validation loss
+        val_loss = metrics["total_loss"]
         val_r2 = metrics["r2"]
         val_stability = metrics["stability"]
 
-        print(f"    Actual:   score={val_score:.4f}, R²={val_r2:.4f}, stability={val_stability:.4f}")
+        print(f"    Actual:   loss={val_loss:.6f}, R²={val_r2:.4f}, stability={val_stability:.4f}")
 
         # Check if within tolerance (relative difference)
-        score_diff = abs(val_score - expected_score) / max(expected_score, 0.01)
+        loss_diff = abs(val_loss - expected_loss) / max(expected_loss, 1e-6)
         r2_diff = abs(val_r2 - expected_r2) / max(expected_r2, 0.01)
         stability_diff = abs(val_stability - expected_stability) / max(expected_stability, 0.01)
 
-        # Primary check: composite score within tolerance
-        # Secondary: neither R² nor stability collapsed
+        # Primary check: training loss within tolerance
+        # Secondary: R² didn't collapse (sanity check)
         converged = (
-            score_diff <= tolerance and
-            r2_diff <= tolerance * 2 and  # Allow slightly more R² variance
-            stability_diff <= tolerance * 2
+            loss_diff <= tolerance and
+            r2_diff <= tolerance * 2  # Allow slightly more R² variance
         )
 
         if converged:
-            print(f"    ✓ Validation PASSED (score diff: {score_diff:.1%})")
+            print(f"    ✓ Validation PASSED (loss diff: {loss_diff:.1%})")
 
             # Save the validated model
             model_path = output_dir / f"sae_{sae_type}_validated.pt"
@@ -436,14 +442,14 @@ def validate_and_save(
 
             return {
                 "params": best_params,
-                "score": val_score,
+                "loss": val_loss,
                 "metrics": metrics,
                 "validated": True,
                 "validation_attempts": attempt + 1,
             }, model_path
 
         else:
-            print(f"    ✗ Validation FAILED (score diff: {score_diff:.1%}, r2 diff: {r2_diff:.1%}, stability diff: {stability_diff:.1%})")
+            print(f"    ✗ Validation FAILED (loss diff: {loss_diff:.1%}, r2 diff: {r2_diff:.1%})")
 
             # Add this result as a new trial to inform Optuna
             # This helps the optimizer learn that this HP region has high variance
@@ -451,7 +457,7 @@ def validate_and_save(
                 optuna.trial.create_trial(
                     params=best_params,
                     distributions=study.best_trial.distributions,
-                    values=[val_score],
+                    values=[val_loss],
                     user_attrs=metrics,
                 )
             )
@@ -470,7 +476,7 @@ def validate_and_save(
 
     return {
         "params": best_params,
-        "score": val_score,
+        "loss": val_loss,
         "metrics": metrics,
         "validated": False,
         "validation_attempts": max_retries,
@@ -481,6 +487,7 @@ def create_optuna_objective(
     embeddings_by_ctx: Dict[int, np.ndarray],
     sae_type: str,
     device: str = "cpu",
+    use_wandb: bool = False,
 ):
     """Create Optuna objective for a specific SAE type.
 
@@ -532,6 +539,44 @@ def create_optuna_objective(
             archetypal_n = 500
             archetypal_relax = 0.0
 
+        # Auxiliary loss for dead neuron mitigation
+        # AuxK is designed for TopK SAEs; ghost_grads is more general
+        if sae_type in ("topk", "batchtopk", "archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
+            aux_loss_type = trial.suggest_categorical("aux_loss_type", ["none", "auxk"])
+            if aux_loss_type != "none":
+                # α = 1/32 default (Gao et al.), search from 0.001 to 10
+                # Paper mentions high values (e.g., 10,000) with delayed startup
+                aux_loss_alpha = trial.suggest_float("aux_loss_alpha", 1e-3, 10.0, log=True)
+            else:
+                aux_loss_alpha = 0.03125
+        else:
+            aux_loss_type = "none"
+            aux_loss_alpha = 0.03125
+
+        # Initialize wandb for this trial
+        if use_wandb:
+            try:
+                import wandb
+                wandb.init(
+                    project="tabular-sae",
+                    name=f"{sae_type}_trial_{trial.number}",
+                    config={
+                        "sae_type": sae_type,
+                        "expansion": expansion,
+                        "sparsity_penalty": sparsity_penalty,
+                        "learning_rate": learning_rate,
+                        "topk": topk,
+                        "archetypal_n": archetypal_n if sae_type in ("archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal") else None,
+                        "archetypal_temp": archetypal_temp if sae_type in ("archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal") else None,
+                        "aux_loss_type": aux_loss_type,
+                        "aux_loss_alpha": aux_loss_alpha if aux_loss_type != "none" else None,
+                    },
+                    reinit=True,
+                )
+            except ImportError:
+                print("Warning: wandb not available, skipping logging")
+                use_wandb = False
+
         try:
             metrics = run_sae_trial(
                 embeddings,
@@ -544,8 +589,11 @@ def create_optuna_objective(
                 archetypal_temp=archetypal_temp,
                 archetypal_relaxation=archetypal_relax,
                 n_epochs=100,
+                aux_loss_type=aux_loss_type,
+                aux_loss_alpha=aux_loss_alpha,
                 measure_stability=True,
                 device=device,
+                use_wandb=use_wandb,
             )
 
             # Store metrics (including context_size for retrieval)
@@ -554,19 +602,28 @@ def create_optuna_objective(
                     trial.set_user_attr(key, val)
             trial.set_user_attr("context_size", context_size)
 
-            # Objective: balance R² and stability
-            # Weight stability higher since that's the key differentiator
-            r2 = metrics["r2"]
-            stability = metrics["stability"]
+            # Objective: minimize the training loss (recon_loss + sparsity_loss)
+            total_loss = metrics["total_loss"]
 
-            # Composite score: 0.4 * R² + 0.6 * stability
-            # (stability is more important for interpretability)
-            score = 0.4 * max(0, r2) + 0.6 * stability
+            # Finish wandb run
+            if use_wandb:
+                try:
+                    import wandb
+                    wandb.finish()
+                except:
+                    pass
 
-            return score
+            return total_loss
 
         except Exception as e:
             print(f"Trial failed: {e}")
+            # Finish wandb run on failure
+            if use_wandb:
+                try:
+                    import wandb
+                    wandb.finish()
+                except:
+                    pass
             return 0.0
 
     return objective
@@ -579,6 +636,7 @@ def run_sweep(
     context_sizes: Optional[List[int]] = None,
     device: str = "cuda",
     sae_type_filter: Optional[List[str]] = None,
+    use_wandb: bool = False,
 ):
     """Run HP sweep for SAE types on train datasets.
 
@@ -645,12 +703,12 @@ def run_sweep(
         study = optuna.create_study(
             study_name=study_name,
             storage=storage,
-            direction="maximize",
+            direction="minimize",
             load_if_exists=True,
             sampler=optuna.samplers.TPESampler(seed=42),
         )
 
-        objective = create_optuna_objective(embeddings_by_ctx, sae_type, device=device)
+        objective = create_optuna_objective(embeddings_by_ctx, sae_type, device=device, use_wandb=use_wandb)
 
         study.optimize(
             objective,
@@ -809,6 +867,7 @@ def main():
                         help="Torch device for SAE training (default: cuda)")
     parser.add_argument("--n-trials", type=int, default=30, help="Trials per SAE type")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate on test set")
+    parser.add_argument("--wandb", action="store_true", help="Enable wandb logging for training visualization")
     args = parser.parse_args()
 
     # Parse context sizes
@@ -847,6 +906,7 @@ def main():
             context_sizes=context_sizes,
             device=args.device,
             sae_type_filter=sae_type_filter,
+            use_wandb=args.wandb,
         )
 
 
