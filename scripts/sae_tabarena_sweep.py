@@ -342,6 +342,7 @@ def validate_and_save(
     max_retries: int = 5,
     extra_trials_per_retry: int = 3,
     device: str = "cpu",
+    use_wandb: bool = False,
 ) -> Tuple[Dict, Optional[Path]]:
     """
     Validate best config by retraining, check metrics match, save if valid.
@@ -735,6 +736,7 @@ def run_sweep(
             max_retries=5,
             extra_trials_per_retry=3,
             device=device,
+            use_wandb=False,  # Disable wandb for validation runs
         )
 
         config_result["model_path"] = str(model_path) if model_path else None
