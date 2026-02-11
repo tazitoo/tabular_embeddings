@@ -554,6 +554,7 @@ def create_optuna_objective(
             aux_loss_alpha = 0.03125
 
         # Initialize wandb for this trial
+        wandb_active = False
         if use_wandb:
             try:
                 import wandb
@@ -573,9 +574,9 @@ def create_optuna_objective(
                     },
                     reinit=True,
                 )
+                wandb_active = True
             except ImportError:
                 print("Warning: wandb not available, skipping logging")
-                use_wandb = False
 
         try:
             metrics = run_sae_trial(
@@ -606,7 +607,7 @@ def create_optuna_objective(
             total_loss = metrics["total_loss"]
 
             # Finish wandb run
-            if use_wandb:
+            if wandb_active:
                 try:
                     import wandb
                     wandb.finish()
@@ -618,7 +619,7 @@ def create_optuna_objective(
         except Exception as e:
             print(f"Trial failed: {e}")
             # Finish wandb run on failure
-            if use_wandb:
+            if wandb_active:
                 try:
                     import wandb
                     wandb.finish()
