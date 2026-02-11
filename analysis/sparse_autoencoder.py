@@ -138,6 +138,9 @@ class SAEResult:
     dead_features: int  # Features that never activate
     alive_features: int
 
+    # Training history (per-epoch)
+    training_history: dict = None  # {"recon_loss": [...], "sparsity_loss": [...], "aux_loss": [...], "total_loss": [...], "lr": [...]}
+
     # Config used
     config: SAEConfig = None
 
@@ -740,7 +743,7 @@ def train_sae(
             mat_weights = [w / sum(mat_weights) for w in mat_weights]  # Normalize
 
     # Training loop
-    history = {"recon_loss": [], "sparsity_loss": [], "aux_loss": [], "total_loss": []}
+    history = {"recon_loss": [], "sparsity_loss": [], "aux_loss": [], "total_loss": [], "lr": []}
 
     for epoch in range(config.n_epochs):
         epoch_recon = 0.0
@@ -871,6 +874,7 @@ def train_sae(
         history["sparsity_loss"].append(epoch_sparse)
         history["aux_loss"].append(epoch_aux)
         history["total_loss"].append(epoch_recon + epoch_sparse + epoch_aux)
+        history["lr"].append(scheduler.get_last_lr()[0] if scheduler else config.learning_rate)
 
         # LR warmup step
         if scheduler is not None:
@@ -934,6 +938,7 @@ def train_sae(
         mean_active_features=float(mean_active),
         dead_features=int(dead_features),
         alive_features=int(config.hidden_dim - dead_features),
+        training_history=history,
         config=config,
     )
 
