@@ -80,7 +80,8 @@ class SAEConfig:
     learning_rate: float = 1e-3
     batch_size: int = 256
     n_epochs: int = 100
-    warmup_epochs: int = 3  # Linear LR warmup to prevent early feature death
+    use_lr_schedule: bool = True  # Three-phase LR schedule: warmup(5%) + stable(75%) + decay(20%)
+    warmup_epochs: int = 3  # DEPRECATED: use_lr_schedule now auto-computes warmup as 5% of n_epochs
     strip_fraction: float = 0.0  # Fraction of most-negative encoder weights to zero per dead neuron (0=disabled)
 
     # Normalization
@@ -703,13 +704,28 @@ def train_sae(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
-    # LR warmup scheduler: linear ramp from 0 to learning_rate over warmup_epochs
-    warmup_epochs = getattr(config, 'warmup_epochs', 0)
-    if warmup_epochs > 0:
+    # Three-phase LR schedule (SAE best practice):
+    # - Warmup (first 5%): linear 0 → peak_lr
+    # - Stable (middle 75%): constant at peak_lr
+    # - Decay (final 20%): linear peak_lr → 0
+    use_lr_schedule = getattr(config, 'use_lr_schedule', True)
+    if use_lr_schedule:
+        n_epochs = config.n_epochs
+        warmup_epochs = int(0.05 * n_epochs)  # First 5%
+        stable_end = int(0.80 * n_epochs)     # Until 80%
+
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
+                # Warmup phase: 0 → 1.0
                 return (epoch + 1) / warmup_epochs
-            return 1.0
+            elif epoch < stable_end:
+                # Stable phase: constant at 1.0
+                return 1.0
+            else:
+                # Decay phase: 1.0 → 0
+                decay_progress = (epoch - stable_end) / (n_epochs - stable_end)
+                return 1.0 - decay_progress
+
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     else:
         scheduler = None
