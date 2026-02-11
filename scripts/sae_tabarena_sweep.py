@@ -227,6 +227,7 @@ def build_sae_config(
     n_epochs: int = 100,
     aux_loss_type: str = "none",
     aux_loss_alpha: float = 0.03125,
+    aux_loss_warmup_epochs: int = 3,
 ) -> SAEConfig:
     """Build SAE config from parameters."""
     input_dim = embeddings.shape[1]
@@ -254,6 +255,7 @@ def build_sae_config(
         archetypal_use_centroids=True,
         aux_loss_type=aux_loss_type,
         aux_loss_alpha=aux_loss_alpha,
+        aux_loss_warmup_epochs=aux_loss_warmup_epochs,
         n_epochs=n_epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
@@ -273,6 +275,7 @@ def run_sae_trial(
     n_epochs: int = 100,
     aux_loss_type: str = "none",
     aux_loss_alpha: float = 0.03125,
+    aux_loss_warmup: int = 3,
     measure_stability: bool = True,
     return_model: bool = False,
     seed: int = 42,
@@ -283,7 +286,7 @@ def run_sae_trial(
     config = build_sae_config(
         embeddings, sae_type, expansion, sparsity_penalty, learning_rate,
         topk, archetypal_n_archetypes, archetypal_temp, archetypal_relaxation, n_epochs,
-        aux_loss_type, aux_loss_alpha
+        aux_loss_type, aux_loss_alpha, aux_loss_warmup
     )
 
     # Train and evaluate
@@ -393,6 +396,7 @@ def validate_and_save(
         archetypal_relax = best_params.get("archetypal_relaxation", 0.0)
         aux_loss_type = best_params.get("aux_loss_type", "none")
         aux_loss_alpha = best_params.get("aux_loss_alpha", 0.03125)
+        aux_loss_warmup = best_params.get("aux_warmup", 3)
 
         # Train with a different seed to test robustness
         validation_seed = 12345 + attempt
@@ -409,6 +413,7 @@ def validate_and_save(
             n_epochs=100,
             aux_loss_type=aux_loss_type,
             aux_loss_alpha=aux_loss_alpha,
+            aux_loss_warmup=aux_loss_warmup,
             measure_stability=True,
             return_model=True,
             seed=validation_seed,
@@ -548,11 +553,15 @@ def create_optuna_objective(
                 # α = 1/32 default (Gao et al.), search from 0.001 to 10
                 # Paper mentions high values (e.g., 10,000) with delayed startup
                 aux_loss_alpha = trial.suggest_float("aux_loss_alpha", 1e-3, 10.0, log=True)
+                # Warmup epochs: allow initial training to stabilize before aux loss kicks in
+                aux_loss_warmup = trial.suggest_categorical("aux_warmup", [3, 5, 10, 20])
             else:
                 aux_loss_alpha = 0.03125
+                aux_loss_warmup = 3
         else:
             aux_loss_type = "none"
             aux_loss_alpha = 0.03125
+            aux_loss_warmup = 3
 
         # Initialize wandb for this trial
         wandb_active = False
@@ -572,6 +581,7 @@ def create_optuna_objective(
                         "archetypal_temp": archetypal_temp if sae_type in ("archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal") else None,
                         "aux_loss_type": aux_loss_type,
                         "aux_loss_alpha": aux_loss_alpha if aux_loss_type != "none" else None,
+                        "aux_loss_warmup": aux_loss_warmup if aux_loss_type != "none" else None,
                     },
                     reinit=True,
                 )
@@ -593,6 +603,7 @@ def create_optuna_objective(
                 n_epochs=100,
                 aux_loss_type=aux_loss_type,
                 aux_loss_alpha=aux_loss_alpha,
+                aux_loss_warmup=aux_loss_warmup,
                 measure_stability=True,
                 device=device,
                 use_wandb=use_wandb,
