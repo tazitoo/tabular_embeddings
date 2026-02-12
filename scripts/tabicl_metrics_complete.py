@@ -14,28 +14,23 @@ from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 def load_tabicl_embeddings():
     """Load pooled TabICL embeddings - use pre-extracted embeddings from sweep."""
     # Use exact same logic as sae_tabarena_sweep.py pool_embeddings()
-    model_name = "tabicl_layer10"
+    from data.extended_loader import TABARENA_DATASETS
 
+    model_name = "tabicl_layer10"
     print(f"Pooling {model_name} embeddings from train datasets...")
 
-    # Train datasets (from sae_tabarena_sweep.py)
-    train_datasets = [
-        'adult', 'amazon', 'bank-marketing', 'blastchar', 'blood-transfusion',
-        'car-evaluation', 'churn', 'credit-approval', 'diabetes', 'electricity',
-        'heart-disease', 'house-votes-84', 'hypothyroid', 'jungle-chess-2pcs',
-        'kr-vs-kp', 'mushroom', 'nomao', 'phoneme', 'qsar-biodeg', 'road-safety',
-        'segment', 'spaceship-titanic', 'baseball', 'breast-cancer', 'concrete',
-        'CPU_1', 'Fiat-500', 'Food_Delivery', 'houses', 'mercedes-benz',
-        'miami_housing', 'nyc-taxi-green', 'superconductivity', 'wine-quality-red'
-    ]
+    # Get train split - first 34 classification datasets
+    all_datasets = sorted([k for k, v in TABARENA_DATASETS.items()
+                          if v['task'] == 'classification'])
+    train_datasets = all_datasets[:34]
 
     all_embeddings = []
     n_samples_per_ds = 100
 
     for ds_name in train_datasets:
+        # Try to find the embedding file (check for exact match and variations)
         emb_path = Path(f"output/embeddings/tabarena/{model_name}/tabarena_{ds_name}.npz")
         if not emb_path.exists():
-            print(f"  Warning: No embeddings for {ds_name}")
             continue
 
         data = np.load(emb_path)
@@ -137,8 +132,13 @@ def main():
 
         # For archetypal models, need to set reference data before loading weights
         if 'archetypal' in arch_name.lower():
-            # Use dummy reference data for initialization (will be overwritten)
-            ref_data = torch.randn(100, config_obj.input_dim)
+            # Get n_archetypes from config (defaults to hidden_dim if not set)
+            n_archetypes = getattr(config_obj, 'archetypal_n_archetypes', None)
+            if n_archetypes is None:
+                n_archetypes = config_obj.hidden_dim
+
+            # Use dummy reference data for initialization (will be overwritten by loaded state)
+            ref_data = torch.randn(n_archetypes, config_obj.input_dim)
             model.set_reference_data(ref_data)
 
         model.load_state_dict(checkpoint['model_state_dict'], strict=False)
