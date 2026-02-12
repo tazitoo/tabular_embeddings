@@ -1,4 +1,8 @@
 # CLAUDE.md - Tabular Embeddings Geometry
+
+<!-- Dynamic statusline - run 'python scripts/status.py --compact --update-claude-md' to refresh -->
+**Status:** 🔄 SAE:tabicl_layer10@firelord4 | 🖥 4/4 | 📝 main | 📅 97d | ✓ on track
+
 ## Project Overview
 
 Research project investigating the universal geometry of embeddings in tabular foundation models. Target: ML/AI conference publication. This repo will be open sourced and heavily scrutinized by experts in the field.  The code should be concise, well written, well documented, and test coverage of at least 80%.  Research & experimentation code should not safe guard against edge cases - we need to know why it fails, and fix it.  Short cuts to get results undermine the validity of the paper.
@@ -13,6 +17,11 @@ Research project investigating the universal geometry of embeddings in tabular f
 ## Key Scripts
 
 ```bash
+# Project status (jobs, workers, git, paper deadline)
+python scripts/status.py                  # Full report
+python scripts/status.py --compact        # One-line statusline
+python scripts/status.py --compact --update-claude-md  # Auto-update statusline
+
 # Embedding geometry comparison
 python compare_embeddings.py --dataset adult --models tabpfn
 
@@ -76,7 +85,7 @@ python compare_embeddings.py --suite relbench
 
 GPU worker pool using the `tfm` conda env (has torch+CUDA+model deps).
 
-- **Workers**: surfer4 (3090), terrax4 (3090), octo4 (3090), firelord4 (4090)
+- **Workers**: surfer4 (3090), terrax4 (3090), octo4 (3090), firelord4 (4090) — all 24GB VRAM
 - **Conda env**: `tfm` on each worker (may need to be created on each worker)
 - **Worker repo path**: `/home/brian/src/tabular_embeddings`
 - **Worker python**: `/home/brian/anaconda3/envs/tfm/bin/python` 
@@ -117,3 +126,4 @@ See `PROJECT_STATUS.md` for detailed extraction status, blocked items, and next 
 - **TabPFN has two model variants with different architectures.** The classifier has 24 transformer layers; the regressor has 18. Layer indices (e.g. layer 16) land at different relative depths (67% vs 89%). Any layer-specific analysis must account for task type.
 - **TabPFN layer extraction requires task type.** `extract_tabpfn_all_layers()` needs `task="regression"` to load `TabPFNRegressor` and call `predict()` instead of `predict_proba()`. Without it, regression and many-class datasets fail silently.
 - **TabArena has mixed task types.** 11 of 51 datasets are regression or many-class. Always check `TABARENA_DATASETS[name]["task"]` rather than assuming classification.
+- **SAE training uses BatchNorm for normalization.** All SAEs use `use_batchnorm=True` by default. Always pass RAW (unnormalized) embeddings to SAE models - the internal BatchNorm layer handles normalization. During training, BatchNorm learns mean/std from data. During eval (`model.eval()`), it applies learned statistics automatically. This ensures consistent normalization between training and evaluation scripts without manual stats tracking.
