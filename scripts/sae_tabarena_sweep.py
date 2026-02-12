@@ -537,25 +537,26 @@ def create_optuna_objective(
         # overparameterized SAEs (4096-dim × 8 = 32768 hidden = 268M params)
         input_dim = embeddings.shape[1]
         if input_dim >= 2048:
-            expansion = trial.suggest_categorical("expansion", [1, 2])
+            expansion = trial.suggest_categorical("expansion", [1, 2, 4])
         else:
-            expansion = trial.suggest_categorical("expansion", [4, 8])
+            expansion = trial.suggest_categorical("expansion", [4, 8, 16])
         sparsity_penalty = trial.suggest_float("sparsity_penalty", 1e-4, 1e-2, log=True)
         learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
 
         # Type-specific parameters
         if sae_type in ("topk", "batchtopk", "archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
-            topk = trial.suggest_categorical("topk", [16, 32, 64, 128])
+            topk = trial.suggest_categorical("topk", [16, 32, 64, 128, 256])
         else:
             topk = 32
 
         if sae_type in ("archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
             archetypal_temp = trial.suggest_float("archetypal_temp", 0.05, 0.5, log=True)
             # K-means on high-dim data is slow; limit centroids for large inputs
+            # Expanded range: old max was 1000, now 2000 for breathing room
             if input_dim >= 2048:
-                archetypal_n = trial.suggest_categorical("archetypal_n", [128, 256])
+                archetypal_n = trial.suggest_categorical("archetypal_n", [128, 256, 512])
             else:
-                archetypal_n = trial.suggest_categorical("archetypal_n", [256, 512, 1000])
+                archetypal_n = trial.suggest_categorical("archetypal_n", [512, 1000, 2000])
             archetypal_relax = trial.suggest_float("archetypal_relaxation", 0.0, 2.0)
         else:
             archetypal_temp = 0.1
@@ -582,13 +583,15 @@ def create_optuna_objective(
         resample_neurons = True
 
         # Resample interval in steps (Anthropic uses 25000)
-        # For 100 epochs × ~120 batches = 12k steps, use smaller intervals
-        resample_interval = trial.suggest_categorical("resample_interval", [2500, 5000, 10000])
+        # For 100 epochs × ~120 batches = 12k steps
+        # Expanded range: old max was 10k, now 25k for breathing room
+        resample_interval = trial.suggest_categorical("resample_interval", [2500, 5000, 10000, 25000])
 
         # Number of samples to use for resampling dead neurons
         # More samples = better error distribution coverage, but higher overhead
-        # For TabICL: ~16k training samples, so [512, 1024, 2048] = [3%, 6%, 12%]
-        resample_samples = trial.suggest_categorical("resample_samples", [512, 1024, 2048])
+        # For TabICL: ~16k training samples, so [512, 1024, 2048, 4096] = [3%, 6%, 12%, 25%]
+        # Expanded range: old max was 2048, now 4096 for breathing room
+        resample_samples = trial.suggest_categorical("resample_samples", [512, 1024, 2048, 4096])
 
         # Initialize wandb for this trial
         wandb_active = False
