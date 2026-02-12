@@ -158,11 +158,21 @@ def main():
         if n == '-' or n is None:
             n = '-'
 
+        # Resampling parameters (new universal approach)
+        resample_interval = getattr(config_obj, 'resample_interval', '-')
+        resample_samples = getattr(config_obj, 'resample_samples', '-')
+
         hyperparam_str = f"m={m}"
         if k != '-':
             hyperparam_str += f", k={k}"
         if n != '-':
             hyperparam_str += f", n={n}"
+        if resample_interval != '-':
+            # Format in thousands (e.g., 10000 -> 10k)
+            ri_k = resample_interval // 1000 if resample_interval >= 1000 else resample_interval
+            hyperparam_str += f", ri={ri_k}k"
+        if resample_samples != '-':
+            hyperparam_str += f", rs={resample_samples}"
 
         # Print row
         print(f"{arch_name:<24} {hyperparam_str:<35} {metrics['rmse']:>8.3f} {stability:>7.3f} "
@@ -178,9 +188,11 @@ def main():
 
     print("="*100)
     print("\nHyperparameters: m = expansion factor (hidden_dim = m × input_dim), k = TopK sparsity,")
-    print("                 n = archetypes")
+    print("                 n = archetypes, ri = resample_interval (×1000 steps),")
+    print("                 rs = resample_samples (high-error samples for neuron revival)")
     print("\nMetrics: RMSE = reconstruction error, Stab = s_n^dec decoder stability [?],")
     print("         L₀ = avg. active features, Dead% = never-activated features.")
+    print("\nAll architectures use residual_targeting aux loss + neuron resampling (universal approach).")
     print()
 
 if __name__ == '__main__':
