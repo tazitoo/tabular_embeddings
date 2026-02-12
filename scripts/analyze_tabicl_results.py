@@ -29,8 +29,7 @@ for arch_name, model_name in models:
 
     # Load checkpoint
     checkpoint = torch.load(model_path, map_location='cpu')
-    model = checkpoint['model']
-    config = model.config
+    config = checkpoint['config']
     metrics = checkpoint.get('metrics', {})
 
     # Extract metrics from checkpoint or config
