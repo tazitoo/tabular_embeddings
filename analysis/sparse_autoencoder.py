@@ -742,14 +742,16 @@ class SparseAutoencoder(nn.Module):
                                                      "batchtopk_archetypal", "matryoshka_batchtopk_archetypal"):
                     # For archetypal SAE, reinitialize archetype logits
                     # Sample random convex combination (softmax of random logits)
+                    # archetype_logits shape: (n_ref, hidden_dim) - each COLUMN is one atom
                     if self.archetype_logits is not None:
-                        n_archetypes = self.archetype_logits.shape[1]
+                        n_ref = self.archetype_logits.shape[0]  # Number of reference points
+                        device = self.archetype_logits.device  # Use same device as parameter
                         # Peaked initialization: set 2-3 archetypes to high values
-                        new_logits = torch.zeros(n_archetypes, device=x.device)
-                        n_peaks = min(3, n_archetypes)
-                        peak_indices = torch.randperm(n_archetypes)[:n_peaks]
+                        new_logits = torch.zeros(n_ref, device=device)
+                        n_peaks = min(3, n_ref)
+                        peak_indices = torch.randperm(n_ref, device=device)[:n_peaks]
                         new_logits[peak_indices] = 5.0
-                        self.archetype_logits.data[neuron_idx] = new_logits
+                        self.archetype_logits.data[:, neuron_idx] = new_logits  # Set COLUMN
                 else:
                     # Standard decoder: random unit vector
                     random_dir = torch.randn(self.config.input_dim, device=x.device)
