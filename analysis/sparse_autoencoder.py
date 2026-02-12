@@ -150,6 +150,7 @@ class SAEConfig:
     # Normalization
     normalize_encoder: bool = True  # Unit norm encoder columns
     tied_weights: bool = False  # Decoder = Encoder.T
+    use_batchnorm: bool = True  # Use BatchNorm for input normalization (recommended)
 
     def __post_init__(self):
         """Resolve legacy aux_loss fields to new aux_loss_type system."""
@@ -233,6 +234,13 @@ class SparseAutoencoder(nn.Module):
         super().__init__()
         self.config = config
 
+        # BatchNorm for input normalization (learns mean/std during training)
+        # Ensures consistent normalization in train/eval without manual stats tracking
+        if config.use_batchnorm:
+            self.bn = nn.BatchNorm1d(config.input_dim)
+        else:
+            self.bn = None
+
         # Encoder
         self.W_enc = nn.Parameter(torch.randn(config.hidden_dim, config.input_dim) * 0.01)
         self.b_enc = nn.Parameter(torch.zeros(config.hidden_dim))
@@ -286,6 +294,12 @@ class SparseAutoencoder(nn.Module):
             h: Sparse activations (batch_size, hidden_dim)
             pre_act: (optional) Pre-activation values
         """
+        # Apply BatchNorm for consistent normalization in train/eval (if enabled)
+        # During training: learns mean/std from data
+        # During eval: uses running mean/std (no manual stats needed)
+        if self.bn is not None:
+            x = self.bn(x)
+
         # For Archetypal SAE, the constraint is on the DECODER only
         # Encoder uses standard learned weights W_enc
         # (Decoder uses dictionary = convex combo of reference data)

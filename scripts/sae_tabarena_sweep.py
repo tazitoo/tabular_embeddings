@@ -42,6 +42,7 @@ from analysis.sparse_autoencoder import (
     measure_dictionary_richness,
     compare_dictionaries,
 )
+from data.tabarena_utils import get_embedding_dir
 
 # Fixed random seed for reproducible splits
 SPLIT_SEED = 42
@@ -53,7 +54,9 @@ def get_available_datasets(model_name: str) -> List[str]:
 
     Dynamically finds all extracted embeddings instead of hardcoding.
     """
-    path = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / model_name
+    # Map model name to actual embedding directory
+    emb_dir_name = get_embedding_dir(model_name)
+    path = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / emb_dir_name
     if not path.exists():
         raise ValueError(f"No embeddings directory found: {path}")
 
@@ -95,7 +98,9 @@ def get_tabarena_splits(model_name: str = "tabpfn") -> Tuple[List[str], List[str
 
 def load_embeddings(model_name: str, dataset_name: str) -> Optional[np.ndarray]:
     """Load cached embeddings for a model/dataset."""
-    path = PROJECT_ROOT / f"output/embeddings/tabarena/{model_name}/tabarena_{dataset_name}.npz"
+    # Map model name to actual embedding directory
+    emb_dir_name = get_embedding_dir(model_name)
+    path = PROJECT_ROOT / f"output/embeddings/tabarena/{emb_dir_name}/tabarena_{dataset_name}.npz"
     if path.exists():
         data = np.load(path, allow_pickle=True)
         return data['embeddings'].astype(np.float32)
@@ -738,7 +743,8 @@ def run_sweep(
     for i, ename in enumerate(effective_names):
         ctx = context_sizes[i] if context_sizes else 0
         print(f"\nPooling {ename} embeddings from train datasets...")
-        emb, counts = pool_embeddings(ename, train_datasets, max_per_dataset=500)
+        # Pass raw embeddings - SAE's BatchNorm will learn normalization during training
+        emb, counts = pool_embeddings(ename, train_datasets, max_per_dataset=500, normalize=False)
         print(f"  Total samples: {len(emb)}")
         print(f"  Embedding dim: {emb.shape[1]}")
         print(f"  Datasets loaded: {len(counts)}")
@@ -854,8 +860,8 @@ def evaluate_on_test(
 
     print(f"Evaluating on {len(test_datasets)} test datasets...")
 
-    # Pool test embeddings
-    embeddings, counts = pool_embeddings(model_name, test_datasets, max_per_dataset=200)
+    # Pool test embeddings (raw, BatchNorm will apply learned normalization)
+    embeddings, counts = pool_embeddings(model_name, test_datasets, max_per_dataset=200, normalize=False)
     print(f"  Total test samples: {len(embeddings)}")
 
     # Evaluate each SAE type

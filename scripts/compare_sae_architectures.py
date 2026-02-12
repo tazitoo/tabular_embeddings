@@ -165,14 +165,18 @@ def load_embeddings_and_normalize(
 def compute_activations(
     model: SparseAutoencoder,
     embeddings: np.ndarray,
-    train_std: np.ndarray,
-    train_mean: np.ndarray,
+    train_std: np.ndarray = None,  # Kept for backward compat, but unused
+    train_mean: np.ndarray = None,  # Kept for backward compat, but unused
 ) -> np.ndarray:
-    """Normalize embeddings and compute SAE activations."""
-    emb_norm = embeddings / train_std
-    emb_centered = emb_norm - train_mean
+    """
+    Compute SAE activations from raw embeddings.
+
+    The SAE's internal BatchNorm layer applies learned normalization automatically,
+    so we pass raw embeddings directly. train_std/train_mean args are kept for
+    backward compatibility but are no longer used.
+    """
     with torch.no_grad():
-        x = torch.tensor(emb_centered, dtype=torch.float32)
+        x = torch.tensor(embeddings, dtype=torch.float32)
         h = model.encode(x).numpy()
     return h
 
