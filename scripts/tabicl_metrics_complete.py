@@ -82,9 +82,11 @@ def compute_sae_metrics(model, embeddings, device='cuda'):
 
         # c_dec (decoder pairwise cosine similarity)
         # Get decoder from model (handle archetypal models)
-        if hasattr(model, 'get_archetypal_dictionary'):
+        if hasattr(model, 'reference_data') and model.reference_data is not None:
+            # Archetypal models: decoder is computed from reference data
             decoder = model.get_archetypal_dictionary().cpu().numpy()
         else:
+            # Standard models: decoder is W_dec
             decoder = model.W_dec.data.T.cpu().numpy()  # (hidden, input)
 
         c_dec = compute_c_dec(decoder)
