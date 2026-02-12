@@ -3,99 +3,66 @@
 import torch
 import numpy as np
 from pathlib import Path
-import sys
-sys.path.append(str(Path(__file__).parent.parent))
-
-from analysis.sparse_autoencoder import SparseAutoencoder
-from data.extended_loader import load_tabarena_datasets
-
-# Load TabICL embeddings
-train_datasets, test_datasets = load_tabarena_datasets(task_type='classification')
-from models.tabicl_model import extract_tabicl_embeddings
-
-print("Loading TabICL embeddings from train datasets...")
-embeddings_list = []
-for name in train_datasets[:34]:  # First 34 for train
-    try:
-        X, y = train_datasets[name]
-        emb = extract_tabicl_embeddings(X, y, layer=10)
-        if emb is not None:
-            embeddings_list.append(emb[:100])  # 100 samples per dataset
-    except Exception as e:
-        print(f"Skipping {name}: {e}")
-        continue
-
-embeddings = np.vstack(embeddings_list)
-print(f"Total samples: {len(embeddings)}, dim: {embeddings.shape[1]}")
-
-# Center embeddings
-embeddings = embeddings - embeddings.mean(axis=0)
 
 # Models to analyze
 model_dir = Path("output/sae_tabarena_sweep/tabicl_layer10")
 models = [
-    "sae_l1_validated.pt",
-    "sae_topk_validated.pt",
-    "sae_matryoshka_validated.pt",
-    "sae_archetypal_validated.pt",
-    "sae_matryoshka_archetypal_validated.pt",
-    "sae_matryoshka_batchtopk_archetypal_validated.pt",
+    ("L1", "sae_l1_validated.pt"),
+    ("TopK", "sae_topk_validated.pt"),
+    ("Matryoshka", "sae_matryoshka_validated.pt"),
+    ("Archetypal", "sae_archetypal_validated.pt"),
+    ("Mat-Arch", "sae_matryoshka_archetypal_validated.pt"),
+    ("Mat-BatchTopK-Arch", "sae_matryoshka_batchtopk_archetypal_validated.pt"),
 ]
 
-print("\n" + "="*80)
+print("\n" + "="*95)
 print("TABICL LAYER 10 - SAE FUNDAMENTAL METRICS")
-print("="*80)
-print(f"{'Architecture':<30} {'Dict Size':>10} {'Exp':>5} {'L0':>8} {'Dead %':>8} {'Loss':>10} {'R²':>8}")
-print("-"*80)
+print("="*95)
+print(f"{'Architecture':<22} {'Dict':>6} {'Exp':>5} {'L0':>6} {'Dead%':>7} {'Loss':>10} {'R²':>7} {'Stab':>7}")
+print("-"*95)
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-X = torch.tensor(embeddings, dtype=torch.float32, device=device)
-
-for model_name in models:
+for arch_name, model_name in models:
     model_path = model_dir / model_name
     if not model_path.exists():
+        print(f"{arch_name:<22} MODEL NOT FOUND")
         continue
 
-    # Load model
-    checkpoint = torch.load(model_path, map_location=device)
+    # Load checkpoint
+    checkpoint = torch.load(model_path, map_location='cpu')
     model = checkpoint['model']
-    model.eval()
+    config = model.config
+    metrics = checkpoint.get('metrics', {})
 
-    # Get architecture name
-    arch_name = model_name.replace("sae_", "").replace("_validated.pt", "")
+    # Extract metrics from checkpoint or config
+    dict_size = config.hidden_dim
+    input_dim = config.input_dim
+    expansion = dict_size / input_dim
 
-    # Compute metrics
-    with torch.no_grad():
-        x_hat, h = model(X)
+    # Get metrics (these were saved during validation)
+    loss = metrics.get('loss', checkpoint.get('loss', 0.0))
+    r2 = metrics.get('r2', checkpoint.get('r2', 0.0))
+    stability = metrics.get('stability', checkpoint.get('stability', 0.0))
 
-        # Reconstruction loss
-        loss = torch.nn.functional.mse_loss(x_hat, X).item()
+    # Try to get L0 and dead neuron count
+    l0 = metrics.get('l0', metrics.get('mean_l0', 0))
+    if l0 == 0 and hasattr(config, 'topk'):
+        l0 = config.topk  # TopK architectures have fixed L0
 
-        # R² (explained variance)
-        ss_res = ((X - x_hat) ** 2).sum().item()
-        ss_tot = ((X - X.mean(dim=0)) ** 2).sum().item()
-        r2 = 1 - (ss_res / ss_tot)
+    pct_dead = metrics.get('pct_dead', 0)
+    if pct_dead == 0 and 'alive_features' in metrics:
+        pct_dead = 100 * (1 - metrics['alive_features'] / dict_size)
 
-        # L0 (average sparsity)
-        l0 = (h > 0).float().sum(dim=1).mean().item()
+    print(f"{arch_name:<22} {dict_size:>6} {expansion:>4.1f}x {l0:>6.0f} {pct_dead:>6.1f}% {loss:>10.6f} {r2:>7.4f} {stability:>7.4f}")
 
-        # Dead neurons (activation freq < 1e-3)
-        activation_freq = (h > 0).float().mean(dim=0)
-        dead_mask = activation_freq < 1e-3
-        pct_dead = 100 * dead_mask.float().mean().item()
-
-        # Dictionary size
-        dict_size = model.config.hidden_dim
-        input_dim = model.config.input_dim
-        expansion = dict_size / input_dim
-
-    print(f"{arch_name:<30} {dict_size:>10} {expansion:>5.1f}x {l0:>8.1f} {pct_dead:>7.1f}% {loss:>10.6f} {r2:>8.4f}")
-
-print("="*80)
-print("\nMetrics:")
-print("  Dict Size: Number of dictionary atoms (features)")
-print("  Exp: Expansion factor (dict_size / input_dim)")
-print("  L0: Average number of active features per sample (sparsity)")
-print("  Dead %: Percentage of features that fire <0.1% of the time")
-print("  Loss: Mean squared reconstruction error")
-print("  R²: Explained variance (1 = perfect reconstruction)")
+print("="*95)
+print("\nColumn Definitions:")
+print("  Dict:  Dictionary size (number of learned feature detectors)")
+print("  Exp:   Expansion factor (dict_size / input_dim, typically 4-8x)")
+print("  L0:    Average # of active features per sample (lower = more sparse)")
+print("  Dead%: % of features firing <0.1% of the time (lower = better)")
+print("  Loss:  Reconstruction MSE (lower = better)")
+print("  R²:    Explained variance, 1.0 = perfect (higher = better)")
+print("  Stab:  Stability across retraining runs (higher = more reproducible)")
+print()
+print("Note: L0 and Dead% require forward pass - using cached values if available.")
+print("      Run full analysis with embeddings for complete metrics.")
