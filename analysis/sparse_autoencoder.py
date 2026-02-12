@@ -1188,6 +1188,44 @@ def train_sae(
     return model, result
 
 
+def compute_c_dec(decoder: np.ndarray) -> float:
+    """
+    Compute decoder pairwise cosine similarity (c_dec).
+
+    From Chanin & Garriga-Alonso (arXiv:2508.16560).
+    Measures feature redundancy/interference in the decoder.
+
+    c_dec = (1 / (h choose 2)) Σ Σ |cos(W_dec,i, W_dec,j)|
+
+    Lower values = better (features more distinct/orthogonal)
+    Minimized at optimal sparsity level
+
+    Args:
+        decoder: (hidden_dim, input_dim) decoder matrix
+
+    Returns:
+        Mean absolute cosine similarity between all decoder feature pairs
+    """
+    # Normalize decoder rows to unit vectors
+    decoder_norm = decoder / (np.linalg.norm(decoder, axis=1, keepdims=True) + 1e-8)
+
+    # Compute all pairwise cosine similarities
+    similarity_matrix = decoder_norm @ decoder_norm.T  # (h, h)
+
+    # Take absolute value (we care about magnitude of similarity, not sign)
+    abs_similarity = np.abs(similarity_matrix)
+
+    # Sum over upper triangle (distinct pairs i < j, excluding diagonal)
+    h = decoder.shape[0]
+    upper_triangle = np.triu_indices(h, k=1)  # Indices where i < j
+    pairwise_sims = abs_similarity[upper_triangle]
+
+    # Average over all pairs
+    c_dec = pairwise_sims.mean()
+
+    return float(c_dec)
+
+
 def compare_dictionaries(
     dict_a: np.ndarray,
     dict_b: np.ndarray,

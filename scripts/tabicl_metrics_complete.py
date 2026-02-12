@@ -51,7 +51,9 @@ def load_tabicl_embeddings():
     return pooled
 
 def compute_sae_metrics(model, embeddings, device='cuda'):
-    """Compute L0, Dead%, RMSE, R² for a trained SAE."""
+    """Compute L0, Dead%, RMSE, R², c_dec for a trained SAE."""
+    from analysis.sparse_autoencoder import compute_c_dec
+
     model.eval()
     model.to(device)
 
@@ -78,11 +80,21 @@ def compute_sae_metrics(model, embeddings, device='cuda'):
         dead_mask = activation_freq < 1e-3
         pct_dead = 100 * dead_mask.float().mean().item()
 
+        # c_dec (decoder pairwise cosine similarity)
+        # Get decoder from model (handle archetypal models)
+        if hasattr(model, 'get_archetypal_dictionary'):
+            decoder = model.get_archetypal_dictionary().cpu().numpy()
+        else:
+            decoder = model.W_dec.data.T.cpu().numpy()  # (hidden, input)
+
+        c_dec = compute_c_dec(decoder)
+
     return {
         'rmse': rmse,
         'r2': r2,
         'l0': l0,
         'pct_dead': pct_dead,
+        'c_dec': c_dec,
     }
 
 def main():
@@ -105,11 +117,11 @@ def main():
         ("Mat-BatchTopK-Arch", "sae_matryoshka_batchtopk_archetypal_validated.pt"),
     ]
 
-    print("\n" + "="*108)
+    print("\n" + "="*116)
     print("Table: SAE Architecture Comparison on TabICL Embeddings (34 TabArena train datasets)")
-    print("="*108)
-    print(f"{'Type':<24} {'Hyperparameters':<35} {'RMSE':>8} {'Stab':>7} {'s_n':>7} {'L₀':>6} {'Dead%':>7}")
-    print("-"*108)
+    print("="*116)
+    print(f"{'Type':<24} {'Hyperparameters':<35} {'RMSE':>8} {'Stab':>7} {'s_n':>7} {'c_d':>7} {'L₀':>6} {'Dead%':>7}")
+    print("-"*116)
 
     results = []
     for arch_name, model_name in models:
@@ -180,7 +192,7 @@ def main():
 
         # Print row
         print(f"{arch_name:<24} {hyperparam_str:<35} {metrics['rmse']:>8.3f} {stability:>7.3f} "
-              f"{s_n_dec:>7.3f} {int(metrics['l0']):>6} {metrics['pct_dead']:>6.1f}%")
+              f"{s_n_dec:>7.3f} {metrics['c_dec']:>7.3f} {int(metrics['l0']):>6} {metrics['pct_dead']:>6.1f}%")
 
         results.append({
             'arch': arch_name,
@@ -190,13 +202,14 @@ def main():
             'dead_pct': metrics['pct_dead'],
         })
 
-    print("="*108)
+    print("="*116)
     print("\nHyperparameters: m = expansion factor (hidden_dim = m × input_dim), k = TopK sparsity,")
     print("                 n = archetypes, ri = resample_interval (×1000 steps),")
     print("                 rs = resample_samples (high-error samples for neuron revival)")
     print("\nMetrics: RMSE = reconstruction error,")
     print("         Stab = feature alignment stability [0-1, higher = more reproducible],")
     print("         s_n = s_n^dec decoder stability [0-∞, lower = better, 0 = optimal sparsity],")
+    print("         c_d = c_dec pairwise cosine similarity [0-1, lower = less redundancy],")
     print("         L₀ = avg. active features, Dead% = never-activated features.")
     print("\nAll architectures use residual_targeting aux loss + neuron resampling (universal approach).")
     print()
