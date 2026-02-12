@@ -65,9 +65,9 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
     cache_key = f"{data_hash}_{n_clusters}_{seed}"
 
     if cache_key in _KMEANS_CACHE:
-        # Cache hit: return cached centroids on same device
+        # Cache hit: return cached centroids on same device as input data
         cached = _KMEANS_CACHE[cache_key]
-        return cached.to(data.device)
+        return cached.to(device=data.device, dtype=data.dtype)
 
     # Cache miss: compute centroids using sklearn K-means (on CPU)
     # torch_kmeans is memory-inefficient for this data size (tries to allocate 52GB)
@@ -83,13 +83,14 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
     centroids = kmeans.cluster_centers_  # (n_clusters, n_features)
 
     # Convert to tensor and normalize (should already be normalized, but be safe)
-    centroids = torch.tensor(centroids, dtype=torch.float32)
+    centroids = torch.tensor(centroids, dtype=data.dtype, device='cpu')
     centroids = F.normalize(centroids, p=2, dim=1)
 
     # Store in cache (keep on CPU to save GPU memory)
     _KMEANS_CACHE[cache_key] = centroids.cpu()
 
-    return centroids
+    # Return on same device as input data
+    return centroids.to(device=data.device)
 
 
 @dataclass
