@@ -228,6 +228,9 @@ def build_sae_config(
     aux_loss_type: str = "none",
     aux_loss_alpha: float = 0.03125,
     aux_loss_warmup_epochs: int = 3,
+    resample_neurons: bool = False,
+    resample_interval: int = 25000,
+    resample_samples: int = 1024,
 ) -> SAEConfig:
     """Build SAE config from parameters."""
     input_dim = embeddings.shape[1]
@@ -256,6 +259,9 @@ def build_sae_config(
         aux_loss_type=aux_loss_type,
         aux_loss_alpha=aux_loss_alpha,
         aux_loss_warmup_epochs=aux_loss_warmup_epochs,
+        resample_dead_neurons=resample_neurons,
+        resample_interval=resample_interval,
+        resample_samples=resample_samples,
         n_epochs=n_epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
@@ -276,6 +282,9 @@ def run_sae_trial(
     aux_loss_type: str = "none",
     aux_loss_alpha: float = 0.03125,
     aux_loss_warmup: int = 3,
+    resample_neurons: bool = False,
+    resample_interval: int = 25000,
+    resample_samples: int = 1024,
     measure_stability: bool = True,
     return_model: bool = False,
     seed: int = 42,
@@ -286,7 +295,8 @@ def run_sae_trial(
     config = build_sae_config(
         embeddings, sae_type, expansion, sparsity_penalty, learning_rate,
         topk, archetypal_n_archetypes, archetypal_temp, archetypal_relaxation, n_epochs,
-        aux_loss_type, aux_loss_alpha, aux_loss_warmup
+        aux_loss_type, aux_loss_alpha, aux_loss_warmup, resample_neurons, resample_interval,
+        resample_samples
     )
 
     # Train and evaluate
@@ -398,6 +408,9 @@ def validate_and_save(
         aux_loss_type = best_params.get("aux_loss_type", "none")
         aux_loss_alpha = best_params.get("aux_loss_alpha", 0.03125)
         aux_loss_warmup = best_params.get("aux_warmup", 3)
+        resample_neurons = best_params.get("resample_neurons", False)
+        resample_interval = best_params.get("resample_interval", 25000)
+        resample_samples = best_params.get("resample_samples", 1024)
 
         # Train with a different seed to test robustness
         validation_seed = 12345 + attempt
@@ -415,6 +428,9 @@ def validate_and_save(
             aux_loss_type=aux_loss_type,
             aux_loss_alpha=aux_loss_alpha,
             aux_loss_warmup=aux_loss_warmup,
+            resample_neurons=resample_neurons,
+            resample_interval=resample_interval,
+            resample_samples=resample_samples,
             measure_stability=True,
             return_model=True,
             seed=validation_seed,
@@ -546,23 +562,33 @@ def create_optuna_objective(
             archetypal_n = 500
             archetypal_relax = 0.0
 
-        # Auxiliary loss for dead neuron mitigation
-        # AuxK is designed for TopK SAEs; ghost_grads is more general
-        if sae_type in ("topk", "batchtopk", "archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
-            aux_loss_type = trial.suggest_categorical("aux_loss_type", ["none", "auxk"])
-            if aux_loss_type != "none":
-                # α = 1/32 default (Gao et al.), search from 0.001 to 10
-                # Paper mentions high values (e.g., 10,000) with delayed startup
-                aux_loss_alpha = trial.suggest_float("aux_loss_alpha", 1e-3, 10.0, log=True)
-                # Warmup epochs: allow initial training to stabilize before aux loss kicks in
-                aux_loss_warmup = trial.suggest_categorical("aux_warmup", [3, 5, 10, 20])
-            else:
-                aux_loss_alpha = 0.03125
-                aux_loss_warmup = 3
-        else:
-            aux_loss_type = "none"
-            aux_loss_alpha = 0.03125
-            aux_loss_warmup = 3
+        # Dead neuron mitigation: residual_targeting + resampling
+        # Apply to ALL architectures for fair comparison.
+        # - L1 penalty can be too strict → dead neurons
+        # - Matryoshka helps with splitting/absorption, not dead neurons directly
+        # - Aux loss + resampling provides universal dead neuron revival
+        # - No downside: if no dead neurons, aux_loss ≈ 0 and resampling doesn't trigger
+
+        # Always use residual_targeting (modern approach from SAE research)
+        aux_loss_type = "residual_targeting"
+
+        # Search aux loss hyperparameters
+        # α controls strength of dead neuron revival loss
+        aux_loss_alpha = trial.suggest_float("aux_loss_alpha", 1e-3, 10.0, log=True)
+        # Warmup epochs: allow initial training to stabilize before aux loss kicks in
+        aux_loss_warmup = trial.suggest_categorical("aux_warmup", [3, 5, 10, 20])
+
+        # Neuron resampling (always enabled, complementary to residual_targeting)
+        resample_neurons = True
+
+        # Resample interval in steps (Anthropic uses 25000)
+        # For 100 epochs × ~120 batches = 12k steps, use smaller intervals
+        resample_interval = trial.suggest_categorical("resample_interval", [2500, 5000, 10000])
+
+        # Number of samples to use for resampling dead neurons
+        # More samples = better error distribution coverage, but higher overhead
+        # For TabICL: ~16k training samples, so [512, 1024, 2048] = [3%, 6%, 12%]
+        resample_samples = trial.suggest_categorical("resample_samples", [512, 1024, 2048])
 
         # Initialize wandb for this trial
         wandb_active = False
@@ -605,6 +631,9 @@ def create_optuna_objective(
                 aux_loss_type=aux_loss_type,
                 aux_loss_alpha=aux_loss_alpha,
                 aux_loss_warmup=aux_loss_warmup,
+                resample_neurons=resample_neurons,
+                resample_interval=resample_interval,
+                resample_samples=resample_samples,
                 measure_stability=True,
                 device=device,
                 use_wandb=use_wandb,

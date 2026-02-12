@@ -71,9 +71,11 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
 
     # Cache miss: compute centroids using spherical K-means
     # normalize='unit' ensures centroids stay on unit sphere (cosine distance)
+    # torch_kmeans expects (batch_size, n_samples, n_features), so add batch dim
     kmeans = KMeans(n_clusters=n_clusters, seed=seed, verbose=False, normalize='unit')
-    _ = kmeans.fit(data)  # Fit returns cluster assignments (not needed)
-    centroids = kmeans.centers  # (n_clusters, n_features)
+    data_batched = data.unsqueeze(0)  # (1, n_samples, n_features)
+    _ = kmeans.fit(data_batched)  # Fit returns KMeans object itself
+    centroids = kmeans._result.centers.squeeze(0)  # Remove batch dim: (n_clusters, n_features)
 
     # Explicitly normalize centroids (torch_kmeans should do this, but be safe)
     centroids = F.normalize(centroids, p=2, dim=1)
@@ -109,12 +111,17 @@ class SAEConfig:
     archetypal_use_centroids: bool = True  # Use K-means centroids (paper) vs raw data
 
     # Dead neuron revival - auxiliary loss
-    aux_loss_type: str = "none"  # "none", "ghost_grads", or "auxk"
+    aux_loss_type: str = "none"  # "none", "ghost_grads", "auxk", or "residual_targeting"
     aux_loss_alpha: float = 0.03125  # Coefficient α for auxiliary loss (1/32 default for AuxK)
     aux_loss_warmup_epochs: int = 3  # Epochs to wait before enabling aux loss (allows initial stabilization)
     dead_threshold: int = 500  # Steps without activation to consider dead (legacy)
     dead_freq_threshold: float = 1e-3  # EMA activation frequency below which a feature is "dead"
     ema_decay: float = 0.999  # Decay rate for activation frequency EMA
+
+    # Dead neuron revival - resampling
+    resample_dead_neurons: bool = False  # Enable Anthropic-style neuron resampling
+    resample_interval: int = 25000  # Resample every N steps (Anthropic uses 25000)
+    resample_samples: int = 1024  # Number of samples to use for resampling
 
     # Legacy ghost grads compatibility
     use_ghost_grads: bool = None  # Deprecated: use aux_loss_type="ghost_grads" instead
@@ -564,6 +571,60 @@ class SparseAutoencoder(nn.Module):
 
         return self.config.aux_loss_alpha * auxk_loss
 
+    def compute_residual_targeting_loss(
+        self, x: torch.Tensor, h: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Residual targeting auxiliary loss for dead neuron revival.
+
+        Directly trains dead neurons to reconstruct what alive neurons miss:
+        ℒ_aux = MSE(x - x̂_alive, x̂_dead)
+
+        This is more effective than reconstructing the entire input because
+        it explicitly drives dead neurons to reduce the overall reconstruction
+        error by focusing on the residual.
+
+        Args:
+            x: Original input (batch_size, input_dim)
+            h: Current activations (batch_size, hidden_dim)
+
+        Returns:
+            Residual targeting loss term (scalar)
+        """
+        if self.config.aux_loss_type != "residual_targeting":
+            return torch.tensor(0.0, device=x.device)
+
+        # Update dead neuron tracking with EMA
+        with torch.no_grad():
+            batch_freq = (h > 0).float().mean(dim=0)
+            decay = self.config.ema_decay
+            self.activation_freq = decay * self.activation_freq + (1 - decay) * batch_freq
+
+        # Identify dead features
+        dead_mask = self.activation_freq < self.config.dead_freq_threshold
+        n_dead = dead_mask.sum().item()
+
+        if n_dead == 0:
+            return torch.tensor(0.0, device=x.device)
+
+        # Reconstruct using ONLY alive features
+        h_alive = h.clone()
+        h_alive[:, dead_mask] = 0.0  # Zero out dead features
+        x_hat_alive = self.decode(h_alive)
+
+        # Residual from alive features
+        residual = x - x_hat_alive  # (batch_size, input_dim)
+
+        # Reconstruct using ONLY dead features
+        h_dead = h.clone()
+        h_dead[:, ~dead_mask] = 0.0  # Zero out alive features
+        x_hat_dead = self.decode(h_dead)
+
+        # Loss: train dead neurons to reconstruct the residual
+        res_loss = F.mse_loss(x_hat_dead, residual)
+
+        return self.config.aux_loss_alpha * res_loss
+
     def synaptic_strip(self, dead_mask: torch.Tensor, strip_fraction: float = 0.1):
         """
         Revive dead neurons by zeroing their most negative encoder weights.
@@ -590,6 +651,101 @@ class SparseAutoencoder(nn.Module):
                 w[neg_indices] = 0.0
                 # Reset bias to small positive to encourage firing
                 self.b_enc.data[idx] = 0.01
+
+        return n_dead
+
+    def resample_dead_neurons(
+        self, x: torch.Tensor, dead_mask: torch.Tensor, n_samples: int = 1024
+    ) -> int:
+        """
+        Resample dead neurons using Anthropic's approach.
+
+        Hard reset of dead neuron weights by reinitializing encoder to point
+        toward high-error samples and decoder to random directions. This is
+        more aggressive than gradient-based revival and can escape local minima.
+
+        Procedure:
+        1. Compute reconstruction error for each sample
+        2. Sample high-error examples (proportional to squared error)
+        3. For each dead neuron:
+           - Reinit encoder weights to (sample - mean) direction, normalized
+           - Reinit encoder bias to activate at ~5% of samples
+           - Reinit decoder weights to random unit vector (or tied to encoder)
+
+        Reference: Anthropic, "Towards Monosemanticity" (2023)
+
+        Args:
+            x: Training data (n_samples, input_dim)
+            dead_mask: Boolean tensor (hidden_dim,) indicating dead neurons
+            n_samples: Number of samples to use for resampling (default 1024)
+
+        Returns:
+            Number of neurons resampled
+        """
+        n_dead = dead_mask.sum().item()
+        if n_dead == 0:
+            return 0
+
+        with torch.no_grad():
+            # Compute reconstruction error for each sample
+            _, h = self.forward(x)
+            x_hat = self.decode(h)
+            errors = (x - x_hat).pow(2).sum(dim=1)  # (n_samples,)
+
+            # Sample high-error examples (proportional to squared error)
+            # Use up to n_samples examples, weighted by reconstruction error
+            n_available = min(len(x), n_samples)
+            probs = errors / (errors.sum() + 1e-8)
+            sample_indices = torch.multinomial(
+                probs, num_samples=min(n_available, n_dead), replacement=True
+            )
+
+            # Get samples and compute mean for centering
+            samples = x[sample_indices]  # (n_resampled, input_dim)
+            x_mean = x.mean(dim=0, keepdim=True)  # (1, input_dim)
+
+            # Resample each dead neuron
+            dead_indices = torch.where(dead_mask)[0]
+            for i, neuron_idx in enumerate(dead_indices):
+                # Sample index (cycle if more dead neurons than samples)
+                sample_idx = i % len(samples)
+                sample = samples[sample_idx]
+
+                # Encoder: point toward (sample - mean), normalized
+                direction = sample - x_mean.squeeze()
+                direction = F.normalize(direction, p=2, dim=0)
+                self.W_enc.data[neuron_idx] = direction * 0.1  # Small init
+
+                # Encoder bias: set to activate at ~5% of samples (negative offset)
+                # Target: pre_act = W_enc @ x + b > 0 for top 5% of samples
+                # Heuristic: b ≈ -1.5 * ||W_enc|| to get sparse firing
+                self.b_enc.data[neuron_idx] = -0.15
+
+                # Decoder: random unit vector (or tied to encoder if using tied weights)
+                if self.config.tied_weights:
+                    # Decoder is automatically W_enc.T, no need to update
+                    pass
+                elif self.config.sparsity_type in ("archetypal", "matryoshka_archetypal",
+                                                     "batchtopk_archetypal", "matryoshka_batchtopk_archetypal"):
+                    # For archetypal SAE, reinitialize archetype logits
+                    # Sample random convex combination (softmax of random logits)
+                    if self.archetype_logits is not None:
+                        n_archetypes = self.archetype_logits.shape[1]
+                        # Peaked initialization: set 2-3 archetypes to high values
+                        new_logits = torch.zeros(n_archetypes, device=x.device)
+                        n_peaks = min(3, n_archetypes)
+                        peak_indices = torch.randperm(n_archetypes)[:n_peaks]
+                        new_logits[peak_indices] = 5.0
+                        self.archetype_logits.data[neuron_idx] = new_logits
+                else:
+                    # Standard decoder: random unit vector
+                    random_dir = torch.randn(self.config.input_dim, device=x.device)
+                    random_dir = F.normalize(random_dir, p=2, dim=0)
+                    self.W_dec.data[:, neuron_idx] = random_dir * 0.1
+
+            # Reset activation frequency for resampled neurons
+            if hasattr(self, 'activation_freq'):
+                self.activation_freq[dead_mask] = 0.0
 
         return n_dead
 
@@ -893,6 +1049,8 @@ def train_sae(
                 aux_loss = model.compute_ghost_grad_loss(batch, h, pre_act)
             elif aux_type == "auxk":
                 aux_loss = model.compute_auxk_loss(batch, h, x_hat)
+            elif aux_type == "residual_targeting":
+                aux_loss = model.compute_residual_targeting_loss(batch, h)
             else:
                 aux_loss = torch.tensor(0.0, device=device)
 
@@ -929,6 +1087,7 @@ def train_sae(
         strip_fraction = getattr(config, 'strip_fraction', 0.0)
         n_dead = 0
         n_stripped = 0
+        n_resampled = 0
         n_alive = config.hidden_dim
         if hasattr(model, 'activation_freq'):
             dead_mask = model.activation_freq < config.dead_freq_threshold
@@ -936,6 +1095,27 @@ def train_sae(
             n_alive = config.hidden_dim - n_dead
             if n_dead > 0 and strip_fraction > 0:
                 n_stripped = model.synaptic_strip(dead_mask, strip_fraction)
+
+        # Dead neuron resampling (Anthropic-style hard reset)
+        resample_enabled = getattr(config, 'resample_dead_neurons', False)
+        resample_interval = getattr(config, 'resample_interval', 25000)
+        resample_samples = getattr(config, 'resample_samples', 1024)
+
+        if resample_enabled and hasattr(model, 'total_steps'):
+            # Check if we should resample this epoch (based on total training steps)
+            steps_per_epoch = len(loader)
+            total_steps = (epoch + 1) * steps_per_epoch
+
+            # Resample if we've crossed a resample_interval boundary
+            prev_steps = epoch * steps_per_epoch
+            if (total_steps // resample_interval) > (prev_steps // resample_interval):
+                if hasattr(model, 'activation_freq'):
+                    dead_mask = model.activation_freq < config.dead_freq_threshold
+                    n_dead = dead_mask.sum().item()
+                    if n_dead > 0:
+                        n_resampled = model.resample_dead_neurons(
+                            X_centered.to(device), dead_mask, n_samples=resample_samples
+                        )
 
         # Log to wandb
         if use_wandb and HAS_WANDB:
@@ -948,16 +1128,19 @@ def train_sae(
                 "features/dead": n_dead,
                 "features/alive": n_alive,
                 "features/dead_fraction": n_dead / config.hidden_dim,
+                "features/resampled": n_resampled,
                 "lr": scheduler.get_last_lr()[0] if scheduler else config.learning_rate,
             })
 
         if verbose and (epoch + 1) % 20 == 0:
             msg = f"  Epoch {epoch+1}/{config.n_epochs}: recon={epoch_recon:.6f}, sparsity={epoch_sparse:.6f}"
-            if config.use_ghost_grads:
-                msg += f", ghost={epoch_aux:.6f}"
+            if config.use_ghost_grads or config.aux_loss_type != "none":
+                msg += f", aux={epoch_aux:.6f}"
             msg += f", dead={n_dead}"
             if n_stripped > 0:
                 msg += f", stripped={n_stripped}"
+            if n_resampled > 0:
+                msg += f", resampled={n_resampled}"
             print(msg)
 
     # Compute final statistics
