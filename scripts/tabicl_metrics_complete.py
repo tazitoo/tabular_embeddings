@@ -12,10 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 
 def load_tabicl_embeddings():
-    """Load pooled TabICL embeddings - extract fresh or use cache."""
-    from data.loaders import get_tabarena_split, TABARENA_DATASETS
-    from models.tabicl_model import extract_tabicl_embeddings
-
+    """Load pooled TabICL embeddings - use the same data as the sweep."""
     # Check cache first
     cache_file = Path("output/sae_tabarena_sweep/tabicl_layer10_embeddings_cache.npy")
     if cache_file.exists():
@@ -23,34 +20,47 @@ def load_tabicl_embeddings():
         print(f"Loaded cached embeddings: {embeddings.shape}")
         return embeddings
 
-    # Extract fresh
-    print("Extracting TabICL embeddings from train datasets...")
-    train_names, _ = get_tabarena_split()
+    # Extract fresh - use exact same logic as sae_tabarena_sweep.py
+    print("Extracting TabICL layer 10 embeddings from 34 train datasets...")
+    print("(This will take ~5-10 minutes)")
+
+    from data.extended_loader import load_tabarena_dataset, TABARENA_DATASETS
+    from models.tabicl_model import extract_tabicl_embeddings
+
+    # Train/test split (from sae_tabarena_sweep.py get_tabarena_splits)
+    train_datasets = [
+        'adult', 'amazon', 'bank-marketing', 'blastchar', 'blood-transfusion',
+        'car-evaluation', 'churn', 'credit-approval', 'diabetes', 'electricity',
+        'heart-disease', 'house-votes-84', 'hypothyroid', 'jungle-chess-2pcs',
+        'kr-vs-kp', 'mushroom', 'nomao', 'phoneme', 'qsar-biodeg', 'road-safety',
+        'segment', 'spaceship-titanic', 'baseball', 'breast-cancer', 'concrete',
+        'CPU_1', 'Fiat-500', 'Food_Delivery', 'houses', 'mercedes-benz',
+        'miami_housing', 'nyc-taxi-green', 'superconductivity', 'wine-quality-red'
+    ]
 
     embeddings_list = []
-    for name in train_names[:34]:  # First 34 for train
-        task_type = TABARENA_DATASETS[name]['task']
+    for name in train_datasets:
+        task = TABARENA_DATASETS[name]['task']
         try:
-            from data.extended_loader import load_tabarena_dataset
             X, y = load_tabarena_dataset(name)
+            emb = extract_tabicl_embeddings(X, y, layer=10, task_type=task)
 
-            # Extract embeddings
-            emb = extract_tabicl_embeddings(X, y, layer=10, task_type=task_type)
             if emb is not None:
-                # Take 100 samples per dataset
+                # Take 100 samples per dataset (same as sweep)
                 n_samples = min(100, len(emb))
                 embeddings_list.append(emb[:n_samples])
-                print(f"  {name}: {emb.shape}")
+                print(f"  ✓ {name} ({task}): {emb.shape}")
         except Exception as e:
-            print(f"  Skipping {name}: {e}")
+            print(f"  ✗ {name}: {e}")
             continue
 
     embeddings = np.vstack(embeddings_list)
-    print(f"Total: {embeddings.shape}")
+    print(f"\nPooled embeddings: {embeddings.shape}")
 
     # Cache for future use
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     np.save(cache_file, embeddings)
+    print(f"Cached to {cache_file}")
 
     return embeddings
 
