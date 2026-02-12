@@ -32,9 +32,16 @@ for arch_name, model_name in models:
     config = checkpoint['config']
     metrics = checkpoint.get('metrics', {})
 
-    # Extract metrics from checkpoint or config
-    dict_size = config.hidden_dim
-    input_dim = config.input_dim
+    # Extract metrics from checkpoint or config (config may be dict or SAEConfig)
+    if isinstance(config, dict):
+        dict_size = config['hidden_dim']
+        input_dim = config['input_dim']
+        topk = config.get('topk', 0)
+    else:
+        dict_size = config.hidden_dim
+        input_dim = config.input_dim
+        topk = getattr(config, 'topk', 0)
+
     expansion = dict_size / input_dim
 
     # Get metrics (these were saved during validation)
@@ -44,8 +51,8 @@ for arch_name, model_name in models:
 
     # Try to get L0 and dead neuron count
     l0 = metrics.get('l0', metrics.get('mean_l0', 0))
-    if l0 == 0 and hasattr(config, 'topk'):
-        l0 = config.topk  # TopK architectures have fixed L0
+    if l0 == 0 and topk > 0:
+        l0 = topk  # TopK architectures have fixed L0
 
     pct_dead = metrics.get('pct_dead', 0)
     if pct_dead == 0 and 'alive_features' in metrics:
