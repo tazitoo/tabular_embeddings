@@ -174,14 +174,30 @@ def compute_stability(
         Overall stability score (or dict with per-scale if return_per_scale=True)
     """
     dicts = []
-    for seed in [123, 456][:n_runs]:
+    seeds = [123, 456, 789, 101112, 131415][:n_runs]
+    for seed in seeds:
         torch.manual_seed(seed)
         np.random.seed(seed)
         model, result = train_sae(embeddings, config, device=device, verbose=False)
         dicts.append(result.dictionary)
 
+    # 1. Feature alignment stability (our metric)
     comp = compare_dictionaries(dicts[0], dicts[1])
     overall_stability = comp['mean_best_match_a']
+
+    # 2. s_n^dec (Chanin & Garriga-Alonso arXiv:2508.16560)
+    # Measures decoder weight stability across retraining
+    # Lower = more stable, 0 = optimal sparsity
+    dicts_array = np.array(dicts)  # (n_runs, hidden_dim, input_dim)
+    W_mean = dicts_array.mean(axis=0)  # (hidden_dim, input_dim)
+    W_mean_norm = np.linalg.norm(W_mean, 'fro')
+
+    distances = []
+    for W in dicts:
+        d = np.linalg.norm(W - W_mean, 'fro') / (W_mean_norm + 1e-8)
+        distances.append(d)
+
+    s_n_dec = float(np.mean(distances))
 
     # For Matryoshka, compute per-scale stability
     if config.sparsity_type == "matryoshka" and return_per_scale:
@@ -207,11 +223,15 @@ def compute_stability(
             per_scale[f"scale_{prev_dim}_{config.hidden_dim}"] = scale_comp['mean_best_match_a']
 
         return {
-            "overall": overall_stability,
+            "alignment": overall_stability,
+            "s_n_dec": s_n_dec,
             "per_scale": per_scale,
         }
 
-    return overall_stability
+    return {
+        "alignment": overall_stability,
+        "s_n_dec": s_n_dec,
+    }
 
 
 def build_sae_config(
@@ -321,8 +341,9 @@ def run_sae_trial(
     }
 
     if measure_stability:
-        stability = compute_stability(embeddings, config, n_runs=2, device=device)
-        metrics["stability"] = stability
+        stability_metrics = compute_stability(embeddings, config, n_runs=3, device=device)
+        metrics["stability"] = stability_metrics["alignment"]
+        metrics["s_n_dec"] = stability_metrics["s_n_dec"]
 
     if return_model:
         return metrics, model, config

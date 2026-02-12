@@ -105,11 +105,11 @@ def main():
         ("Mat-BatchTopK-Arch", "sae_matryoshka_batchtopk_archetypal_validated.pt"),
     ]
 
-    print("\n" + "="*100)
+    print("\n" + "="*108)
     print("Table: SAE Architecture Comparison on TabICL Embeddings (34 TabArena train datasets)")
-    print("="*100)
-    print(f"{'Type':<24} {'Hyperparameters':<35} {'RMSE':>8} {'Stab':>7} {'L₀':>6} {'Dead%':>7}")
-    print("-"*100)
+    print("="*108)
+    print(f"{'Type':<24} {'Hyperparameters':<35} {'RMSE':>8} {'Stab':>7} {'s_n':>7} {'L₀':>6} {'Dead%':>7}")
+    print("-"*108)
 
     results = []
     for arch_name, model_name in models:
@@ -143,10 +143,14 @@ def main():
 
         model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 
-        # Get stability from checkpoint
+        # Get stability metrics from checkpoint
         stability = checkpoint.get('metrics', {}).get('stability', 0.0)
         if stability == 0:
             stability = checkpoint.get('stability', 0.0)
+
+        s_n_dec = checkpoint.get('metrics', {}).get('s_n_dec', 0.0)
+        if s_n_dec == 0:
+            s_n_dec = checkpoint.get('s_n_dec', 0.0)
 
         # Compute metrics
         metrics = compute_sae_metrics(model, embeddings, device)
@@ -176,7 +180,7 @@ def main():
 
         # Print row
         print(f"{arch_name:<24} {hyperparam_str:<35} {metrics['rmse']:>8.3f} {stability:>7.3f} "
-              f"{int(metrics['l0']):>6} {metrics['pct_dead']:>6.1f}%")
+              f"{s_n_dec:>7.3f} {int(metrics['l0']):>6} {metrics['pct_dead']:>6.1f}%")
 
         results.append({
             'arch': arch_name,
@@ -186,11 +190,13 @@ def main():
             'dead_pct': metrics['pct_dead'],
         })
 
-    print("="*100)
+    print("="*108)
     print("\nHyperparameters: m = expansion factor (hidden_dim = m × input_dim), k = TopK sparsity,")
     print("                 n = archetypes, ri = resample_interval (×1000 steps),")
     print("                 rs = resample_samples (high-error samples for neuron revival)")
-    print("\nMetrics: RMSE = reconstruction error, Stab = s_n^dec decoder stability [?],")
+    print("\nMetrics: RMSE = reconstruction error,")
+    print("         Stab = feature alignment stability [0-1, higher = more reproducible],")
+    print("         s_n = s_n^dec decoder stability [0-∞, lower = better, 0 = optimal sparsity],")
     print("         L₀ = avg. active features, Dead% = never-activated features.")
     print("\nAll architectures use residual_targeting aux loss + neuron resampling (universal approach).")
     print()
