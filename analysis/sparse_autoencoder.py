@@ -58,7 +58,7 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
     Returns:
         centroids: (n_clusters, n_features) cluster centers (unit-normalized)
     """
-    from torch_kmeans import KMeans
+    from sklearn.cluster import KMeans as SklearnKMeans
 
     # Compute cache key from data hash
     data_hash = hashlib.sha256(data.cpu().numpy().tobytes()).hexdigest()[:16]
@@ -69,15 +69,21 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
         cached = _KMEANS_CACHE[cache_key]
         return cached.to(data.device)
 
-    # Cache miss: compute centroids using spherical K-means
-    # normalize='unit' ensures centroids stay on unit sphere (cosine distance)
-    # torch_kmeans expects (batch_size, n_samples, n_features), so add batch dim
-    kmeans = KMeans(n_clusters=n_clusters, seed=seed, verbose=False, normalize='unit')
-    data_batched = data.unsqueeze(0)  # (1, n_samples, n_features)
-    _ = kmeans.fit(data_batched)  # Fit returns KMeans object itself
-    centroids = kmeans._result.centers.squeeze(0)  # Remove batch dim: (n_clusters, n_features)
+    # Cache miss: compute centroids using sklearn K-means (on CPU)
+    # torch_kmeans is memory-inefficient for this data size (tries to allocate 52GB)
+    # sklearn is slower but works, and we cache the result anyway
+    data_cpu = data.cpu().numpy()
 
-    # Explicitly normalize centroids (torch_kmeans should do this, but be safe)
+    # Spherical K-means: normalize data before clustering (cosine distance)
+    from sklearn.preprocessing import normalize
+    data_normalized = normalize(data_cpu, norm='l2', axis=1)
+
+    kmeans = SklearnKMeans(n_clusters=n_clusters, random_state=seed, n_init=10, max_iter=100)
+    kmeans.fit(data_normalized)
+    centroids = kmeans.cluster_centers_  # (n_clusters, n_features)
+
+    # Convert to tensor and normalize (should already be normalized, but be safe)
+    centroids = torch.tensor(centroids, dtype=torch.float32)
     centroids = F.normalize(centroids, p=2, dim=1)
 
     # Store in cache (keep on CPU to save GPU memory)
