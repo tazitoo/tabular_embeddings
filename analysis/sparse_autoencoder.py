@@ -687,10 +687,16 @@ class SparseAutoencoder(nn.Module):
             return 0
 
         with torch.no_grad():
-            # Compute reconstruction error for each sample
-            _, h = self.forward(x)
-            x_hat = self.decode(h)
-            errors = (x - x_hat).pow(2).sum(dim=1)  # (n_samples,)
+            # Compute reconstruction error for each sample (batched to avoid OOM)
+            batch_size = 256
+            errors = []
+            for i in range(0, len(x), batch_size):
+                batch = x[i:i+batch_size]
+                _, h = self.forward(batch)
+                x_hat = self.decode(h)
+                batch_errors = (batch - x_hat).pow(2).sum(dim=1)  # (batch_size,)
+                errors.append(batch_errors)
+            errors = torch.cat(errors, dim=0)  # (n_samples,)
 
             # Sample high-error examples (proportional to squared error)
             # Use up to n_samples examples, weighted by reconstruction error
