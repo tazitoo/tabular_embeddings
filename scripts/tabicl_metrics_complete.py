@@ -12,37 +12,47 @@ sys.path.append(str(Path(__file__).parent.parent))
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 
 def load_tabicl_embeddings():
-    """Load pooled TabICL embeddings from sweep cache."""
-    # The sweep saves embeddings - try to find them
-    cache_dirs = [
-        Path("output/sae_tabarena_sweep/tabicl_layer10"),
-        Path("output/embeddings/tabicl_layer10"),
-    ]
+    """Load pooled TabICL embeddings - extract fresh or use cache."""
+    from data.loaders import get_tabarena_split, TABARENA_DATASETS
+    from models.tabicl_model import extract_tabicl_embeddings
 
-    for cache_dir in cache_dirs:
-        if cache_dir.exists():
-            # Check for any pt file with embeddings
-            for pt_file in cache_dir.glob("*.pt"):
-                try:
-                    data = torch.load(pt_file, map_location='cpu')
-                    if 'embeddings' in data:
-                        embeddings = data['embeddings']
-                        print(f"Loaded embeddings from {pt_file.name}: {embeddings.shape}")
-                        return np.array(embeddings)
-                except:
-                    continue
+    # Check cache first
+    cache_file = Path("output/sae_tabarena_sweep/tabicl_layer10_embeddings_cache.npy")
+    if cache_file.exists():
+        embeddings = np.load(cache_file)
+        print(f"Loaded cached embeddings: {embeddings.shape}")
+        return embeddings
 
-    # Fallback: load from saved checkpoint
-    print("Could not find cached embeddings, loading from model checkpoint...")
-    model_path = Path("output/sae_tabarena_sweep/tabicl_layer10/sae_l1_validated.pt")
-    if model_path.exists():
-        checkpoint = torch.load(model_path, map_location='cpu')
-        if 'embeddings' in checkpoint:
-            return np.array(checkpoint['embeddings'])
+    # Extract fresh
+    print("Extracting TabICL embeddings from train datasets...")
+    train_names, _ = get_tabarena_split()
 
-    # Last resort: generate dummy data (should not happen)
-    print("WARNING: Using dummy data - results will be incorrect!")
-    return np.random.randn(3400, 512).astype(np.float32)
+    embeddings_list = []
+    for name in train_names[:34]:  # First 34 for train
+        task_type = TABARENA_DATASETS[name]['task']
+        try:
+            from data.extended_loader import load_tabarena_dataset
+            X, y = load_tabarena_dataset(name)
+
+            # Extract embeddings
+            emb = extract_tabicl_embeddings(X, y, layer=10, task_type=task_type)
+            if emb is not None:
+                # Take 100 samples per dataset
+                n_samples = min(100, len(emb))
+                embeddings_list.append(emb[:n_samples])
+                print(f"  {name}: {emb.shape}")
+        except Exception as e:
+            print(f"  Skipping {name}: {e}")
+            continue
+
+    embeddings = np.vstack(embeddings_list)
+    print(f"Total: {embeddings.shape}")
+
+    # Cache for future use
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cache_file, embeddings)
+
+    return embeddings
 
 def compute_sae_metrics(model, embeddings, device='cuda'):
     """Compute L0, Dead%, RMSE, R² for a trained SAE."""
@@ -123,7 +133,14 @@ def main():
             config_obj = config
 
         model = SparseAutoencoder(config_obj)
-        model.load_state_dict(checkpoint['model_state_dict'])
+
+        # For archetypal models, need to set reference data before loading weights
+        if 'archetypal' in arch_name.lower():
+            # Use dummy reference data for initialization (will be overwritten)
+            ref_data = torch.randn(100, config_obj.input_dim)
+            model.set_reference_data(ref_data)
+
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 
         # Get stability from checkpoint
         stability = checkpoint.get('metrics', {}).get('stability', 0.0)
