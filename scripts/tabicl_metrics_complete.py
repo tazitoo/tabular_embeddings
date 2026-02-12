@@ -12,22 +12,13 @@ sys.path.append(str(Path(__file__).parent.parent))
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 
 def load_tabicl_embeddings():
-    """Load pooled TabICL embeddings - use the same data as the sweep."""
-    # Check cache first
-    cache_file = Path("output/sae_tabarena_sweep/tabicl_layer10_embeddings_cache.npy")
-    if cache_file.exists():
-        embeddings = np.load(cache_file)
-        print(f"Loaded cached embeddings: {embeddings.shape}")
-        return embeddings
+    """Load pooled TabICL embeddings - use pre-extracted embeddings from sweep."""
+    # Use exact same logic as sae_tabarena_sweep.py pool_embeddings()
+    model_name = "tabicl_layer10"
 
-    # Extract fresh - use exact same logic as sae_tabarena_sweep.py
-    print("Extracting TabICL layer 10 embeddings from 34 train datasets...")
-    print("(This will take ~5-10 minutes)")
+    print(f"Pooling {model_name} embeddings from train datasets...")
 
-    from data.extended_loader import load_tabarena_dataset, TABARENA_DATASETS
-    from models.tabicl_model import extract_tabicl_embeddings
-
-    # Train/test split (from sae_tabarena_sweep.py get_tabarena_splits)
+    # Train datasets (from sae_tabarena_sweep.py)
     train_datasets = [
         'adult', 'amazon', 'bank-marketing', 'blastchar', 'blood-transfusion',
         'car-evaluation', 'churn', 'credit-approval', 'diabetes', 'electricity',
@@ -38,31 +29,31 @@ def load_tabicl_embeddings():
         'miami_housing', 'nyc-taxi-green', 'superconductivity', 'wine-quality-red'
     ]
 
-    embeddings_list = []
-    for name in train_datasets:
-        task = TABARENA_DATASETS[name]['task']
-        try:
-            X, y = load_tabarena_dataset(name)
-            emb = extract_tabicl_embeddings(X, y, layer=10, task_type=task)
+    all_embeddings = []
+    n_samples_per_ds = 100
 
-            if emb is not None:
-                # Take 100 samples per dataset (same as sweep)
-                n_samples = min(100, len(emb))
-                embeddings_list.append(emb[:n_samples])
-                print(f"  ✓ {name} ({task}): {emb.shape}")
-        except Exception as e:
-            print(f"  ✗ {name}: {e}")
+    for ds_name in train_datasets:
+        emb_path = Path(f"output/embeddings/tabarena/{model_name}/tabarena_{ds_name}.npz")
+        if not emb_path.exists():
+            print(f"  Warning: No embeddings for {ds_name}")
             continue
 
-    embeddings = np.vstack(embeddings_list)
-    print(f"\nPooled embeddings: {embeddings.shape}")
+        data = np.load(emb_path)
+        emb = data['embeddings'].astype(np.float32)
 
-    # Cache for future use
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-    np.save(cache_file, embeddings)
-    print(f"Cached to {cache_file}")
+        # Take up to 100 samples
+        n_samples = min(n_samples_per_ds, len(emb))
+        all_embeddings.append(emb[:n_samples])
 
-    return embeddings
+    if not all_embeddings:
+        raise ValueError(f"No embeddings found for {model_name}")
+
+    pooled = np.vstack(all_embeddings)
+    print(f"  Total samples: {len(pooled)}")
+    print(f"  Embedding dim: {pooled.shape[1]}")
+    print(f"  Datasets loaded: {len(all_embeddings)}")
+
+    return pooled
 
 def compute_sae_metrics(model, embeddings, device='cuda'):
     """Compute L0, Dead%, RMSE, R² for a trained SAE."""
