@@ -78,7 +78,7 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
     from sklearn.preprocessing import normalize
     data_normalized = normalize(data_cpu, norm='l2', axis=1)
 
-    kmeans = SklearnKMeans(n_clusters=n_clusters, random_state=seed, n_init=10, max_iter=100)
+    kmeans = SklearnKMeans(n_clusters=n_clusters, random_state=seed, n_init=10, max_iter=100, n_jobs=-1)
     kmeans.fit(data_normalized)
     centroids = kmeans.cluster_centers_  # (n_clusters, n_features)
 

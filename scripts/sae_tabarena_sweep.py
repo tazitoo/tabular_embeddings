@@ -33,6 +33,13 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
+# Enable multi-threading for CPU operations (K-means, matrix ops)
+import os
+num_threads = os.cpu_count() or 8
+torch.set_num_threads(num_threads)
+os.environ['OMP_NUM_THREADS'] = str(num_threads)
+os.environ['MKL_NUM_THREADS'] = str(num_threads)
+
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
