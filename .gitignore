@@ -216,3 +216,4 @@ output/*.pdf
 output/*.csv
 wandb/
 *.ckpt
+.DS_Store

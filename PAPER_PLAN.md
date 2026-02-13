@@ -42,37 +42,40 @@ distribution shape, geometric structure, sparsity, feature correlations, scale.
 
 ### 4.1 Geometric Alignment (CKA / Procrustes)
 
-**Status**: Tables complete for 4 models, scripts in place
+**Status**: Complete (7 models)
 
 **Deliverables**:
 - [x] Table 1: Pairwise CKA (mean ± std) — `scripts/table1/table1.py`
 - [x] Table 2: Procrustes disparity d² ∈ [0,1] — `scripts/table2/table2.py`
-- [ ] Expand to 5-6 models when Mitra/HyperFast SAEs land
-- [ ] Narrative: partial convergence (transformer cluster exists, CARTE diverges)
+- [x] Expand to 7 models (all SAEs validated)
+- [ ] Narrative: partial convergence (transformer cluster exists, outlier tiers)
 
-**Key findings (36 common datasets, 6 models)**:
+**Key findings (36 common datasets, 7 models)**:
 - Transformer cluster: Mitra-TabDPT CKA=0.83, Mitra-TabPFN=0.68, TabPFN-TabDPT=0.67, TabPFN-TabICL=0.66, Mitra-TabICL=0.62, TabDPT-TabICL=0.61
 - CARTE outlier: CKA=0.39-0.53 vs transformers (GNN architecture)
-- HyperFast outlier: CKA=0.13-0.27 vs all (hypernetwork, lowest in study after Tabula-8B)
-- Tabula-8B: CKA ~0.05 vs all models (LLM architecture, most geometrically distinct)
-- Procrustes: Mitra-TabDPT d²=0.30 (closest), HyperFast d²=0.64-0.77
+- HyperFast outlier: CKA=0.13-0.27 vs all (hypernetwork)
+- Tabula-8B outlier: CKA=0.24-0.34 vs all (LLM), high variance (std 0.17-0.23)
+- Tabula-8B-HyperFast: CKA=0.24 — two outliers are as similar to each other as to the cluster
+- Procrustes: Mitra-TabDPT d²=0.30 (closest), Tabula-8B-HyperFast d²=0.47 (two outliers closest after transformer cluster)
 
 ---
 
 ### 4.2 Cross-Model Concept Alignment
 
-**Status**: Figure 1 complete (4 models), Mitra SAE training
+**Status**: Complete (7 models)
 
 **Deliverables**:
 - [x] Figure 1: Jaccard heatmaps by Matryoshka scale band — `scripts/figure1/figure1.py`
-- [ ] Add Mitra (SAE training on firelord4 now)
-- [ ] Add HyperFast (next GPU slot)
+- [x] All 7 models included (TabPFN, CARTE, TabICL, TabDPT, Mitra, HyperFast, Tabula-8B)
 - [ ] Sensitivity analysis on corr_threshold (appendix)
 
-**Key findings (6 models)**:
-- S1 [0,32): transformer cluster Jaccard 0.33-0.52, CARTE 0.19-0.35, HyperFast 0.20-0.31
+**Key findings (7 models, 36 common datasets)**:
+- S1 [0,32): transformer cluster Jaccard 0.35-0.48, CARTE 0.17-0.44, HyperFast 0.24-0.35, Tabula-8B 0.21-0.36
 - HyperFast has LOW CKA (0.13-0.27) but moderate S1 Jaccard — coarse concepts shared despite different geometry
-- S2-S5: rapid decay to 0.04-0.22 (model-specific fine concepts)
+- Tabula-8B shows similar pattern: CKA=0.24-0.34 but S1 Jaccard=0.21-0.36
+- HyperFast-Tabula-8B S2 Jaccard=0.44 (highest in entire study!) — two outliers share medium-scale concepts
+- Tabula-8B S5 near zero (0.01-0.07) — fine-grained concepts are most model-specific for LLM architecture
+- S2-S5: rapid decay to 0.02-0.21 (model-specific fine concepts)
 - corr_threshold=0.15 gives meaningful cross-model clusters
 
 ---
@@ -117,17 +120,20 @@ Mitigation: focus on rank correlation, bootstrap CIs, and qualitative case studi
 
 ### 4.4 Synthesis (CKA × Concepts)
 
-**Status**: Figure 7 complete
+**Status**: Complete (7 models, 21 pairs)
 
 **Deliverables**:
 - [x] Figure 7: CKA vs Jaccard scatter — `scripts/figure7/figure7.py`
-- [ ] Update with Mitra/HyperFast when available
+- [x] All 7 models included (4 architecture categories)
 - [ ] 2×2 interpretation framework in text
 - [ ] Connect to diagnostic findings from 4.3
 
-**Key finding**: CKA predicts S1 concept overlap (r=0.93), but fine-grained
-concepts (S5) decouple from geometry (r=0.56). Concept-level analysis reveals
-structure invisible to CKA alone.
+**Key findings**:
+- CKA predicts S1 concept overlap but with weaker correlation now (21 pairs vs 15)
+- Tabula-8B pairs cluster with HyperFast pairs in CKA-Jaccard space (low CKA, moderate S1)
+- HyperFast-Tabula-8B is the most interesting outlier: low CKA (0.24) but high S2 Jaccard (0.44)
+- Fine concepts (S5) fully decouple from geometry — Tabula-8B S5 near zero despite moderate CKA
+- Four architecture tiers: transformer cluster → CARTE → {HyperFast, Tabula-8B} → (gap)
 
 ---
 
@@ -141,7 +147,7 @@ structure invisible to CKA alone.
 | TabDPT | 51 ds | L14/16 (88%) | Validated | Yes | TFM + retrieval |
 | Mitra | 48 ds | L12/13 (92%) | Validated | Yes | Score=0.967. L12 required for cross-model CKA (L10→CKA=0.01) |
 | HyperFast | 39 ds | L2/3 (67%) | Validated | Yes | Score=0.954, R²=0.941, stability=0.963, 5833/6272 alive |
-| Tabula-8B | 51 ds | L21/32 (66%) | **Training** | No | Llama-3 8B, 4096 dim. CKA ~0.05 vs all models. SAE sweep on firelord4 |
+| Tabula-8B | 51 ds | L21/32 (66%) | Validated | Yes | Score=0.855, R²=0.804, stability=0.893. Llama-3 8B, 4096 dim. CKA=0.24-0.34 vs others |
 
 ---
 
@@ -149,15 +155,15 @@ structure invisible to CKA alone.
 
 | # | Section | Description | Status | Script |
 |---|---------|-------------|--------|--------|
-| 1 | 4.2 | **Cross-model concept agreement by scale band.** 2×3 Jaccard heatmaps. | Done (6 models) | `scripts/figure1/figure1.py` |
+| 1 | 4.2 | **Cross-model concept agreement by scale band.** 2×3 Jaccard heatmaps. | Done (7 models) | `scripts/figure1/figure1.py` |
 | 2 | 4.3 | **Concept gap vs performance delta.** Scatter per model pair showing SAE-predicted gaps correlate with actual performance differences. THE DIAGNOSTIC FIGURE. | Not started | — |
-| 3 | 4.4 | **CKA vs concept overlap.** Scatter + band-decay panel. | Done (6 models, 15 pairs) | `scripts/figure7/figure7.py` |
+| 3 | 4.4 | **CKA vs concept overlap.** Scatter + band-decay panel. | Done (7 models, 21 pairs) | `scripts/figure7/figure7.py` |
 
 Tables:
 | # | Section | Description | Status | Script |
 |---|---------|-------------|--------|--------|
-| 1 | 4.1 | Pairwise CKA (mean ± std) | Done (6 models) | `scripts/table1/table1.py` |
-| 2 | 4.1 | Procrustes disparity d² | Done (6 models) | `scripts/table2/table2.py` |
+| 1 | 4.1 | Pairwise CKA (mean ± std) | Done (7 models) | `scripts/table1/table1.py` |
+| 2 | 4.1 | Procrustes disparity d² | Done (7 models) | `scripts/table2/table2.py` |
 | 3 | 4.3 | Top diagnostic concepts | Not started | — |
 
 Appendix (supplementary):
@@ -172,16 +178,15 @@ Appendix (supplementary):
 
 ## Timeline (11 weeks to Apr 30)
 
-### Phase 1: Foundation (Feb 8–21) — 2 weeks
-- [x] Table 1 (CKA) and Table 2 (Procrustes) for 4 models
-- [x] Figure 1 (Jaccard heatmaps) for 4 models
-- [x] Figure 7 (CKA vs concept scatter)
-- [ ] Mitra SAE trained and validated (running on firelord4)
-- [ ] HyperFast SAE trained and validated
-- [ ] Expand all figures/tables to 5-6 models
+### Phase 1: Foundation (Feb 8–21) — 2 weeks ✓ COMPLETE
+- [x] Table 1 (CKA) and Table 2 (Procrustes) — 7 models
+- [x] Figure 1 (Jaccard heatmaps) — 7 models
+- [x] Figure 7 (CKA vs concept scatter) — 7 models, 21 pairs
+- [x] All 7 SAEs trained and validated
+- [x] All figures/tables expanded to 7 models
 
 ### Phase 2: Diagnostic Angle (Feb 22–Mar 14) — 3 weeks
-- [ ] Collect per-dataset performance scores for all models
+- [ ] Collect per-dataset performance scores for all models (need to run inference)
 - [ ] Implement concept gap → performance correlation pipeline
 - [ ] Figure 2: diagnostic scatter (the new key figure)
 - [ ] Table 3: top diagnostic concepts
@@ -203,8 +208,7 @@ Appendix (supplementary):
 
 ## Priority Order (what to do next)
 
-1. **Wait for Mitra SAE** (running on firelord4) → validate → add to figures
-2. **Train HyperFast SAE** (next GPU slot)
-3. **Collect TabArena performance data** (leaderboard or run inference)
-4. **Build diagnostic pipeline** (concept gap × performance correlation)
-5. **Start writing** — intro and method sections can begin now
+1. **Collect TabArena performance data** (run inference — tabarena package is placeholder)
+2. **Build diagnostic pipeline** (concept gap × performance correlation)
+3. **Start writing** — intro and method sections can begin now
+4. **Appendix figures** (SAE quality, corr_threshold sensitivity)

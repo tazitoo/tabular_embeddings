@@ -1,0 +1,49 @@
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llrrrr}
+\toprule
+Model & Architecture & R² & L0 & Alive & Stability \\
+\midrule
+TabPFN & L1 & 0.9989 & 245.8 & 1491 & 0.405 \\
+TabPFN & TopK & 0.9985 & 138.1 & 813 & 0.416 \\
+TabPFN & Matryoshka & 0.9971 & 59.2 & 206 & 0.327 \\
+TabPFN & Archetypal & 0.9951 & 252.8 & 1890 & 0.956 \\
+TabPFN & Mat-Arch & 0.9912 & 43.7 & 198 & 0.967 \\
+\midrule
+TabICL & L1 & 0.9980 & 744.8 & 4096 & 0.333 \\
+TabICL & TopK & 0.9971 & 233.3 & 2449 & 0.440 \\
+TabICL & Matryoshka & 0.9891 & 183.1 & 256 & 0.212 \\
+TabICL & Archetypal & 0.9839 & 492.4 & 2040 & 0.859 \\
+TabICL & Mat-Arch & 0.9462 & 100.6 & 255 & 0.896 \\
+\midrule
+Mitra & L1 & 0.9986 & 455.4 & 3880 & 0.255 \\
+Mitra & TopK & 0.9980 & 95.9 & 698 & 0.494 \\
+Mitra & Matryoshka & 0.9966 & 54.8 & 203 & 0.175 \\
+Mitra & Archetypal & 0.9910 & 358.3 & 2039 & 0.961 \\
+Mitra & Mat-Arch & 0.9890 & 61.7 & 246 & 0.964 \\
+\midrule
+TabDPT & L1 & 0.9986 & 769.2 & 6140 & 0.299 \\
+TabDPT & TopK & 0.9983 & 247.4 & 2892 & 0.332 \\
+TabDPT & Matryoshka & 0.9866 & 77.7 & 256 & 0.156 \\
+TabDPT & Archetypal & -0.1494 & 1431.9 & 3072 & 0.899 \\
+TabDPT & Mat-Arch & 0.9034 & 57.7 & 258 & 0.913 \\
+\midrule
+CARTE & L1 & 0.9993 & 208.2 & 1519 & 0.722 \\
+CARTE & TopK & 0.9993 & 109.3 & 712 & 0.754 \\
+CARTE & Matryoshka & 0.9987 & 26.3 & 167 & 0.359 \\
+CARTE & Archetypal & 0.9982 & 452.8 & 1567 & 0.982 \\
+CARTE & Mat-Arch & 0.9974 & 30.2 & 98 & 0.983 \\
+\midrule
+HyperFast & L1 & 0.9988 & 1313.5 & 6272 & 0.689 \\
+HyperFast & TopK & 0.9984 & 253.1 & 4027 & 0.634 \\
+HyperFast & Matryoshka & 0.9974 & 53.6 & 1172 & 0.188 \\
+HyperFast & Archetypal & 0.9960 & 756.1 & 3136 & 0.991 \\
+HyperFast & Mat-Arch & 0.9908 & 66.7 & 244 & 0.964 \\
+\midrule
+Tabula-8B & Mat-Arch & 0.8044 & 15.7 & 353 & 0.893 \\
+\bottomrule
+\end{tabular}
+\caption{SAE metrics for each architecture across models. R² = reconstruction quality, L0 = average sparsity, Alive = number of active features, Stability = $s_n^{dec}$ metric.}
+\label{tab:sae_metrics}
+\end{table}

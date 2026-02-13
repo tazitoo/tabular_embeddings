@@ -20,23 +20,30 @@ from pathlib import Path
 # Data: model pairs with CKA (from Table 1, 36 common datasets) and Jaccard per band (from Figure 1)
 PAIRS = {
     # Transformer cluster (TabPFN, TabICL, TabDPT, Mitra)
-    'TabPFN–TabDPT':  {'cka': 0.67, 's1': 0.524, 's2': 0.148, 's3': 0.055, 's4': 0.100, 's5': 0.074},
-    'TabPFN–TabICL':  {'cka': 0.66, 's1': 0.360, 's2': 0.042, 's3': 0.021, 's4': 0.071, 's5': 0.066},
-    'TabPFN–Mitra':   {'cka': 0.68, 's1': 0.391, 's2': 0.179, 's3': 0.091, 's4': 0.159, 's5': 0.087},
-    'TabDPT–TabICL':  {'cka': 0.61, 's1': 0.391, 's2': 0.103, 's3': 0.117, 's4': 0.070, 's5': 0.077},
-    'TabDPT–Mitra':   {'cka': 0.83, 's1': 0.429, 's2': 0.212, 's3': 0.100, 's4': 0.125, 's5': 0.078},
-    'TabICL–Mitra':   {'cka': 0.62, 's1': 0.333, 's2': 0.214, 's3': 0.140, 's4': 0.102, 's5': 0.067},
+    'TabPFN–TabDPT':  {'cka': 0.67, 's1': 0.476, 's2': 0.100, 's3': 0.037, 's4': 0.101, 's5': 0.074},
+    'TabPFN–TabICL':  {'cka': 0.66, 's1': 0.346, 's2': 0.083, 's3': 0.021, 's4': 0.073, 's5': 0.065},
+    'TabPFN–Mitra':   {'cka': 0.68, 's1': 0.375, 's2': 0.167, 's3': 0.085, 's4': 0.146, 's5': 0.087},
+    'TabDPT–TabICL':  {'cka': 0.61, 's1': 0.391, 's2': 0.100, 's3': 0.083, 's4': 0.070, 's5': 0.078},
+    'TabDPT–Mitra':   {'cka': 0.83, 's1': 0.364, 's2': 0.235, 's3': 0.081, 's4': 0.133, 's5': 0.076},
+    'TabICL–Mitra':   {'cka': 0.62, 's1': 0.360, 's2': 0.207, 's3': 0.132, 's4': 0.092, 's5': 0.067},
     # CARTE pairs (GNN outlier)
-    'TabPFN–CARTE':   {'cka': 0.43, 's1': 0.250, 's2': 0.056, 's3': 0.000, 's4': 0.059, 's5': 0.060},
-    'TabDPT–CARTE':   {'cka': 0.52, 's1': 0.278, 's2': 0.040, 's3': 0.021, 's4': 0.061, 's5': 0.086},
-    'TabICL–CARTE':   {'cka': 0.39, 's1': 0.190, 's2': 0.111, 's3': 0.054, 's4': 0.085, 's5': 0.059},
-    'Mitra–CARTE':    {'cka': 0.53, 's1': 0.353, 's2': 0.077, 's3': 0.056, 's4': 0.147, 's5': 0.090},
+    'TabPFN–CARTE':   {'cka': 0.43, 's1': 0.300, 's2': 0.048, 's3': 0.000, 's4': 0.044, 's5': 0.060},
+    'TabDPT–CARTE':   {'cka': 0.52, 's1': 0.438, 's2': 0.074, 's3': 0.022, 's4': 0.071, 's5': 0.081},
+    'TabICL–CARTE':   {'cka': 0.39, 's1': 0.174, 's2': 0.100, 's3': 0.054, 's4': 0.086, 's5': 0.057},
+    'Mitra–CARTE':    {'cka': 0.53, 's1': 0.389, 's2': 0.148, 's3': 0.051, 's4': 0.176, 's5': 0.086},
     # HyperFast pairs (hypernetwork outlier)
-    'TabPFN–HyperFast':  {'cka': 0.27, 's1': 0.200, 's2': 0.083, 's3': 0.025, 's4': 0.029, 's5': 0.048},
-    'TabDPT–HyperFast':  {'cka': 0.22, 's1': 0.308, 's2': 0.222, 's3': 0.054, 's4': 0.072, 's5': 0.079},
-    'TabICL–HyperFast':  {'cka': 0.24, 's1': 0.200, 's2': 0.038, 's3': 0.042, 's4': 0.086, 's5': 0.057},
-    'Mitra–HyperFast':   {'cka': 0.21, 's1': 0.308, 's2': 0.129, 's3': 0.195, 's4': 0.149, 's5': 0.060},
-    'CARTE–HyperFast':   {'cka': 0.13, 's1': 0.286, 's2': 0.105, 's3': 0.069, 's4': 0.122, 's5': 0.048},
+    'TabPFN–HyperFast':  {'cka': 0.27, 's1': 0.241, 's2': 0.115, 's3': 0.025, 's4': 0.015, 's5': 0.048},
+    'TabDPT–HyperFast':  {'cka': 0.22, 's1': 0.320, 's2': 0.200, 's3': 0.056, 's4': 0.052, 's5': 0.079},
+    'TabICL–HyperFast':  {'cka': 0.24, 's1': 0.233, 's2': 0.036, 's3': 0.020, 's4': 0.062, 's5': 0.058},
+    'Mitra–HyperFast':   {'cka': 0.21, 's1': 0.346, 's2': 0.152, 's3': 0.209, 's4': 0.135, 's5': 0.060},
+    'CARTE–HyperFast':   {'cka': 0.13, 's1': 0.333, 's2': 0.087, 's3': 0.069, 's4': 0.128, 's5': 0.048},
+    # Tabula-8B pairs (LLM outlier)
+    'TabPFN–Tabula-8B':  {'cka': 0.34, 's1': 0.240, 's2': 0.111, 's3': 0.049, 's4': 0.054, 's5': 0.009},
+    'TabDPT–Tabula-8B':  {'cka': 0.27, 's1': 0.217, 's2': 0.194, 's3': 0.054, 's4': 0.074, 's5': 0.019},
+    'TabICL–Tabula-8B':  {'cka': 0.30, 's1': 0.231, 's2': 0.154, 's3': 0.040, 's4': 0.107, 's5': 0.019},
+    'Mitra–Tabula-8B':   {'cka': 0.26, 's1': 0.364, 's2': 0.219, 's3': 0.102, 's4': 0.130, 's5': 0.028},
+    'CARTE–Tabula-8B':   {'cka': 0.24, 's1': 0.211, 's2': 0.130, 's3': 0.065, 's4': 0.123, 's5': 0.074},
+    'HyperFast–Tabula-8B': {'cka': 0.24, 's1': 0.320, 's2': 0.435, 's3': 0.158, 's4': 0.129, 's5': 0.029},
 }
 
 TRANSFORMER_PAIRS = {
@@ -48,6 +55,10 @@ HYPERFAST_PAIRS = {
     'TabPFN–HyperFast', 'TabDPT–HyperFast', 'TabICL–HyperFast',
     'Mitra–HyperFast', 'CARTE–HyperFast',
 }
+TABULA8B_PAIRS = {
+    'TabPFN–Tabula-8B', 'TabDPT–Tabula-8B', 'TabICL–Tabula-8B',
+    'Mitra–Tabula-8B', 'CARTE–Tabula-8B', 'HyperFast–Tabula-8B',
+}
 
 
 def _pair_style(label):
@@ -56,6 +67,8 @@ def _pair_style(label):
         return '#e41a1c', 'o'
     elif label in CARTE_PAIRS:
         return '#377eb8', 's'
+    elif label in TABULA8B_PAIRS:
+        return '#984ea3', '^'  # purple triangles
     else:  # HyperFast
         return '#4daf4a', 'D'
 
@@ -83,24 +96,27 @@ def make_figure(output_path: Path):
         ax.plot([vals['cka'], vals['cka']], [vals['s1'], vals['s5']],
                 color=color, alpha=0.25, linewidth=0.8, zorder=1)
 
-        # Label only a subset to avoid clutter (highest/lowest CKA per group)
+        # Label only a subset to avoid clutter
         show_label = label in {
-            'TabDPT–Mitra', 'TabPFN–TabDPT', 'TabPFN–TabICL',
+            'TabDPT–Mitra', 'TabPFN–TabDPT',
             'TabPFN–CARTE', 'Mitra–CARTE',
-            'TabPFN–HyperFast', 'CARTE–HyperFast',
+            'CARTE–HyperFast', 'Mitra–HyperFast',
+            'TabPFN–Tabula-8B', 'HyperFast–Tabula-8B',
         }
         if not show_label:
             continue
 
         ha, va, dx, dy = 'left', 'bottom', 0.015, 0.015
-        if label == 'TabPFN–TabICL':
-            ha, va, dx, dy = 'left', 'top', 0.015, -0.015
-        elif label == 'TabPFN–CARTE':
+        if label == 'TabPFN–CARTE':
             ha, va, dx, dy = 'right', 'bottom', -0.015, 0.015
         elif label == 'Mitra–CARTE':
             ha, va, dx, dy = 'left', 'top', 0.015, -0.015
         elif label == 'CARTE–HyperFast':
             ha, va, dx, dy = 'right', 'top', -0.015, -0.015
+        elif label == 'TabPFN–Tabula-8B':
+            ha, va, dx, dy = 'left', 'bottom', 0.015, 0.015
+        elif label == 'HyperFast–Tabula-8B':
+            ha, va, dx, dy = 'left', 'top', 0.015, -0.015
 
         ax.annotate(label, (vals['cka'] + dx, vals['s1'] + dy),
                     fontsize=6.5, ha=ha, va=va, color=color)
@@ -155,9 +171,10 @@ def make_figure(output_path: Path):
     ax.scatter([], [], c='#e41a1c', marker='o', s=50, label='Transformer pairs')
     ax.scatter([], [], c='#377eb8', marker='s', s=50, label='CARTE pairs')
     ax.scatter([], [], c='#4daf4a', marker='D', s=50, label='HyperFast pairs')
+    ax.scatter([], [], c='#984ea3', marker='^', s=50, label='Tabula-8B pairs')
     ax.scatter([], [], c='gray', marker='o', s=30, alpha=0.3, label='S5 (fine)')
     ax.scatter([], [], c='gray', marker='o', s=50, label='S1 (coarse)')
-    ax.legend(fontsize=7, loc='upper left', framealpha=0.9)
+    ax.legend(fontsize=6.5, loc='upper left', framealpha=0.9)
 
     ax.set_xlabel('CKA Similarity', fontsize=10)
     ax.set_ylabel('Concept Overlap (Jaccard)', fontsize=10)

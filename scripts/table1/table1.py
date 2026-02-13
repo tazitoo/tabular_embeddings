@@ -29,6 +29,7 @@ MODEL_CONFIGS = [
     ("TabDPT", "tabdpt_layer14_ctx600"),
     ("Mitra", "mitra_layer12_ctx600"),
     ("HyperFast", "hyperfast_layer2_ctx600"),
+    ("Tabula-8B", "tabula8b_layer21_ctx600"),
 ]
 
 EMB_BASE = PROJECT_ROOT / "output" / "embeddings" / "tabarena"

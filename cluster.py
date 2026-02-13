@@ -45,14 +45,14 @@ GPU_WORKERS: Dict[str, Dict] = {
     },
     "terrax4": {
         "ip": "192.168.10.4",
-        "gpu": "RTX 2080 Ti",
-        "vram_gb": 11,
+        "gpu": "RTX 3090",
+        "vram_gb": 24,
         "enabled": True,
     },
     "octo4": {
         "ip": "192.168.10.12",
-        "gpu": "RTX 3070",
-        "vram_gb": 8,
+        "gpu": "RTX 3090",
+        "vram_gb": 24,
         "enabled": True,
     },
     "firelord4": {
