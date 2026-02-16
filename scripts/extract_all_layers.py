@@ -78,6 +78,10 @@ def extract_all_layers_for_dataset(
     kwargs = dict(device=device)
     if "task" in sig.parameters:
         kwargs["task"] = task
+    elif task == "regression":
+        raise ValueError(
+            f"{model} is classification-only, skipping regression dataset {dataset_name}"
+        )
 
     layer_embeddings = extract_fn(X_context, y_context, X_query, **kwargs)
     return layer_embeddings
