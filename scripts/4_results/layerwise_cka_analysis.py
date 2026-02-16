@@ -93,22 +93,9 @@ def extract_tabpfn_all_layers(
     Args:
         task: "classification" or "regression" — selects the correct model variant.
     """
-    import os
+    from models.tabpfn_utils import load_tabpfn
 
-    if task == "regression":
-        from tabpfn import TabPFNRegressor as TabPFNModel
-        worker_path = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-regressor-v2.5_default.ckpt"
-    else:
-        from tabpfn import TabPFNClassifier as TabPFNModel
-        worker_path = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-classifier-v2.5_real.ckpt"
-
-    model_path = worker_path if os.path.exists(worker_path) else None
-
-    kwargs = dict(device=device, n_estimators=2)
-    if model_path:
-        kwargs["model_path"] = model_path
-
-    clf = TabPFNModel(**kwargs)
+    clf = load_tabpfn(task=task, device=device)
     clf.fit(X_context, y_context)
 
     model = clf.model_

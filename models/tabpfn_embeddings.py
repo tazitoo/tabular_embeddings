@@ -19,10 +19,6 @@ from .base import EmbeddingExtractor, EmbeddingResult
 class TabPFNEmbeddingExtractor(EmbeddingExtractor):
     """Extract embeddings from TabPFN v2.5 transformer layers."""
 
-    # Local checkpoint paths on GPU workers (avoids HuggingFace download)
-    WORKER_CLF_PATH = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-classifier-v2.5_real.ckpt"
-    WORKER_REG_PATH = "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-regressor-v2.5_default.ckpt"
-
     def __init__(
         self,
         device: str = "cpu",
@@ -47,33 +43,14 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
 
     def load_model(self, task: str = "classification") -> None:
         """Load TabPFN classifier or regressor based on task type."""
-        import os
+        from .tabpfn_utils import load_tabpfn
 
-        is_regression = task == "regression"
-
-        if is_regression:
-            from tabpfn import TabPFNRegressor as TabPFNModel
-            worker_path = self.WORKER_REG_PATH
-        else:
-            from tabpfn import TabPFNClassifier as TabPFNModel
-            worker_path = self.WORKER_CLF_PATH
-
-        # Resolve model path: explicit > worker checkpoint > auto-download
-        model_path = self.model_path
-        if model_path is None and os.path.exists(worker_path):
-            model_path = worker_path
-
-        if self.version == "v2.5":
-            kwargs = dict(device=self.device, n_estimators=self.n_estimators)
-            if model_path is not None:
-                kwargs["model_path"] = model_path
-            self._model = TabPFNModel(**kwargs)
-        else:
-            self._model = TabPFNModel.create_default_for_version(
-                self.version,
-                device=self.device,
-                n_estimators=self.n_estimators,
-            )
+        self._model = load_tabpfn(
+            task=task,
+            device=self.device,
+            n_estimators=self.n_estimators,
+            model_path=self.model_path,
+        )
         self._current_task = task
 
     def extract_embeddings(
