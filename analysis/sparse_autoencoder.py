@@ -40,57 +40,116 @@ except ImportError:
 _KMEANS_CACHE = {}
 
 
-def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> torch.Tensor:
-    """
-    Get K-means centroids with caching to avoid recomputation.
+def _spherical_kmeans_torch(
+    data: torch.Tensor,
+    n_clusters: int,
+    max_iter: int = 100,
+    n_init: int = 3,
+    seed: int = 42,
+) -> torch.Tensor:
+    """GPU-accelerated spherical K-means via cosine similarity.
 
-    Uses spherical K-means (cosine similarity) for high-dimensional embeddings.
-    Assumes input data is already normalized. Centroids are constrained to unit sphere.
-
-    Cache key is based on data hash, n_clusters, and seed.
-    Centroids are computed once and reused across trials.
+    Avoids the full (n_samples, n_clusters) distance matrix that blows up memory
+    in torch_kmeans. Instead, computes assignments in mini-batches of clusters
+    using matrix multiplication (cosine similarity on unit-normalized data).
 
     Args:
-        data: (n_samples, n_features) normalized embeddings on GPU/CPU
+        data: (n_samples, n_features) on any device, will be L2-normalized
+        n_clusters: Number of centroids
+        max_iter: Max iterations per init
+        n_init: Number of random initializations (best inertia wins)
+        seed: Random seed
+
+    Returns:
+        centroids: (n_clusters, n_features) unit-normalized, on data's device
+    """
+    device = data.device
+    n, d = data.shape
+    data = F.normalize(data.float(), p=2, dim=1)
+
+    best_centroids = None
+    best_inertia = float("inf")
+
+    for init_i in range(n_init):
+        rng = torch.Generator(device=device)
+        rng.manual_seed(seed + init_i)
+
+        # K-means++ initialization
+        idx = torch.randint(n, (1,), generator=rng, device=device)
+        centroids = data[idx]  # (1, d)
+
+        for k in range(1, n_clusters):
+            # Cosine similarity to nearest existing centroid
+            sim = data @ centroids.T  # (n, k)
+            min_dist = 1.0 - sim.max(dim=1).values  # (n,)
+            min_dist = min_dist.clamp(min=0)
+            # Sample proportional to distance²
+            probs = min_dist ** 2
+            probs = probs / probs.sum()
+            idx = torch.multinomial(probs, 1, generator=rng)
+            centroids = torch.cat([centroids, data[idx]], dim=0)
+
+        centroids = F.normalize(centroids, p=2, dim=1)
+
+        # Lloyd's iterations
+        for _ in range(max_iter):
+            # Assignments via cosine similarity
+            sim = data @ centroids.T  # (n, n_clusters)
+            labels = sim.argmax(dim=1)  # (n,)
+
+            # Update centroids
+            new_centroids = torch.zeros_like(centroids)
+            counts = torch.zeros(n_clusters, device=device)
+            new_centroids.scatter_add_(0, labels.unsqueeze(1).expand(-1, d), data)
+            counts.scatter_add_(0, labels, torch.ones(n, device=device))
+
+            # Handle empty clusters: reinitialize from farthest points
+            empty = counts == 0
+            if empty.any():
+                sim_nearest = sim.max(dim=1).values
+                farthest = sim_nearest.argsort()[:empty.sum()]
+                new_centroids[empty] = data[farthest]
+                counts[empty] = 1
+
+            centroids = F.normalize(new_centroids / counts.unsqueeze(1), p=2, dim=1)
+
+        # Inertia = sum of (1 - cosine_sim) for assigned points
+        sim = data @ centroids.T
+        inertia = (1.0 - sim.max(dim=1).values).sum().item()
+
+        if inertia < best_inertia:
+            best_inertia = inertia
+            best_centroids = centroids.clone()
+
+    return best_centroids
+
+
+def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> torch.Tensor:
+    """Get K-means centroids with caching to avoid recomputation.
+
+    Uses GPU-accelerated spherical K-means (cosine similarity). Centroids are
+    computed once and cached across Optuna trials.
+
+    Args:
+        data: (n_samples, n_features) embeddings on GPU/CPU
         n_clusters: Number of clusters
         seed: Random seed
 
     Returns:
-        centroids: (n_clusters, n_features) cluster centers (unit-normalized)
+        centroids: (n_clusters, n_features) unit-normalized, on data's device
     """
-    from sklearn.cluster import KMeans as SklearnKMeans
-
-    # Compute cache key from data hash
     data_hash = hashlib.sha256(data.cpu().numpy().tobytes()).hexdigest()[:16]
     cache_key = f"{data_hash}_{n_clusters}_{seed}"
 
     if cache_key in _KMEANS_CACHE:
-        # Cache hit: return cached centroids on same device as input data
         cached = _KMEANS_CACHE[cache_key]
         return cached.to(device=data.device, dtype=data.dtype)
 
-    # Cache miss: compute centroids using sklearn K-means (on CPU)
-    # torch_kmeans is memory-inefficient for this data size (tries to allocate 52GB)
-    # sklearn is slower but works, and we cache the result anyway
-    data_cpu = data.cpu().numpy()
+    centroids = _spherical_kmeans_torch(data, n_clusters, seed=seed)
 
-    # Spherical K-means: normalize data before clustering (cosine distance)
-    from sklearn.preprocessing import normalize
-    data_normalized = normalize(data_cpu, norm='l2', axis=1)
-
-    kmeans = SklearnKMeans(n_clusters=n_clusters, random_state=seed, n_init=10, max_iter=100)
-    kmeans.fit(data_normalized)
-    centroids = kmeans.cluster_centers_  # (n_clusters, n_features)
-
-    # Convert to tensor and normalize (should already be normalized, but be safe)
-    centroids = torch.tensor(centroids, dtype=data.dtype, device='cpu')
-    centroids = F.normalize(centroids, p=2, dim=1)
-
-    # Store in cache (keep on CPU to save GPU memory)
+    # Cache on CPU to save GPU memory
     _KMEANS_CACHE[cache_key] = centroids.cpu()
-
-    # Return on same device as input data
-    return centroids.to(device=data.device)
+    return centroids.to(device=data.device, dtype=data.dtype)
 
 
 @dataclass
