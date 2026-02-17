@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import torch
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -130,12 +131,28 @@ def main():
 
         t0 = time.time()
         try:
-            layer_embeddings = extract_all_layers_for_dataset(
-                args.model, ds,
-                device=args.device,
-                context_size=args.context_size,
-                query_size=args.query_size,
-            )
+            # Auto-shrink context on OOM: halve context size and retry
+            ctx = args.context_size
+            layer_embeddings = None
+            while ctx >= 50:
+                try:
+                    layer_embeddings = extract_all_layers_for_dataset(
+                        args.model, ds,
+                        device=args.device,
+                        context_size=ctx,
+                        query_size=args.query_size,
+                    )
+                    break
+                except (torch.cuda.OutOfMemoryError, RuntimeError) as oom:
+                    if "out of memory" in str(oom).lower() and ctx > 50:
+                        import gc
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        old_ctx = ctx
+                        ctx = ctx // 2
+                        print(f"  OOM with context={old_ctx}, retrying with context={ctx}")
+                    else:
+                        raise
 
             if not layer_embeddings:
                 dt = time.time() - t0
