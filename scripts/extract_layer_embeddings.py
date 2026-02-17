@@ -33,6 +33,7 @@ from pathlib import Path
 
 import numpy as np
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -94,6 +95,10 @@ def load_context_query(
 
     task = get_dataset_task(dataset_name)
     if task == "classification":
+        # Ensure contiguous 0-indexed labels (e.g. QSAR-TID-11 has labels [4..11])
+        le = LabelEncoder()
+        y = le.fit_transform(y)
+
         # Stratified split ensures all classes appear in both context and query
         query_frac = query_size / (context_size + query_size)
         try:
