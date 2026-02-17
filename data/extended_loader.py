@@ -734,7 +734,7 @@ TABARENA_DATASETS = {
     "physiochemical_protein": {"openml_id": 46949, "task": "regression", "domain": "biology"},
     "polish_companies_bankruptcy": {"openml_id": 46950, "task": "classification", "domain": "financial"},
     "qsar-biodeg": {"openml_id": 46952, "task": "classification", "domain": "chemistry"},
-    "QSAR-TID-11": {"openml_id": 46953, "task": "classification", "domain": "chemistry"},
+    "QSAR-TID-11": {"openml_id": 46953, "task": "regression", "domain": "chemistry"},
     "QSAR_fish_toxicity": {"openml_id": 46954, "task": "regression", "domain": "chemistry"},
     "SDSS17": {"openml_id": 46955, "task": "classification", "domain": "astronomy"},
     "seismic-bumps": {"openml_id": 46956, "task": "classification", "domain": "geology"},
