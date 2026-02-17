@@ -399,13 +399,30 @@ def extract_carte_all_layers(
     clf = CARTEClassifier(device=device, num_model=3, max_epoch=50, disable_pbar=True)
     t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
 
-    # Clean extreme values (prevents PowerTransformer bracket errors)
+    # Robust preprocessing to prevent PowerTransformer bracket errors.
+    # CARTE's Table2GraphTransformer applies Yeo-Johnson internally, which
+    # diverges on constant columns or extreme value ranges (e.g. APSFailure
+    # has columns spanning 0 to 2e9).
+    from sklearn.preprocessing import RobustScaler
     X_context = np.nan_to_num(
         np.asarray(X_context, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
     )
     X_query = np.nan_to_num(
         np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
     )
+    # Drop constant columns (Yeo-Johnson can't optimize on zero-variance)
+    col_std = X_context.std(axis=0)
+    nonconstant = col_std > 0
+    if not nonconstant.all():
+        X_context = X_context[:, nonconstant]
+        X_query = X_query[:, nonconstant]
+    # RobustScaler to tame extreme ranges before Yeo-Johnson
+    scaler = RobustScaler()
+    X_context = scaler.fit_transform(X_context)
+    X_query = scaler.transform(X_query)
+    # Clip remaining outliers to ±10 IQR
+    X_context = np.clip(X_context, -10, 10)
+    X_query = np.clip(X_query, -10, 10)
 
     # For regression, discretize targets for CARTE's classifier interface
     if task == "regression":
