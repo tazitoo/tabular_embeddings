@@ -372,6 +372,7 @@ def extract_carte_all_layers(
     y_context: np.ndarray,
     X_query: np.ndarray,
     device: str = "cuda",
+    task: str = "classification",
 ) -> Dict[str, np.ndarray]:
     """
     Extract embeddings from CARTE GNN layers.
@@ -398,6 +399,25 @@ def extract_carte_all_layers(
     clf = CARTEClassifier(device=device, num_model=3, max_epoch=50, disable_pbar=True)
     t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
 
+    # Clean extreme values (prevents PowerTransformer bracket errors)
+    X_context = np.nan_to_num(
+        np.asarray(X_context, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
+    )
+    X_query = np.nan_to_num(
+        np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
+    )
+
+    # For regression, discretize targets for CARTE's classifier interface
+    if task == "regression":
+        y_context = np.asarray(y_context, dtype=np.float32)
+        n_bins = min(10, len(np.unique(y_context)))
+        y_for_fit = pd.qcut(y_context, q=n_bins, labels=False, duplicates='drop').astype(np.int64)
+    else:
+        y_context = np.asarray(y_context)
+        if y_context.dtype == np.float64:
+            y_context = y_context.astype(np.int64)
+        y_for_fit = y_context
+
     # Prepare data
     feature_names = [f"f{i}" for i in range(X_context.shape[1])]
     df_context = pd.DataFrame(X_context, columns=feature_names)
@@ -417,10 +437,10 @@ def extract_carte_all_layers(
 
     # Attach y values
     for i, g in enumerate(X_context_graph):
-        g.y = torch.tensor([y_context[i]], dtype=torch.float32)
+        g.y = torch.tensor([y_for_fit[i]], dtype=torch.float32)
 
     # Fit
-    clf.fit(X_context_graph, y_context)
+    clf.fit(X_context_graph, y_for_fit)
 
     n_query = len(X_query)
     model = clf.model_list_[0]
