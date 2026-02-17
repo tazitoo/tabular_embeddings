@@ -395,7 +395,7 @@ def extract_carte_all_layers(
     if not ft_path:
         raise ValueError("FastText model not found")
 
-    clf = CARTEClassifier(device=device, num_model=1, max_epoch=20, disable_pbar=True)
+    clf = CARTEClassifier(device=device, num_model=3, max_epoch=50, disable_pbar=True)
     t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
 
     # Prepare data
