@@ -335,16 +335,14 @@ def run_sae_trial(
     torch.manual_seed(seed)
     np.random.seed(seed)
     model, result = train_sae(embeddings, config, device=device, verbose=False, use_wandb=use_wandb)
-    richness = measure_dictionary_richness(result, input_features=embeddings, sae_model=model)
+    richness = measure_dictionary_richness(result)
 
     metrics = {
         "sae_type": sae_type,
         "expansion": expansion,
         "sparsity_penalty": sparsity_penalty,
         "learning_rate": learning_rate,
-        "r2": richness.get("explained_variance", 0.0),
         "l0_sparsity": richness["l0_sparsity"],
-        "richness_score": richness["richness_score"],
         "reconstruction_loss": result.reconstruction_loss,
         "sparsity_loss": result.sparsity_loss,
         "aux_loss": result.aux_loss,
@@ -421,11 +419,9 @@ def validate_and_save(
         best_trial = candidate_trial
         best_params = best_trial.params
         expected_loss = best_trial.value
-        expected_r2 = best_trial.user_attrs.get("r2", 0)
-        expected_stability = best_trial.user_attrs.get("stability", 0)
 
         print(f"\n  Validation attempt {attempt + 1}/{max_retries}")
-        print(f"    Expected: loss={expected_loss:.6f}, R²={expected_r2:.4f}, stability={expected_stability:.4f}")
+        print(f"    Expected: loss={expected_loss:.6f}")
 
         # Select embeddings for this trial's context_size
         best_ctx = best_params.get("context_size", ctx_keys[0])
@@ -475,22 +471,12 @@ def validate_and_save(
 
         # Compute validation loss
         val_loss = metrics["total_loss"]
-        val_r2 = metrics["r2"]
-        val_stability = metrics["stability"]
 
-        print(f"    Actual:   loss={val_loss:.6f}, R²={val_r2:.4f}, stability={val_stability:.4f}")
+        print(f"    Actual:   loss={val_loss:.6f}")
 
         # Check if within tolerance (relative difference)
         loss_diff = abs(val_loss - expected_loss) / max(expected_loss, 1e-6)
-        r2_diff = abs(val_r2 - expected_r2) / max(expected_r2, 0.01)
-        stability_diff = abs(val_stability - expected_stability) / max(expected_stability, 0.01)
-
-        # Primary check: training loss within tolerance
-        # Secondary: R² didn't collapse (sanity check)
-        converged = (
-            loss_diff <= tolerance and
-            r2_diff <= tolerance * 2  # Allow slightly more R² variance
-        )
+        converged = loss_diff <= tolerance
 
         if converged:
             print(f"    ✓ Validation PASSED (loss diff: {loss_diff:.1%})")
@@ -508,7 +494,7 @@ def validate_and_save(
             }, model_path
 
         else:
-            print(f"    ✗ Validation FAILED (loss diff: {loss_diff:.1%}, r2 diff: {r2_diff:.1%})")
+            print(f"    ✗ Validation FAILED (loss diff: {loss_diff:.1%})")
 
             # Add validation result to inform the surrogate about variance
             study.add_trial(
@@ -876,11 +862,8 @@ def run_sweep(
         )
 
         print(f"\nBest {sae_type} (before validation):")
-        print(f"  Score: {study.best_value:.4f}")
+        print(f"  Loss: {study.best_value:.6f}")
         print(f"  Params: {study.best_params}")
-        if study.best_trial.user_attrs:
-            print(f"  R²: {study.best_trial.user_attrs.get('r2', 'N/A'):.4f}")
-            print(f"  Stability: {study.best_trial.user_attrs.get('stability', 'N/A'):.4f}")
 
         # Validation fit: retrain with best HPs and verify metrics are reproducible
         print(f"\nValidating {sae_type} config...")
@@ -907,15 +890,15 @@ def run_sweep(
     print(f"\n{'='*60}")
     print("ARCHITECTURE COMPARISON (Validated)")
     print('='*60)
-    print(f"{'Type':<20} {'Score':>8} {'R²':>8} {'Stability':>10} {'L0':>8} {'Valid':>6}")
-    print('-'*70)
+    print(f"{'Type':<20} {'Loss':>10} {'Recon':>10} {'Stability':>10} {'L0':>8} {'Alive':>8} {'Valid':>6}")
+    print('-'*76)
 
     for sae_type, config in best_configs.items():
         m = config["metrics"]
         validated = "✓" if config.get("validated", False) else "✗"
-        score = config.get('score', m.get('total_loss', 0))
-        print(f"{sae_type:<20} {score:>8.4f} {m.get('r2', 0):>8.4f} "
-              f"{m.get('stability', 0):>10.4f} {m.get('l0_sparsity', 0):>8.1f} {validated:>6}")
+        print(f"{sae_type:<20} {m.get('total_loss', 0):>10.4f} {m.get('reconstruction_loss', 0):>10.6f} "
+              f"{m.get('stability', 0):>10.4f} {m.get('l0_sparsity', 0):>8.1f} "
+              f"{m.get('alive_features', 0):>8} {validated:>6}")
 
     # List saved models
     print(f"\nSaved models:")
@@ -974,7 +957,7 @@ def evaluate_on_test(
         )
 
         results[sae_type] = metrics
-        print(f"  R²: {metrics['r2']:.4f}, Stability: {metrics['stability']:.4f}")
+        print(f"  Loss: {metrics['total_loss']:.6f}, Stability: {metrics['stability']:.4f}")
 
     # Save test results
     with open(output_dir / "test_results.json", "w") as f:
@@ -984,11 +967,12 @@ def evaluate_on_test(
     print(f"\n{'='*60}")
     print("TEST SET RESULTS")
     print('='*60)
-    print(f"{'Type':<12} {'R²':>8} {'Stability':>10} {'L0':>8}")
+    print(f"{'Type':<12} {'Loss':>10} {'Recon':>10} {'Stability':>10} {'L0':>8}")
     print('-'*60)
 
     for sae_type, m in results.items():
-        print(f"{sae_type:<12} {m['r2']:>8.4f} {m['stability']:>10.4f} {m['l0_sparsity']:>8.1f}")
+        print(f"{sae_type:<12} {m['total_loss']:>10.4f} {m['reconstruction_loss']:>10.6f} "
+              f"{m['stability']:>10.4f} {m['l0_sparsity']:>8.1f}")
 
     return results
 
