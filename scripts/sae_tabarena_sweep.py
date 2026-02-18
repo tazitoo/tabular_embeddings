@@ -901,7 +901,8 @@ def run_sweep(
     for sae_type, config in best_configs.items():
         m = config["metrics"]
         validated = "✓" if config.get("validated", False) else "✗"
-        print(f"{sae_type:<20} {config['score']:>8.4f} {m.get('r2', 0):>8.4f} "
+        score = config.get('score', m.get('total_loss', 0))
+        print(f"{sae_type:<20} {score:>8.4f} {m.get('r2', 0):>8.4f} "
               f"{m.get('stability', 0):>10.4f} {m.get('l0_sparsity', 0):>8.1f} {validated:>6}")
 
     # List saved models
