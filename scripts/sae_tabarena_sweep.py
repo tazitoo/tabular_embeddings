@@ -413,11 +413,14 @@ def validate_and_save(
 
     ctx_keys = sorted(embeddings_by_ctx.keys())
     objective = create_optuna_objective(embeddings_by_ctx, sae_type, device=device, use_wandb=use_wandb)
+    # On first attempt, validate the best from the initial sweep.
+    # On subsequent attempts, validate the best from the latest surrogate-guided batch.
+    candidate_trial = study.best_trial
 
     for attempt in range(max_retries):
-        best_trial = study.best_trial
-        best_params = study.best_params
-        expected_loss = study.best_value
+        best_trial = candidate_trial
+        best_params = best_trial.params
+        expected_loss = best_trial.value
         expected_r2 = best_trial.user_attrs.get("r2", 0)
         expected_stability = best_trial.user_attrs.get("stability", 0)
 
@@ -507,20 +510,29 @@ def validate_and_save(
         else:
             print(f"    ✗ Validation FAILED (loss diff: {loss_diff:.1%}, r2 diff: {r2_diff:.1%})")
 
-            # Add this result as a new trial to inform Optuna
-            # This helps the optimizer learn that this HP region has high variance
+            # Add validation result to inform the surrogate about variance
             study.add_trial(
                 optuna.trial.create_trial(
                     params=best_params,
-                    distributions=study.best_trial.distributions,
+                    distributions=best_trial.distributions,
                     values=[val_loss],
                     user_attrs=metrics,
                 )
             )
 
-            # Run additional trials to find more robust HPs
+            # Run surrogate-guided trials — the surrogate now knows this
+            # region has high variance and will explore elsewhere
             print(f"    Running {extra_trials_per_retry} additional trials...")
+            n_before = len(study.trials)
             study.optimize(objective, n_trials=extra_trials_per_retry, show_progress_bar=False)
+
+            # Next validation candidate = best of the new surrogate-guided trials
+            new_trials = [t for t in study.trials[n_before:]
+                          if t.state == optuna.trial.TrialState.COMPLETE]
+            if new_trials:
+                candidate_trial = min(new_trials, key=lambda t: t.value)
+            else:
+                candidate_trial = study.best_trial
 
     # Max retries exceeded
     print(f"  ⚠ Validation did not converge after {max_retries} attempts")
