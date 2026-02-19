@@ -1,0 +1,79 @@
+{
+  "tabpfn": {
+    "optimal_layer": 17,
+    "n_layers": 24,
+    "critical_layer_mean": 18,
+    "critical_layer_std": 1.64,
+    "optimal_depth_fraction": 0.708,
+    "architecture": "Transformer (ICL)",
+    "task": "classification",
+    "extraction_point": "layer_17",
+    "rationale": "Layer 17 is optimal (critical - 1), where representation maintains 0.68 CKA with input before divergence cliff at layer 18"
+  },
+  "tabicl": {
+    "optimal_layer": 8,
+    "n_layers": 13,
+    "critical_layer_mean": 9,
+    "critical_layer_std": 2.45,
+    "optimal_depth_fraction": 0.615,
+    "architecture": "Column-then-Row TFM",
+    "task": "classification",
+    "extraction_point": "layer_8",
+    "rationale": "Layer 8 is optimal (critical - 1), where representation maintains 0.66 CKA with input before divergence cliff at layer 9"
+  },
+  "mitra": {
+    "optimal_layer": 10,
+    "n_layers": 13,
+    "critical_layer_mean": 11,
+    "critical_layer_std": 2.01,
+    "optimal_depth_fraction": 0.769,
+    "architecture": "2D Attention",
+    "task": "classification",
+    "extraction_point": "layer_10",
+    "rationale": "Layer 10 is optimal (critical - 1), where representation maintains 0.87 CKA with input before divergence cliff at layer 11"
+  },
+  "tabdpt": {
+    "optimal_layer": 13,
+    "n_layers": 17,
+    "critical_layer_mean": 14,
+    "critical_layer_std": 1.62,
+    "optimal_depth_fraction": 0.765,
+    "architecture": "Transformer + Retrieval",
+    "task": "classification",
+    "extraction_point": "layer_13",
+    "rationale": "Layer 13 is optimal (critical - 1), where representation maintains 0.73 CKA with input before divergence cliff at layer 14"
+  },
+  "carte": {
+    "optimal_layer": 1,
+    "n_layers": 5,
+    "critical_layer_mean": 1,
+    "critical_layer_std": 1.3,
+    "optimal_depth_fraction": 0.2,
+    "architecture": "Graph Transformer",
+    "task": "classification",
+    "extraction_point": "layer_1",
+    "rationale": "Layer 1 is optimal (critical - 1), where representation maintains 0.50 CKA with input before divergence cliff at layer 1"
+  },
+  "hyperfast": {
+    "optimal_layer": 1,
+    "n_layers": 3,
+    "critical_layer_mean": 2,
+    "critical_layer_std": 0.0,
+    "optimal_depth_fraction": 0.333,
+    "architecture": "Hypernetwork",
+    "task": "classification",
+    "extraction_point": "layer_1",
+    "rationale": "Layer 1 is optimal (critical - 1), where representation maintains 1.00 CKA with input before divergence cliff at layer 2"
+  },
+  "tabula8b": {
+    "optimal_layer": 18,
+    "n_layers": 33,
+    "critical_layer_mean": 19,
+    "critical_layer_std": 12.37,
+    "optimal_depth_fraction": 0.545,
+    "architecture": "Llama-3 8B (LLM)",
+    "task": "classification",
+    "extraction_point": "layer_18",
+    "rationale": "Layer 18 is optimal (critical - 1), where representation maintains 0.38 CKA with input before divergence cliff at layer 19"
+  }
+}
