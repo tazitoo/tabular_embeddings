@@ -10,29 +10,18 @@ from typing import Dict, List, Tuple
 from data.extended_loader import TABARENA_DATASETS
 
 
-# Embedding directory name mapping
-# Maps sweep model names to actual embedding directory names
-EMB_DIR_MAP = {
-    'tabpfn': 'tabpfn',  # Sweep uses 'tabpfn', maps to 'tabpfn' directory
-    'tabpfn_layer16': 'tabpfn',
-    'tabicl': 'tabicl',  # Sweep uses 'tabicl', maps to 'tabicl' directory
-    'tabicl_layer10': 'tabicl',
-    'mitra': 'mitra',  # Sweep uses 'mitra', maps to 'mitra' directory
-    'mitra_layer12': 'mitra',
-    'tabdpt': 'tabdpt',  # Sweep uses 'tabdpt', maps to 'tabdpt' directory
-    'tabdpt_layer14': 'tabdpt',
-    'carte': 'carte',  # Sweep uses 'carte', maps to 'carte' directory
-    'carte_layer1': 'carte',
-    'hyperfast': 'hyperfast',  # Sweep uses 'hyperfast', maps to 'hyperfast' directory
-    'hyperfast_layer2': 'hyperfast',
-    'tabula8b': 'tabula8b',  # Sweep uses 'tabula8b', maps to 'tabula8b' directory
-    'tabula8b_layer21': 'tabula8b_layer21_ctx600',  # Exception: uses ctx600 variant
-}
+def get_embedding_dir(model_name: str, use_optimal: bool = True) -> str:
+    """
+    Get the standard embedding directory name for a model.
 
+    Args:
+        model_name: Model identifier (e.g., 'tabpfn', 'mitra')
+        use_optimal: If True, use optimal layer from config. If False, use default.
 
-def get_embedding_dir(model_name: str) -> str:
-    """Get the standard embedding directory name for a model."""
-    return EMB_DIR_MAP.get(model_name, model_name)
+    Returns:
+        Directory name (e.g., 'tabpfn_layer17' or 'tabpfn')
+    """
+    return model_name
 
 
 def get_tabarena_splits() -> Tuple[List[str], List[str]]:

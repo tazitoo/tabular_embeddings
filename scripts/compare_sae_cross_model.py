@@ -44,15 +44,15 @@ from scripts.analyze_sae_concepts_deep import (
 )
 from data.extended_loader import load_tabarena_dataset
 
-# Default model configurations: (model_name, sae_path, emb_dir)
+# Default model configurations: (display_name, sae_sweep_dir, emb_dir)
 DEFAULT_MODELS = [
-    ("TabPFN", "tabpfn_layer16", "tabpfn_layer16_ctx600"),
-    ("CARTE", "carte_layer1", "carte_layer1_ctx600"),
-    ("TabICL", "tabicl_layer10", "tabicl_layer10_ctx600"),
-    ("TabDPT", "tabdpt_layer14", "tabdpt_layer14_ctx600"),
-    ("Mitra", "mitra_layer12", "mitra_layer12_ctx600"),
-    ("HyperFast", "hyperfast_layer2", "hyperfast_layer2_ctx600"),
-    ("Tabula-8B", "tabula8b_layer21", "tabula8b_layer21_ctx600"),  # layer TBD after depth analysis
+    ("TabPFN", "tabpfn", "tabpfn"),
+    ("CARTE", "carte", "carte"),
+    ("TabICL", "tabicl", "tabicl"),
+    ("TabDPT", "tabdpt", "tabdpt"),
+    ("Mitra", "mitra", "mitra"),
+    ("HyperFast", "hyperfast", "hyperfast"),
+    ("Tabula-8B", "tabula8b", "tabula8b"),
 ]
 
 
