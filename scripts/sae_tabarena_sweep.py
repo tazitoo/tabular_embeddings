@@ -572,7 +572,7 @@ def create_optuna_objective(
         else:
             expansion = trial.suggest_categorical("expansion", [4, 8, 16])
         sparsity_penalty = trial.suggest_float("sparsity_penalty", 1e-4, 1e-2, log=True)
-        learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
+        learning_rate = trial.suggest_float("learning_rate", 5e-5, 2e-3, log=True)
 
         # Type-specific parameters
         if sae_type in ("topk", "batchtopk", "archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
