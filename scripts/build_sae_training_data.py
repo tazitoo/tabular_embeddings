@@ -9,8 +9,8 @@ Row-level 70/30 split: every dataset contributes rows to both train and test,
 eliminating domain bias from dataset-level holdouts.
 
 Output structure:
-    output/sae_training/{model}_layer{N}_sae_training.npz  (70% of rows)
-    output/sae_training/{model}_layer{N}_sae_test.npz      (30% of rows)
+    output/sae_training_round5/{model}_layer{N}_sae_training.npz  (70% of rows)
+    output/sae_training_round5/{model}_layer{N}_sae_test.npz      (30% of rows)
 
 Each file contains:
     embeddings: (n_total, hidden_dim) pooled across datasets
@@ -46,8 +46,8 @@ from config import load_optimal_layers, get_optimal_layer
 from scripts.extract_layer_embeddings import sort_layer_names
 
 
-LAYERWISE_DIR = PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise"
-OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training"
+LAYERWISE_DIR = PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise_round5"
+OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training_round5"
 
 SPLIT_SEED = 42
 TRAIN_FRACTION = 0.7

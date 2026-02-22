@@ -2,7 +2,7 @@
 """
 Extract embeddings at optimal layers for all models.
 
-Reads pre-extracted layerwise data from output/embeddings/tabarena_layerwise/{model}/
+Reads pre-extracted layerwise data from output/embeddings/tabarena_layerwise_round5/{model}/
 and selects the optimal layer specified in config/optimal_extraction_layers.json.
 
 Saves single-layer embeddings to output/embeddings/tabarena/{model}/ for SAE training.
@@ -45,7 +45,7 @@ def main():
     config = load_optimal_layers()
     models = args.models or list(config.keys())
 
-    layerwise_base = PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise"
+    layerwise_base = PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise_round5"
     output_base = PROJECT_ROOT / "output" / "embeddings" / "tabarena"
 
     print(f"{'Model':<12} {'Layer':<10} {'Datasets':<10}")

@@ -713,7 +713,7 @@ def _load_prebuilt_embeddings(model_name: str) -> Optional[Tuple[np.ndarray, np.
     Returns:
         (train_embeddings, test_embeddings, source_datasets, optimal_layer) or None
     """
-    prebuilt_dir = PROJECT_ROOT / "output" / "sae_training"
+    prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round5"
 
     # Find train file
     base = model_name.split("_layer")[0] if "_layer" in model_name else model_name
@@ -782,7 +782,7 @@ def run_sweep(
     # Load prebuilt training data (required)
     prebuilt = _load_prebuilt_embeddings(model_name)
     if prebuilt is None:
-        prebuilt_dir = PROJECT_ROOT / "output" / "sae_training"
+        prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round5"
         raise FileNotFoundError(
             f"No prebuilt SAE training data found for '{model_name}'. "
             f"Expected: {prebuilt_dir}/{model_name}_layer*_sae_training.npz\n"

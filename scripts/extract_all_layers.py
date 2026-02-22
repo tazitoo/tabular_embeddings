@@ -7,7 +7,7 @@ can pick the optimal layer without re-running extraction. Each dataset produces 
 file containing all layers.
 
 Output structure:
-    output/embeddings/tabarena_layerwise/{model}/tabarena_{dataset}.npz
+    output/embeddings/tabarena_layerwise_round5/{model}/tabarena_{dataset}.npz
 
 Each .npz contains:
     layer_0, layer_1, ..., layer_N: (n_query, hidden_dim) arrays
@@ -103,14 +103,10 @@ def main():
                         help="Number of query rows to embed (default: 500)")
     parser.add_argument("--datasets", nargs="+", default=None,
                         help="Specific dataset names (default: all TabArena)")
-    parser.add_argument("--output-dir", type=str, default=None,
-                        help="Output directory (default: output/embeddings/tabarena_layerwise/{model})")
     args = parser.parse_args()
 
     datasets = args.datasets or get_tabarena_dataset_names()
-    output_dir = Path(args.output_dir) if args.output_dir else (
-        PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise" / args.model
-    )
+    output_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise_round5" / args.model
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Extracting ALL layers for {args.model}")
