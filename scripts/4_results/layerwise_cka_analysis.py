@@ -96,7 +96,7 @@ def extract_tabpfn_all_layers(
     """
     from models.tabpfn_utils import load_tabpfn
 
-    clf = load_tabpfn(task=task, device=device)
+    clf = load_tabpfn(task=task, device=device, n_estimators=1)
     clf.fit(X_context, y_context)
 
     model = clf.model_
