@@ -299,19 +299,24 @@ def extract_tabicl_all_layers(
         for handle in handles:
             handle.remove()
 
-    # Process captured activations — concatenate across potential batches
+    # Process captured activations — reduce each internal batch to 2D before
+    # concatenating. Internal batches may have different sequence lengths.
     layer_embeddings = {}
     for key, act_list in captured.items():
-        act = np.concatenate(act_list, axis=0)
-        # Shape: (n_ensemble, n_ctx+n_query, dim) or (n_ensemble, n_ctx+n_query, n_struct, dim)
-        if act.ndim == 3:
-            query_act = act[:, -n_query:, :]  # (ensemble, n_query, dim)
-            emb = query_act.mean(axis=0)  # (n_query, dim)
-        elif act.ndim == 4:
-            query_act = act[:, -n_query:, :, :]  # (ensemble, n_query, struct, dim)
-            emb = query_act.mean(axis=(0, 2))  # (n_query, dim)
-        else:
+        batch_embs = []
+        for act in act_list:
+            if act.ndim == 3:
+                # (1, n_seq, dim) — take query tokens from this batch
+                batch_embs.append(act[0, -n_query:, :])  # (<=n_query, dim)
+            elif act.ndim == 4:
+                # (1, n_seq, n_struct, dim) — mean-pool structure, take query tokens
+                batch_embs.append(act[0, -n_query:, :, :].mean(axis=1))
+            elif act.ndim == 2:
+                batch_embs.append(act)
+        if not batch_embs:
             continue
+        # Average across internal batches (each is a view of the same queries)
+        emb = np.mean(batch_embs, axis=0)  # (n_query, dim)
         layer_embeddings[key] = emb
 
     return layer_embeddings
