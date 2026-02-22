@@ -159,12 +159,15 @@ def extract_mitra_all_layers(
         clf = MitraClassifier(device=device, n_estimators=1, fine_tune=False)
 
     clf.fit(X_context, y_context)
+    torch.cuda.empty_cache()
 
     n_query = len(X_query)
+    n_context = len(X_context)
     n_features = X_query.shape[1]
     # Batch predict() calls for high-dim datasets to avoid OOM.
-    # Tab2D attention is O(n_query * n_features) per layer.
-    query_batch = min(n_query, max(50, 400_000 // max(n_features, 1)))
+    # Tab2D attention processes (n_context + n_query_batch) * n_features tokens.
+    max_total_samples = max(n_context + 50, 150_000 // max(n_features, 1))
+    query_batch = min(n_query, max(50, max_total_samples - n_context))
 
     # Access the Tab2D model through trainers
     trainer = clf.trainers[0]
