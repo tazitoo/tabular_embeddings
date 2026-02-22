@@ -131,26 +131,33 @@ def main():
 
         t0 = time.time()
         try:
-            # Auto-shrink context on OOM: halve context size and retry
+            # Auto-shrink on OOM: halve context first, then query size
             ctx = args.context_size
+            qry = args.query_size
             layer_embeddings = None
-            while ctx >= 50:
+            while ctx >= 50 or qry >= 100:
                 try:
                     layer_embeddings = extract_all_layers_for_dataset(
                         args.model, ds,
                         device=args.device,
                         context_size=ctx,
-                        query_size=args.query_size,
+                        query_size=qry,
                     )
                     break
                 except (torch.cuda.OutOfMemoryError, RuntimeError) as oom:
-                    if "out of memory" in str(oom).lower() and ctx > 50:
-                        import gc
-                        torch.cuda.empty_cache()
-                        gc.collect()
+                    if "out of memory" not in str(oom).lower():
+                        raise
+                    import gc
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    if ctx > 50:
                         old_ctx = ctx
                         ctx = ctx // 2
                         print(f"  OOM with context={old_ctx}, retrying with context={ctx}")
+                    elif qry > 100:
+                        old_qry = qry
+                        qry = qry // 2
+                        print(f"  OOM with query={old_qry}, retrying with query={qry}")
                     else:
                         raise
 

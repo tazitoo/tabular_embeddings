@@ -136,31 +136,30 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
             for h in handles:
                 h.remove()
 
-        # Process captured hidden states — concatenate across internal batches
+        # Process captured hidden states — reduce each batch to 2D before concatenating.
+        # Internal batches may have different query counts (Mitra batches for GPU memory).
         for captured in captured_per_trainer:
             if not captured["hidden"]:
                 continue
-            hidden = np.concatenate(captured["hidden"], axis=0)
-            # Shape varies based on flash_attn path:
-            # With flash_attn: (n_valid_query, dim) — already flat
-            # Without flash_attn: (batch, n_query, n_features+1, dim)
-            if hidden.ndim == 2:
-                # (n_valid_query, dim) — need to figure out query samples
-                # This is the flash_attn path where padding is removed
-                # Take last n_query rows (query comes after support in the sequence)
-                if hidden.shape[0] >= n_query:
-                    all_hidden_states.append(hidden[-n_query:])
-            elif hidden.ndim == 4:
-                # (batch, n_query, n_features+1, dim)
-                # Take the y-token (first feature position) and average batches
-                y_token_hidden = hidden[:, :, 0, :]  # (batch, n_query, dim)
-                avg_hidden = y_token_hidden.mean(axis=0)  # (n_query, dim)
-                # Trim to actual query size (may have padding)
-                all_hidden_states.append(avg_hidden[:n_query])
-            elif hidden.ndim == 3:
-                # (batch, n_query, dim) — rare case
-                avg_hidden = hidden.mean(axis=0)
-                all_hidden_states.append(avg_hidden[:n_query])
+            batch_embs = []
+            for hidden in captured["hidden"]:
+                if hidden.ndim == 2:
+                    # (n_valid_tokens, dim) — flash_attn path
+                    batch_embs.append(hidden)
+                elif hidden.ndim == 4:
+                    # (1, n_query_batch, n_features+1, dim) — take y-token
+                    y_token = hidden[:, :, 0, :]  # (1, n_query_batch, dim)
+                    batch_embs.append(y_token.mean(axis=0))  # (n_query_batch, dim)
+                elif hidden.ndim == 3:
+                    # (1, n_query_batch, dim)
+                    batch_embs.append(hidden.mean(axis=0))  # (n_query_batch, dim)
+            if not batch_embs:
+                continue
+            emb_all = np.concatenate(batch_embs, axis=0)
+            if emb_all.shape[0] >= n_query:
+                all_hidden_states.append(emb_all[-n_query:])
+            else:
+                all_hidden_states.append(emb_all)
 
         if all_hidden_states:
             # Average across ensemble trainers

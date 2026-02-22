@@ -104,7 +104,8 @@ def extract_tabpfn_all_layers(
     print(f"TabPFN has {n_layers} transformer layers")
 
     # Register hooks for all layers
-    captured = {}
+    # Use lists to accumulate across potential internal batches
+    captured = defaultdict(list)
     handles = []
     n_query = len(X_query)
 
@@ -112,7 +113,7 @@ def extract_tabpfn_all_layers(
         def make_hook(layer_idx):
             def hook_fn(module, input, output):
                 if isinstance(output, torch.Tensor):
-                    captured[f"layer_{layer_idx}"] = output.detach().cpu().numpy()
+                    captured[f"layer_{layer_idx}"].append(output.detach().cpu().numpy())
             return hook_fn
         handle = layer.register_forward_hook(make_hook(i))
         handles.append(handle)
@@ -128,9 +129,10 @@ def extract_tabpfn_all_layers(
         for handle in handles:
             handle.remove()
 
-    # Process captured activations
+    # Process captured activations — concatenate across potential batches
     layer_embeddings = {}
-    for key, act in captured.items():
+    for key, act_list in captured.items():
+        act = np.concatenate(act_list, axis=0)
         # Shape: (1, n_ctx+n_query+thinking, n_structure, hidden_dim)
         # Query samples are the last n_query along dim 1
         query_act = act[0, -n_query:, :, :]  # (n_query, n_structure, hidden)
@@ -206,29 +208,33 @@ def extract_mitra_all_layers(
         for handle in handles:
             handle.remove()
 
-    # Process captured activations — concatenate across internal batches
+    # Process captured activations — reduce each batch to 2D before concatenating.
+    # Internal batches may have different query counts, so we can't concatenate raw
+    # 4D tensors. Process each to (n_batch_queries, dim) first.
     layer_embeddings = {}
     for key, act_list in captured.items():
-        # Concatenate all batches along first axis
-        act = np.concatenate(act_list, axis=0)
-        # Mitra shapes vary based on flash_attn path
-        if act.ndim == 2:
-            # (n_valid_samples, dim) - flash_attn path
-            if act.shape[0] >= n_query:
-                emb = act[-n_query:]
-            else:
-                print(f"  Warning: {key} has {act.shape[0]} samples < {n_query} queries, skipping")
-                continue
-        elif act.ndim == 4:
-            # (batch, n_samples, n_features+1, dim)
-            y_token = act[:, :, 0, :]  # Take y-token position
-            emb = y_token.mean(axis=0)[-n_query:]
-        elif act.ndim == 3:
-            # (batch, n_samples, dim)
-            emb = act.mean(axis=0)[-n_query:]
-        else:
+        batch_embs = []
+        for act in act_list:
+            if act.ndim == 2:
+                # (n_valid_tokens, dim) — flash_attn path, already 2D
+                batch_embs.append(act)
+            elif act.ndim == 4:
+                # (1, n_query_batch, n_features+1, dim) — take y-token, squeeze batch
+                y_token = act[:, :, 0, :]  # (1, n_query_batch, dim)
+                batch_embs.append(y_token.mean(axis=0))  # (n_query_batch, dim)
+            elif act.ndim == 3:
+                # (1, n_query_batch, dim)
+                batch_embs.append(act.mean(axis=0))  # (n_query_batch, dim)
+
+        if not batch_embs:
             continue
-        layer_embeddings[key] = emb
+
+        emb_all = np.concatenate(batch_embs, axis=0)
+        if emb_all.shape[0] >= n_query:
+            layer_embeddings[key] = emb_all[-n_query:]
+        else:
+            print(f"  Warning: {key} has {emb_all.shape[0]} samples < {n_query} queries")
+            layer_embeddings[key] = emb_all
 
     return layer_embeddings
 
@@ -255,14 +261,15 @@ def extract_tabicl_all_layers(
     print(f"TabICL has {n_blocks} ICL transformer blocks")
 
     # Register hooks for all ICL blocks
-    captured = {}
+    # Use lists to accumulate across potential internal batches
+    captured = defaultdict(list)
     handles = []
 
     for i, block in enumerate(icl_blocks):
         def make_hook(block_idx):
             def hook_fn(module, input, output):
                 if isinstance(output, torch.Tensor):
-                    captured[f"layer_{block_idx}"] = output.detach().cpu().numpy()
+                    captured[f"layer_{block_idx}"].append(output.detach().cpu().numpy())
             return hook_fn
         handle = block.register_forward_hook(make_hook(i))
         handles.append(handle)
@@ -270,7 +277,7 @@ def extract_tabicl_all_layers(
     # Also hook row_interactor output
     def row_hook(module, input, output):
         if isinstance(output, torch.Tensor):
-            captured["row_output"] = output.detach().cpu().numpy()
+            captured["row_output"].append(output.detach().cpu().numpy())
     handles.append(model.row_interactor.out_ln.register_forward_hook(row_hook))
 
     # Forward pass
@@ -281,9 +288,10 @@ def extract_tabicl_all_layers(
         for handle in handles:
             handle.remove()
 
-    # Process captured activations
+    # Process captured activations — concatenate across potential batches
     layer_embeddings = {}
-    for key, act in captured.items():
+    for key, act_list in captured.items():
+        act = np.concatenate(act_list, axis=0)
         # Shape: (n_ensemble, n_ctx+n_query, dim) or (n_ensemble, n_ctx+n_query, n_struct, dim)
         if act.ndim == 3:
             query_act = act[:, -n_query:, :]  # (ensemble, n_query, dim)
@@ -325,7 +333,8 @@ def extract_tabdpt_all_layers(
     print(f"TabDPT has {n_layers} transformer encoder layers")
 
     # Register hooks for all encoder layers
-    captured = {}
+    # Use lists to accumulate across potential internal batches
+    captured = defaultdict(list)
     handles = []
 
     for i, layer in enumerate(encoder_layers):
@@ -336,7 +345,7 @@ def extract_tabdpt_all_layers(
                 else:
                     out = output
                 if isinstance(out, torch.Tensor):
-                    captured[f"layer_{layer_idx}"] = out.detach().float().cpu().numpy()
+                    captured[f"layer_{layer_idx}"].append(out.detach().float().cpu().numpy())
             return hook_fn
         handle = layer.register_forward_hook(make_hook(i))
         handles.append(handle)
@@ -345,7 +354,7 @@ def extract_tabdpt_all_layers(
     def encoder_hook(module, input, output):
         if isinstance(output, torch.Tensor):
             out = output.detach().float().cpu().numpy()  # Convert bfloat16 to float32
-            captured["input_encoder"] = out
+            captured["input_encoder"].append(out)
     handles.append(model.encoder.register_forward_hook(encoder_hook))
 
     # Forward pass
@@ -356,9 +365,10 @@ def extract_tabdpt_all_layers(
         for handle in handles:
             handle.remove()
 
-    # Process captured activations
+    # Process captured activations — concatenate across potential batches
     layer_embeddings = {}
-    for key, act in captured.items():
+    for key, act_list in captured.items():
+        act = np.concatenate(act_list, axis=0)
         # TabDPT shapes: (batch, seq_len, hidden_dim) or (batch, hidden_dim)
         if act.ndim == 3:
             # Take mean over sequence dimension, then slice query samples
@@ -474,19 +484,20 @@ def extract_carte_all_layers(
     print(f"CARTE GNN: initial_x → read_out_block → classifier")
 
     # Register hooks
-    captured = {}
+    # Use lists to accumulate across potential internal batches
+    captured = defaultdict(list)
     handles = []
 
     # Hook initial_x
     def init_hook(module, input, output):
         if isinstance(output, torch.Tensor):
-            captured["layer_0_initial"] = output.detach().cpu().numpy()
+            captured["layer_0_initial"].append(output.detach().cpu().numpy())
     handles.append(base.initial_x.register_forward_hook(init_hook))
 
     # Hook read_out_block attention
     def attn_hook(module, input, output):
         if isinstance(output, torch.Tensor):
-            captured["layer_1_attention"] = output.detach().cpu().numpy()
+            captured["layer_1_attention"].append(output.detach().cpu().numpy())
     handles.append(base.read_out_block.g_attn.register_forward_hook(attn_hook))
 
     # Hook read_out_block full output
@@ -496,7 +507,7 @@ def extract_carte_all_layers(
         else:
             out = output
         if isinstance(out, torch.Tensor):
-            captured["layer_2_readout"] = out.detach().cpu().numpy()
+            captured["layer_2_readout"].append(out.detach().cpu().numpy())
     handles.append(base.read_out_block.register_forward_hook(block_hook))
 
     # Hook classifier layers
@@ -505,7 +516,7 @@ def extract_carte_all_layers(
             def make_clf_hook(idx):
                 def hook_fn(module, input, output):
                     if isinstance(output, torch.Tensor):
-                        captured[f"layer_{3+idx}_classifier"] = output.detach().cpu().numpy()
+                        captured[f"layer_{3+idx}_classifier"].append(output.detach().cpu().numpy())
                 return hook_fn
             handles.append(layer.register_forward_hook(make_clf_hook(i)))
 
@@ -521,9 +532,11 @@ def extract_carte_all_layers(
         for handle in handles:
             handle.remove()
 
-    # Process captured activations - extract central node for per-node outputs
+    # Process captured activations — concatenate across potential batches,
+    # then extract central node for per-node outputs
     layer_embeddings = {}
-    for key, act in captured.items():
+    for key, act_list in captured.items():
+        act = np.concatenate(act_list, axis=0)
         if act.shape[0] == n_query:
             # Already per-graph
             layer_embeddings[key] = act
