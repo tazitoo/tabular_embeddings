@@ -434,7 +434,7 @@ def extract_carte_all_layers(
     if not ft_path:
         raise ValueError("FastText model not found")
 
-    clf = CARTEClassifier(device=device, num_model=3, max_epoch=50, disable_pbar=True)
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
     t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
 
     # Robust preprocessing to prevent PowerTransformer bracket errors.
@@ -496,6 +496,7 @@ def extract_carte_all_layers(
 
     # Fit
     clf.fit(X_context_graph, y_for_fit)
+    torch.cuda.empty_cache()
 
     n_query = len(X_query)
     model = clf.model_list_[0]
@@ -541,32 +542,43 @@ def extract_carte_all_layers(
                 return hook_fn
             handles.append(layer.register_forward_hook(make_clf_hook(i)))
 
-    # Forward pass
+    # Forward pass in batches to avoid OOM on large graphs
     try:
         from torch_geometric.data import Batch
-        batch = Batch.from_data_list(X_query_graph)
-        batch.to(clf.device_)
+        batch_size = 100
+        all_ptrs = []
+        for start in range(0, n_query, batch_size):
+            end = min(start + batch_size, n_query)
+            batch = Batch.from_data_list(X_query_graph[start:end])
+            batch.to(clf.device_)
+            all_ptrs.append(batch.ptr.cpu().numpy())
 
-        with torch.no_grad():
-            _ = model(batch)
+            with torch.no_grad():
+                _ = model(batch)
+
+            del batch
+            torch.cuda.empty_cache()
     finally:
         for handle in handles:
             handle.remove()
 
-    # Process captured activations — concatenate across potential batches,
+    # Process captured activations — concatenate across batches,
     # then extract central node for per-node outputs
     layer_embeddings = {}
     for key, act_list in captured.items():
         act = np.concatenate(act_list, axis=0)
         if act.shape[0] == n_query:
-            # Already per-graph
+            # Already per-graph (one embedding per graph)
             layer_embeddings[key] = act
-        elif act.shape[0] > n_query and hasattr(batch, 'ptr'):
-            # Per-node output - extract central nodes
-            ptr = batch.ptr.cpu().numpy()
+        elif act.shape[0] > n_query:
+            # Per-node output — extract central node from each graph
+            # Reconstruct ptrs across all batches
             central_emb = []
-            for i in range(len(ptr) - 1):
-                central_emb.append(act[ptr[i]])
+            node_offset = 0
+            for ptr in all_ptrs:
+                for i in range(len(ptr) - 1):
+                    central_emb.append(act[node_offset + ptr[i]])
+                node_offset += ptr[-1]
             layer_embeddings[key] = np.stack(central_emb)
         elif act.ndim >= 2:
             layer_embeddings[key] = act[:n_query]

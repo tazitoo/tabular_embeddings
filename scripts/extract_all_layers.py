@@ -79,10 +79,6 @@ def extract_all_layers_for_dataset(
     kwargs = dict(device=device)
     if "task" in sig.parameters:
         kwargs["task"] = task
-    elif task == "regression":
-        raise ValueError(
-            f"{model} is classification-only, skipping regression dataset {dataset_name}"
-        )
 
     layer_embeddings = extract_fn(X_context, y_context, X_query, **kwargs)
     return layer_embeddings
@@ -105,14 +101,25 @@ def main():
                         help="Specific dataset names (default: all TabArena)")
     args = parser.parse_args()
 
-    datasets = args.datasets or get_tabarena_dataset_names()
+    all_datasets = args.datasets or get_tabarena_dataset_names()
     output_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise_round5" / args.model
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Filter out regression datasets for classification-only models
+    import inspect
+    extract_fn = EXTRACT_FN[args.model]
+    cls_only = "task" not in inspect.signature(extract_fn).parameters
+    if cls_only:
+        datasets = [ds for ds in all_datasets if get_dataset_task(ds) == "classification"]
+        n_skipped_task = len(all_datasets) - len(datasets)
+    else:
+        datasets = all_datasets
+        n_skipped_task = 0
 
     print(f"Extracting ALL layers for {args.model}")
     print(f"  Output: {output_dir}")
     print(f"  Context: {args.context_size}, Query: {args.query_size}")
-    print(f"  Datasets: {len(datasets)}")
+    print(f"  Datasets: {len(datasets)}" + (f" ({n_skipped_task} regression skipped)" if n_skipped_task else ""))
     print(f"  Device: {args.device}")
     print()
 
