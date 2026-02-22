@@ -3,35 +3,35 @@
 Build SAE training data from layerwise extractions.
 
 Reads from extract_all_layers.py output and config/optimal_extraction_layers.json
-to produce a single pooled file per model at the optimal layer.
+to produce pooled train/test files per model at the optimal layer.
+
+Row-level 70/30 split: every dataset contributes rows to both train and test,
+eliminating domain bias from dataset-level holdouts.
 
 Output structure:
-    output/sae_training/{model}_layer{N}_sae_training.npz
+    output/sae_training/{model}_layer{N}_sae_training.npz  (70% of rows)
+    output/sae_training/{model}_layer{N}_sae_test.npz      (30% of rows)
 
 Each file contains:
-    embeddings: (n_total, hidden_dim) pooled across train datasets
+    embeddings: (n_total, hidden_dim) pooled across datasets
     optimal_layer: int
     layer_name: string (e.g. "layer_17")
     source_datasets: list of dataset names included
     samples_per_dataset: array of (dataset_name, count) pairs
-    split: "train" or "all"
+    split: "train" or "test"
 
 Usage:
-    # Build training data for TabPFN at optimal layer
+    # Build train+test data for TabPFN at optimal layer
     python scripts/build_sae_training_data.py --model tabpfn
 
     # Build for all models
     python scripts/build_sae_training_data.py --model all
-
-    # Build including all datasets (not just train split)
-    python scripts/build_sae_training_data.py --model tabpfn --split all
 
     # Custom max samples per dataset
     python scripts/build_sae_training_data.py --model tabpfn --max-per-dataset 300
 """
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -49,6 +49,9 @@ from scripts.extract_layer_embeddings import sort_layer_names
 LAYERWISE_DIR = PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training"
 
+SPLIT_SEED = 42
+TRAIN_FRACTION = 0.7
+
 
 def get_available_datasets(model: str) -> List[str]:
     """Discover datasets with layerwise extractions for a model."""
@@ -59,18 +62,6 @@ def get_available_datasets(model: str) -> List[str]:
         f.stem.replace("tabarena_", "")
         for f in model_dir.glob("tabarena_*.npz")
     )
-
-
-def get_train_test_split(datasets: List[str]) -> Tuple[List[str], List[str]]:
-    """Deterministic 70/30 train/test split matching sae_tabarena_sweep.py logic."""
-    train, test = [], []
-    for ds in datasets:
-        h = int(hashlib.md5(ds.encode()).hexdigest(), 16)
-        if h % 10 < 7:
-            train.append(ds)
-        else:
-            test.append(ds)
-    return train, test
 
 
 def load_layer_from_npz(
@@ -104,41 +95,69 @@ def load_layer_from_npz(
     return data[layer_key].astype(np.float32)
 
 
+def split_rows(
+    emb: np.ndarray,
+    max_per_dataset: int = 500,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Split embedding rows into train/test with deterministic shuffle.
+
+    Caps total rows at max_per_dataset first, then splits 70/30.
+
+    Args:
+        emb: (n_samples, hidden_dim) array
+        max_per_dataset: Cap total samples before splitting
+
+    Returns:
+        (train_emb, test_emb) tuple
+    """
+    rng = np.random.RandomState(SPLIT_SEED)
+
+    # Cap total samples
+    if len(emb) > max_per_dataset:
+        idx = rng.choice(len(emb), max_per_dataset, replace=False)
+        emb = emb[idx]
+    else:
+        # Still shuffle for deterministic split
+        idx = rng.permutation(len(emb))
+        emb = emb[idx]
+
+    n_train = int(len(emb) * TRAIN_FRACTION)
+    return emb[:n_train], emb[n_train:]
+
+
 def build_training_data(
     model: str,
-    split: str = "train",
     max_per_dataset: int = 500,
 ) -> Dict:
-    """Build pooled SAE training data for a model.
+    """Build pooled SAE train+test data for a model.
+
+    Every dataset contributes rows to both train and test files.
+    Row-level 70/30 split eliminates domain bias.
 
     Args:
         model: Model name (e.g. 'tabpfn')
-        split: "train" for train-only, "all" for all datasets
-        max_per_dataset: Cap samples per dataset
+        max_per_dataset: Cap samples per dataset (before splitting)
 
     Returns:
-        Dict with embeddings, metadata, and file path
+        Dict with shapes, metadata, and file paths
     """
     optimal_layer = get_optimal_layer(model)
     config = load_optimal_layers()[model]
 
-    available = get_available_datasets(model)
-    if not available:
+    datasets = get_available_datasets(model)
+    if not datasets:
         raise ValueError(
             f"No layerwise extractions found for {model} at {LAYERWISE_DIR / model}"
         )
 
-    if split == "train":
-        datasets, _ = get_train_test_split(available)
-    else:
-        datasets = available
-
-    print(f"  Available datasets: {len(available)}")
-    print(f"  Using ({split}): {len(datasets)}")
+    print(f"  Available datasets: {len(datasets)}")
     print(f"  Optimal layer: {optimal_layer}")
+    print(f"  Split: {TRAIN_FRACTION:.0%} train / {1-TRAIN_FRACTION:.0%} test (row-level)")
 
-    all_embeddings = []
-    samples_per_dataset = {}
+    train_embeddings = []
+    test_embeddings = []
+    train_samples = {}
+    test_samples = {}
 
     for ds in datasets:
         try:
@@ -147,52 +166,54 @@ def build_training_data(
             print(f"    Warning: {ds} - {e}")
             continue
 
-        if len(emb) > max_per_dataset:
-            np.random.seed(42)
-            idx = np.random.choice(len(emb), max_per_dataset, replace=False)
-            emb = emb[idx]
+        train_emb, test_emb = split_rows(emb, max_per_dataset)
 
-        all_embeddings.append(emb)
-        samples_per_dataset[ds] = len(emb)
+        train_embeddings.append(train_emb)
+        test_embeddings.append(test_emb)
+        train_samples[ds] = len(train_emb)
+        test_samples[ds] = len(test_emb)
 
-    if not all_embeddings:
+    if not train_embeddings:
         raise ValueError(f"No embeddings loaded for {model}")
 
-    pooled = np.concatenate(all_embeddings, axis=0)
+    train_pooled = np.concatenate(train_embeddings, axis=0)
+    test_pooled = np.concatenate(test_embeddings, axis=0)
     layer_name = f"layer_{optimal_layer}"
 
-    # Build output path
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    suffix = f"_{split}" if split != "train" else ""
-    output_path = OUTPUT_DIR / f"{model}_layer{optimal_layer}_sae_training{suffix}.npz"
+    train_path = OUTPUT_DIR / f"{model}_layer{optimal_layer}_sae_training.npz"
+    test_path = OUTPUT_DIR / f"{model}_layer{optimal_layer}_sae_test.npz"
 
-    # Save
-    np.savez_compressed(
-        str(output_path),
-        embeddings=pooled,
-        optimal_layer=np.array(optimal_layer),
-        layer_name=np.array(layer_name),
-        source_datasets=np.array(list(samples_per_dataset.keys())),
-        samples_per_dataset=np.array(
-            [(k, v) for k, v in samples_per_dataset.items()],
-            dtype=[("dataset", "U100"), ("count", "i4")],
-        ),
-        split=np.array(split),
-        config=np.array(json.dumps(config)),
-    )
+    def _save(path, embeddings, samples_dict, split_name):
+        np.savez_compressed(
+            str(path),
+            embeddings=embeddings,
+            optimal_layer=np.array(optimal_layer),
+            layer_name=np.array(layer_name),
+            source_datasets=np.array(list(samples_dict.keys())),
+            samples_per_dataset=np.array(
+                [(k, v) for k, v in samples_dict.items()],
+                dtype=[("dataset", "U100"), ("count", "i4")],
+            ),
+            split=np.array(split_name),
+            config=np.array(json.dumps(config)),
+        )
 
-    print(f"  Pooled shape: {pooled.shape}")
-    print(f"  Datasets included: {len(samples_per_dataset)}")
-    print(f"  Saved: {output_path}")
+    _save(train_path, train_pooled, train_samples, "train")
+    _save(test_path, test_pooled, test_samples, "test")
+
+    print(f"  Train: {train_pooled.shape} from {len(train_samples)} datasets → {train_path.name}")
+    print(f"  Test:  {test_pooled.shape} from {len(test_samples)} datasets → {test_path.name}")
 
     return {
         "model": model,
         "optimal_layer": optimal_layer,
         "layer_name": layer_name,
-        "shape": pooled.shape,
-        "n_datasets": len(samples_per_dataset),
-        "split": split,
-        "output_path": str(output_path),
+        "train_shape": train_pooled.shape,
+        "test_shape": test_pooled.shape,
+        "n_datasets": len(train_samples),
+        "train_path": str(train_path),
+        "test_path": str(test_path),
     }
 
 
@@ -202,11 +223,8 @@ def main():
     )
     parser.add_argument("--model", type=str, required=True,
                         help="Model name or 'all' for all available models")
-    parser.add_argument("--split", type=str, default="train",
-                        choices=["train", "all"],
-                        help="Dataset split to use (default: train)")
     parser.add_argument("--max-per-dataset", type=int, default=500,
-                        help="Max samples per dataset (default: 500)")
+                        help="Max samples per dataset before split (default: 500)")
     args = parser.parse_args()
 
     config = load_optimal_layers()
@@ -230,21 +248,9 @@ def main():
         try:
             result = build_training_data(
                 model,
-                split=args.split,
                 max_per_dataset=args.max_per_dataset,
             )
             results.append(result)
-
-            # Also build "all" variant if we're doing train
-            if args.split == "train":
-                print(f"\n  Building 'all' variant...")
-                result_all = build_training_data(
-                    model,
-                    split="all",
-                    max_per_dataset=args.max_per_dataset,
-                )
-                results.append(result_all)
-
         except Exception as e:
             print(f"  ERROR: {e}")
 
@@ -252,12 +258,13 @@ def main():
     print(f"\n{'='*60}")
     print("SUMMARY")
     print("=" * 60)
-    print(f"{'Model':<12} {'Layer':>6} {'Shape':>20} {'Datasets':>10} {'Split':>8}")
-    print("-" * 60)
+    print(f"{'Model':<12} {'Layer':>6} {'Train':>20} {'Test':>20} {'Datasets':>10}")
+    print("-" * 70)
     for r in results:
         print(
             f"{r['model']:<12} {r['optimal_layer']:>6} "
-            f"{str(r['shape']):>20} {r['n_datasets']:>10} {r['split']:>8}"
+            f"{str(r['train_shape']):>20} {str(r['test_shape']):>20} "
+            f"{r['n_datasets']:>10}"
         )
 
 

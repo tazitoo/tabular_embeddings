@@ -24,7 +24,6 @@ Usage:
 
 import argparse
 import json
-import hashlib
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -91,30 +90,18 @@ def get_available_datasets(model_name: str, task_filter: str = None) -> List[str
 
 def get_tabarena_splits(model_name: str = "tabpfn", task_filter: str = None) -> Tuple[List[str], List[str]]:
     """
-    Get train/test split of TabArena datasets.
+    Get train/test dataset lists from prebuilt SAE training data.
 
-    Split is deterministic (based on hash of dataset name).
-    Roughly 70% train, 30% test.
-
-    Dynamically discovers available embeddings for the model.
+    Row-level split: every dataset contributes to both train and test.
+    Returns the same dataset list for both (since all datasets are in both splits).
     """
     all_datasets = get_available_datasets(model_name, task_filter=task_filter)
 
     if not all_datasets:
         raise ValueError(f"No datasets found for {model_name}")
 
-    train_datasets = []
-    test_datasets = []
-
-    for ds in all_datasets:
-        # Deterministic split based on hash
-        h = int(hashlib.md5(ds.encode()).hexdigest(), 16)
-        if h % 10 < 7:  # 70% train
-            train_datasets.append(ds)
-        else:
-            test_datasets.append(ds)
-
-    return train_datasets, test_datasets
+    # With row-level split, all datasets are in both train and test
+    return all_datasets, all_datasets
 
 
 def load_embeddings(model_name: str, dataset_name: str) -> Optional[np.ndarray]:
@@ -720,52 +707,47 @@ def create_optuna_objective(
     return objective
 
 
-def _load_prebuilt_embeddings(model_name: str) -> Optional[Tuple[np.ndarray, List[str], List[str], int]]:
-    """Try to load prebuilt SAE training data.
+def _load_prebuilt_embeddings(model_name: str) -> Optional[Tuple[np.ndarray, np.ndarray, List[str], int]]:
+    """Try to load prebuilt SAE training and test data.
 
     Returns:
-        (embeddings, train_datasets, test_datasets, optimal_layer) or None if not found
+        (train_embeddings, test_embeddings, source_datasets, optimal_layer) or None
     """
     prebuilt_dir = PROJECT_ROOT / "output" / "sae_training"
 
-    # Try to find prebuilt file matching model name
-    # model_name might be 'tabpfn' or 'tabpfn_layer17' — handle both
-    import hashlib as _hashlib
-
-    candidates = sorted(prebuilt_dir.glob(f"{model_name}_layer*_sae_training.npz"))
-    if not candidates:
-        # Try base model name (strip _layerN suffix)
-        base = model_name.split("_layer")[0] if "_layer" in model_name else model_name
-        candidates = sorted(prebuilt_dir.glob(f"{base}_layer*_sae_training.npz"))
-
-    if not candidates:
+    # Find train file
+    base = model_name.split("_layer")[0] if "_layer" in model_name else model_name
+    train_candidates = sorted(prebuilt_dir.glob(f"{base}_layer*_sae_training.npz"))
+    if not train_candidates:
         return None
 
-    path = candidates[0]  # Use first match (train variant)
-    print(f"Loading prebuilt SAE training data: {path}")
+    train_path = train_candidates[0]
+    # Derive test path from train path
+    test_path = Path(str(train_path).replace("_sae_training.npz", "_sae_test.npz"))
 
-    data = np.load(path, allow_pickle=True)
-    embeddings = data["embeddings"].astype(np.float32)
-    optimal_layer = int(data["optimal_layer"])
-    source_datasets = list(data["source_datasets"])
+    print(f"Loading prebuilt SAE data:")
+    print(f"  Train: {train_path}")
 
-    # Reconstruct train/test split
-    from data.extended_loader import TABARENA_DATASETS
-    all_datasets = sorted(TABARENA_DATASETS.keys())
-    train_datasets = []
-    test_datasets = []
-    for ds in all_datasets:
-        h = int(_hashlib.md5(ds.encode()).hexdigest(), 16)
-        if h % 10 < 7:
-            train_datasets.append(ds)
-        else:
-            test_datasets.append(ds)
+    train_data = np.load(train_path, allow_pickle=True)
+    train_embeddings = train_data["embeddings"].astype(np.float32)
+    optimal_layer = int(train_data["optimal_layer"])
+    source_datasets = list(train_data["source_datasets"])
 
-    print(f"  Shape: {embeddings.shape}")
+    test_embeddings = None
+    if test_path.exists():
+        print(f"  Test:  {test_path}")
+        test_data = np.load(test_path, allow_pickle=True)
+        test_embeddings = test_data["embeddings"].astype(np.float32)
+    else:
+        print(f"  Test:  NOT FOUND (run build_sae_training_data.py)")
+
+    print(f"  Train shape: {train_embeddings.shape}")
+    if test_embeddings is not None:
+        print(f"  Test shape:  {test_embeddings.shape}")
     print(f"  Optimal layer: {optimal_layer}")
     print(f"  Source datasets: {len(source_datasets)}")
 
-    return embeddings, train_datasets, test_datasets, optimal_layer
+    return train_embeddings, test_embeddings, source_datasets, optimal_layer
 
 
 def run_sweep(
@@ -807,18 +789,18 @@ def run_sweep(
             f"Run: python scripts/build_sae_training_data.py --model {model_name}"
         )
 
-    embeddings, train_datasets, test_datasets, optimal_layer = prebuilt
-    embeddings_by_ctx: Dict[int, np.ndarray] = {0: embeddings}
-    print(f"Train datasets: {len(train_datasets)}")
-    print(f"Test datasets: {len(test_datasets)}")
+    train_embeddings, test_embeddings, source_datasets, optimal_layer = prebuilt
+    embeddings_by_ctx: Dict[int, np.ndarray] = {0: train_embeddings}
+    print(f"Source datasets: {len(source_datasets)} (row-level 70/30 split)")
 
     # Save split info
     split_info = {
-        "train_datasets": train_datasets,
-        "test_datasets": test_datasets,
+        "source_datasets": source_datasets,
+        "split_type": "row_level_70_30",
         "context_sizes": context_sizes or [],
         "total_train_samples": {str(k): len(v) for k, v in embeddings_by_ctx.items()},
-        "prebuilt": prebuilt is not None,
+        "total_test_samples": len(test_embeddings) if test_embeddings is not None else 0,
+        "prebuilt": True,
     }
     with open(output_dir / "split_info.json", "w") as f:
         json.dump(split_info, f, indent=2)
@@ -916,14 +898,16 @@ def evaluate_on_test(
     with open(config_path) as f:
         best_configs = json.load(f)
 
-    # Get test datasets
-    _, test_datasets = get_tabarena_splits(model_name)
+    # Load prebuilt test embeddings
+    prebuilt = _load_prebuilt_embeddings(model_name)
+    if prebuilt is None or prebuilt[1] is None:
+        raise ValueError(
+            f"No prebuilt test data for {model_name}. "
+            f"Run: python scripts/build_sae_training_data.py --model {model_name}"
+        )
 
-    print(f"Evaluating on {len(test_datasets)} test datasets...")
-
-    # Pool test embeddings (raw, BatchNorm will apply learned normalization)
-    embeddings, counts = pool_embeddings(model_name, test_datasets, max_per_dataset=200, normalize=False)
-    print(f"  Total test samples: {len(embeddings)}")
+    _, embeddings, source_datasets, _ = prebuilt
+    print(f"Evaluating on {len(source_datasets)} datasets ({len(embeddings)} test samples)...")
 
     # Evaluate each SAE type
     results = {}
@@ -970,21 +954,25 @@ def evaluate_on_test(
 
 def setup_check(model_name: str = "tabpfn"):
     """Check data availability and show split info."""
-    train_datasets, test_datasets = get_tabarena_splits(model_name)
+    datasets = get_available_datasets(model_name)
 
-    print("TabArena Train/Test Split")
-    print("="*60)
-    print(f"Train datasets ({len(train_datasets)}):")
-    for ds in train_datasets:
+    print(f"TabArena datasets for {model_name} (row-level 70/30 split)")
+    print("=" * 60)
+    print(f"Datasets ({len(datasets)}):")
+    for ds in datasets:
         emb = load_embeddings(model_name, ds)
         status = f"{len(emb)} samples" if emb is not None else "MISSING"
         print(f"  {ds}: {status}")
 
-    print(f"\nTest datasets ({len(test_datasets)}):")
-    for ds in test_datasets:
-        emb = load_embeddings(model_name, ds)
-        status = f"{len(emb)} samples" if emb is not None else "MISSING"
-        print(f"  {ds}: {status}")
+    # Check prebuilt files
+    prebuilt = _load_prebuilt_embeddings(model_name)
+    if prebuilt:
+        train_emb, test_emb, _, _ = prebuilt
+        print(f"\nPrebuilt train: {train_emb.shape}")
+        if test_emb is not None:
+            print(f"Prebuilt test:  {test_emb.shape}")
+    else:
+        print("\nNo prebuilt SAE training data found.")
 
 
 def main():
