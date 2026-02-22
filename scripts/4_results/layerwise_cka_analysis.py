@@ -259,7 +259,7 @@ def extract_tabicl_all_layers(
     """Extract embeddings from all TabICL transformer layers."""
     from tabicl import TabICLClassifier
 
-    clf = TabICLClassifier(device=device)
+    clf = TabICLClassifier(device=device, n_estimators=1)
     clf.fit(X_context, y_context)
 
     n_query = len(X_query)
