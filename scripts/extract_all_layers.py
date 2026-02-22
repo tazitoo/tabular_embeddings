@@ -131,41 +131,12 @@ def main():
 
         t0 = time.time()
         try:
-            # Auto-shrink on OOM: halve context first, then query size
-            ctx = args.context_size
-            qry = args.query_size
-            layer_embeddings = None
-            while ctx >= 50 or qry >= 100:
-                try:
-                    layer_embeddings = extract_all_layers_for_dataset(
-                        args.model, ds,
-                        device=args.device,
-                        context_size=ctx,
-                        query_size=qry,
-                    )
-                    break
-                except (torch.cuda.OutOfMemoryError, RuntimeError) as oom:
-                    if "out of memory" not in str(oom).lower():
-                        raise
-                    import gc
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    if ctx > 50:
-                        old_ctx = ctx
-                        ctx = ctx // 2
-                        print(f"  OOM with context={old_ctx}, retrying with context={ctx}")
-                    elif qry > 100:
-                        old_qry = qry
-                        qry = qry // 2
-                        print(f"  OOM with query={old_qry}, retrying with query={qry}")
-                    else:
-                        raise
-
-            if not layer_embeddings:
-                dt = time.time() - t0
-                print(f"[{i+1}/{len(datasets)}] {ds}: FAILED ({dt:.1f}s) - no layers extracted")
-                failed += 1
-                continue
+            layer_embeddings = extract_all_layers_for_dataset(
+                args.model, ds,
+                device=args.device,
+                context_size=args.context_size,
+                query_size=args.query_size,
+            )
 
             # Sort layer names for consistent ordering
             sorted_names = sort_layer_names(list(layer_embeddings.keys()))

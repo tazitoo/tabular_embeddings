@@ -99,14 +99,21 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
 
         n_query = len(X_query)
+        n_features = X_query.shape[1]
 
         # Fit (finetunes pretrained weights on context data)
         self._classifier.fit(X_context, y_context)
 
+        # Batch predict() calls for high-dim datasets to avoid OOM.
+        # Tab2D attention is O(n_query * n_features) per layer; for
+        # Bioresponse (1776 features) or QSAR-TID-11 (1024), a single
+        # predict(500 rows) OOMs on 24GB GPUs.
+        query_batch = min(n_query, max(50, 400_000 // max(n_features, 1)))
+
         layer_embeddings = {}
 
         # Hook final_layer_norm on each trainer's Tab2D model
-        # Use lists to accumulate across internal batches (Mitra may batch queries)
+        # Use lists to accumulate across predict() calls and internal batches
         all_hidden_states = []
         captured_per_trainer = []
 
@@ -126,11 +133,18 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
             captured_per_trainer.append(captured)
 
         try:
+            all_outputs = []
+            for chunk_start in range(0, n_query, query_batch):
+                X_chunk = X_query[chunk_start:chunk_start + query_batch]
+                if task == "regression":
+                    all_outputs.append(self._classifier.predict(X_chunk))
+                else:
+                    all_outputs.append(self._classifier.predict_proba(X_chunk))
+
             if task == "regression":
-                preds = self._classifier.predict(X_query)
-                layer_embeddings["final_preds"] = preds
+                layer_embeddings["final_preds"] = np.concatenate(all_outputs, axis=0)
             else:
-                probs = self._classifier.predict_proba(X_query)
+                probs = np.concatenate(all_outputs, axis=0)
                 layer_embeddings["final_probs"] = probs
         finally:
             for h in handles:

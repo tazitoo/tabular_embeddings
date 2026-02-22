@@ -161,6 +161,10 @@ def extract_mitra_all_layers(
     clf.fit(X_context, y_context)
 
     n_query = len(X_query)
+    n_features = X_query.shape[1]
+    # Batch predict() calls for high-dim datasets to avoid OOM.
+    # Tab2D attention is O(n_query * n_features) per layer.
+    query_batch = min(n_query, max(50, 400_000 // max(n_features, 1)))
 
     # Access the Tab2D model through trainers
     trainer = clf.trainers[0]
@@ -197,13 +201,17 @@ def extract_mitra_all_layers(
             captured["final_norm"].append(output.detach().float().cpu().numpy())
     handles.append(tab2d_model.final_layer_norm.register_forward_hook(final_norm_hook))
 
-    # Forward pass
+    # Forward pass — batch queries to avoid OOM on high-dim datasets
+    if query_batch < n_query:
+        print(f"  High-dim ({n_features} features): batching queries {query_batch} at a time")
     try:
         with torch.no_grad():
-            if task == "regression":
-                _ = clf.predict(X_query)
-            else:
-                _ = clf.predict_proba(X_query)
+            for chunk_start in range(0, n_query, query_batch):
+                X_chunk = X_query[chunk_start:chunk_start + query_batch]
+                if task == "regression":
+                    _ = clf.predict(X_chunk)
+                else:
+                    _ = clf.predict_proba(X_chunk)
     finally:
         for handle in handles:
             handle.remove()
