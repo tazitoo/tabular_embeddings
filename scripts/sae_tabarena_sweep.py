@@ -776,7 +776,6 @@ def run_sweep(
     device: str = "cuda",
     sae_type_filter: Optional[List[str]] = None,
     use_wandb: bool = False,
-    use_prebuilt: bool = True,
     task_filter: Optional[str] = None,
 ):
     """Run HP sweep for SAE types on train datasets.
@@ -790,9 +789,6 @@ def run_sweep(
             When None, uses model_name directory directly.
         device: Torch device for training
         sae_type_filter: If given, only sweep these SAE types (default: all 5)
-        use_prebuilt: If True (default), load from prebuilt SAE training files
-            produced by build_sae_training_data.py. Falls back to per-dataset
-            discovery if prebuilt files are not found.
     """
     import optuna
 
@@ -801,41 +797,20 @@ def run_sweep(
         output_dir = sae_sweep_dir() / sweep_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Try prebuilt path first (preferred — uses optimal layers)
-    prebuilt = None
-    if use_prebuilt and not context_sizes:
-        prebuilt = _load_prebuilt_embeddings(model_name)
+    # Load prebuilt training data (required)
+    prebuilt = _load_prebuilt_embeddings(model_name)
+    if prebuilt is None:
+        prebuilt_dir = PROJECT_ROOT / "output" / "sae_training"
+        raise FileNotFoundError(
+            f"No prebuilt SAE training data found for '{model_name}'. "
+            f"Expected: {prebuilt_dir}/{model_name}_layer*_sae_training.npz\n"
+            f"Run: python scripts/build_sae_training_data.py --model {model_name}"
+        )
 
-    if prebuilt is not None:
-        embeddings, train_datasets, test_datasets, optimal_layer = prebuilt
-        embeddings_by_ctx: Dict[int, np.ndarray] = {0: embeddings}
-        print(f"Train datasets: {len(train_datasets)}")
-        print(f"Test datasets: {len(test_datasets)}")
-    else:
-        if use_prebuilt and not context_sizes:
-            print("No prebuilt SAE training data found, falling back to per-dataset discovery")
-
-        # Legacy path: discover per-dataset files
-        if context_sizes:
-            effective_names = [f"{model_name}_ctx{c}" for c in context_sizes]
-        else:
-            effective_names = [model_name]
-
-        # Discover train/test split from first available effective model
-        train_datasets, test_datasets = get_tabarena_splits(effective_names[0], task_filter=task_filter)
-        print(f"Train datasets: {len(train_datasets)}")
-        print(f"Test datasets: {len(test_datasets)}")
-
-        embeddings_by_ctx: Dict[int, np.ndarray] = {}
-        for i, ename in enumerate(effective_names):
-            ctx = context_sizes[i] if context_sizes else 0
-            print(f"\nPooling {ename} embeddings from train datasets...")
-            # Pass raw embeddings - SAE's BatchNorm will learn normalization during training
-            emb, counts = pool_embeddings(ename, train_datasets, max_per_dataset=500, normalize=False)
-            print(f"  Total samples: {len(emb)}")
-            print(f"  Embedding dim: {emb.shape[1]}")
-            print(f"  Datasets loaded: {len(counts)}")
-            embeddings_by_ctx[ctx] = emb
+    embeddings, train_datasets, test_datasets, optimal_layer = prebuilt
+    embeddings_by_ctx: Dict[int, np.ndarray] = {0: embeddings}
+    print(f"Train datasets: {len(train_datasets)}")
+    print(f"Test datasets: {len(test_datasets)}")
 
     # Save split info
     split_info = {
@@ -1029,16 +1004,10 @@ def main():
     parser.add_argument("--n-trials", type=int, default=30, help="Trials per SAE type")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate on test set")
     parser.add_argument("--wandb", action="store_true", help="Enable wandb logging for training visualization")
-    parser.add_argument("--use-prebuilt", action="store_true", default=True,
-                        help="Load from prebuilt SAE training files (default: True)")
-    parser.add_argument("--no-prebuilt", action="store_true",
-                        help="Disable prebuilt loading, use per-dataset discovery")
     parser.add_argument("--task", type=str, default=None,
                         choices=["classification", "regression"],
                         help="Filter datasets by task type (default: all)")
     args = parser.parse_args()
-    if args.no_prebuilt:
-        args.use_prebuilt = False
 
     # Parse context sizes
     context_sizes = None
@@ -1077,7 +1046,6 @@ def main():
             device=args.device,
             sae_type_filter=sae_type_filter,
             use_wandb=args.wandb,
-            use_prebuilt=args.use_prebuilt,
             task_filter=args.task,
         )
 
