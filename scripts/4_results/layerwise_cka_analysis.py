@@ -255,11 +255,15 @@ def extract_tabicl_all_layers(
     y_context: np.ndarray,
     X_query: np.ndarray,
     device: str = "cuda",
+    task: str = "classification",
 ) -> Dict[str, np.ndarray]:
     """Extract embeddings from all TabICL transformer layers."""
-    from tabicl import TabICLClassifier
-
-    clf = TabICLClassifier(device=device)
+    if task == "regression":
+        from tabicl import TabICLRegressor
+        clf = TabICLRegressor(device=device)
+    else:
+        from tabicl import TabICLClassifier
+        clf = TabICLClassifier(device=device)
     clf.fit(X_context, y_context)
 
     n_query = len(X_query)
@@ -294,7 +298,10 @@ def extract_tabicl_all_layers(
     # Forward pass
     try:
         with torch.no_grad():
-            _ = clf.predict_proba(X_query)
+            if task == "regression":
+                _ = clf.predict(X_query)
+            else:
+                _ = clf.predict_proba(X_query)
     finally:
         for handle in handles:
             handle.remove()
@@ -322,15 +329,19 @@ def extract_tabdpt_all_layers(
     y_context: np.ndarray,
     X_query: np.ndarray,
     device: str = "cuda",
+    task: str = "classification",
 ) -> Dict[str, np.ndarray]:
     """
     Extract embeddings from all TabDPT transformer encoder layers (16 layers).
 
     TabDPT architecture: encoder → transformer_encoder (16 layers) → head
     """
-    from tabdpt import TabDPTClassifier
-
-    clf = TabDPTClassifier(device=device, compile=False)
+    if task == "regression":
+        from tabdpt import TabDPTRegressor
+        clf = TabDPTRegressor(device=device, compile=False)
+    else:
+        from tabdpt import TabDPTClassifier
+        clf = TabDPTClassifier(device=device, compile=False)
     clf.fit(X_context, y_context)
 
     n_query = len(X_query)
@@ -371,7 +382,10 @@ def extract_tabdpt_all_layers(
     # Forward pass
     try:
         with torch.no_grad():
-            _ = clf.predict_proba(X_query)
+            if task == "regression":
+                _ = clf.predict(X_query)
+            else:
+                _ = clf.predict_proba(X_query)
     finally:
         for handle in handles:
             handle.remove()
