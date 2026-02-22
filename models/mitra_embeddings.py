@@ -106,18 +106,19 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         layer_embeddings = {}
 
         # Hook final_layer_norm on each trainer's Tab2D model
+        # Use lists to accumulate across internal batches (Mitra may batch queries)
         all_hidden_states = []
         captured_per_trainer = []
 
         handles = []
         for trainer in self._classifier.trainers:
             tab2d_model = trainer.model
-            captured = {}
+            captured = {"hidden": []}
 
             def make_hook(capture_dict):
                 def hook_fn(module, input, output):
                     if isinstance(output, torch.Tensor):
-                        capture_dict["hidden"] = output.detach().cpu().numpy()
+                        capture_dict["hidden"].append(output.detach().cpu().numpy())
                 return hook_fn
 
             h = tab2d_model.final_layer_norm.register_forward_hook(make_hook(captured))
@@ -135,11 +136,11 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
             for h in handles:
                 h.remove()
 
-        # Process captured hidden states
+        # Process captured hidden states — concatenate across internal batches
         for captured in captured_per_trainer:
-            if "hidden" not in captured:
+            if not captured["hidden"]:
                 continue
-            hidden = captured["hidden"]
+            hidden = np.concatenate(captured["hidden"], axis=0)
             # Shape varies based on flash_attn path:
             # With flash_attn: (n_valid_query, dim) — already flat
             # Without flash_attn: (batch, n_query, n_features+1, dim)

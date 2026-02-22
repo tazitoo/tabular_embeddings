@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -170,7 +171,8 @@ def extract_mitra_all_layers(
     print(f"Mitra has {n_layers} Tab2D transformer layers")
 
     # Register hooks for all layers
-    captured = {}
+    # Use lists to accumulate across internal batches (Mitra may batch queries)
+    captured = defaultdict(list)
     handles = []
 
     for i, layer in enumerate(layers):
@@ -182,7 +184,7 @@ def extract_mitra_all_layers(
                 else:
                     out = output
                 if isinstance(out, torch.Tensor):
-                    captured[f"layer_{layer_idx}"] = out.detach().float().cpu().numpy()
+                    captured[f"layer_{layer_idx}"].append(out.detach().float().cpu().numpy())
             return hook_fn
         handle = layer.register_forward_hook(make_hook(i))
         handles.append(handle)
@@ -190,7 +192,7 @@ def extract_mitra_all_layers(
     # Also hook final_layer_norm
     def final_norm_hook(module, input, output):
         if isinstance(output, torch.Tensor):
-            captured["final_norm"] = output.detach().float().cpu().numpy()
+            captured["final_norm"].append(output.detach().float().cpu().numpy())
     handles.append(tab2d_model.final_layer_norm.register_forward_hook(final_norm_hook))
 
     # Forward pass
@@ -204,14 +206,19 @@ def extract_mitra_all_layers(
         for handle in handles:
             handle.remove()
 
-    # Process captured activations
+    # Process captured activations — concatenate across internal batches
     layer_embeddings = {}
-    for key, act in captured.items():
+    for key, act_list in captured.items():
+        # Concatenate all batches along first axis
+        act = np.concatenate(act_list, axis=0)
         # Mitra shapes vary based on flash_attn path
         if act.ndim == 2:
             # (n_valid_samples, dim) - flash_attn path
             if act.shape[0] >= n_query:
                 emb = act[-n_query:]
+            else:
+                print(f"  Warning: {key} has {act.shape[0]} samples < {n_query} queries, skipping")
+                continue
         elif act.ndim == 4:
             # (batch, n_samples, n_features+1, dim)
             y_token = act[:, :, 0, :]  # Take y-token position
