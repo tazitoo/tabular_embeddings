@@ -18,6 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig, compute_c_dec
 from data.tabarena_utils import load_embeddings_raw, get_tabarena_splits
+from scripts.compare_sae_cross_model import sae_sweep_dir
 
 
 def compute_sae_metrics(model, embeddings, device='cpu'):
@@ -79,7 +80,7 @@ def main():
     print()
 
     # Load SAE
-    model_path = PROJECT_ROOT / f'output/sae_tabarena_sweep/{args.model}/sae_{args.architecture}_validated.pt'
+    model_path = sae_sweep_dir() / f'{args.model}/sae_{args.architecture}_validated.pt'
     if not model_path.exists():
         print(f"ERROR: Model not found: {model_path}")
         return

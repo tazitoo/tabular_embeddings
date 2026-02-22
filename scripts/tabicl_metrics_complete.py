@@ -10,6 +10,7 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
+from scripts.compare_sae_cross_model import sae_sweep_dir
 
 def load_tabicl_embeddings():
     """Load pooled TabICL embeddings - use pre-extracted embeddings from sweep."""
@@ -109,7 +110,7 @@ def main():
     print(f"Embeddings shape: {embeddings.shape}")
 
     # Models to analyze
-    model_dir = Path("output/sae_tabarena_sweep/tabicl_layer10")
+    model_dir = sae_sweep_dir() / "tabicl_layer10"
     models = [
         ("Matryoshka-Archetypal", "sae_matryoshka_archetypal_validated.pt"),
         ("Archetypal", "sae_archetypal_validated.pt"),

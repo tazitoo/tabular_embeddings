@@ -8,10 +8,15 @@ Creates appendix tables with:
 """
 
 import json
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-SWEEP_DIR = PROJECT_ROOT / "output" / "sae_tabarena_sweep"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.compare_sae_cross_model import sae_sweep_dir
+
+SWEEP_DIR = sae_sweep_dir()
 OUTPUT_DIR = Path(__file__).parent  # Save outputs in scripts/tables/
 
 # Model display names

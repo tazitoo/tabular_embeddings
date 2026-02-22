@@ -142,6 +142,41 @@ def centered_kernel_alignment(emb_a: np.ndarray, emb_b: np.ndarray) -> float:
     return hsic_ab / (np.sqrt(hsic_aa * hsic_bb) + 1e-8)
 
 
+def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
+    """
+    Feature-space linear CKA between two representation matrices.
+
+    Equivalent to centered_kernel_alignment() but avoids forming n×n Gram
+    matrices. Complexity is O(n·p·q) instead of O(n²·(p+q)).
+
+    Formula: ||Y^T X||_F^2 / (||X^T X||_F · ||Y^T Y||_F)
+    computed on column-centered inputs.
+
+    Args:
+        X: (n_samples, p) activations from model A
+        Y: (n_samples, q) activations from model B
+
+    Returns:
+        CKA score in [0, 1]. Returns NaN if sample counts differ.
+    """
+    if X.shape[0] != Y.shape[0]:
+        return float("nan")
+
+    # Center columns
+    X = X - X.mean(axis=0)
+    Y = Y - Y.mean(axis=0)
+
+    # Cross-covariance and self-covariance Frobenius norms
+    YtX = Y.T @ X  # (q, p)
+    XtX = X.T @ X  # (p, p)
+    YtY = Y.T @ Y  # (q, q)
+
+    numerator = np.sum(YtX ** 2)
+    denominator = np.sqrt(np.sum(XtX ** 2) * np.sum(YtY ** 2))
+
+    return float(numerator / (denominator + 1e-8))
+
+
 def procrustes_align(
     emb_a: np.ndarray,
     emb_b: np.ndarray,

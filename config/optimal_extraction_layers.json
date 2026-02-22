@@ -30,7 +30,9 @@
     "architecture": "2D Attention",
     "task": "classification",
     "extraction_point": "layer_10",
-    "rationale": "Layer 10 is optimal (critical - 1), where representation maintains 0.87 CKA with input before divergence cliff at layer 11"
+    "rationale": "Layer 10 is optimal (critical - 1), where representation maintains 0.87 CKA with input before divergence cliff at layer 11",
+    "regression_layer": 11,
+    "regression_rationale": "Regressor checkpoint has critical depth at L12 (92.3%) with zero variance across 13 datasets. Layer 11 maintains CKA=0.77 with input."
   },
   "tabdpt": {
     "optimal_layer": 13,

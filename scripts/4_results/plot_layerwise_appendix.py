@@ -153,29 +153,238 @@ def plot_single_model_appendix(model_name: str, matrix: np.ndarray, output_path:
     plt.close()
 
 
+def plot_model_evidence(model_key: str, display_name: str, batch_data: dict,
+                        cka_matrix: np.ndarray = None, optimal_layer: int = None,
+                        n_layers_config: int = None, output_path: Path = None):
+    """
+    Generate publication-quality 3-panel evidence figure for a single model.
+
+    Uses ALL datasets from batch analysis (8-15 per model) to robustly justify
+    the extraction layer choice.
+
+    Panel A: Representative CKA heatmap (if available)
+    Panel B: CKA drift from L0 for ALL datasets (individual + mean + critical layer)
+    Panel C: Distribution of critical depths across datasets
+    """
+    import json
+
+    datasets = list(batch_data.keys())
+    n_datasets = len(datasets)
+
+    # Get number of layers from first dataset
+    first = batch_data[datasets[0]]
+    n_layers = first['n_layers']
+
+    # Collect profiles and critical depths
+    profiles = []
+    critical_depths = []
+    critical_layers = []
+    for ds_name, r in batch_data.items():
+        profiles.append(np.array(r['l0_cka_profile']))
+        critical_depths.append(r['critical_depth_frac'])
+        critical_layers.append(r['critical_layer'])
+
+    mean_profile = np.mean(profiles, axis=0)
+    mean_critical = np.mean(critical_depths)
+    std_critical = np.std(critical_depths)
+
+    # Figure layout
+    if cka_matrix is not None:
+        fig = plt.figure(figsize=(15, 4.5))
+        ax1 = fig.add_subplot(131)
+        ax2 = fig.add_subplot(132)
+        ax3 = fig.add_subplot(133)
+    else:
+        fig = plt.figure(figsize=(11, 4.5))
+        ax2 = fig.add_subplot(121)
+        ax3 = fig.add_subplot(122)
+        ax1 = None
+
+    # --- Panel A: Heatmap (if available) ---
+    if ax1 is not None and cka_matrix is not None:
+        n_hm = cka_matrix.shape[0]
+        if n_hm <= 6:
+            tick_step = 1
+        elif n_hm <= 15:
+            tick_step = 2
+        else:
+            tick_step = 4
+
+        tick_positions = list(range(0, n_hm, tick_step))
+        tick_labels = [f'L{i}' for i in tick_positions]
+
+        im = ax1.imshow(cka_matrix, cmap='RdYlBu_r', vmin=0, vmax=1, aspect='equal')
+        ax1.set_xticks(tick_positions)
+        ax1.set_xticklabels(tick_labels, fontsize=8)
+        ax1.set_yticks(tick_positions)
+        ax1.set_yticklabels(tick_labels, fontsize=8)
+        ax1.set_xlabel('Layer', fontsize=11)
+        ax1.set_ylabel('Layer', fontsize=11)
+        ax1.set_title(f'(A) Layer-wise CKA', fontsize=12)
+
+        cbar = plt.colorbar(im, ax=ax1, shrink=0.8)
+        cbar.set_label('CKA', fontsize=10)
+
+        # Mark optimal layer
+        if optimal_layer is not None and optimal_layer < n_hm:
+            ax1.axhline(y=optimal_layer, color='lime', linestyle='--', linewidth=1.5, alpha=0.8)
+            ax1.axvline(x=optimal_layer, color='lime', linestyle='--', linewidth=1.5, alpha=0.8)
+
+    # --- Panel B: CKA drift from L0 (ALL datasets) ---
+    layers = np.arange(n_layers)
+    colors_palette = plt.cm.tab10(np.linspace(0, 1, min(n_datasets, 10)))
+
+    # Individual dataset profiles (thin, colored)
+    for i, (ds_name, profile) in enumerate(zip(datasets, profiles)):
+        color = colors_palette[i % len(colors_palette)]
+        ax2.plot(layers, profile, color=color, alpha=0.3, linewidth=1)
+
+    # Mean profile (bold black)
+    ax2.plot(layers, mean_profile, color='black', linewidth=3, label=f'Mean (n={n_datasets})',
+             zorder=10)
+
+    # CKA = 0.5 threshold
+    ax2.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5, linewidth=1)
+    ax2.text(0.5, 0.52, 'CKA = 0.5', fontsize=8, color='gray', alpha=0.7)
+
+    # Mark critical layer (mean)
+    mean_crit_layer = np.mean(critical_layers)
+    ax2.axvline(x=mean_crit_layer, color='red', linestyle='--', linewidth=2, alpha=0.8,
+                label=f'Critical (L{mean_crit_layer:.0f})')
+
+    # Mark optimal extraction layer
+    if optimal_layer is not None:
+        ax2.axvline(x=optimal_layer, color='#2ca02c', linestyle='-', linewidth=2.5, alpha=0.9,
+                    label=f'Extract (L{optimal_layer})')
+        # Annotate CKA at extraction point
+        cka_at_optimal = mean_profile[optimal_layer] if optimal_layer < len(mean_profile) else None
+        if cka_at_optimal is not None:
+            ax2.plot(optimal_layer, cka_at_optimal, 'o', color='#2ca02c', markersize=10,
+                     zorder=11, markeredgecolor='black', markeredgewidth=1.5)
+            # Position annotation to avoid overlap with data
+            x_offset = max(n_layers * 0.08, 1.5)
+            y_offset = 0.1 if cka_at_optimal < 0.85 else -0.12
+            ax2.annotate(f'CKA={cka_at_optimal:.2f}',
+                         xy=(optimal_layer, cka_at_optimal),
+                         xytext=(optimal_layer + x_offset, cka_at_optimal + y_offset),
+                         fontsize=10, fontweight='bold', color='#2ca02c',
+                         arrowprops=dict(arrowstyle='->', color='#2ca02c', lw=1.5))
+
+    panel_b_label = '(B)' if ax1 is not None else '(A)'
+    ax2.set_xlabel('Layer', fontsize=11)
+    ax2.set_ylabel('CKA with Layer 0', fontsize=11)
+    ax2.set_title(f'{panel_b_label} Representation Drift ({n_datasets} datasets)', fontsize=12)
+    ax2.set_ylim(0, 1.08)
+    ax2.set_xlim(-0.5, n_layers - 0.5)
+    ax2.legend(loc='lower left', fontsize=8, ncol=1 if n_datasets <= 8 else 2)
+    ax2.grid(True, alpha=0.3)
+
+    # --- Panel C: Critical depth distribution ---
+    panel_c_label = '(C)' if ax1 is not None else '(B)'
+
+    # Strip plot of individual critical depths
+    jitter = np.random.RandomState(42).uniform(-0.15, 0.15, n_datasets)
+    ax3.scatter(jitter, critical_layers, c='steelblue', s=50, alpha=0.6, edgecolors='black',
+                linewidths=0.5, zorder=5)
+
+    # Mean + std
+    ax3.errorbar(0, np.mean(critical_layers), yerr=np.std(critical_layers),
+                 fmt='D', color='red', markersize=10, capsize=8, capthick=2,
+                 linewidth=2, zorder=10, label=f'Mean: L{np.mean(critical_layers):.1f} '
+                 f'({mean_critical:.0%} depth)')
+
+    # Optimal extraction layer
+    if optimal_layer is not None:
+        ax3.axhline(y=optimal_layer, color='#2ca02c', linestyle='-', linewidth=2.5, alpha=0.9,
+                    label=f'Extraction: L{optimal_layer}', zorder=8)
+
+    # Add dataset labels for small n
+    if n_datasets <= 15:
+        for i, (ds_name, cl) in enumerate(zip(datasets, critical_layers)):
+            short_name = ds_name[:15] + '...' if len(ds_name) > 15 else ds_name
+            ax3.annotate(short_name, (jitter[i], cl),
+                         xytext=(0.25, cl), fontsize=7, alpha=0.6,
+                         arrowprops=dict(arrowstyle='-', color='gray', alpha=0.3, lw=0.5))
+
+    ax3.set_xlim(-0.5, 2.5)
+    ax3.set_ylim(-0.5, n_layers - 0.5)
+    ax3.set_ylabel('Critical Layer', fontsize=11)
+    ax3.set_title(f'{panel_c_label} Critical Depth Distribution', fontsize=12)
+    ax3.set_xticks([])
+    ax3.legend(loc='lower right', fontsize=9)
+    ax3.grid(True, alpha=0.3, axis='y')
+
+    # Add depth fraction on right y-axis
+    ax3_right = ax3.twinx()
+    ax3_right.set_ylim(-0.5 / n_layers, (n_layers - 0.5) / n_layers)
+    ax3_right.set_ylabel('Depth Fraction', fontsize=10)
+
+    fig.suptitle(f'{display_name} — Layer Selection Evidence', fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path.with_suffix('.pdf'), dpi=300, bbox_inches='tight')
+        plt.savefig(output_path.with_suffix('.png'), dpi=300, bbox_inches='tight')
+        print(f"Saved: {output_path.with_suffix('.png')} ({n_datasets} datasets)")
+    plt.close()
+
+
 def plot_all_model_appendix_figures():
-    """Generate individual appendix figures for all models."""
-    # Model configurations: (file_pattern, display_name)
+    """Generate individual appendix figures for all models using batch analysis data."""
+    import json
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+    # Load optimal layer config
+    try:
+        from config import load_optimal_layers
+        optimal_config = load_optimal_layers()
+    except (ImportError, FileNotFoundError):
+        optimal_config = {}
+
+    # Model configurations
     models = {
-        'tabpfn_adult': 'TabPFN',
-        'tabicl_adult': 'TabICL',
-        'mitra_adult': 'Mitra',
-        'hyperfast_adult': 'HyperFast',
-        'tabdpt_adult': 'TabDPT',
-        'carte_SpeedDating': 'CARTE',
+        'tabpfn': {'name': 'TabPFN', 'heatmap_key': 'tabpfn_adult'},
+        'tabicl': {'name': 'TabICL', 'heatmap_key': 'tabicl_adult'},
+        'mitra': {'name': 'Mitra', 'heatmap_key': 'mitra_adult'},
+        'tabdpt': {'name': 'TabDPT', 'heatmap_key': 'tabdpt_adult'},
+        'carte': {'name': 'CARTE', 'heatmap_key': 'carte_SpeedDating'},
+        'hyperfast': {'name': 'HyperFast', 'heatmap_key': 'hyperfast_adult'},
+        'tabula8b': {'name': 'Tabula-8B', 'heatmap_key': None},
     }
 
-    for file_key, display_name in models.items():
-        npz_path = OUTPUT_DIR / f"layerwise_cka_{file_key}.npz"
-        if not npz_path.exists():
-            print(f"Skipping {display_name}: {npz_path} not found")
+    for model_key, config in models.items():
+        # Load batch analysis data
+        json_path = OUTPUT_DIR / f"layerwise_depth_analysis_{model_key}.json"
+        if not json_path.exists():
+            print(f"Skipping {config['name']}: batch analysis not found")
             continue
 
-        data = np.load(npz_path)
-        matrix = data['cka_matrix']
+        with open(json_path) as f:
+            batch_data = json.load(f)
 
-        output_path = OUTPUT_DIR / f"layerwise_cka_appendix_{file_key}"
-        plot_single_model_appendix(display_name, matrix, output_path)
+        # Load CKA matrix for heatmap (if available)
+        cka_matrix = None
+        if config['heatmap_key']:
+            npz_path = OUTPUT_DIR / f"layerwise_cka_{config['heatmap_key']}.npz"
+            if npz_path.exists():
+                data = np.load(npz_path)
+                cka_matrix = data['cka_matrix']
+
+        # Get optimal layer from config
+        optimal_layer = None
+        if model_key in optimal_config:
+            optimal_layer = optimal_config[model_key]['optimal_layer']
+
+        output_path = OUTPUT_DIR / f"layerwise_cka_appendix_{model_key}"
+        plot_model_evidence(
+            model_key=model_key,
+            display_name=config['name'],
+            batch_data=batch_data,
+            cka_matrix=cka_matrix,
+            optimal_layer=optimal_layer,
+            output_path=output_path,
+        )
 
 
 def plot_appendix_figure():
@@ -515,6 +724,7 @@ def plot_combined_all_models():
         'hyperfast': {'name': 'HyperFast', 'color': '#d62728', 'marker': 'D'},
         'tabdpt': {'name': 'TabDPT', 'color': '#9467bd', 'marker': 'v'},
         'carte': {'name': 'CARTE', 'color': '#8c564b', 'marker': 'P'},
+        'tabula8b': {'name': 'Tabula-8B', 'color': '#e377c2', 'marker': 'X'},
     }
 
     # Load aggregated results for each model
@@ -619,7 +829,7 @@ def plot_combined_all_models():
     ax.set_xticks(x)
     ax.set_xticklabels(model_names, fontsize=11)
     ax.set_ylim(0, 1.15)
-    ax.legend(loc='upper right', fontsize=10)
+    ax.legend(loc='lower left', fontsize=10)
     ax.grid(True, alpha=0.3, axis='y')
 
     plt.tight_layout()

@@ -39,6 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from scripts.compare_sae_cross_model import (
     DEFAULT_MODELS,
     find_common_datasets,
+    sae_sweep_dir,
 )
 from scripts.compare_sae_architectures import (
     compute_activations,
@@ -493,7 +494,7 @@ def main():
     print(f"Datasets with domain labels: {len(dataset_domain)}")
 
     # Resolve model paths
-    base_sae = PROJECT_ROOT / "output" / "sae_tabarena_sweep"
+    base_sae = sae_sweep_dir()
     base_emb = PROJECT_ROOT / "output" / "embeddings" / "tabarena"
 
     model_configs = []

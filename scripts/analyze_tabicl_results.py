@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Extract fundamental SAE metrics from TabICL sweep results."""
+import sys
 import torch
 import numpy as np
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.compare_sae_cross_model import sae_sweep_dir
+
 # Models to analyze
-model_dir = Path("output/sae_tabarena_sweep/tabicl_layer10")
+model_dir = sae_sweep_dir() / "tabicl_layer10"
 models = [
     ("L1", "sae_l1_validated.pt"),
     ("TopK", "sae_topk_validated.pt"),

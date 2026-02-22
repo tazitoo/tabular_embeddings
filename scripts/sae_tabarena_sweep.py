@@ -43,6 +43,9 @@ os.environ['MKL_NUM_THREADS'] = str(num_threads)
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND, sae_sweep_dir
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from analysis.sparse_autoencoder import (
     SAEConfig,
     train_sae,
@@ -55,11 +58,16 @@ from data.tabarena_utils import get_embedding_dir
 SPLIT_SEED = 42
 
 
-def get_available_datasets(model_name: str) -> List[str]:
+def get_available_datasets(model_name: str, task_filter: str = None) -> List[str]:
     """
     Discover available embeddings for a model.
 
     Dynamically finds all extracted embeddings instead of hardcoding.
+
+    Args:
+        model_name: Model identifier (e.g., 'tabpfn', 'mitra')
+        task_filter: If set, only return datasets matching this task type
+                     ('classification' or 'regression'). Requires TABARENA_DATASETS.
     """
     # Map model name to actual embedding directory
     emb_dir_name = get_embedding_dir(model_name)
@@ -70,12 +78,18 @@ def get_available_datasets(model_name: str) -> List[str]:
     datasets = []
     for f in path.glob("tabarena_*.npz"):
         ds_name = f.stem.replace("tabarena_", "")
+        if task_filter:
+            from data.extended_loader import TABARENA_DATASETS
+            info = TABARENA_DATASETS.get(ds_name, {})
+            ds_task = info.get("task", "classification")
+            if ds_task != task_filter:
+                continue
         datasets.append(ds_name)
 
     return sorted(datasets)
 
 
-def get_tabarena_splits(model_name: str = "tabpfn") -> Tuple[List[str], List[str]]:
+def get_tabarena_splits(model_name: str = "tabpfn", task_filter: str = None) -> Tuple[List[str], List[str]]:
     """
     Get train/test split of TabArena datasets.
 
@@ -84,7 +98,7 @@ def get_tabarena_splits(model_name: str = "tabpfn") -> Tuple[List[str], List[str
 
     Dynamically discovers available embeddings for the model.
     """
-    all_datasets = get_available_datasets(model_name)
+    all_datasets = get_available_datasets(model_name, task_filter=task_filter)
 
     if not all_datasets:
         raise ValueError(f"No datasets found for {model_name}")
@@ -763,6 +777,7 @@ def run_sweep(
     sae_type_filter: Optional[List[str]] = None,
     use_wandb: bool = False,
     use_prebuilt: bool = True,
+    task_filter: Optional[str] = None,
 ):
     """Run HP sweep for SAE types on train datasets.
 
@@ -782,7 +797,8 @@ def run_sweep(
     import optuna
 
     if output_dir is None:
-        output_dir = PROJECT_ROOT / "output" / "sae_tabarena_sweep" / model_name
+        sweep_name = f"{model_name}_{task_filter}" if task_filter else model_name
+        output_dir = sae_sweep_dir() / sweep_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Try prebuilt path first (preferred — uses optimal layers)
@@ -806,7 +822,7 @@ def run_sweep(
             effective_names = [model_name]
 
         # Discover train/test split from first available effective model
-        train_datasets, test_datasets = get_tabarena_splits(effective_names[0])
+        train_datasets, test_datasets = get_tabarena_splits(effective_names[0], task_filter=task_filter)
         print(f"Train datasets: {len(train_datasets)}")
         print(f"Test datasets: {len(test_datasets)}")
 
@@ -915,7 +931,7 @@ def evaluate_on_test(
 ):
     """Evaluate best configs on test datasets."""
     if output_dir is None:
-        output_dir = PROJECT_ROOT / "output" / "sae_tabarena_sweep" / model_name
+        output_dir = sae_sweep_dir() / model_name
 
     # Load best configs
     config_path = output_dir / "best_configs.json"
@@ -1017,6 +1033,9 @@ def main():
                         help="Load from prebuilt SAE training files (default: True)")
     parser.add_argument("--no-prebuilt", action="store_true",
                         help="Disable prebuilt loading, use per-dataset discovery")
+    parser.add_argument("--task", type=str, default=None,
+                        choices=["classification", "regression"],
+                        help="Filter datasets by task type (default: all)")
     args = parser.parse_args()
     if args.no_prebuilt:
         args.use_prebuilt = False
@@ -1059,6 +1078,7 @@ def main():
             sae_type_filter=sae_type_filter,
             use_wandb=args.wandb,
             use_prebuilt=args.use_prebuilt,
+            task_filter=args.task,
         )
 
 

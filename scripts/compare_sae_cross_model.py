@@ -44,16 +44,73 @@ from scripts.analyze_sae_concepts_deep import (
 )
 from data.extended_loader import load_tabarena_dataset
 
+# SAE sweep round tracking — increment when retraining with architecture changes.
+# Round 4: DAE bug (TopK not enforced), fixed bands [32,64,128,256]
+# Round 5: TopK enforced, proportional bands [h/16,h/8,h/4,h/2,h], ghost grads enabled
+DEFAULT_SAE_ROUND = 5
+
+
+def sae_sweep_dir(round: int = None) -> Path:
+    """Return the SAE sweep base directory for a given round."""
+    r = round if round is not None else DEFAULT_SAE_ROUND
+    return PROJECT_ROOT / "output" / f"sae_tabarena_sweep_round{r}"
+
+
 # Default model configurations: (display_name, sae_sweep_dir, emb_dir)
+# Mitra uses separate cls/reg SAEs because its pretrained cls and reg checkpoints
+# produce geometrically unrelated embeddings (r ≈ 0.02). The cls SAE handles
+# 38 classification datasets; regression datasets must be excluded.
 DEFAULT_MODELS = [
     ("TabPFN", "tabpfn", "tabpfn"),
     ("CARTE", "carte", "carte"),
     ("TabICL", "tabicl", "tabicl"),
     ("TabDPT", "tabdpt", "tabdpt"),
-    ("Mitra", "mitra", "mitra"),
+    ("Mitra", "mitra_classification", "mitra"),
     ("HyperFast", "hyperfast", "hyperfast"),
     ("Tabula-8B", "tabula8b", "tabula8b"),
 ]
+
+# Regression model configurations: only models with regression-capable SAEs.
+# Mitra regression uses a separate SAE trained on regression embeddings.
+REGRESSION_MODELS = [
+    ("TabPFN", "tabpfn", "tabpfn"),
+    ("CARTE", "carte", "carte"),
+    ("TabDPT", "tabdpt", "tabdpt"),
+    ("Mitra", "mitra_regression", "mitra"),
+    ("Tabula-8B", "tabula8b", "tabula8b"),
+]
+
+# Models whose SAE only applies to datasets of a specific task type.
+# Models not listed here work on all tasks.
+MODEL_TASK_FILTERS = {
+    "Mitra": "classification",
+}
+
+REGRESSION_TASK_FILTERS = {
+    "Mitra": "regression",
+}
+
+
+def get_models_for_task(task: str = "classification"):
+    """Return (model_list, task_filters) appropriate for the given task type.
+
+    Args:
+        task: "classification" or "regression"
+
+    Returns:
+        (models, task_filters) where models is a list of
+        (display_name, sae_sweep_dir, emb_dir) tuples and task_filters
+        restricts certain models to specific dataset task types.
+    """
+    if task == "regression":
+        return REGRESSION_MODELS, REGRESSION_TASK_FILTERS
+    return DEFAULT_MODELS, MODEL_TASK_FILTERS
+
+
+def get_dataset_tasks():
+    """Return {dataset_name: task_type} for all TabArena datasets."""
+    from data.extended_loader import TABARENA_DATASETS
+    return {name: info["task"] for name, info in TABARENA_DATASETS.items()}
 
 
 def find_common_datasets(emb_dirs: Dict[str, Path]) -> List[str]:
@@ -371,9 +428,11 @@ def main():
                         help="Output JSON path")
     parser.add_argument("--max-per-dataset", type=int, default=500,
                         help="Max samples per dataset (default: 500)")
+    parser.add_argument("--round", type=int, default=None,
+                        help=f"SAE sweep round (default: {DEFAULT_SAE_ROUND})")
     args = parser.parse_args()
 
-    base_sae = PROJECT_ROOT / "output" / "sae_tabarena_sweep"
+    base_sae = sae_sweep_dir(args.round)
     base_emb = PROJECT_ROOT / "output" / "embeddings" / "tabarena"
 
     # Resolve model paths

@@ -12,6 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 from data.extended_loader import TABARENA_DATASETS
+from scripts.compare_sae_cross_model import sae_sweep_dir
 
 # Domain mapping for TabArena datasets
 DOMAIN_COLORS = {
@@ -140,7 +141,7 @@ def main():
         ("Mat-BatchTopK-Arch", "sae_matryoshka_batchtopk_archetypal_validated.pt"),
     ]
 
-    model_dir = Path("output/sae_tabarena_sweep/tabicl_layer10")
+    model_dir = sae_sweep_dir() / "tabicl_layer10"
 
     # Matryoshka scales to evaluate
     scales = [32, 64, 128, 256]

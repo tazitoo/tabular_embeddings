@@ -32,6 +32,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from analysis.sparse_autoencoder import SAEConfig
+from scripts.compare_sae_cross_model import sae_sweep_dir
 
 
 # Architecture display names and colors
@@ -56,7 +57,7 @@ def load_sweep_results(model_name: str, base_dir: Path = None) -> Dict[str, List
         Each trial has: {l0, r2, stability, params, ...}
     """
     if base_dir is None:
-        base_dir = PROJECT_ROOT / 'output' / 'sae_tabarena_sweep'
+        base_dir = sae_sweep_dir()
 
     model_dir = base_dir / model_name
     if not model_dir.exists():
@@ -402,7 +403,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # Discover available models
-    sweep_dir = PROJECT_ROOT / 'output' / 'sae_tabarena_sweep'
+    sweep_dir = sae_sweep_dir()
     if not sweep_dir.exists():
         print(f"Error: Sweep directory not found: {sweep_dir}")
         return

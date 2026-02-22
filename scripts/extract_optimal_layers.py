@@ -24,7 +24,14 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config import load_optimal_layers
+from data.extended_loader import TABARENA_DATASETS
 from scripts.extract_layer_embeddings import sort_layer_names
+
+
+def get_dataset_task(dataset_name: str) -> str:
+    """Look up task type ('classification' or 'regression') from the catalog."""
+    info = TABARENA_DATASETS.get(dataset_name, {})
+    return info.get("task", "classification")
 
 
 def main():
@@ -45,7 +52,8 @@ def main():
     print("-" * 35)
 
     for model in models:
-        optimal_layer = config[model]["optimal_layer"]
+        cls_layer = config[model]["optimal_layer"]
+        reg_layer = config[model].get("regression_layer")
         n_layers = config[model]["n_layers"]
         layerwise_dir = layerwise_base / model
         output_dir = output_base / model
@@ -54,10 +62,22 @@ def main():
         npz_files = sorted(layerwise_dir.glob("tabarena_*.npz"))
         assert len(npz_files) > 0, f"No layerwise data for {model} in {layerwise_dir}"
 
+        n_cls, n_reg = 0, 0
         for npz_path in npz_files:
             out_path = output_dir / f"{npz_path.stem}.npz"
             data = np.load(npz_path, allow_pickle=True)
             layer_names = sort_layer_names(list(data["layer_names"]))
+
+            # Pick layer based on dataset task type
+            ds_name = npz_path.stem.replace("tabarena_", "")
+            task = get_dataset_task(ds_name)
+            if task == "regression" and reg_layer is not None:
+                optimal_layer = reg_layer
+                n_reg += 1
+            else:
+                optimal_layer = cls_layer
+                n_cls += 1
+
             assert optimal_layer < len(layer_names), (
                 f"{model}: layer {optimal_layer} out of range ({len(layer_names)} layers)"
             )
@@ -73,8 +93,10 @@ def main():
                 embedding_dim=np.array(embeddings.shape[1]),
             )
 
-        layer_str = f"L{optimal_layer}/{n_layers}"
-        print(f"{model:<12} {layer_str:<10} {len(npz_files):<10}")
+        layer_str = f"L{cls_layer}/{n_layers}"
+        if reg_layer is not None:
+            layer_str += f" (reg:L{reg_layer})"
+        print(f"{model:<12} {layer_str:<20} {n_cls} cls + {n_reg} reg = {len(npz_files)}")
 
     print(f"\nOutput: {output_base}")
 

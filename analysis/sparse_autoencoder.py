@@ -167,7 +167,8 @@ class SAEConfig:
 
     # Matryoshka settings (nested representation learning)
     # Used by "matryoshka" and "matryoshka_archetypal" types
-    matryoshka_dims: List[int] = field(default_factory=lambda: [32, 64, 128, 256])
+    # Default None → auto-compute as [h//16, h//8, h//4, h//2, h] in train_sae()
+    matryoshka_dims: List[int] = None
     matryoshka_weights: List[float] = None  # Weights for each scale (default: equal)
 
     # Archetypal settings (convex hull constraints)
@@ -237,6 +238,11 @@ class SAEConfig:
             self.use_aux_loss = self.use_ghost_grads
         if self.aux_loss_coef is None:
             self.aux_loss_coef = self.ghost_grad_coef
+
+        # Auto-compute proportional Matryoshka bands from hidden_dim
+        if self.matryoshka_dims is None and self.hidden_dim > 0:
+            h = self.hidden_dim
+            self.matryoshka_dims = [h // 16, h // 8, h // 4, h // 2, h]
 
 
 @dataclass
@@ -407,24 +413,33 @@ class SparseAutoencoder(nn.Module):
             h = F.relu(pre_act) * gate
 
         elif self.config.sparsity_type == "matryoshka":
-            # Matryoshka: standard ReLU, loss handles nesting
+            # Matryoshka: ReLU + TopK, loss handles nesting
             h = F.relu(pre_act)
+            topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
+            mask = torch.zeros_like(h)
+            mask.scatter_(-1, topk_idx, 1.0)
+            h = h * mask
 
         elif self.config.sparsity_type == "archetypal":
             # Archetypal SAE: dictionary atoms are constrained to convex hull of data
-            # Apply ReLU, then optionally TopK/BatchTopK for sparsity
+            # ReLU + TopK sparsity
             h = F.relu(pre_act)
-            # Note: Archetypal doesn't have its own sparsity_type variants
-            # Instead, use "batchtopk_archetypal" or "matryoshka_batchtopk_archetypal"
+            topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
+            mask = torch.zeros_like(h)
+            mask.scatter_(-1, topk_idx, 1.0)
+            h = h * mask
 
         elif self.config.sparsity_type == "matryoshka_archetypal":
             # Matryoshka-Archetypal: combines nested loss + archetypal decoder
             # - Encoder: standard learned weights (like archetypal)
             # - Decoder: convex combo of K-means centroids (archetypal constraint)
-            # - Activations: ReLU + TopK sparsity (or BatchTopK)
+            # - Activations: ReLU + TopK sparsity
             # - Loss: multi-scale reconstruction at Matryoshka dims (handled in train_sae)
             h = F.relu(pre_act)
-            # Note: Use "matryoshka_batchtopk_archetypal" for BatchTopK variant
+            topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
+            mask = torch.zeros_like(h)
+            mask.scatter_(-1, topk_idx, 1.0)
+            h = h * mask
 
         elif self.config.sparsity_type in ("batchtopk_archetypal", "matryoshka_batchtopk_archetypal"):
             # Archetypal/Matryoshka-Archetypal + BatchTopK sparsity
@@ -1024,7 +1039,15 @@ def train_sae(
 
     # For Matryoshka and Matryoshka-Archetypal, setup dimension weights
     if config.sparsity_type in ("matryoshka", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
-        mat_dims = [d for d in config.matryoshka_dims if d <= config.hidden_dim]
+        if config.matryoshka_dims is None:
+            # Proportional bands: [h/16, h/8, h/4, h/2, h]
+            h = config.hidden_dim
+            mat_dims = [h // 16, h // 8, h // 4, h // 2, h]
+        else:
+            mat_dims = [d for d in config.matryoshka_dims if d <= config.hidden_dim]
+            # Always include hidden_dim so all features are constrained
+            if config.hidden_dim not in mat_dims:
+                mat_dims.append(config.hidden_dim)
         if config.matryoshka_weights is None:
             mat_weights = [1.0 / len(mat_dims)] * len(mat_dims)
         else:
@@ -1083,13 +1106,18 @@ def train_sae(
                 sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
 
             elif config.sparsity_type in ("matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
-                # Matryoshka-Archetypal: combines two key ideas
+                # Matryoshka-Archetypal: combines three key ideas
                 # 1. Archetypal decoder: dictionary atoms = convex combos of K-means centroids (stability)
                 # 2. Matryoshka loss: multi-scale reconstruction at nested truncation points (hierarchy)
                 # 3. TopK sparsity: handled in encode() for interpretable sparse activations
-                # Note: Ghost grads destabilize training here (R²→-12804 on CARTE, NaN on TabDPT).
-                #       AuxK is compatible and may help with dead features.
-                h = model.encode(batch)
+                aux_type = config.aux_loss_type
+                if aux_type == "none" and config.use_ghost_grads:
+                    aux_type = "ghost_grads"
+
+                if aux_type == "ghost_grads":
+                    h, pre_act = model.encode(batch, return_pre_act=True)
+                else:
+                    h = model.encode(batch)
 
                 # Multi-scale reconstruction loss (Matryoshka)
                 # Loss at each scale ensures features are ordered by importance
@@ -1611,7 +1639,6 @@ if __name__ == "__main__":
             hidden_dim=256,
             sparsity_penalty=1e-3,
             sparsity_type="matryoshka",
-            matryoshka_dims=[32, 64, 128, 256],
             use_aux_loss=True,
             n_epochs=50,
         ),
