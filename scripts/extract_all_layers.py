@@ -116,7 +116,8 @@ def main():
     print(f"  Device: {args.device}")
     print()
 
-    success, skipped, failed = 0, 0, 0
+    success, skipped = 0, 0
+    failures = []
 
     for i, ds in enumerate(datasets):
         output_path = output_dir / f"tabarena_{ds}.npz"
@@ -162,12 +163,18 @@ def main():
             success += 1
 
         except Exception as e:
+            import traceback
             dt = time.time() - t0
-            print(f"[{i+1}/{len(datasets)}] {ds}: FAILED ({dt:.1f}s) - {e}")
-            failed += 1
+            print(f"[{i+1}/{len(datasets)}] {ds}: FAILED ({dt:.1f}s)")
+            traceback.print_exc()
+            failures.append(ds)
 
-    print(f"\nDone: {success} extracted, {skipped} skipped, {failed} failed")
+    print(f"\nDone: {success} extracted, {skipped} skipped, {len(failures)} failed")
     print(f"Output: {output_dir}")
+
+    if failures:
+        print(f"\nFailed datasets: {', '.join(failures)}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
