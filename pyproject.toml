@@ -12,38 +12,64 @@ dependencies = [
     "pandas>=2.0",
     "torch>=2.0",
     "scikit-learn>=1.3",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
 ]
 
 [project.optional-dependencies]
 # Individual model dependencies
 tabpfn = ["tabpfn>=2.0"]
 tabicl = ["tabicl"]
+tabdpt = ["tabdpt"]
 hyperfast = ["hyperfast"]
-mitra = ["autogluon.tabular"]
+carte = ["carte-ai"]
+mitra = ["autogluon.tabular[mitra]"]
+tabula8b = ["transformers>=4.36"]
 mothernet = ["ticl @ git+https://github.com/microsoft/ticl.git"]
 
-# All models
+# All models (except mothernet which requires manual install)
 models = [
     "tabpfn>=2.0",
     "tabicl",
+    "tabdpt",
     "hyperfast",
-    "autogluon.tabular",
-    "ticl @ git+https://github.com/microsoft/ticl.git",
+    "carte-ai",
+    "autogluon.tabular[mitra]",
+    "transformers>=4.36",
+]
+
+# SAE training and hyperparameter optimization
+sae = [
+    "optuna>=3.0",
+    "wandb",
+]
+
+# Benchmark dataset loaders
+benchmarks = [
+    "relbench",
+    "pmlb",
 ]
 
 # Distributed execution
 distributed = ["dask[distributed]"]
 
-# Benchmarks and leaderboards
-benchmarks = ["tabarena"]
+# Plotting extras (beyond matplotlib/seaborn in core)
+plots = [
+    "adjustText",
+    "tqdm",
+]
 
-# Development
+# Development and testing
 dev = [
     "pytest>=7.0",
-    "matplotlib>=3.7",
-    "seaborn>=0.12",
+]
+
+# Everything needed for a full worker environment
+all = [
+    "tabular-embeddings[models,sae,benchmarks,distributed,plots,dev]",
 ]
 
 [tool.setuptools.packages.find]
-include = ["models*", "data*", "analysis*"]
+include = ["models*", "data*", "analysis*", "config*", "scripts*"]
 exclude = ["output*", "notebooks*"]
