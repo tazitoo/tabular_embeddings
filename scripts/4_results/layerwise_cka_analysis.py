@@ -151,6 +151,16 @@ def extract_mitra_all_layers(
     task: str = "classification",
 ) -> Dict[str, np.ndarray]:
     """Extract embeddings from all Mitra Tab2D transformer layers (12 layers)."""
+    n_features = X_query.shape[1]
+
+    # Cap context size for high-dim datasets to avoid system RAM OOM during fit().
+    # Tab2D attention is O(n_context * n_features) — keep product under 200K.
+    max_context = max(100, 200_000 // max(n_features, 1))
+    if len(X_context) > max_context:
+        print(f"  High-dim ({n_features} features): capping context from {len(X_context)} to {max_context}")
+        X_context = X_context[:max_context]
+        y_context = y_context[:max_context]
+
     if task == "regression":
         from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
         clf = MitraRegressor(device=device, n_estimators=1, fine_tune=False)

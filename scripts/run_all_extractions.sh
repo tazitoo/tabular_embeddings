@@ -55,7 +55,7 @@ for model in "${MODELS[@]}"; do
 
     MODEL_START=$(date +%s)
 
-    if $PYTHON "$EXTRACT" --model "$model" --device cuda; then
+    if $PYTHON -u "$EXTRACT" --model "$model" --device cuda; then
         MODEL_END=$(date +%s)
         ELAPSED=$(( MODEL_END - MODEL_START ))
         MINS=$(( ELAPSED / 60 ))
