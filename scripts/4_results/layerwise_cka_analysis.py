@@ -746,8 +746,9 @@ def extract_tabula8b_all_layers(
                 input_device = next(model.parameters()).device
                 input_tensor = torch.tensor([input_ids], device=input_device)
 
-                # Forward pass — hooks extract last-token hidden states
-                _ = model(input_ids=input_tensor)
+                # Forward pass through base LlamaModel only — hooks capture
+                # last-token hidden states. Skipping lm_head saves ~1GB peak.
+                _ = llama_model(input_ids=input_tensor)
 
                 # Hooks already extracted last-token vectors to CPU
                 for key, vec in captured.items():
