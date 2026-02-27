@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 # Default paths
 DEFAULT_SAE_DIR = PROJECT_ROOT / "output" / "sae_tabarena_sweep_round5"
+DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / "sae_training_round5"
 DEFAULT_LAYERS_PATH = PROJECT_ROOT / "config" / "optimal_extraction_layers.json"
 
 # Model display name -> checkpoint key
@@ -105,23 +106,59 @@ def get_extraction_layer(model_key: str, layers_path: Path = DEFAULT_LAYERS_PATH
     return layers_config[model_key]["optimal_layer"]
 
 
+def load_training_mean(
+    model_key: str,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
+    layers_path: Path = DEFAULT_LAYERS_PATH,
+    device: str = "cuda",
+) -> torch.Tensor:
+    """Load the training pool mean used to center data before SAE training.
+
+    train_sae() centers data via X_centered = X - X.mean(dim=0), but doesn't
+    save the mean. We recompute it from the training .npz file.
+
+    Returns:
+        (emb_dim,) tensor on device
+    """
+    layer = get_extraction_layer(model_key, layers_path)
+    training_path = training_dir / f"{model_key}_layer{layer}_sae_training.npz"
+    if not training_path.exists():
+        raise FileNotFoundError(
+            f"SAE training data not found: {training_path}. "
+            f"Cannot compute centering mean for intervention."
+        )
+    data = np.load(training_path)
+    mean = data["embeddings"].mean(axis=0)
+    return torch.tensor(mean, dtype=torch.float32, device=device)
+
+
 def compute_ablation_delta(
     sae: torch.nn.Module,
     embeddings: torch.Tensor,
     ablate_features: List[int],
+    data_mean: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute the delta from ablating SAE features.
 
+    The SAE was trained on mean-centered embeddings. We must center before
+    encoding, then the delta (decode(ablated) - decode(original)) is applied
+    in the original (uncentered) space — centering cancels in the subtraction.
+
     Args:
         sae: Trained SAE in eval mode
-        embeddings: (n_query, emb_dim) mean-pooled query embeddings
+        embeddings: (n_query, emb_dim) mean-pooled query embeddings (raw, uncentered)
         ablate_features: Feature indices to zero out
+        data_mean: (emb_dim,) training pool mean for centering. If None, no centering.
 
     Returns:
         delta: (n_query, emb_dim) to add to hidden states
     """
     with torch.no_grad():
-        h = sae.encode(embeddings)
+        x = embeddings
+        if data_mean is not None:
+            x = x - data_mean
+
+        h = sae.encode(x)
         original_recon = sae.decode(h)
 
         h_ablated = h.clone()
@@ -147,6 +184,7 @@ def intervene_tabpfn(
     extraction_layer: int,
     device: str = "cuda",
     task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run TabPFN with SAE feature ablation at extraction layer.
 
@@ -184,7 +222,7 @@ def intervene_tabpfn(
     query_emb = query_hidden.mean(dim=1)  # (n_query, hidden) — mean-pool structure
 
     # --- Compute delta ---
-    delta = compute_ablation_delta(sae, query_emb, ablate_features)
+    delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
     # Broadcast delta back to structure dimension
     # delta shape: (n_query, hidden) → (n_query, 1, hidden)
     delta_broadcast = delta.unsqueeze(1)
@@ -237,6 +275,7 @@ def intervene_mitra(
     extraction_layer: int,
     device: str = "cuda",
     task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run Mitra with SAE feature ablation at extraction layer.
 
@@ -298,7 +337,7 @@ def intervene_mitra(
     query_emb = all_emb[-n_query:]  # (n_query, dim)
 
     # --- Compute delta ---
-    delta = compute_ablation_delta(sae, query_emb, ablate_features)
+    delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
 
     # --- Pass 2: Pre-hook on layer L+1 ---
     next_layer = extraction_layer + 1
@@ -359,6 +398,7 @@ def intervene_tabicl(
     extraction_layer: int,
     device: str = "cuda",
     task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run TabICL with SAE feature ablation at extraction layer.
 
@@ -395,7 +435,7 @@ def intervene_tabicl(
     query_emb = query_hidden.mean(dim=0)  # (n_query, 512)
 
     # --- Compute delta ---
-    delta = compute_ablation_delta(sae, query_emb, ablate_features)
+    delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
     # Broadcast to ensemble dimension: (1, n_query, 512)
     delta_broadcast = delta.unsqueeze(0)
 
@@ -442,6 +482,7 @@ def intervene_tabdpt(
     extraction_layer: int,
     device: str = "cuda",
     task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run TabDPT with SAE feature ablation at extraction layer.
 
@@ -487,7 +528,7 @@ def intervene_tabdpt(
         raise ValueError(f"Unexpected hidden state shape: {hidden_state.shape}")
 
     # --- Compute delta ---
-    delta = compute_ablation_delta(sae, query_emb, ablate_features)
+    delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
 
     # --- Pass 2: Pre-hook on layer L+1 ---
     next_layer = extraction_layer + 1
@@ -539,6 +580,7 @@ def intervene_hyperfast(
     extraction_layer: int,
     device: str = "cuda",
     task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run HyperFast with SAE feature ablation.
 
@@ -600,7 +642,7 @@ def intervene_hyperfast(
 
                 if layer_idx == extraction_layer:
                     # Apply SAE delta here
-                    delta = compute_ablation_delta(sae, x, ablate_features)
+                    delta = compute_ablation_delta(sae, x, ablate_features, data_mean=data_mean)
                     x = x + delta
 
             ablated_outputs.append(F.softmax(x, dim=1).cpu().numpy())
@@ -638,6 +680,7 @@ def intervene(
     task: str = "classification",
     sae_dir: Path = DEFAULT_SAE_DIR,
     layers_path: Path = DEFAULT_LAYERS_PATH,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
 ) -> Dict[str, np.ndarray]:
     """Run a model with SAE feature ablation at its optimal extraction layer.
 
@@ -650,6 +693,7 @@ def intervene(
         task: 'classification' or 'regression'
         sae_dir: Path to SAE checkpoints
         layers_path: Path to optimal_extraction_layers.json
+        training_dir: Path to SAE training data (for centering mean)
 
     Returns:
         Dict with 'baseline_preds', 'ablated_preds', 'y_query'
@@ -659,6 +703,9 @@ def intervene(
 
     sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
     extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
+    data_mean = load_training_mean(
+        model_key, training_dir=training_dir, layers_path=layers_path, device=device,
+    )
 
     return INTERVENE_FN[model_key](
         X_context=X_context,
@@ -670,6 +717,7 @@ def intervene(
         extraction_layer=extraction_layer,
         device=device,
         task=task,
+        data_mean=data_mean,
     )
 
 
@@ -690,6 +738,7 @@ def main():
     parser.add_argument("--verify-identity", action="store_true",
                         help="Verify that ablating nothing gives identical predictions")
     parser.add_argument("--sae-dir", type=Path, default=DEFAULT_SAE_DIR)
+    parser.add_argument("--training-dir", type=Path, default=DEFAULT_TRAINING_DIR)
     parser.add_argument("--layers-config", type=Path, default=DEFAULT_LAYERS_PATH)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -764,6 +813,7 @@ def main():
         task=task,
         sae_dir=args.sae_dir,
         layers_path=args.layers_config,
+        training_dir=args.training_dir,
     )
 
     # Evaluate

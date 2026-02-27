@@ -20,6 +20,7 @@ import torch.nn.functional as F
 from scripts.intervene_sae import (
     compute_ablation_delta,
     load_sae,
+    load_training_mean,
     get_extraction_layer,
     INTERVENE_FN,
 )
@@ -87,6 +88,28 @@ class TestComputeAblationDelta:
         delta = compute_ablation_delta(mock_sae, emb, ablate_features=[0, 1, 2, 3, 4])
         assert delta.abs().sum() > 0
 
+    def test_delta_with_data_mean(self, mock_sae):
+        """Centering with data_mean changes the delta computation."""
+        emb = torch.randn(50, 64)
+        data_mean = torch.randn(64)
+        delta_no_center = compute_ablation_delta(
+            mock_sae, emb, ablate_features=[0, 1, 2], data_mean=None,
+        )
+        delta_centered = compute_ablation_delta(
+            mock_sae, emb, ablate_features=[0, 1, 2], data_mean=data_mean,
+        )
+        # Centering should produce a different delta
+        assert not torch.allclose(delta_no_center, delta_centered, atol=1e-4)
+
+    def test_delta_zero_with_centering_no_ablation(self, mock_sae):
+        """Delta is zero when no features ablated, even with centering."""
+        emb = torch.randn(50, 64)
+        data_mean = torch.randn(64)
+        delta = compute_ablation_delta(
+            mock_sae, emb, ablate_features=[], data_mean=data_mean,
+        )
+        assert torch.allclose(delta, torch.zeros_like(delta), atol=1e-6)
+
     def test_delta_with_real_sae(self, real_sae):
         """Delta computation works with real SAE."""
         sae, config = real_sae
@@ -136,6 +159,35 @@ class TestLoadSae:
         )
         assert config.input_dim == 512
         assert config.hidden_dim == 4096
+
+
+# ── Test load_training_mean ───────────────────────────────────────────────────
+
+
+class TestLoadTrainingMean:
+    @pytest.mark.skipif(
+        not (DATA_ROOT / "output" / "sae_training_round5").exists(),
+        reason="SAE training data not available",
+    )
+    def test_load_tabpfn_mean(self):
+        mean = load_training_mean(
+            "tabpfn",
+            training_dir=DATA_ROOT / "output" / "sae_training_round5",
+            layers_path=DATA_ROOT / "config" / "optimal_extraction_layers.json",
+            device="cpu",
+        )
+        assert mean.shape == (192,)  # TabPFN embedding dim
+        assert mean.dtype == torch.float32
+
+    def test_missing_training_data(self, tmp_path):
+        """Raises FileNotFoundError for missing training data."""
+        with pytest.raises(FileNotFoundError, match="SAE training data not found"):
+            load_training_mean(
+                "tabpfn",
+                training_dir=tmp_path,
+                layers_path=DATA_ROOT / "config" / "optimal_extraction_layers.json",
+                device="cpu",
+            )
 
 
 # ── Test get_extraction_layer ─────────────────────────────────────────────────

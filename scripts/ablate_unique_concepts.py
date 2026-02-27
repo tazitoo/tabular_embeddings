@@ -39,6 +39,7 @@ from scripts.intervene_sae import (
     get_extraction_layer,
     INTERVENE_FN,
     DEFAULT_SAE_DIR,
+    DEFAULT_TRAINING_DIR,
     DEFAULT_LAYERS_PATH,
 )
 
@@ -126,6 +127,7 @@ def ablate_pair_dataset(
     hierarchy: dict,
     device: str = "cuda",
     sae_dir: Path = DEFAULT_SAE_DIR,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
     layers_path: Path = DEFAULT_LAYERS_PATH,
 ) -> Optional[dict]:
     """Run pairwise ablation for one model pair on one dataset.
@@ -195,6 +197,7 @@ def ablate_pair_dataset(
             task=task,
             sae_dir=sae_dir,
             layers_path=layers_path,
+            training_dir=training_dir,
         )
     except Exception as e:
         logger.error("  Intervention failed for %s on %s: %s", model_a, dataset, e)
@@ -213,6 +216,7 @@ def ablate_pair_dataset(
             task=task,
             sae_dir=sae_dir,
             layers_path=layers_path,
+            training_dir=training_dir,
         )
     except Exception as e:
         logger.error("  Baseline failed for %s on %s: %s", model_b, dataset, e)
@@ -250,6 +254,7 @@ def ablate_pair(
     hierarchy: dict,
     device: str = "cuda",
     sae_dir: Path = DEFAULT_SAE_DIR,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
     layers_path: Path = DEFAULT_LAYERS_PATH,
 ) -> dict:
     """Run pairwise ablation across multiple datasets.
@@ -265,7 +270,8 @@ def ablate_pair(
         logger.info("  Dataset: %s", ds)
         result = ablate_pair_dataset(
             model_a, model_b, ds, hierarchy,
-            device=device, sae_dir=sae_dir, layers_path=layers_path,
+            device=device, sae_dir=sae_dir, training_dir=training_dir,
+            layers_path=layers_path,
         )
         if result is not None:
             dataset_results[ds] = result
@@ -306,6 +312,7 @@ def main():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--hierarchy", type=Path, default=DEFAULT_HIERARCHY_PATH)
     parser.add_argument("--sae-dir", type=Path, default=DEFAULT_SAE_DIR)
+    parser.add_argument("--training-dir", type=Path, default=DEFAULT_TRAINING_DIR)
     parser.add_argument("--layers-config", type=Path, default=DEFAULT_LAYERS_PATH)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--verbose", action="store_true")
@@ -341,7 +348,8 @@ def main():
         pair_key = f"{DISPLAY_NAMES[model_a]}__{DISPLAY_NAMES[model_b]}"
         result = ablate_pair(
             model_a, model_b, datasets, hierarchy,
-            device=args.device, sae_dir=args.sae_dir, layers_path=args.layers_config,
+            device=args.device, sae_dir=args.sae_dir,
+            training_dir=args.training_dir, layers_path=args.layers_config,
         )
         all_results["pairwise_ablations"][pair_key] = result
 

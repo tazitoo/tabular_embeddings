@@ -46,6 +46,7 @@ from scripts.intervene_sae import (
     get_extraction_layer,
     INTERVENE_FN,
     DEFAULT_SAE_DIR,
+    DEFAULT_TRAINING_DIR,
     DEFAULT_LAYERS_PATH,
 )
 
@@ -187,6 +188,7 @@ def diagnose_dataset(
     top_k: int = 10,
     device: str = "cuda",
     sae_dir: Path = DEFAULT_SAE_DIR,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
     layers_path: Path = DEFAULT_LAYERS_PATH,
 ) -> Optional[dict]:
     """Run per-dataset causal diagnostics for one model pair.
@@ -238,12 +240,14 @@ def diagnose_dataset(
         results_a = intervene(
             model_key=model_a, X_context=X_ctx, y_context=y_ctx,
             X_query=X_q, y_query=y_q, ablate_features=[],
-            device=device, task=task, sae_dir=sae_dir, layers_path=layers_path,
+            device=device, task=task, sae_dir=sae_dir,
+            training_dir=training_dir, layers_path=layers_path,
         )
         results_b = intervene(
             model_key=model_b, X_context=X_ctx, y_context=y_ctx,
             X_query=X_q, y_query=y_q, ablate_features=[],
-            device=device, task=task, sae_dir=sae_dir, layers_path=layers_path,
+            device=device, task=task, sae_dir=sae_dir,
+            training_dir=training_dir, layers_path=layers_path,
         )
     except Exception as e:
         logger.error("  Baseline failed: %s", e)
@@ -305,7 +309,8 @@ def diagnose_dataset(
             ablated = intervene(
                 model_key=model_a, X_context=X_ctx, y_context=y_ctx,
                 X_query=X_q, y_query=y_q, ablate_features=features,
-                device=device, task=task, sae_dir=sae_dir, layers_path=layers_path,
+                device=device, task=task, sae_dir=sae_dir,
+                training_dir=training_dir, layers_path=layers_path,
             )
         except Exception as e:
             logger.error("  Ablation failed for group %s: %s", gid, e)
@@ -361,6 +366,7 @@ def main():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--hierarchy", type=Path, default=DEFAULT_HIERARCHY_PATH)
     parser.add_argument("--sae-dir", type=Path, default=DEFAULT_SAE_DIR)
+    parser.add_argument("--training-dir", type=Path, default=DEFAULT_TRAINING_DIR)
     parser.add_argument("--layers-config", type=Path, default=DEFAULT_LAYERS_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--verbose", action="store_true")
@@ -393,7 +399,8 @@ def main():
         result = diagnose_dataset(
             args.model_a, args.model_b, ds, hierarchy,
             top_k=args.top_k, device=args.device,
-            sae_dir=args.sae_dir, layers_path=args.layers_config,
+            sae_dir=args.sae_dir, training_dir=args.training_dir,
+            layers_path=args.layers_config,
         )
         if result is not None:
             all_results.append(result)
