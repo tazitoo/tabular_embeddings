@@ -123,9 +123,136 @@ class RowMetaFeatures:
     frac_integers: float             # Fraction that are integers (x == int(x))
     frac_round_tens: float           # Fraction divisible by 10
 
+    # === Supervised Complexity (require y, classification only) ===
+    fisher_ratio: float = 0.0       # F1: row-level class separability
+    borderline: float = 0.0         # N1: fraction of k-NN from different class
+    knn_class_ratio: float = 0.0    # N2: same-class / different-class NN ratio
+    linear_boundary_dist: float = 0.0  # L1: distance to SVM hyperplane
+
+    # === Graph Topology (from existing k-NN graph) ===
+    hub_score: float = 0.0          # How often this row appears in others' k-NN
+    local_clustering: float = 0.0   # Fraction of neighbor pairs that are mutual neighbors
+    local_intrinsic_dim: float = 0.0  # MLE local dimensionality (Levina-Bickel 2004)
+
+    # === Information-Theoretic ===
+    row_surprise: float = 0.0       # -log p(row) under per-column Gaussian
+    mi_contribution: float = 0.0    # Pointwise MI between features and target
+
     # === Target-Related (if available) ===
-    target_is_minority: float        # 1 if minority class, 0 otherwise (classification)
-    target_zscore: float             # Z-score of target value (regression)
+    target_is_minority: float = 0.0  # 1 if minority class, 0 otherwise (classification)
+    target_zscore: float = 0.0       # Z-score of target value (regression)
+
+
+def _compute_borderline(nn_indices: np.ndarray, y: np.ndarray, k: int) -> np.ndarray:
+    """Fraction of k-NN from different class (N1 complexity measure)."""
+    neighbor_labels = y[nn_indices[:, 1:k+1]]  # exclude self
+    own_labels = y[:, np.newaxis]
+    return (neighbor_labels != own_labels).mean(axis=1).astype(np.float64)
+
+
+def _compute_knn_class_ratio(nn_indices: np.ndarray, y: np.ndarray, k: int) -> np.ndarray:
+    """Ratio: same-class NN / (different-class NN + 1). Higher = more separable."""
+    neighbor_labels = y[nn_indices[:, 1:k+1]]
+    own_labels = y[:, np.newaxis]
+    same = (neighbor_labels == own_labels).sum(axis=1)
+    diff = (neighbor_labels != own_labels).sum(axis=1)
+    return (same / (diff + 1.0)).astype(np.float64)
+
+
+def _compute_fisher_per_row(numeric_matrix: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Per-row Fisher discriminant ratio: sum_d (mu_own - mu_other)^2 / (var_own + var_other).
+
+    Vectorized: precompute per-class Fisher scores, then index by class label.
+    """
+    classes = np.unique(y)
+    n_samples, n_dims = numeric_matrix.shape
+    global_mean = numeric_matrix.mean(axis=0)
+    global_var = numeric_matrix.var(axis=0) + 1e-8
+
+    # Per-class Fisher score (same for all members of a class)
+    class_fisher = np.zeros(len(classes))
+    class_map = {}
+    for ci, c in enumerate(classes):
+        mask = y == c
+        own_mean = numeric_matrix[mask].mean(axis=0)
+        own_var = numeric_matrix[mask].var(axis=0) + 1e-8
+        ratio = ((own_mean - global_mean) ** 2) / (own_var + global_var)
+        class_fisher[ci] = ratio.mean()
+        class_map[c] = ci
+
+    # Map each sample to its class's Fisher score
+    class_indices = np.array([class_map[yi] for yi in y])
+    return class_fisher[class_indices]
+
+
+def _compute_linear_boundary_dist(numeric_matrix: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Distance to SVM decision boundary. Fit once, evaluate all rows."""
+    from sklearn.svm import LinearSVC
+    from sklearn.preprocessing import StandardScaler
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(numeric_matrix)
+    try:
+        svc = LinearSVC(max_iter=1000, dual='auto')
+        svc.fit(X_scaled, y)
+        distances = svc.decision_function(X_scaled)
+        if distances.ndim > 1:
+            distances = np.abs(distances).min(axis=1)  # Multi-class: min distance
+        else:
+            distances = np.abs(distances)
+        return distances
+    except Exception:
+        return np.zeros(len(numeric_matrix))
+
+
+def _compute_hub_scores(nn_indices: np.ndarray) -> np.ndarray:
+    """How often each point appears in others' k-NN lists (hubness)."""
+    n = nn_indices.shape[0]
+    neighbor_flat = nn_indices[:, 1:].ravel()  # exclude self column
+    return np.bincount(neighbor_flat, minlength=n).astype(np.float64)
+
+
+def _compute_local_clustering(nn_indices: np.ndarray, k: int) -> np.ndarray:
+    """Fraction of neighbor pairs that are mutual neighbors.
+
+    For each point i, check all C(k,2) pairs of i's neighbors (a,b):
+    is b in a's neighbor list? Uses a sparse membership set for O(1) lookup.
+    """
+    n = nn_indices.shape[0]
+    neighbors = nn_indices[:, 1:k+1]  # (n, k) excluding self
+
+    if k < 2:
+        return np.zeros(n)
+
+    # Build neighbor sets once for O(1) membership lookup
+    neighbor_sets = [set(neighbors[i]) for i in range(n)]
+
+    # Precompute all neighbor pairs per point
+    n_pairs = k * (k - 1) // 2
+    clustering = np.zeros(n)
+    for i in range(n):
+        connected = 0
+        ni = neighbors[i]
+        for a in range(k):
+            ns_a = neighbor_sets[ni[a]]
+            for b in range(a + 1, k):
+                if ni[b] in ns_a:
+                    connected += 1
+        clustering[i] = connected / n_pairs
+    return clustering
+
+
+def _compute_local_id(distances: np.ndarray, k: int) -> np.ndarray:
+    """MLE local intrinsic dimensionality (Levina-Bickel 2004)."""
+    # distances shape: (n, k+1), column 0 is self (0)
+    nn_dists = distances[:, 1:k+1]  # (n, k)
+    nn_dists = np.maximum(nn_dists, 1e-10)  # avoid log(0)
+    # MLE: d_hat = 1 / mean(log(max_dist / dist_j)) for j=1..k-1
+    max_dist = nn_dists[:, -1:]  # (n, 1)
+    log_ratios = np.log(max_dist / nn_dists[:, :-1])  # (n, k-1)
+    mean_log = log_ratios.mean(axis=1)
+    local_id = 1.0 / (mean_log + 1e-10)
+    return np.clip(local_id, 0, 100)  # Cap at 100 to avoid numerical instability
 
 
 def compute_row_meta_features(
@@ -167,17 +294,21 @@ def compute_row_meta_features(
     centroid = numeric_matrix.mean(axis=0)
     centroid_distances = np.linalg.norm(numeric_matrix - centroid, axis=1)
 
-    # Nearest neighbor distances (for isolation/density)
-    if n_rows > 5 and len(numeric_cols) > 0:
+    # Nearest neighbor distances (for isolation/density and graph topology)
+    has_nn = n_rows > 5 and len(numeric_cols) > 0
+    if has_nn:
         k = min(5, n_rows - 1)
         nn = NearestNeighbors(n_neighbors=k + 1, algorithm='auto')
         nn.fit(numeric_matrix)
-        distances, _ = nn.kneighbors(numeric_matrix)
+        distances, nn_indices = nn.kneighbors(numeric_matrix)
         nn_distances = distances[:, 1]  # Exclude self
         local_densities = 1.0 / (distances[:, 1:].mean(axis=1) + 1e-8)
     else:
+        k = 0
         nn_distances = np.zeros(n_rows)
         local_densities = np.ones(n_rows)
+        distances = np.zeros((n_rows, 1))
+        nn_indices = np.zeros((n_rows, 1), dtype=int)
 
     # PCA for position features
     if len(numeric_cols) >= 2 and n_rows > 2:
@@ -208,183 +339,344 @@ def compute_row_meta_features(
         is_minority = np.zeros(n_rows)
         target_zscores = np.zeros(n_rows)
 
-    meta_features = []
+    # === Vectorized precomputation: supervised complexity + graph topology ===
+    is_classification = (y is not None and len(np.unique(y)) <= 10 and len(np.unique(y)) >= 2)
 
-    for idx in range(n_rows):
-        row = df.iloc[idx]
+    if is_classification and has_nn and len(numeric_cols) > 0:
+        borderline_arr = _compute_borderline(nn_indices, y, k)
+        knn_class_ratio_arr = _compute_knn_class_ratio(nn_indices, y, k)
+        fisher_arr = _compute_fisher_per_row(numeric_matrix, y)
+        linear_boundary_dist_arr = _compute_linear_boundary_dist(numeric_matrix, y)
+    else:
+        borderline_arr = np.zeros(n_rows)
+        knn_class_ratio_arr = np.zeros(n_rows)
+        fisher_arr = np.zeros(n_rows)
+        linear_boundary_dist_arr = np.zeros(n_rows)
 
-        # === Missing Value Patterns ===
-        missing_rate = row.isna().sum() / n_cols if n_cols > 0 else 0.0
-        missing_numeric = sum(pd.isna(row[c]) for c in numeric_cols)
-        missing_numeric_rate = missing_numeric / len(numeric_cols) if numeric_cols else 0.0
-        missing_cat = sum(pd.isna(row[c]) for c in categorical_cols)
-        missing_cat_rate = missing_cat / len(categorical_cols) if categorical_cols else 0.0
+    if has_nn:
+        hub_scores_arr = _compute_hub_scores(nn_indices)
+        local_clustering_arr = _compute_local_clustering(nn_indices, k)
+        local_id_arr = _compute_local_id(distances, k)
+    else:
+        hub_scores_arr = np.zeros(n_rows)
+        local_clustering_arr = np.zeros(n_rows)
+        local_id_arr = np.zeros(n_rows)
 
-        # === Numeric Distribution Patterns ===
-        zscores = []  # Signed z-scores
-        abs_zscores = []
-        raw_values = []
-        for col in numeric_cols:
-            val = row[col]
-            if pd.notna(val) and col in col_stats:
-                mean, std = col_stats[col]['mean'], col_stats[col]['std']
-                raw_values.append(val)
-                if std > 1e-8:
-                    z = (val - mean) / std
-                    zscores.append(z)
-                    abs_zscores.append(abs(z))
+    # Row surprise: -log p(row) under per-column Gaussian
+    # Precompute column means/stds for Gaussian model
+    col_means = np.array([col_stats[c]['mean'] for c in numeric_cols if c in col_stats])
+    col_stds = np.array([col_stats[c]['std'] for c in numeric_cols if c in col_stats])
+    col_stds_safe = np.where(col_stds > 1e-8, col_stds, 1.0)
 
-        if abs_zscores:
-            numeric_mean_zscore = np.mean(abs_zscores)
-            numeric_max_zscore = np.max(abs_zscores)
-            numeric_min_zscore = np.min(abs_zscores)
-            numeric_std = np.std(abs_zscores)
-            numeric_skewness = float(skew(zscores)) if len(zscores) > 2 else 0.0
-            numeric_kurtosis = float(kurtosis(zscores)) if len(zscores) > 2 else 0.0
-            numeric_range = (np.max(zscores) - np.min(zscores)) if len(zscores) > 1 else 0.0
-            q75, q25 = np.percentile(abs_zscores, [75, 25])
-            numeric_iqr = q75 - q25
-            frac_pos_outliers = np.mean([z > 2 for z in zscores])
-            frac_neg_outliers = np.mean([z < -2 for z in zscores])
+    # MI contribution: discretize features + target, compute pointwise MI
+    mi_contributions = np.zeros(n_rows)
+    if y is not None and len(numeric_cols) > 0:
+        # Discretize target into 10 bins (or use class labels for classification)
+        if is_classification:
+            y_disc = y.astype(int)
         else:
-            numeric_mean_zscore = numeric_max_zscore = numeric_min_zscore = 0.0
-            numeric_std = numeric_skewness = numeric_kurtosis = 0.0
-            numeric_range = numeric_iqr = 0.0
-            frac_pos_outliers = frac_neg_outliers = 0.0
+            y_disc = np.digitize(y, np.percentile(y, np.linspace(0, 100, 11)[1:-1]))
+        # Discretize features into 5 bins each
+        n_feat = numeric_matrix.shape[1]
+        feat_disc = np.zeros_like(numeric_matrix, dtype=int)
+        for j in range(n_feat):
+            col_vals = numeric_matrix[:, j]
+            try:
+                feat_disc[:, j] = np.digitize(col_vals, np.percentile(col_vals, [20, 40, 60, 80]))
+            except Exception:
+                feat_disc[:, j] = 0
+        # Compute joint and marginal counts for pointwise MI
+        from collections import Counter
+        # Build joint distribution: (feature_bin_tuple, y_bin) -> count
+        feat_keys = [tuple(feat_disc[i]) for i in range(n_rows)]
+        joint_counts = Counter(zip(feat_keys, y_disc))
+        feat_counts = Counter(feat_keys)
+        y_counts = Counter(y_disc)
+        for i in range(n_rows):
+            fk = feat_keys[i]
+            yk = y_disc[i]
+            p_joint = joint_counts[(fk, yk)] / n_rows
+            p_feat = feat_counts[fk] / n_rows
+            p_y = y_counts[yk] / n_rows
+            if p_joint > 0 and p_feat > 0 and p_y > 0:
+                mi_contributions[i] = np.log(p_joint / (p_feat * p_y + 1e-15))
 
-        # Zero and negative fractions
-        if raw_values:
-            frac_zeros = np.mean([abs(v) < 1e-10 for v in raw_values])
-            frac_negative = np.mean([v < 0 for v in raw_values])
-        else:
-            frac_zeros = frac_negative = 0.0
+    # =======================================================================
+    # Vectorized computation of all per-row meta-features
+    # =======================================================================
 
-        # === Categorical Patterns ===
-        rarities = []
-        modal_fracs = []
-        n_rare = 0
-        unique_cats = set()
-        cat_value_freqs = []
+    # --- Missing patterns (vectorized over DataFrame) ---
+    missing_total = df.isna().sum(axis=1).values / n_cols if n_cols > 0 else np.zeros(n_rows)
+    if numeric_cols:
+        missing_num = df[numeric_cols].isna().sum(axis=1).values / len(numeric_cols)
+    else:
+        missing_num = np.zeros(n_rows)
+    if categorical_cols:
+        missing_cat = df[categorical_cols].isna().sum(axis=1).values / len(categorical_cols)
+    else:
+        missing_cat = np.zeros(n_rows)
+
+    # --- Numeric distribution patterns (from z-score matrix) ---
+    # numeric_matrix is already z-scored; build raw matrix + valid mask
+    n_num = len(numeric_cols)
+    if n_num > 0:
+        # Raw numeric values with NaN preserved for masking
+        raw_matrix = np.full((n_rows, n_num), np.nan)
+        valid_mask = np.zeros((n_rows, n_num), dtype=bool)  # non-NaN and in col_stats
+        zscore_valid = np.zeros((n_rows, n_num), dtype=bool)  # also has std > 1e-8
+        for j, col in enumerate(numeric_cols):
+            if col in col_stats:
+                vals = df[col].values
+                not_na = ~pd.isna(vals)
+                raw_matrix[not_na, j] = vals[not_na].astype(np.float64)
+                valid_mask[:, j] = not_na
+                if col_stats[col]['std'] > 1e-8:
+                    zscore_valid[:, j] = not_na
+
+        # Signed z-scores (already in numeric_matrix, but only where zscore_valid)
+        zscores_full = np.where(zscore_valid, numeric_matrix, np.nan)
+        abs_zscores_full = np.abs(zscores_full)
+
+        n_valid_z = zscore_valid.sum(axis=1)  # per row
+        has_z = n_valid_z > 0
+
+        # Replace NaN with 0 for nanmean etc. — use masked computations
+        with np.errstate(all='ignore'):
+            mean_abs_z = np.nanmean(abs_zscores_full, axis=1)
+            max_abs_z = np.nanmax(abs_zscores_full, axis=1)
+            min_abs_z = np.nanmin(abs_zscores_full, axis=1)
+            std_abs_z = np.nanstd(abs_zscores_full, axis=1)
+
+        mean_abs_z = np.where(has_z, mean_abs_z, 0.0)
+        max_abs_z = np.where(has_z, max_abs_z, 0.0)
+        min_abs_z = np.where(has_z, min_abs_z, 0.0)
+        std_abs_z = np.where(has_z, std_abs_z, 0.0)
+
+        # Skewness and kurtosis (need > 2 valid z-scores per row)
+        has_enough = n_valid_z > 2
+        skew_arr = np.zeros(n_rows)
+        kurt_arr = np.zeros(n_rows)
+        for idx in np.where(has_enough)[0]:
+            row_z = zscores_full[idx, zscore_valid[idx]]
+            skew_arr[idx] = skew(row_z)
+            kurt_arr[idx] = kurtosis(row_z)
+
+        # Range and IQR
+        with np.errstate(all='ignore'):
+            z_max = np.nanmax(zscores_full, axis=1)
+            z_min = np.nanmin(zscores_full, axis=1)
+        range_arr = np.where(n_valid_z > 1, z_max - z_min, 0.0)
+
+        iqr_arr = np.zeros(n_rows)
+        for idx in np.where(has_z)[0]:
+            row_abs = abs_zscores_full[idx, zscore_valid[idx]]
+            q75, q25 = np.percentile(row_abs, [75, 25])
+            iqr_arr[idx] = q75 - q25
+
+        # Outlier fractions
+        frac_pos_out = np.where(has_z,
+            np.nansum(zscores_full > 2, axis=1) / np.maximum(n_valid_z, 1), 0.0)
+        frac_neg_out = np.where(has_z,
+            np.nansum(zscores_full < -2, axis=1) / np.maximum(n_valid_z, 1), 0.0)
+
+        # Zero and negative fractions (from raw values)
+        n_valid_raw = valid_mask.sum(axis=1)
+        has_raw = n_valid_raw > 0
+        raw_for_calc = np.where(valid_mask, raw_matrix, np.nan)
+        with np.errstate(all='ignore'):
+            frac_zeros_arr = np.nansum(np.abs(raw_for_calc) < 1e-10, axis=1) / np.maximum(n_valid_raw, 1)
+            frac_neg_arr = np.nansum(raw_for_calc < 0, axis=1) / np.maximum(n_valid_raw, 1)
+        frac_zeros_arr = np.where(has_raw, frac_zeros_arr, 0.0)
+        frac_neg_arr = np.where(has_raw, frac_neg_arr, 0.0)
+
+        # --- Scale/Magnitude (from raw values) ---
+        abs_raw = np.abs(np.where(valid_mask, raw_matrix, np.nan))
+        log_mags = np.log10(abs_raw + 1)
+        with np.errstate(all='ignore'):
+            log_mag_mean = np.nanmean(log_mags, axis=1)
+            log_mag_std = np.nanstd(log_mags, axis=1)
+        log_mag_mean = np.where(has_raw, log_mag_mean, 0.0)
+        log_mag_std = np.where(n_valid_raw > 1, log_mag_std, 0.0)
+
+        frac_tiny = np.where(has_raw,
+            np.nansum(abs_raw < 0.01, axis=1) / np.maximum(n_valid_raw, 1), 0.0)
+        frac_huge = np.where(has_raw,
+            np.nansum(abs_raw > 1000, axis=1) / np.maximum(n_valid_raw, 1), 0.0)
+
+        # Integer fraction: x == floor(x) for non-NaN raw values
+        raw_nonan = np.where(valid_mask, raw_matrix, 0.0)
+        is_int = valid_mask & (raw_nonan == np.floor(raw_nonan))
+        frac_int = np.where(has_raw, is_int.sum(axis=1) / np.maximum(n_valid_raw, 1), 0.0)
+
+        # Round-tens fraction
+        is_round10 = valid_mask & (raw_nonan != 0) & (raw_nonan % 10 == 0)
+        frac_r10 = np.where(has_raw, is_round10.sum(axis=1) / np.maximum(n_valid_raw, 1), 0.0)
+
+    else:
+        mean_abs_z = max_abs_z = min_abs_z = std_abs_z = np.zeros(n_rows)
+        skew_arr = kurt_arr = range_arr = iqr_arr = np.zeros(n_rows)
+        frac_pos_out = frac_neg_out = np.zeros(n_rows)
+        frac_zeros_arr = frac_neg_arr = np.zeros(n_rows)
+        log_mag_mean = log_mag_std = np.zeros(n_rows)
+        frac_tiny = frac_huge = frac_int = frac_r10 = np.zeros(n_rows)
+
+    # --- Categorical patterns (vectorized per-column, aggregated per-row) ---
+    if categorical_cols:
+        # Build arrays: rarity, modal_frac, is_rare per (row, col)
+        cat_rarity_sum = np.zeros(n_rows)
+        cat_modal_sum = np.zeros(n_rows)
+        cat_rare_count = np.zeros(n_rows, dtype=int)
+        cat_valid_count = np.zeros(n_rows, dtype=int)
+        cat_freq_lists = [[] for _ in range(n_rows)]  # for entropy
+        cat_unique_sets = [set() for _ in range(n_rows)]
 
         for col in categorical_cols:
-            val = row[col]
-            if pd.notna(val) and col in col_stats:
-                freq = col_stats[col].get(val, 0.0)
-                rarities.append(1.0 - freq)
+            vals = df[col].values
+            not_na = ~pd.isna(vals)
+            if col not in col_stats:
+                continue
+            freq_map = col_stats[col]
+            max_freq = max(freq_map.values()) if freq_map else 0
+
+            for idx in np.where(not_na)[0]:
+                v = vals[idx]
+                freq = freq_map.get(v, 0.0)
+                cat_rarity_sum[idx] += (1.0 - freq)
+                cat_modal_sum[idx] += (1.0 if abs(freq - max_freq) < 1e-8 else 0.0)
                 if freq < 0.05:
-                    n_rare += 1
-                # Is this the mode?
-                max_freq = max(col_stats[col].values()) if col_stats[col] else 0
-                modal_fracs.append(1.0 if abs(freq - max_freq) < 1e-8 else 0.0)
-                unique_cats.add(f"{col}_{val}")
-                cat_value_freqs.append(freq)
+                    cat_rare_count[idx] += 1
+                cat_valid_count[idx] += 1
+                cat_unique_sets[idx].add(f"{col}_{v}")
+                cat_freq_lists[idx].append(freq)
 
-        categorical_rarity = np.mean(rarities) if rarities else 0.0
-        categorical_modal_frac = np.mean(modal_fracs) if modal_fracs else 0.0
-        n_unique_categories = len(unique_cats)
+        has_cat = cat_valid_count > 0
+        cat_rarity_arr = np.where(has_cat, cat_rarity_sum / cat_valid_count, 0.0)
+        cat_modal_arr = np.where(has_cat, cat_modal_sum / cat_valid_count, 0.0)
+        n_unique_cat_arr = np.array([len(s) for s in cat_unique_sets])
 
-        if cat_value_freqs:
-            probs = np.array(cat_value_freqs)
+        cat_entropy_arr = np.zeros(n_rows)
+        for idx in np.where(has_cat)[0]:
+            probs = np.array(cat_freq_lists[idx])
             probs = probs / (probs.sum() + 1e-10)
-            categorical_entropy = -np.sum(probs * np.log(probs + 1e-10))
-        else:
-            categorical_entropy = 0.0
+            cat_entropy_arr[idx] = -np.sum(probs * np.log(probs + 1e-10))
+    else:
+        cat_rarity_arr = cat_modal_arr = np.zeros(n_rows)
+        cat_rare_count = np.zeros(n_rows, dtype=int)
+        n_unique_cat_arr = np.zeros(n_rows, dtype=int)
+        cat_entropy_arr = np.zeros(n_rows)
 
-        # === Row Complexity/Structure ===
-        # Discretize all values for entropy
-        discrete_values = []
-        for col in numeric_cols:
-            val = row[col]
-            if pd.notna(val) and col in col_stats:
-                pctl = col_stats[col].get('percentiles', [])
-                if pctl:
-                    bin_idx = np.searchsorted(pctl, val)
-                    discrete_values.append(f"n{bin_idx}")
+    # --- Row entropy/complexity (discretize all values) ---
+    # Build discretized matrix: numeric bins + categorical labels
+    # For numeric: bin into percentile bins; for categorical: use value directly
+    row_entropy_arr = np.zeros(n_rows)
+    row_uniformity_arr = np.ones(n_rows)
+    n_distinct_arr = np.zeros(n_rows, dtype=int)
+
+    # Pre-build percentile arrays for each numeric column
+    pctl_arrays = {}
+    for col in numeric_cols:
+        if col in col_stats:
+            pctl = col_stats[col].get('percentiles', [])
+            if pctl:
+                pctl_arrays[col] = np.array(pctl)
+
+    # Vectorized discretization for numeric columns
+    num_bins = np.full((n_rows, n_num), -1, dtype=int)  # -1 = missing/invalid
+    for j, col in enumerate(numeric_cols):
+        if col in pctl_arrays:
+            vals = df[col].values
+            not_na = ~pd.isna(vals)
+            num_bins[not_na, j] = np.searchsorted(pctl_arrays[col], vals[not_na].astype(np.float64))
+
+    # Compute row entropy from discretized values
+    for idx in range(n_rows):
+        # Collect discrete tokens for this row
+        tokens = []
+        for j in range(n_num):
+            if num_bins[idx, j] >= 0:
+                tokens.append(num_bins[idx, j])  # numeric bin index
+        # Categorical tokens: offset by max_bin to avoid collision
+        cat_offset = 100
         for col in categorical_cols:
-            val = row[col]
+            val = df[col].iat[idx]
             if pd.notna(val):
-                discrete_values.append(f"c{val}")
+                tokens.append(hash(f"c{val}") % 100000 + cat_offset)
 
-        if discrete_values:
-            _, counts = np.unique(discrete_values, return_counts=True)
+        if tokens:
+            _, counts = np.unique(tokens, return_counts=True)
             probs = counts / counts.sum()
-            row_entropy = -np.sum(probs * np.log(probs + 1e-10))
-            max_entropy = np.log(len(discrete_values) + 1e-10)
-            row_uniformity = 1.0 - (row_entropy / (max_entropy + 1e-10))
-            n_distinct_values = len(counts)
-        else:
-            row_entropy = 0.0
-            row_uniformity = 1.0
-            n_distinct_values = 0
+            ent = -np.sum(probs * np.log(probs + 1e-10))
+            max_ent = np.log(len(tokens) + 1e-10)
+            row_entropy_arr[idx] = ent
+            row_uniformity_arr[idx] = 1.0 - (ent / (max_ent + 1e-10))
+            n_distinct_arr[idx] = len(counts)
 
-        # === Scale/Magnitude Patterns ===
-        if raw_values:
-            abs_vals = [abs(v) for v in raw_values]
-            log_mags = [np.log10(v + 1) for v in abs_vals]
-            log_magnitude_mean = np.mean(log_mags)
-            log_magnitude_std = np.std(log_mags) if len(log_mags) > 1 else 0.0
-            frac_very_small = np.mean([v < 0.01 for v in abs_vals])
-            frac_very_large = np.mean([v > 1000 for v in abs_vals])
-            frac_integers = np.mean([v == int(v) for v in raw_values])
-            frac_round_tens = np.mean([v != 0 and v % 10 == 0 for v in raw_values])
-        else:
-            log_magnitude_mean = 0.0
-            log_magnitude_std = 0.0
-            frac_very_small = 0.0
-            frac_very_large = 0.0
-            frac_integers = 0.0
-            frac_round_tens = 0.0
+    # --- Row surprise (vectorized) ---
+    if len(col_means) > 0:
+        z_for_surprise = (numeric_matrix[:, :len(col_means)] - col_means) / col_stds_safe
+        log_pdf = -0.5 * z_for_surprise**2 - np.log(col_stds_safe * np.sqrt(2 * np.pi) + 1e-10)
+        row_surprise_arr = -log_pdf.sum(axis=1)
+    else:
+        row_surprise_arr = np.zeros(n_rows)
 
+    # --- Assemble RowMetaFeatures list from arrays ---
+    # Scalar dataset-level values
+    _n_numeric = len(numeric_cols)
+    _n_categorical = len(categorical_cols)
+
+    meta_features = []
+    for idx in range(n_rows):
         meta_features.append(RowMetaFeatures(
-            # Missing patterns
-            missing_rate=missing_rate,
-            missing_numeric_rate=missing_numeric_rate,
-            missing_categorical_rate=missing_cat_rate,
-            # Numeric distribution
-            numeric_mean_zscore=numeric_mean_zscore,
-            numeric_max_zscore=numeric_max_zscore,
-            numeric_min_zscore=numeric_min_zscore,
-            numeric_std=numeric_std,
-            numeric_skewness=numeric_skewness,
-            numeric_kurtosis=numeric_kurtosis,
-            numeric_range=numeric_range,
-            numeric_iqr=numeric_iqr,
-            frac_zeros=frac_zeros,
-            frac_negative=frac_negative,
-            frac_positive_outliers=frac_pos_outliers,
-            frac_negative_outliers=frac_neg_outliers,
-            # Categorical
-            categorical_rarity=categorical_rarity,
-            categorical_modal_frac=categorical_modal_frac,
-            n_rare_categories=n_rare,
-            n_unique_categories=n_unique_categories,
-            categorical_entropy=categorical_entropy,
-            # Row complexity
-            row_entropy=row_entropy,
-            row_uniformity=row_uniformity,
-            n_distinct_values=n_distinct_values,
-            # Position in dataset
+            missing_rate=float(missing_total[idx]),
+            missing_numeric_rate=float(missing_num[idx]),
+            missing_categorical_rate=float(missing_cat[idx]),
+            numeric_mean_zscore=float(mean_abs_z[idx]),
+            numeric_max_zscore=float(max_abs_z[idx]),
+            numeric_min_zscore=float(min_abs_z[idx]),
+            numeric_std=float(std_abs_z[idx]),
+            numeric_skewness=float(skew_arr[idx]),
+            numeric_kurtosis=float(kurt_arr[idx]),
+            numeric_range=float(range_arr[idx]),
+            numeric_iqr=float(iqr_arr[idx]),
+            frac_zeros=float(frac_zeros_arr[idx]),
+            frac_negative=float(frac_neg_arr[idx]),
+            frac_positive_outliers=float(frac_pos_out[idx]),
+            frac_negative_outliers=float(frac_neg_out[idx]),
+            categorical_rarity=float(cat_rarity_arr[idx]),
+            categorical_modal_frac=float(cat_modal_arr[idx]),
+            n_rare_categories=int(cat_rare_count[idx]),
+            n_unique_categories=int(n_unique_cat_arr[idx]),
+            categorical_entropy=float(cat_entropy_arr[idx]),
+            row_entropy=float(row_entropy_arr[idx]),
+            row_uniformity=float(row_uniformity_arr[idx]),
+            n_distinct_values=int(n_distinct_arr[idx]),
             centroid_distance=float(centroid_distances[idx]),
             nearest_neighbor_dist=float(nn_distances[idx]),
             local_density=float(local_densities[idx]),
             pca_pc1=float(pc1[idx]),
             pca_pc2=float(pc2[idx]),
             pca_residual=float(pca_residual),
-            # Dataset characteristics
-            n_numeric=len(numeric_cols),
-            n_categorical=len(categorical_cols),
+            n_numeric=_n_numeric,
+            n_categorical=_n_categorical,
             n_rows_total=n_rows,
             n_cols_total=n_cols,
             dataset_sparsity=dataset_sparsity,
             numeric_correlation_mean=numeric_corr_mean,
-            # Scale/Magnitude
-            log_magnitude_mean=log_magnitude_mean,
-            log_magnitude_std=log_magnitude_std,
-            frac_very_small=frac_very_small,
-            frac_very_large=frac_very_large,
-            frac_integers=frac_integers,
-            frac_round_tens=frac_round_tens,
-            # Target
+            log_magnitude_mean=float(log_mag_mean[idx]),
+            log_magnitude_std=float(log_mag_std[idx]),
+            frac_very_small=float(frac_tiny[idx]),
+            frac_very_large=float(frac_huge[idx]),
+            frac_integers=float(frac_int[idx]),
+            frac_round_tens=float(frac_r10[idx]),
+            fisher_ratio=float(fisher_arr[idx]),
+            borderline=float(borderline_arr[idx]),
+            knn_class_ratio=float(knn_class_ratio_arr[idx]),
+            linear_boundary_dist=float(linear_boundary_dist_arr[idx]),
+            hub_score=float(hub_scores_arr[idx]),
+            local_clustering=float(local_clustering_arr[idx]),
+            local_intrinsic_dim=float(local_id_arr[idx]),
+            row_surprise=float(row_surprise_arr[idx]),
+            mi_contribution=float(mi_contributions[idx]),
             target_is_minority=float(is_minority[idx]),
             target_zscore=float(target_zscores[idx]),
         ))
@@ -551,55 +843,9 @@ def analyze_feature_triggers(
     all_activations = np.concatenate(all_activations, axis=0)
     print(f"Total: {len(all_meta)} samples from {len(set(all_dataset_names))} datasets")
 
-    # Convert meta-features to array for analysis (all 37 features)
-    meta_array = np.array([
-        [
-            # Missing patterns (3)
-            m.missing_rate, m.missing_numeric_rate, m.missing_categorical_rate,
-            # Numeric distribution (13)
-            m.numeric_mean_zscore, m.numeric_max_zscore, m.numeric_min_zscore,
-            m.numeric_std, m.numeric_skewness, m.numeric_kurtosis,
-            m.numeric_range, m.numeric_iqr, m.frac_zeros, m.frac_negative,
-            m.frac_positive_outliers, m.frac_negative_outliers,
-            # Categorical (5)
-            m.categorical_rarity, m.categorical_modal_frac, m.n_rare_categories,
-            m.n_unique_categories, m.categorical_entropy,
-            # Row complexity (3)
-            m.row_entropy, m.row_uniformity, m.n_distinct_values,
-            # Position in dataset (6)
-            m.centroid_distance, m.nearest_neighbor_dist, m.local_density,
-            m.pca_pc1, m.pca_pc2, m.pca_residual,
-            # Dataset characteristics (5)
-            m.n_numeric, m.n_categorical, m.n_rows_total, m.n_cols_total,
-            m.dataset_sparsity, m.numeric_correlation_mean,
-            # Target (2)
-            m.target_is_minority, m.target_zscore,
-        ]
-        for m in all_meta
-    ])
-
-    meta_names = [
-        # Missing patterns
-        'missing_rate', 'missing_numeric_rate', 'missing_categorical_rate',
-        # Numeric distribution
-        'numeric_mean_zscore', 'numeric_max_zscore', 'numeric_min_zscore',
-        'numeric_std', 'numeric_skewness', 'numeric_kurtosis',
-        'numeric_range', 'numeric_iqr', 'frac_zeros', 'frac_negative',
-        'frac_positive_outliers', 'frac_negative_outliers',
-        # Categorical
-        'categorical_rarity', 'categorical_modal_frac', 'n_rare_categories',
-        'n_unique_categories', 'categorical_entropy',
-        # Row complexity
-        'row_entropy', 'row_uniformity', 'n_distinct_values',
-        # Position in dataset
-        'centroid_distance', 'nearest_neighbor_dist', 'local_density',
-        'pca_pc1', 'pca_pc2', 'pca_residual',
-        # Dataset characteristics
-        'n_numeric', 'n_categorical', 'n_rows_total', 'n_cols_total',
-        'dataset_sparsity', 'numeric_correlation_mean',
-        # Target
-        'target_is_minority', 'target_zscore',
-    ]
+    # Convert meta-features to array — use canonical META_NAMES from compare_sae_architectures
+    from scripts.compare_sae_architectures import META_NAMES as meta_names, meta_features_to_array
+    meta_array = np.array([meta_features_to_array(m) for m in all_meta])
 
     # Compute baseline statistics
     baseline_means = meta_array.mean(axis=0)

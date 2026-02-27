@@ -1,0 +1,171 @@
+{
+  "domains": {
+    "Finance & Insurance": {
+      "description": "Banking, credit scoring, loan default prediction, corporate bankruptcy, and insurance policy datasets.",
+      "datasets": [
+        "bank-marketing",
+        "Bank_Customer_Churn",
+        "credit-g",
+        "credit_card_clients_default",
+        "GiveMeSomeCredit",
+        "heloc",
+        "coil2000_insurance_policies",
+        "polish_companies_bankruptcy",
+        "taiwanese_bankruptcy_prediction"
+      ]
+    },
+    "Healthcare & Life Sciences": {
+      "description": "Medical diagnosis, patient outcomes, drug response, protein structure, and biological activity datasets.",
+      "datasets": [
+        "blood-transfusion-service-center",
+        "diabetes",
+        "Diabetes130US",
+        "healthcare_insurance_expenses",
+        "maternal_health_risk",
+        "Bioresponse",
+        "hiva_agnostic",
+        "physiochemical_protein"
+      ]
+    },
+    "Chemistry & Materials": {
+      "description": "Chemical property prediction (QSAR), material strength testing, wine quality, and superconductor properties.",
+      "datasets": [
+        "qsar-biodeg",
+        "QSAR-TID-11",
+        "QSAR_fish_toxicity",
+        "wine_quality",
+        "concrete_compressive_strength",
+        "superconductivity",
+        "anneal"
+      ]
+    },
+    "Business & Marketing": {
+      "description": "Customer churn, satisfaction, marketing campaigns, employee access, and HR analytics.",
+      "datasets": [
+        "Amazon_employee_access",
+        "churn",
+        "customer_satisfaction_in_airline",
+        "Fitness_Club",
+        "HR_Analytics_Job_Change_of_Data_Scientists",
+        "in_vehicle_coupon_recommendation",
+        "Is-this-a-good-customer",
+        "kddcup09_appetency",
+        "Marketing_Campaign",
+        "online_shoppers_intention"
+      ]
+    },
+    "Real Estate & Pricing": {
+      "description": "Housing price prediction and gemstone valuation datasets.",
+      "datasets": [
+        "houses",
+        "miami_housing",
+        "Another-Dataset-on-used-Fiat-500",
+        "diamonds"
+      ]
+    },
+    "Engineering & Industry": {
+      "description": "Industrial failure prediction, noise modeling, food quality control, and seismic hazard detection.",
+      "datasets": [
+        "APSFailure",
+        "airfoil_self_noise",
+        "hazelnut-spread-contaminant-detection",
+        "seismic-bumps"
+      ]
+    },
+    "Technology & Security": {
+      "description": "Software defect prediction, Android malware detection, website phishing classification, and cybersecurity.",
+      "datasets": [
+        "jm1",
+        "NATICUSdroid",
+        "website_phishing"
+      ]
+    },
+    "Logistics & Commerce": {
+      "description": "E-commerce shipping, food delivery time prediction, and supply chain datasets.",
+      "datasets": [
+        "E-CommereShippingData",
+        "Food_Delivery_Time"
+      ]
+    },
+    "Education & Social": {
+      "description": "Student academic outcomes and social science datasets.",
+      "datasets": [
+        "students_dropout_and_academic_success"
+      ]
+    },
+    "Natural Sciences": {
+      "description": "Astronomy, genomics, and earth science datasets.",
+      "datasets": [
+        "SDSS17",
+        "splice",
+        "MIC"
+      ]
+    }
+  },
+  "dataset_domain": {
+    "airfoil_self_noise": "Engineering & Industry",
+    "Amazon_employee_access": "Business & Marketing",
+    "anneal": "Chemistry & Materials",
+    "Another-Dataset-on-used-Fiat-500": "Real Estate & Pricing",
+    "APSFailure": "Engineering & Industry",
+    "bank-marketing": "Finance & Insurance",
+    "Bank_Customer_Churn": "Finance & Insurance",
+    "Bioresponse": "Healthcare & Life Sciences",
+    "blood-transfusion-service-center": "Healthcare & Life Sciences",
+    "churn": "Business & Marketing",
+    "coil2000_insurance_policies": "Finance & Insurance",
+    "concrete_compressive_strength": "Chemistry & Materials",
+    "credit-g": "Finance & Insurance",
+    "credit_card_clients_default": "Finance & Insurance",
+    "customer_satisfaction_in_airline": "Business & Marketing",
+    "diabetes": "Healthcare & Life Sciences",
+    "Diabetes130US": "Healthcare & Life Sciences",
+    "diamonds": "Real Estate & Pricing",
+    "E-CommereShippingData": "Logistics & Commerce",
+    "Fitness_Club": "Business & Marketing",
+    "Food_Delivery_Time": "Logistics & Commerce",
+    "GiveMeSomeCredit": "Finance & Insurance",
+    "hazelnut-spread-contaminant-detection": "Engineering & Industry",
+    "healthcare_insurance_expenses": "Healthcare & Life Sciences",
+    "heloc": "Finance & Insurance",
+    "hiva_agnostic": "Healthcare & Life Sciences",
+    "houses": "Real Estate & Pricing",
+    "HR_Analytics_Job_Change_of_Data_Scientists": "Business & Marketing",
+    "in_vehicle_coupon_recommendation": "Business & Marketing",
+    "Is-this-a-good-customer": "Business & Marketing",
+    "kddcup09_appetency": "Business & Marketing",
+    "Marketing_Campaign": "Business & Marketing",
+    "maternal_health_risk": "Healthcare & Life Sciences",
+    "miami_housing": "Real Estate & Pricing",
+    "online_shoppers_intention": "Business & Marketing",
+    "physiochemical_protein": "Healthcare & Life Sciences",
+    "polish_companies_bankruptcy": "Finance & Insurance",
+    "qsar-biodeg": "Chemistry & Materials",
+    "QSAR-TID-11": "Chemistry & Materials",
+    "QSAR_fish_toxicity": "Chemistry & Materials",
+    "SDSS17": "Natural Sciences",
+    "seismic-bumps": "Engineering & Industry",
+    "splice": "Natural Sciences",
+    "students_dropout_and_academic_success": "Education & Social",
+    "superconductivity": "Chemistry & Materials",
+    "taiwanese_bankruptcy_prediction": "Finance & Insurance",
+    "website_phishing": "Technology & Security",
+    "wine_quality": "Chemistry & Materials",
+    "NATICUSdroid": "Technology & Security",
+    "jm1": "Technology & Security",
+    "MIC": "Natural Sciences"
+  },
+  "metadata": {
+    "total_datasets": 51,
+    "total_domains": 10,
+    "source": "TabArena benchmark (OpenML Suite 457), NeurIPS 2025",
+    "taxonomy_basis": "OpenML metadata + dataset name semantics + well-known benchmark provenance",
+    "notes": {
+      "MIC": "Minimum Inhibitory Concentration - antimicrobial resistance dataset; could fit Healthcare or Natural Sciences. Placed in Natural Sciences due to microbiology focus.",
+      "hiva_agnostic": "HIV drug activity screening from ECML/PKDD 2004 AgnosticVsProbe challenge. Placed in Healthcare due to pharmaceutical relevance.",
+      "anneal": "Steel annealing process classification. Could fit Engineering; placed in Chemistry & Materials due to metallurgical focus.",
+      "Another-Dataset-on-used-Fiat-500": "Used car pricing. Placed in Real Estate & Pricing as a valuation/pricing task alongside housing and diamonds.",
+      "healthcare_insurance_expenses": "Straddles Healthcare and Finance. Placed in Healthcare as the target is medical cost prediction driven by health factors."
+    }
+  }
+}

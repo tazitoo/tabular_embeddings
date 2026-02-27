@@ -70,6 +70,16 @@ META_NAMES = [
     'pca_pc1', 'pca_pc2', 'pca_residual',
     'n_numeric', 'n_categorical', 'n_rows_total', 'n_cols_total',
     'dataset_sparsity', 'numeric_correlation_mean',
+    # Scale/Magnitude (6)
+    'log_magnitude_mean', 'log_magnitude_std',
+    'frac_very_small', 'frac_very_large', 'frac_integers', 'frac_round_tens',
+    # Supervised Complexity (4)
+    'fisher_ratio', 'borderline', 'knn_class_ratio', 'linear_boundary_dist',
+    # Graph Topology (3)
+    'hub_score', 'local_clustering', 'local_intrinsic_dim',
+    # Information-Theoretic (2)
+    'row_surprise', 'mi_contribution',
+    # Target (2)
     'target_is_minority', 'target_zscore',
 ]
 
@@ -89,6 +99,16 @@ def meta_features_to_array(mf: RowMetaFeatures) -> List[float]:
         mf.pca_pc1, mf.pca_pc2, mf.pca_residual,
         mf.n_numeric, mf.n_categorical, mf.n_rows_total, mf.n_cols_total,
         mf.dataset_sparsity, mf.numeric_correlation_mean,
+        # Scale/Magnitude
+        mf.log_magnitude_mean, mf.log_magnitude_std,
+        mf.frac_very_small, mf.frac_very_large, mf.frac_integers, mf.frac_round_tens,
+        # Supervised Complexity
+        mf.fisher_ratio, mf.borderline, mf.knn_class_ratio, mf.linear_boundary_dist,
+        # Graph Topology
+        mf.hub_score, mf.local_clustering, mf.local_intrinsic_dim,
+        # Information-Theoretic
+        mf.row_surprise, mf.mi_contribution,
+        # Target
         mf.target_is_minority, mf.target_zscore,
     ]
 

@@ -57,38 +57,33 @@ def sae_sweep_dir(round: int = None) -> Path:
 
 
 # Default model configurations: (display_name, sae_sweep_dir, emb_dir)
-# Mitra uses separate cls/reg SAEs because its pretrained cls and reg checkpoints
-# produce geometrically unrelated embeddings (r ≈ 0.02). The cls SAE handles
-# 38 classification datasets; regression datasets must be excluded.
+# Round 5 SAEs are trained on all datasets per model (cls + reg pooled).
+# Mitra's cls/reg checkpoints produce different embeddings, but both are
+# extracted at the cls-optimal layer (10) and pooled into one SAE.
 DEFAULT_MODELS = [
     ("TabPFN", "tabpfn", "tabpfn"),
     ("CARTE", "carte", "carte"),
     ("TabICL", "tabicl", "tabicl"),
     ("TabDPT", "tabdpt", "tabdpt"),
-    ("Mitra", "mitra_classification", "mitra"),
+    ("Mitra", "mitra", "mitra"),
     ("HyperFast", "hyperfast", "hyperfast"),
     ("Tabula-8B", "tabula8b", "tabula8b"),
 ]
 
-# Regression model configurations: only models with regression-capable SAEs.
-# Mitra regression uses a separate SAE trained on regression embeddings.
+# Regression model configurations: models with regression-capable embeddings.
 REGRESSION_MODELS = [
     ("TabPFN", "tabpfn", "tabpfn"),
     ("CARTE", "carte", "carte"),
     ("TabDPT", "tabdpt", "tabdpt"),
-    ("Mitra", "mitra_regression", "mitra"),
+    ("Mitra", "mitra", "mitra"),
     ("Tabula-8B", "tabula8b", "tabula8b"),
 ]
 
 # Models whose SAE only applies to datasets of a specific task type.
 # Models not listed here work on all tasks.
-MODEL_TASK_FILTERS = {
-    "Mitra": "classification",
-}
+MODEL_TASK_FILTERS = {}
 
-REGRESSION_TASK_FILTERS = {
-    "Mitra": "regression",
-}
+REGRESSION_TASK_FILTERS = {}
 
 
 def get_models_for_task(task: str = "classification"):
@@ -128,55 +123,86 @@ def find_common_datasets(emb_dirs: Dict[str, Path]) -> List[str]:
     return common
 
 
+def _process_single_dataset(
+    ds_name: str,
+    emb_dir: Path,
+    max_per_dataset: int,
+) -> Optional[Tuple[str, List[List[float]]]]:
+    """Process one dataset for meta-feature extraction (joblib worker function)."""
+    import pandas as pd
+
+    emb_path = emb_dir / f"tabarena_{ds_name}.npz"
+    if not emb_path.exists():
+        return None
+
+    emb_data = np.load(emb_path, allow_pickle=True)
+    n_emb = len(emb_data['embeddings'])
+
+    if n_emb > max_per_dataset:
+        np.random.seed(42)
+        sample_indices = np.random.choice(n_emb, max_per_dataset, replace=False)
+    else:
+        sample_indices = np.arange(n_emb)
+
+    try:
+        X, y, _ = load_tabarena_dataset(ds_name)
+        df = X if hasattr(X, 'iloc') else pd.DataFrame(X)
+        df = df.iloc[sample_indices].reset_index(drop=True)
+        y_sub = y[sample_indices] if y is not None else None
+
+        numeric_cols, categorical_cols, col_stats, dataset_stats = compute_column_stats(df)
+        meta_features = compute_row_meta_features(
+            df, y_sub, numeric_cols, categorical_cols, col_stats, dataset_stats
+        )
+        rows = [meta_features_to_array(m) for m in meta_features]
+        print(f"    {ds_name}: {len(rows)} rows")
+        return (ds_name, rows)
+    except Exception as e:
+        print(f"    Skipping {ds_name}: {e}")
+        return None
+
+
 def collect_meta_for_datasets(
     datasets: List[str],
     emb_dir: Path,
     max_per_dataset: int = 500,
-) -> Tuple[np.ndarray, List[str]]:
+    n_jobs: int = -1,
+) -> Tuple[np.ndarray, List[str], np.ndarray]:
     """
     Compute row meta-features for specified datasets.
 
     Uses sample indices matching the embedding pooling logic so meta-features
-    align row-by-row with SAE activations.
+    align row-by-row with SAE activations. Parallelized across datasets with
+    joblib (each dataset is independent).
+
+    Args:
+        n_jobs: Number of parallel workers. -1 = all CPUs, 1 = sequential.
 
     Returns:
         meta_array: (n_samples, n_meta_features)
         loaded_datasets: datasets that loaded successfully
+        boundaries: (n_datasets + 1,) cumulative sample counts per dataset
     """
+    from joblib import Parallel, delayed
+
+    results = Parallel(n_jobs=n_jobs, verbose=0)(
+        delayed(_process_single_dataset)(ds, emb_dir, max_per_dataset)
+        for ds in datasets
+    )
+
+    # Collect in original dataset order (deterministic)
     all_meta = []
     loaded = []
-
-    for ds_name in datasets:
-        emb_path = emb_dir / f"tabarena_{ds_name}.npz"
-        if not emb_path.exists():
-            continue
-
-        emb_data = np.load(emb_path, allow_pickle=True)
-        n_emb = len(emb_data['embeddings'])
-
-        if n_emb > max_per_dataset:
-            np.random.seed(42)
-            sample_indices = np.random.choice(n_emb, max_per_dataset, replace=False)
-        else:
-            sample_indices = np.arange(n_emb)
-
-        try:
-            X, y, _ = load_tabarena_dataset(ds_name)
-            import pandas as pd
-            df = X if hasattr(X, 'iloc') else pd.DataFrame(X)
-            df = df.iloc[sample_indices].reset_index(drop=True)
-            y_sub = y[sample_indices] if y is not None else None
-
-            numeric_cols, categorical_cols, col_stats, dataset_stats = compute_column_stats(df)
-            meta_features = compute_row_meta_features(
-                df, y_sub, numeric_cols, categorical_cols, col_stats, dataset_stats
-            )
-            all_meta.extend([meta_features_to_array(m) for m in meta_features])
+    boundaries = [0]
+    for res in results:
+        if res is not None:
+            ds_name, rows = res
+            all_meta.extend(rows)
             loaded.append(ds_name)
-        except Exception as e:
-            print(f"    Skipping {ds_name}: {e}")
+            boundaries.append(boundaries[-1] + len(rows))
 
-    return np.array(all_meta), loaded
+    meta = np.array(all_meta) if all_meta else np.empty((0, 0))
+    return meta, loaded, np.array(boundaries)
 
 
 def pool_embeddings_for_datasets(
@@ -462,7 +488,7 @@ def main():
     # Compute meta-features once (using first model's emb_dir for sample indices)
     # All models use same seed(42) subsampling so indices match for common datasets
     print(f"\nComputing meta-features for {len(common_datasets)} common datasets...")
-    meta_array, loaded_datasets = collect_meta_for_datasets(
+    meta_array, loaded_datasets, _boundaries = collect_meta_for_datasets(
         common_datasets, model_configs[0][2], max_per_dataset=args.max_per_dataset
     )
     print(f"  Meta-feature matrix: {meta_array.shape} from {len(loaded_datasets)} datasets")
