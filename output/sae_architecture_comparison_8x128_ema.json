@@ -1,0 +1,713 @@
+{
+  "sae_a": {
+    "path": "output/sae_tabarena_sweep/tabpfn_layer16/sae_archetypal_8x128_ema_ghostgrad.pt",
+    "type": "archetypal",
+    "config": {
+      "hidden_dim": 1536,
+      "topk": 128,
+      "sparsity_type": "archetypal"
+    },
+    "basic_metrics": {
+      "hidden_dim": 1536,
+      "alive_features": 1395,
+      "alive_frac": 0.908203125,
+      "dead_features": 141,
+      "l0_mean": 128.0,
+      "l0_std": 0.0,
+      "mean_activation": 0.3751867413520813,
+      "max_activation": 6.805061340332031
+    },
+    "monosemanticity": {
+      "mean_strong_effects": 7.078853046594982,
+      "median_strong_effects": 5.0,
+      "mean_max_effect": 1.373683055119929,
+      "frac_monosemantic": 0.3060931899641577
+    },
+    "coverage": {
+      "missing_rate": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "missing_numeric_rate": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "missing_categorical_rate": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "numeric_mean_zscore": {
+        "max_positive": 0.687960015091341,
+        "max_negative": -1.2876626204743151,
+        "n_strong": 826,
+        "coverage_score": 1.2876626204743151
+      },
+      "numeric_max_zscore": {
+        "max_positive": 2.8233192018727937,
+        "max_negative": -0.5430619804995421,
+        "n_strong": 843,
+        "coverage_score": 2.8233192018727937
+      },
+      "numeric_min_zscore": {
+        "max_positive": 1.7708552816299465,
+        "max_negative": -0.762744473256621,
+        "n_strong": 894,
+        "coverage_score": 1.7708552816299465
+      },
+      "numeric_std": {
+        "max_positive": 1.054416091226287,
+        "max_negative": -0.6373448220757592,
+        "n_strong": 506,
+        "coverage_score": 1.054416091226287
+      },
+      "numeric_skewness": {
+        "max_positive": 3.063712414982298,
+        "max_negative": -1.0765243891855603,
+        "n_strong": 926,
+        "coverage_score": 3.063712414982298
+      },
+      "numeric_kurtosis": {
+        "max_positive": 3.0683014152423937,
+        "max_negative": -0.33145178660430147,
+        "n_strong": 679,
+        "coverage_score": 3.0683014152423937
+      },
+      "numeric_range": {
+        "max_positive": 2.688444481549308,
+        "max_negative": -0.791911449540042,
+        "n_strong": 868,
+        "coverage_score": 2.688444481549308
+      },
+      "numeric_iqr": {
+        "max_positive": 0.9824190824478743,
+        "max_negative": -1.2529756395983231,
+        "n_strong": 678,
+        "coverage_score": 1.2529756395983231
+      },
+      "frac_zeros": {
+        "max_positive": 2.417989172534159,
+        "max_negative": -0.9775645653373459,
+        "n_strong": 1113,
+        "coverage_score": 2.417989172534159
+      },
+      "frac_negative": {
+        "max_positive": 5.706658541817317,
+        "max_negative": -0.28195346758311896,
+        "n_strong": 106,
+        "coverage_score": 5.706658541817317
+      },
+      "frac_positive_outliers": {
+        "max_positive": 0.8294471683699509,
+        "max_negative": -0.4502903552358265,
+        "n_strong": 93,
+        "coverage_score": 0.8294471683699509
+      },
+      "frac_negative_outliers": {
+        "max_positive": 1.3247809471985683,
+        "max_negative": -0.22033880455081187,
+        "n_strong": 122,
+        "coverage_score": 1.3247809471985683
+      },
+      "categorical_rarity": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "categorical_modal_frac": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "n_rare_categories": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "n_unique_categories": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "categorical_entropy": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "row_entropy": {
+        "max_positive": 1.0423730544369996,
+        "max_negative": -2.462403595674883,
+        "n_strong": 891,
+        "coverage_score": 2.462403595674883
+      },
+      "row_uniformity": {
+        "max_positive": 2.0135304700325234,
+        "max_negative": -1.5539034831851841,
+        "n_strong": 1084,
+        "coverage_score": 2.0135304700325234
+      },
+      "n_distinct_values": {
+        "max_positive": 0.788542948213079,
+        "max_negative": -2.4412045008308216,
+        "n_strong": 959,
+        "coverage_score": 2.4412045008308216
+      },
+      "centroid_distance": {
+        "max_positive": 3.6284404498284775,
+        "max_negative": -0.5092784453316166,
+        "n_strong": 842,
+        "coverage_score": 3.6284404498284775
+      },
+      "nearest_neighbor_dist": {
+        "max_positive": 3.824394205559918,
+        "max_negative": -0.45422108852019183,
+        "n_strong": 881,
+        "coverage_score": 3.824394205559918
+      },
+      "local_density": {
+        "max_positive": 1.69837579556059,
+        "max_negative": -0.06824285669046067,
+        "n_strong": 55,
+        "coverage_score": 1.69837579556059
+      },
+      "pca_pc1": {
+        "max_positive": 0.6557695434712159,
+        "max_negative": -0.689331429555938,
+        "n_strong": 18,
+        "coverage_score": 0.689331429555938
+      },
+      "pca_pc2": {
+        "max_positive": 0.649423903833982,
+        "max_negative": -0.42679952286016104,
+        "n_strong": 24,
+        "coverage_score": 0.649423903833982
+      },
+      "pca_residual": {
+        "max_positive": 2.015647308441011,
+        "max_negative": -2.473867821867505,
+        "n_strong": 1118,
+        "coverage_score": 2.473867821867505
+      },
+      "n_numeric": {
+        "max_positive": 4.563620081352353,
+        "max_negative": -0.33462067659237543,
+        "n_strong": 781,
+        "coverage_score": 4.563620081352353
+      },
+      "n_categorical": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "n_rows_total": {
+        "max_positive": 0.31830303030569207,
+        "max_negative": -3.839543850597439,
+        "n_strong": 716,
+        "coverage_score": 3.839543850597439
+      },
+      "n_cols_total": {
+        "max_positive": 4.563620081352353,
+        "max_negative": -0.33462067659237543,
+        "n_strong": 781,
+        "coverage_score": 4.563620081352353
+      },
+      "dataset_sparsity": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "numeric_correlation_mean": {
+        "max_positive": 3.434043150925304,
+        "max_negative": -1.0093842508102409,
+        "n_strong": 1014,
+        "coverage_score": 3.434043150925304
+      },
+      "target_is_minority": {
+        "max_positive": 0.8578850804600345,
+        "max_negative": -0.24074486877453746,
+        "n_strong": 275,
+        "coverage_score": 0.8578850804600345
+      },
+      "target_zscore": {
+        "max_positive": 0.5421351169594562,
+        "max_negative": -0.5836504646466077,
+        "n_strong": 76,
+        "coverage_score": 0.5836504646466077
+      }
+    },
+    "redundancy": {
+      "n_alive": 1395,
+      "n_near_duplicate_pairs": 102344,
+      "n_total_pairs": 972315,
+      "frac_duplicate_pairs": 0.10525806965849545,
+      "n_features_with_duplicate": 1365,
+      "frac_features_with_duplicate": 0.978494623655914,
+      "mean_pairwise_similarity": 0.10313719511032104,
+      "max_pairwise_similarity": 1.0000005960464478
+    }
+  },
+  "sae_b": {
+    "path": "output/sae_tabarena_sweep/tabpfn_layer16/sae_matryoshka_archetypal_validated.pt",
+    "type": "matryoshka_archetypal",
+    "config": {
+      "hidden_dim": 1536,
+      "topk": 128,
+      "sparsity_type": "matryoshka_archetypal"
+    },
+    "basic_metrics": {
+      "hidden_dim": 1536,
+      "alive_features": 1536,
+      "alive_frac": 1.0,
+      "dead_features": 0,
+      "l0_mean": 127.99987357774968,
+      "l0_std": 0.01947436182170784,
+      "mean_activation": 0.1546100378036499,
+      "max_activation": 2.3034415245056152
+    },
+    "monosemanticity": {
+      "mean_strong_effects": 6.262369791666667,
+      "median_strong_effects": 5.0,
+      "mean_max_effect": 1.1202703766550959,
+      "frac_monosemantic": 0.287109375
+    },
+    "coverage": {
+      "missing_rate": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "missing_numeric_rate": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "missing_categorical_rate": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "numeric_mean_zscore": {
+        "max_positive": 0.6187684208974519,
+        "max_negative": -1.1923045323363042,
+        "n_strong": 727,
+        "coverage_score": 1.1923045323363042
+      },
+      "numeric_max_zscore": {
+        "max_positive": 2.761399316513723,
+        "max_negative": -0.4783482491305218,
+        "n_strong": 790,
+        "coverage_score": 2.761399316513723
+      },
+      "numeric_min_zscore": {
+        "max_positive": 1.4090970497291804,
+        "max_negative": -0.7316249160850876,
+        "n_strong": 774,
+        "coverage_score": 1.4090970497291804
+      },
+      "numeric_std": {
+        "max_positive": 1.0150292604715188,
+        "max_negative": -0.5435754945580167,
+        "n_strong": 392,
+        "coverage_score": 1.0150292604715188
+      },
+      "numeric_skewness": {
+        "max_positive": 2.8913429633292203,
+        "max_negative": -1.0538208591570117,
+        "n_strong": 882,
+        "coverage_score": 2.8913429633292203
+      },
+      "numeric_kurtosis": {
+        "max_positive": 2.8310606242196377,
+        "max_negative": -0.3290989254442855,
+        "n_strong": 645,
+        "coverage_score": 2.8310606242196377
+      },
+      "numeric_range": {
+        "max_positive": 2.6453336864881978,
+        "max_negative": -0.5528989753951513,
+        "n_strong": 795,
+        "coverage_score": 2.6453336864881978
+      },
+      "numeric_iqr": {
+        "max_positive": 0.931963004797526,
+        "max_negative": -1.2520499540329721,
+        "n_strong": 760,
+        "coverage_score": 1.2520499540329721
+      },
+      "frac_zeros": {
+        "max_positive": 2.4122234448920863,
+        "max_negative": -0.9775645653373459,
+        "n_strong": 1244,
+        "coverage_score": 2.4122234448920863
+      },
+      "frac_negative": {
+        "max_positive": 5.403181581881484,
+        "max_negative": -0.28195346758311896,
+        "n_strong": 45,
+        "coverage_score": 5.403181581881484
+      },
+      "frac_positive_outliers": {
+        "max_positive": 0.7134643208335721,
+        "max_negative": -0.4502903552358265,
+        "n_strong": 68,
+        "coverage_score": 0.7134643208335721
+      },
+      "frac_negative_outliers": {
+        "max_positive": 1.0615132334190307,
+        "max_negative": -0.22033880455081187,
+        "n_strong": 132,
+        "coverage_score": 1.0615132334190307
+      },
+      "categorical_rarity": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "categorical_modal_frac": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "n_rare_categories": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "n_unique_categories": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "categorical_entropy": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "row_entropy": {
+        "max_positive": 1.085444941307555,
+        "max_negative": -2.4380909708410807,
+        "n_strong": 1059,
+        "coverage_score": 2.4380909708410807
+      },
+      "row_uniformity": {
+        "max_positive": 2.006887337535159,
+        "max_negative": -1.4893299527207606,
+        "n_strong": 1074,
+        "coverage_score": 2.006887337535159
+      },
+      "n_distinct_values": {
+        "max_positive": 0.788542948213079,
+        "max_negative": -1.2525613876139217,
+        "n_strong": 871,
+        "coverage_score": 1.2525613876139217
+      },
+      "centroid_distance": {
+        "max_positive": 3.4571806137646455,
+        "max_negative": -0.4571890221395993,
+        "n_strong": 798,
+        "coverage_score": 3.4571806137646455
+      },
+      "nearest_neighbor_dist": {
+        "max_positive": 3.601942853924739,
+        "max_negative": -0.4524768633832815,
+        "n_strong": 877,
+        "coverage_score": 3.601942853924739
+      },
+      "local_density": {
+        "max_positive": 1.2567210649199823,
+        "max_negative": -0.06824285661226925,
+        "n_strong": 49,
+        "coverage_score": 1.2567210649199823
+      },
+      "pca_pc1": {
+        "max_positive": 0.7154213737577534,
+        "max_negative": -0.5987259128212163,
+        "n_strong": 35,
+        "coverage_score": 0.7154213737577534
+      },
+      "pca_pc2": {
+        "max_positive": 0.4581789512967344,
+        "max_negative": -0.5746507088362159,
+        "n_strong": 26,
+        "coverage_score": 0.5746507088362159
+      },
+      "pca_residual": {
+        "max_positive": 2.015647308441011,
+        "max_negative": -2.117609024733471,
+        "n_strong": 1233,
+        "coverage_score": 2.117609024733471
+      },
+      "n_numeric": {
+        "max_positive": 4.212788068873719,
+        "max_negative": -0.33216034650722864,
+        "n_strong": 724,
+        "coverage_score": 4.212788068873719
+      },
+      "n_categorical": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "n_rows_total": {
+        "max_positive": 0.31830303030569207,
+        "max_negative": -3.2667195849060047,
+        "n_strong": 519,
+        "coverage_score": 3.2667195849060047
+      },
+      "n_cols_total": {
+        "max_positive": 4.212788068873719,
+        "max_negative": -0.33216034650722864,
+        "n_strong": 724,
+        "coverage_score": 4.212788068873719
+      },
+      "dataset_sparsity": {
+        "max_positive": 0.0,
+        "max_negative": 0.0,
+        "n_strong": 0,
+        "coverage_score": 0.0
+      },
+      "numeric_correlation_mean": {
+        "max_positive": 3.3584713688650516,
+        "max_negative": -1.0093842508102409,
+        "n_strong": 1027,
+        "coverage_score": 3.3584713688650516
+      },
+      "target_is_minority": {
+        "max_positive": 0.726049486551886,
+        "max_negative": -0.24074486877453746,
+        "n_strong": 124,
+        "coverage_score": 0.726049486551886
+      },
+      "target_zscore": {
+        "max_positive": 0.7108865414754857,
+        "max_negative": -0.7000685224338256,
+        "n_strong": 129,
+        "coverage_score": 0.7108865414754857
+      }
+    },
+    "redundancy": {
+      "n_alive": 1536,
+      "n_near_duplicate_pairs": 3515,
+      "n_total_pairs": 1178880,
+      "frac_duplicate_pairs": 0.0029816435939196526,
+      "n_features_with_duplicate": 1119,
+      "frac_features_with_duplicate": 0.728515625,
+      "mean_pairwise_similarity": 0.008667482994496822,
+      "max_pairwise_similarity": 1.0000005960464478
+    }
+  },
+  "dictionary_overlap": {
+    "mean_best_match_a": 0.5260812640190125,
+    "mean_best_match_b": 0.5635727047920227,
+    "bidirectional_matches": 151,
+    "bidirectional_rate": 0.09830729166666667,
+    "coverage_a_at_0.7": 0.06575520833333333,
+    "coverage_b_at_0.7": 0.12630208333333334,
+    "top_matches": [
+      {
+        "feature_a": 236,
+        "feature_b": 554,
+        "similarity": 0.8790518045425415
+      },
+      {
+        "feature_a": 236,
+        "feature_b": 307,
+        "similarity": 0.8790518045425415
+      },
+      {
+        "feature_a": 1015,
+        "feature_b": 22,
+        "similarity": 0.8760817646980286
+      },
+      {
+        "feature_a": 1015,
+        "feature_b": 1427,
+        "similarity": 0.8751614689826965
+      },
+      {
+        "feature_a": 1015,
+        "feature_b": 1058,
+        "similarity": 0.8751614689826965
+      },
+      {
+        "feature_a": 1015,
+        "feature_b": 582,
+        "similarity": 0.8751614689826965
+      },
+      {
+        "feature_a": 1015,
+        "feature_b": 1172,
+        "similarity": 0.8751614689826965
+      },
+      {
+        "feature_a": 1015,
+        "feature_b": 402,
+        "similarity": 0.8751614689826965
+      },
+      {
+        "feature_a": 1015,
+        "feature_b": 1223,
+        "similarity": 0.8713806867599487
+      },
+      {
+        "feature_a": 1477,
+        "feature_b": 1089,
+        "similarity": 0.8707242608070374
+      }
+    ]
+  },
+  "scale_analysis": {
+    "[0,32)": {
+      "start": 0,
+      "end": 32,
+      "n_features": 32,
+      "alive_features": 32,
+      "alive_frac": 1.0,
+      "mean_activation": 0.28533342480659485,
+      "mean_strong_effects": 4.875,
+      "n_well_covered_meta": 20,
+      "well_covered_meta": [
+        "numeric_mean_zscore",
+        "numeric_max_zscore",
+        "numeric_min_zscore",
+        "numeric_std",
+        "numeric_skewness",
+        "numeric_kurtosis",
+        "numeric_range",
+        "numeric_iqr",
+        "frac_zeros",
+        "frac_negative",
+        "row_entropy",
+        "row_uniformity",
+        "n_distinct_values",
+        "centroid_distance",
+        "nearest_neighbor_dist",
+        "pca_residual",
+        "n_numeric",
+        "n_rows_total",
+        "n_cols_total",
+        "numeric_correlation_mean"
+      ]
+    },
+    "[32,64)": {
+      "start": 32,
+      "end": 64,
+      "n_features": 32,
+      "alive_features": 32,
+      "alive_frac": 1.0,
+      "mean_activation": 0.16911718249320984,
+      "mean_strong_effects": 3.375,
+      "n_well_covered_meta": 6,
+      "well_covered_meta": [
+        "numeric_min_zscore",
+        "frac_negative",
+        "n_distinct_values",
+        "pca_residual",
+        "n_rows_total",
+        "numeric_correlation_mean"
+      ]
+    },
+    "[64,128)": {
+      "start": 64,
+      "end": 128,
+      "n_features": 64,
+      "alive_features": 64,
+      "alive_frac": 1.0,
+      "mean_activation": 0.13405157625675201,
+      "mean_strong_effects": 4.1875,
+      "n_well_covered_meta": 14,
+      "well_covered_meta": [
+        "numeric_min_zscore",
+        "numeric_skewness",
+        "numeric_kurtosis",
+        "frac_negative",
+        "row_entropy",
+        "row_uniformity",
+        "n_distinct_values",
+        "centroid_distance",
+        "nearest_neighbor_dist",
+        "pca_residual",
+        "n_numeric",
+        "n_rows_total",
+        "n_cols_total",
+        "numeric_correlation_mean"
+      ]
+    },
+    "[128,256)": {
+      "start": 128,
+      "end": 256,
+      "n_features": 128,
+      "alive_features": 128,
+      "alive_frac": 1.0,
+      "mean_activation": 0.10491232573986053,
+      "mean_strong_effects": 4.078125,
+      "n_well_covered_meta": 8,
+      "well_covered_meta": [
+        "numeric_min_zscore",
+        "frac_negative",
+        "row_entropy",
+        "row_uniformity",
+        "n_distinct_values",
+        "pca_residual",
+        "n_rows_total",
+        "numeric_correlation_mean"
+      ]
+    },
+    "[256,1536)": {
+      "start": 256,
+      "end": 1536,
+      "n_features": 1280,
+      "alive_features": 1280,
+      "alive_frac": 1.0,
+      "mean_activation": 0.09180469065904617,
+      "mean_strong_effects": 6.69140625,
+      "n_well_covered_meta": 21,
+      "well_covered_meta": [
+        "numeric_mean_zscore",
+        "numeric_max_zscore",
+        "numeric_min_zscore",
+        "numeric_skewness",
+        "numeric_kurtosis",
+        "numeric_range",
+        "numeric_iqr",
+        "frac_zeros",
+        "frac_negative",
+        "frac_negative_outliers",
+        "row_entropy",
+        "row_uniformity",
+        "n_distinct_values",
+        "centroid_distance",
+        "nearest_neighbor_dist",
+        "local_density",
+        "pca_residual",
+        "n_numeric",
+        "n_rows_total",
+        "n_cols_total",
+        "numeric_correlation_mean"
+      ]
+    }
+  },
+  "n_datasets": 51,
+  "n_samples": 23730
+}

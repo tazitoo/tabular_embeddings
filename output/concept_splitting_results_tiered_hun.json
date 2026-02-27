@@ -1,0 +1,168 @@
+{
+  "metadata": {
+    "matching_file": "output/sae_feature_matching_tiered_t0.001_n500.json",
+    "min_group_r2": 0.3,
+    "min_delta_r2": 0.05,
+    "max_group_size": 200,
+    "n_folds": 5,
+    "n_models": 7,
+    "n_pairs": 21,
+    "n_datasets": 38,
+    "runtime_seconds": 6.9
+  },
+  "pairs": {
+    "CARTE__HyperFast": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "CARTE__Mitra": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "CARTE__TabDPT": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "CARTE__TabICL": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "CARTE__TabPFN": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "CARTE__Tabula-8B": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "HyperFast__Mitra": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "HyperFast__TabDPT": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "HyperFast__TabICL": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "HyperFast__TabPFN": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "HyperFast__Tabula-8B": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "Mitra__TabDPT": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "Mitra__TabICL": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "Mitra__TabPFN": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "Mitra__Tabula-8B": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "TabDPT__TabICL": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "TabDPT__TabPFN": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "TabDPT__Tabula-8B": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "TabICL__TabPFN": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "TabICL__Tabula-8B": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    },
+    "TabPFN__Tabula-8B": {
+      "n_groups_tested": 0,
+      "n_split": 0,
+      "n_single_match": 0,
+      "n_noise": 0,
+      "groups": []
+    }
+  },
+  "global_summary": {
+    "total_groups_tested": 0,
+    "total_split": 0,
+    "total_single_match": 0,
+    "total_noise": 0
+  }
+}
