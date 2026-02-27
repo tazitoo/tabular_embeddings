@@ -227,7 +227,11 @@ def intervene_tabpfn(
     # delta shape: (n_query, hidden) → (n_query, 1, hidden)
     delta_broadcast = delta.unsqueeze(1)
 
-    # --- Pass 2: Pre-hook on layer L+1 to inject delta ---
+    # --- Pass 2: Persistent patching on all layers after L ---
+    # Single-layer patching (only layer L+1) is ineffective because subsequent
+    # attention layers recover information from unperturbed context tokens.
+    # Persistent patching re-injects the delta at every subsequent layer,
+    # preventing attention-based recovery.
     next_layer = extraction_layer + 1
     if next_layer >= len(layers):
         raise ValueError(
@@ -235,17 +239,19 @@ def intervene_tabpfn(
             f"({len(layers)} total). Cannot place pre-hook on next layer."
         )
 
-    def modify_hook(module, args):
-        """Pre-forward hook: modify input to layer L+1."""
-        inp = args[0] if isinstance(args, tuple) else args
-        if isinstance(inp, torch.Tensor) and inp.ndim == 4:
-            # inp shape: (1, seq_len, n_structure, hidden_dim)
-            modified = inp.clone()
-            modified[0, -n_query:, :, :] += delta_broadcast
-            return (modified,) + args[1:] if isinstance(args, tuple) else modified
-        return args
+    def make_modify_hook():
+        def modify_hook(module, args):
+            inp = args[0] if isinstance(args, tuple) else args
+            if isinstance(inp, torch.Tensor) and inp.ndim == 4:
+                modified = inp.clone()
+                modified[0, -n_query:, :, :] += delta_broadcast
+                return (modified,) + args[1:] if isinstance(args, tuple) else modified
+            return args
+        return modify_hook
 
-    handle = layers[next_layer].register_forward_pre_hook(modify_hook)
+    handles = []
+    for layer_idx in range(next_layer, len(layers)):
+        handles.append(layers[layer_idx].register_forward_pre_hook(make_modify_hook()))
     try:
         with torch.no_grad():
             if task == "regression":
@@ -253,7 +259,8 @@ def intervene_tabpfn(
             else:
                 ablated_preds = clf.predict_proba(X_query)
     finally:
-        handle.remove()
+        for h in handles:
+            h.remove()
 
     return {
         "baseline_preds": np.asarray(baseline_preds),
@@ -339,7 +346,7 @@ def intervene_mitra(
     # --- Compute delta ---
     delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
 
-    # --- Pass 2: Pre-hook on layer L+1 ---
+    # --- Pass 2: Persistent patching on all layers after L ---
     next_layer = extraction_layer + 1
     if next_layer >= len(layers):
         raise ValueError(
@@ -347,36 +354,47 @@ def intervene_mitra(
             f"({len(layers)} total)."
         )
 
-    # Track which batch we're on for delta injection
-    batch_offset = [0]
+    def make_mitra_modify_hook():
+        """Create a hook with its own batch offset tracker."""
+        batch_offset = [0]
 
-    def modify_hook(module, args):
-        inp = args[0] if isinstance(args, tuple) else args
-        if isinstance(inp, torch.Tensor):
-            modified = inp.clone()
-            if modified.ndim == 4:
-                # (1, n_batch, n_feat+1, dim)
-                n_batch = modified.shape[1]
-                start = batch_offset[0]
-                end = min(start + n_batch, n_query)
-                actual = end - start
-                if actual > 0:
-                    # Add delta to y-token (position 0) and broadcast to all feature positions
-                    modified[0, :actual, :, :] += delta[start:end].unsqueeze(1)
-                    batch_offset[0] = end
-            return (modified,) + args[1:] if isinstance(args, tuple) else modified
-        return args
+        def modify_hook(module, args):
+            inp = args[0] if isinstance(args, tuple) else args
+            if isinstance(inp, torch.Tensor):
+                modified = inp.clone()
+                if modified.ndim == 4:
+                    n_batch = modified.shape[1]
+                    start = batch_offset[0]
+                    end = min(start + n_batch, n_query)
+                    actual = end - start
+                    if actual > 0:
+                        modified[0, :actual, :, :] += delta[start:end].unsqueeze(1)
+                        batch_offset[0] = end
+                return (modified,) + args[1:] if isinstance(args, tuple) else modified
+            return args
 
-    handle = layers[next_layer].register_forward_pre_hook(modify_hook)
+        def reset():
+            batch_offset[0] = 0
+
+        return modify_hook, reset
+
+    handles = []
+    resetters = []
+    for layer_idx in range(next_layer, len(layers)):
+        hook, reset = make_mitra_modify_hook()
+        handles.append(layers[layer_idx].register_forward_pre_hook(hook))
+        resetters.append(reset)
     try:
         with torch.no_grad():
-            batch_offset[0] = 0  # Reset
+            for r in resetters:
+                r()
             if task == "regression":
                 ablated_preds = clf.predict(X_query)
             else:
                 ablated_preds = clf.predict_proba(X_query)
     finally:
-        handle.remove()
+        for h in handles:
+            h.remove()
 
     return {
         "baseline_preds": np.asarray(baseline_preds),
@@ -439,7 +457,7 @@ def intervene_tabicl(
     # Broadcast to ensemble dimension: (1, n_query, 512)
     delta_broadcast = delta.unsqueeze(0)
 
-    # --- Pass 2: Pre-hook on block L+1 ---
+    # --- Pass 2: Persistent patching on all blocks after L ---
     next_block = extraction_layer + 1
     if next_block >= len(blocks):
         raise ValueError(
@@ -447,20 +465,25 @@ def intervene_tabicl(
             f"({len(blocks)} total)."
         )
 
-    def modify_hook(module, args):
-        inp = args[0] if isinstance(args, tuple) else args
-        if isinstance(inp, torch.Tensor) and inp.ndim == 3:
-            modified = inp.clone()
-            modified[:, -n_query:, :] += delta_broadcast
-            return (modified,) + args[1:] if isinstance(args, tuple) else modified
-        return args
+    def make_tabicl_modify_hook():
+        def modify_hook(module, args):
+            inp = args[0] if isinstance(args, tuple) else args
+            if isinstance(inp, torch.Tensor) and inp.ndim == 3:
+                modified = inp.clone()
+                modified[:, -n_query:, :] += delta_broadcast
+                return (modified,) + args[1:] if isinstance(args, tuple) else modified
+            return args
+        return modify_hook
 
-    handle = blocks[next_block].register_forward_pre_hook(modify_hook)
+    handles = []
+    for block_idx in range(next_block, len(blocks)):
+        handles.append(blocks[block_idx].register_forward_pre_hook(make_tabicl_modify_hook()))
     try:
         with torch.no_grad():
             ablated_preds = clf.predict_proba(X_query)
     finally:
-        handle.remove()
+        for h in handles:
+            h.remove()
 
     return {
         "baseline_preds": np.asarray(baseline_preds),
@@ -530,7 +553,7 @@ def intervene_tabdpt(
     # --- Compute delta ---
     delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
 
-    # --- Pass 2: Pre-hook on layer L+1 ---
+    # --- Pass 2: Persistent patching on all layers after L ---
     next_layer = extraction_layer + 1
     if next_layer >= len(encoder_layers):
         raise ValueError(
@@ -538,19 +561,22 @@ def intervene_tabdpt(
             f"({len(encoder_layers)} total)."
         )
 
-    def modify_hook(module, args):
-        inp = args[0] if isinstance(args, tuple) else args
-        if isinstance(inp, torch.Tensor):
-            modified = inp.clone()
-            if modified.ndim == 3:
-                # (batch, seq, H) — broadcast delta across seq dim
-                modified[-n_query:] += delta.unsqueeze(1)
-            elif modified.ndim == 2:
-                modified[-n_query:] += delta
-            return (modified,) + args[1:] if isinstance(args, tuple) else modified
-        return args
+    def make_tabdpt_modify_hook():
+        def modify_hook(module, args):
+            inp = args[0] if isinstance(args, tuple) else args
+            if isinstance(inp, torch.Tensor):
+                modified = inp.clone()
+                if modified.ndim == 3:
+                    modified[-n_query:] += delta.unsqueeze(1)
+                elif modified.ndim == 2:
+                    modified[-n_query:] += delta
+                return (modified,) + args[1:] if isinstance(args, tuple) else modified
+            return args
+        return modify_hook
 
-    handle = encoder_layers[next_layer].register_forward_pre_hook(modify_hook)
+    handles = []
+    for layer_idx in range(next_layer, len(encoder_layers)):
+        handles.append(encoder_layers[layer_idx].register_forward_pre_hook(make_tabdpt_modify_hook()))
     try:
         with torch.no_grad():
             if task == "regression":
@@ -558,7 +584,8 @@ def intervene_tabdpt(
             else:
                 ablated_preds = clf.predict_proba(X_query)
     finally:
-        handle.remove()
+        for h in handles:
+            h.remove()
 
     return {
         "baseline_preds": np.asarray(baseline_preds),
