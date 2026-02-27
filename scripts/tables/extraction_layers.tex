@@ -1,0 +1,18 @@
+\begin{table}[h]
+\centering
+\begin{tabular}{llrrr}
+\toprule
+\textbf{Model} & \textbf{Architecture} & \textbf{Layers} & \textbf{Critical Layer} & \textbf{Depth} \\
+\midrule
+TabPFN v2.5     & Transformer (ICL)        & 24 & 17 & 71\% \\
+Mitra           & 2D Attention             & 13 & 12 & 92\% \\
+TabICL          & Column-then-Row TFM      & 13 & 10 & 77\% \\
+TabDPT          & Transformer + Retrieval  & 16 & 14 & 88\% \\
+CARTE           & Graph Transformer        &  3 &  1 & 33\% \\
+HyperFast       & Hypernetwork             &  3 &  2 & 67\% \\
+Tabula-8B       & Llama-3 8B (LLM)         & 32 & 21 & 66\% \\
+\bottomrule
+\end{tabular}
+\caption{Embedding extraction points per model, selected by layerwise CKA critical depth analysis across 8--15 TabArena datasets per model. Note: Mitra's 13 ``layers'' are extraction-point blocks (12 transformer layers + final normalization), not the raw 72 transformer layers. Layer 12 of 13 blocks corresponds to roughly layer 60--66 of the underlying architecture.}
+\label{tab:extraction_layers}
+\end{table}

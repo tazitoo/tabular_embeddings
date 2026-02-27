@@ -1,0 +1,84 @@
+================================================================================
+SAE Architecture Comparison: tabpfn
+================================================================================
+
+Test embeddings: 1700 samples × 192 dims
+
+================================================================================
+HYPERPARAMETER SEARCH SPACE
+================================================================================
+
+For all architectures:
+  - expansion: {4, 8} (hidden_dim = expansion × input_dim)
+  - learning_rate: log-uniform [1e-4, 1e-2]
+  - sparsity_penalty: log-uniform [1e-4, 1e-2]
+  - batch_size: {128, 256}
+  - n_epochs: {50, 100}
+
+TopK-specific:
+  - topk: {16, 32, 64, 128}
+
+Archetypal-specific:
+  - n_archetypes: {256, 500, 1000}
+  - simplex_temp: log-uniform [0.05, 0.5]
+  - relaxation: uniform [0.1, 2.0]
+
+Matryoshka-Archetypal:
+  - All TopK + Archetypal parameters
+  - matryoshka_dims: [32, 64, 128, 256]
+
+
+Warning: No checkpoint found for l1: /Volumes/Samsung2TB/src/tabular_embeddings/output/sae_tabarena_sweep/tabpfn/sae_l1_validated.pt
+
+--- topk ---
+  HPs: k=16, exp=8
+  Score: 0.714, RMSE: 0.4357, Stability: 0.543, L0: 16.0, Dead: 84.9%
+
+--- matryoshka ---
+  HPs: exp=4, k=32
+  Score: 0.593, RMSE: 0.2933, Stability: 0.336, L0: 227.3, Dead: 0.0%
+
+--- archetypal ---
+  HPs: n_arch=256, temp=0.15
+  Score: 0.928, RMSE: 0.5278, Stability: 0.914, L0: 32.0, Dead: 49.6%
+
+--- matryoshka_archetypal ---
+  HPs: exp=8, k=128, n_arch=256, temp=0.09
+  Score: 0.928, RMSE: 0.6204, Stability: 0.917, L0: 123.8, Dead: 0.3%
+
+================================================================================
+TABLE: SAE ARCHITECTURE COMPARISON
+================================================================================
+
+Type                      HPs                                   Score    RMSE   Stab    L0  Dead%
+---------------------------------------------------------------------------------------------------------
+Matryoshka-Archetypal     exp=8, k=128, n_arch=256, temp=0.09   0.928  0.6204  0.917 104.6   13.2
+Archetypal                n_arch=256, temp=0.15                 0.928  0.5278  0.914  31.9   58.2
+Topk                      k=16, exp=8                           0.714  0.4357  0.543  16.0   83.1
+Matryoshka                exp=4, k=32                           0.593  0.2933  0.336 175.5   66.7
+
+Score = 0.4 × (1 - RMSE) + 0.6 × Stability
+RMSE = Root mean squared error on test embeddings
+Stab = s_n^dec decoder stability (Chanin & Garriga-Alonso 2025)
+L0 = Average number of active features per sample
+Dead% = Percentage of features that never activate
+
+================================================================================
+LATEX TABLE
+================================================================================
+\begin{table}[t]
+\caption{SAE Architecture Comparison on TABPFN Embeddings}
+\label{tab:sae_comparison}
+\centering
+\small
+\begin{tabular}{l l r r r r r}
+\toprule
+Type & Hyperparameters & Score & RMSE & Stab & L0 & Dead\% \\
+\midrule
+Matryoshka\mbox{-}Archetypal & exp=8, k=128, n\_arch=256, temp=0.09 & 0.928 & 0.6204 & 0.917 & 104 & 13.2 \\
+Archetypal & n\_arch=256, temp=0.15 & 0.928 & 0.5278 & 0.914 & 31 & 58.2 \\
+Topk & k=16, exp=8 & 0.714 & 0.4357 & 0.543 & 15 & 83.1 \\
+Matryoshka & exp=4, k=32 & 0.593 & 0.2933 & 0.336 & 175 & 66.7 \\
+\bottomrule
+\end{tabular}
+\end{table}

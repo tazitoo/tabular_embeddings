@@ -1,0 +1,19 @@
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llrrrrr}
+\toprule
+\textbf{Model} & \textbf{Architecture} & \textbf{Layers} & \textbf{Critical} & \textbf{Optimal} & \textbf{Current} & \textbf{Gap} \\
+\midrule
+TabPFN v2.5     & Transformer (ICL)         & 24 & 18 & 17 & 23 & +6 \\
+TabICL          & Column-then-Row TFM       & 13 &  9 &  8 & 12 & +4 \\
+Mitra           & 2D Attention              & 13 & 11 & 10 & 12 & +2 \\
+TabDPT          & Transformer + Retrieval   & 17 & 14 & 13 & 15 & +2 \\
+CARTE           & Graph Transformer         &  5 &  1 &  1 &  4 & +3 \\
+HyperFast       & Hypernetwork              &  3 &  2 &  1 &  1 &  0 \\
+Tabula-8B       & Llama-3 8B (LLM)          & 33 & 19 & 18 & 21 & +3 \\
+\bottomrule
+\end{tabular}
+\caption{Embedding extraction analysis. \textbf{Layers}: Total model depth. \textbf{Critical}: First layer where CKA with L0 drops below 0.5 (mean across datasets). \textbf{Optimal}: Recommended extraction point (critical $-$ 1). \textbf{Current}: Layer currently used for SAE training. \textbf{Gap}: Layers beyond optimal (positive = too deep).}
+\label{tab:extraction_layers_detailed}
+\end{table}

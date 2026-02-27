@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\caption{Linear CKA similarity ($\in [0,1]$) between model representations, averaged over 36 TabArena datasets. Higher values indicate more similar representational geometry.}
+\label{tab:cka_matrix}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccccccc}
+\toprule
+ & \rotatebox{45}{TabPFN} & \rotatebox{45}{CARTE} & \rotatebox{45}{TabICL} & \rotatebox{45}{TabDPT} & \rotatebox{45}{Mitra} & \rotatebox{45}{HyperFast} & \rotatebox{45}{Tabula-8B} \\
+\midrule
+TabPFN & 1 & -- & -- & -- & -- & -- & -- \\
+CARTE & 0.43\scriptsize{$\pm$0.17} & 1 & -- & -- & -- & -- & -- \\
+TabICL & 0.66\scriptsize{$\pm$0.13} & 0.39\scriptsize{$\pm$0.19} & 1 & -- & -- & -- & -- \\
+TabDPT & 0.67\scriptsize{$\pm$0.11} & 0.52\scriptsize{$\pm$0.23} & 0.61\scriptsize{$\pm$0.15} & 1 & -- & -- & -- \\
+Mitra & 0.68\scriptsize{$\pm$0.13} & 0.53\scriptsize{$\pm$0.22} & 0.62\scriptsize{$\pm$0.17} & 0.83\scriptsize{$\pm$0.12} & 1 & -- & -- \\
+HyperFast & 0.27\scriptsize{$\pm$0.17} & 0.13\scriptsize{$\pm$0.13} & 0.24\scriptsize{$\pm$0.17} & 0.22\scriptsize{$\pm$0.14} & 0.21\scriptsize{$\pm$0.15} & 1 & -- \\
+Tabula-8B & 0.34\scriptsize{$\pm$0.20} & 0.24\scriptsize{$\pm$0.20} & 0.30\scriptsize{$\pm$0.17} & 0.27\scriptsize{$\pm$0.17} & 0.26\scriptsize{$\pm$0.18} & 0.24\scriptsize{$\pm$0.23} & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,44 @@
+% SAE Training Loss and Evaluation Metrics
+
+% Training Loss (Matryoshka-Archetypal SAE)
+\begin{equation}
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{recon}} + \lambda_{\text{aux}} \mathcal{L}_{\text{aux}}
+\label{eq:sae_loss}
+\end{equation}
+
+where the multi-scale reconstruction loss is:
+\begin{equation}
+\mathcal{L}_{\text{recon}} = \sum_{s \in \mathcal{S}} w_s \cdot \text{MSE}(\mathbf{x}, \text{decode}(\text{encode}(\mathbf{x}), s))
+\label{eq:matryoshka_loss}
+\end{equation}
+
+with $\mathcal{S} = \{32, 64, 128, 256, d_{\text{hidden}}\}$ denoting Matryoshka scale dimensions, $w_s$ the scale weights (uniform by default), and the auxiliary TopK loss:
+\begin{equation}
+\mathcal{L}_{\text{aux}} = \text{MSE}(\mathbf{x}, \text{decode}(\text{topk}(\mathbf{h}, k_{\text{aux}})))
+\label{eq:aux_loss}
+\end{equation}
+
+where $k_{\text{aux}} > k$ to encourage dead features to activate.
+
+% Composite Score for Model Selection
+\begin{equation}
+\text{Score} = 0.4 \times (1 - \text{RMSE}) + 0.6 \times s_n^{\text{dec}}
+\label{eq:composite_score}
+\end{equation}
+
+where:
+\begin{align}
+\text{RMSE} &= \sqrt{\frac{1}{N} \sum_{i=1}^{N} \|\mathbf{x}_i - \hat{\mathbf{x}}_i\|^2} \\
+s_n^{\text{dec}} &= \frac{1}{d_{\text{hidden}}} \sum_{j=1}^{d_{\text{hidden}}} \max_{j'} \cos(\mathbf{d}_j, \mathbf{d}'_{j'})
+\end{align}
+
+with $\mathbf{d}_j$ and $\mathbf{d}'_{j'}$ being decoder dictionary atoms from two independent training runs, measuring feature stability.
+
+% Archetypal Constraint
+The archetypal constraint enforces that each decoder atom is a convex combination of $K$-means centroids:
+\begin{equation}
+\mathbf{d}_j = \sum_{c=1}^{n_{\text{arch}}} \alpha_{jc} \mathbf{c}_c, \quad \text{where } \alpha_{jc} = \frac{\exp(\beta_{jc}/\tau)}{\sum_{c'} \exp(\beta_{jc'}/\tau)}, \quad \sum_c \alpha_{jc} = 1
+\label{eq:archetypal}
+\end{equation}
+
+with $\mathbf{c}_c$ the centroids, $\beta_{jc}$ learnable logits, and $\tau$ the simplex temperature.

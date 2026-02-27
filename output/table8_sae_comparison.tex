@@ -1,0 +1,21 @@
+\begin{table}[t]
+\caption{SAE Architecture Comparison on TabPFN Embeddings (21 TabArena test datasets). All architectures use TopK sparsity and were optimized via Optuna (30 trials each). Composite score = $0.4 \times (1 - \text{RMSE}) + 0.6 \times \text{Stability}$.}
+\label{tab:sae_comparison}
+\centering
+\small
+\begin{tabular}{l l r r r r r}
+\toprule
+Type & Hyperparameters & Score & RMSE & Stab & $L_0$ & Dead\% \\
+\midrule
+Matryoshka-Archetypal & $m{=}8$, $k{=}128$, $n{=}256$, $\tau{=}0.09$ & \textbf{0.928} & 0.620 & \textbf{0.917} & 105 & \textbf{13.2} \\
+Archetypal & $m{=}8$, $k{=}32$, $n{=}256$, $\tau{=}0.15$ & \textbf{0.928} & \textbf{0.528} & 0.914 & 32 & 58.2 \\
+TopK & $m{=}8$, $k{=}16$ & 0.714 & 0.436 & 0.543 & 16 & 83.1 \\
+Matryoshka & $m{=}4$, $k{=}32$ & 0.593 & 0.293 & 0.336 & 176 & 66.7 \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.5em}
+\footnotesize
+\textbf{Hyperparameters:} $m$ = expansion factor (hidden\_dim = $m \times$ input\_dim), $k$ = TopK sparsity, $n$ = archetypes, $\tau$ = simplex temperature. \\
+\textbf{Metrics:} RMSE = reconstruction error, Stab = $s_n^{\text{dec}}$ decoder stability~\cite{chanin2025archetypal}, $L_0$ = avg.\ active features, Dead\% = never-activated features.
+\end{table}

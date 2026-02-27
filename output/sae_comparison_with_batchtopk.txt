@@ -1,0 +1,35 @@
+================================================================================
+SAE Architecture Comparison on TabPFN Embeddings (TabArena Test Datasets)
+================================================================================
+
+All architectures use TopK sparsity and were optimized via Optuna (30 trials each).
+Composite score = 0.4 × (1 - RMSE) + 0.6 × Stability.
+
+================================================================================
+TABLE: SAE ARCHITECTURE COMPARISON
+================================================================================
+
+Type                           HPs                                      Score    RMSE   Stab    L0  Dead%
+------------------------------------------------------------------------------------------------------------
+Matryoshka-Archetypal          m=8, k=128, n=256, τ=0.09               0.928   0.620  0.917  105   13.2
+Archetypal                     m=8, k=32, n=256, τ=0.15                0.928   0.528  0.914   32   58.2
+TopK                           m=8, k=16                               0.714   0.436  0.543   16   83.1
+Matryoshka                     m=4, k=32                               0.593   0.293  0.336  176   66.7
+Matryoshka-BatchTopK-Arch      m=8, k=128, n=1000, τ=0.39              0.586   0.620  0.312  128   83.1
+
+------------------------------------------------------------------------------------------------------------
+Hyperparameters: m = expansion factor, k = TopK sparsity, n = archetypes, τ = simplex temperature
+Metrics: RMSE = reconstruction error, Stab = decoder stability, L0 = avg active features, Dead% = never-activated
+
+Key Findings:
+1. BOTH Matryoshka-Archetypal and BatchTopK use k=128 (same target sparsity)
+2. BOTH have identical RMSE (0.620) - same reconstruction quality
+3. BUT BatchTopK has much worse stability (0.312 vs 0.917)
+4. Batch-level competition introduces training noise → features don't reproduce across runs
+5. This stability drop kills the composite score (0.586 vs 0.928)
+
+Conclusion: BatchTopK's batch-level selection mechanism hurts feature stability without improving
+reconstruction. The adaptive sparsity benefit seen in LLM activations doesn't translate to tabular
+embeddings. Standard Matryoshka-Archetypal remains superior.
+
+================================================================================
