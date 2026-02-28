@@ -294,6 +294,10 @@ def intervene_mitra(
     tab2d_model = trainer.model
     layers = tab2d_model.layers
 
+    # Save RNG state — Mitra's DatasetFinetune uses trainer.rng for batching,
+    # so the RNG must be at the same state for both passes to get identical batches.
+    rng_state = trainer.rng.get_state()
+
     # --- Pass 1: Capture hidden state + baseline predictions ---
     captured_hidden = []
 
@@ -330,6 +334,8 @@ def intervene_mitra(
     delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
 
     # --- Pass 2: Inject delta at layer L output for all batches ---
+    # Restore RNG state so batching is identical to pass 1
+    trainer.rng.set_state(rng_state)
     batch_offset = [0]
 
     def modify_output_hook(module, input, output):
