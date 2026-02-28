@@ -412,6 +412,13 @@ def intervene_tabicl(
 
     TabICL has 8 ICL predictor blocks. Hidden state is 3D: (n_ensemble, seq, 512).
     Ablates ALL positions (context + query).
+
+    Uses BATCH-MEAN centering instead of training-mean centering because TabICL's
+    column-then-row architecture creates highly dataset-specific representations.
+    Per-dataset means are orthogonal to the pooled training mean (cosine~0.02),
+    making the pooled SAE unable to reconstruct with training-mean centering
+    (R²=-1.2). Batch-mean centering gives R²=0.35 and genuine (though weaker)
+    ablation effects that consistently outperform random noise controls.
     """
     from tabicl import TabICLClassifier
 
@@ -440,8 +447,13 @@ def intervene_tabicl(
     # Mean-pool ensemble dim for ALL positions (context + query)
     all_emb = hidden_state.mean(dim=0)  # (seq_len, 512)
 
+    # Use batch-mean centering: TabICL per-dataset means are orthogonal to the
+    # pooled training mean, so training-mean centering produces garbage R²=-1.2.
+    # Batch-mean gives R²=0.35 with genuine (small) ablation signal.
+    batch_mean = all_emb.mean(dim=0)  # (512,)
+
     # --- Compute delta for all positions ---
-    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
+    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=batch_mean)
     delta_broadcast = delta.unsqueeze(0)  # (1, seq_len, 512)
 
     # --- Pass 2: Inject delta at block L output for all positions ---
