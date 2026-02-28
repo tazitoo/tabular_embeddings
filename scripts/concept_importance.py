@@ -574,27 +574,206 @@ def sweep_concept_importance(
     return result
 
 
+# ── Concept-level analysis ───────────────────────────────────────────────────
+
+
+def get_matryoshka_bands(model_key: str, sae_dir: Path = None) -> Dict[str, int]:
+    """Get Matryoshka band boundaries for a model's SAE.
+
+    Bands are proportional: [h/16, h/8, h/4, h/2, h] where h = hidden_dim.
+    Returns dict mapping band name to upper boundary (exclusive).
+    """
+    import torch as _torch
+
+    if sae_dir is None:
+        sae_dir = PROJECT_ROOT / "output" / "sae_tabarena_sweep_round5"
+
+    ckpt_path = sae_dir / model_key / "sae_matryoshka_archetypal_validated.pt"
+    ckpt = _torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    config = ckpt["config"]
+    h = config.hidden_dim if hasattr(config, "hidden_dim") else config["hidden_dim"]
+
+    boundaries = {"S1": h // 16, "S2": h // 8, "S3": h // 4, "S4": h // 2, "S5": h}
+    return boundaries
+
+
+def feature_to_band(feat_idx: int, bands: Dict[str, int]) -> str:
+    """Map a feature index to its Matryoshka band."""
+    for name in ["S1", "S2", "S3", "S4", "S5"]:
+        if feat_idx < bands[name]:
+            return name
+    return "S5"
+
+
+def analyze_importance(
+    importance_path: Path,
+    model_key: str,
+    top_n: int = 5,
+    labels_path: Path = DEFAULT_CONCEPT_LABELS,
+) -> Dict:
+    """Analyze concept importance results with cross-model and Matryoshka metadata.
+
+    Loads a saved importance JSON and enriches each feature with:
+    - Matryoshka band (S1-S5)
+    - Concept group membership and cross-model coverage
+    - Top PyMFE probes for the concept group
+    - Cumulative group-level importance
+
+    Args:
+        importance_path: Path to saved importance JSON (from sweep)
+        model_key: Model key (e.g. 'tabdpt')
+        top_n: Number of top unique concept groups to return
+        labels_path: Path to cross_model_concept_labels.json
+
+    Returns:
+        Dict with 'baseline_acc', 'dataset', 'model', 'bands', 'top_groups',
+        and 'summary' fields.
+    """
+    from collections import Counter
+
+    with open(importance_path) as f:
+        importance = json.load(f)
+
+    with open(labels_path) as f:
+        concept_data = json.load(f)
+
+    bands = get_matryoshka_bands(model_key)
+    label_key = MODEL_KEY_TO_LABEL_KEY.get(model_key, model_key)
+    feature_lookup = concept_data["feature_lookup"][label_key]
+    concept_groups = concept_data["concept_groups"]
+
+    # Enrich each feature with band and group info
+    enriched = []
+    for feat in importance["features"]:
+        idx = feat["index"]
+        info = feature_lookup.get(str(idx), {})
+        enriched.append({
+            **feat,
+            "band": feature_to_band(idx, bands),
+            "group_id": info.get("group_id"),
+            "category": info.get("category", "unknown"),
+        })
+
+    # Deduplicate to top feature per unique concept group
+    seen_groups = set()
+    top_by_group = []
+    for f in enriched:
+        gid = f["group_id"]
+        if gid is not None and gid not in seen_groups and f["drop"] > 0:
+            seen_groups.add(gid)
+            top_by_group.append(f)
+
+    # Build detailed group info for top N
+    top_groups = []
+    for f in top_by_group[:top_n]:
+        gid = str(f["group_id"])
+        g = concept_groups.get(gid, {})
+        members = g.get("members", [])
+        models_in_group = Counter(m[0] for m in members)
+
+        # All features in this group from the importance results
+        group_features = [e for e in enriched if e["group_id"] == int(gid)]
+        positive_drops = [e["drop"] for e in group_features if e["drop"] > 0]
+        cumulative_drop = sum(positive_drops)
+
+        # Band distribution within group
+        band_counts = Counter(e["band"] for e in group_features)
+
+        probes = g.get("top_probes", [])
+
+        top_groups.append({
+            "rank": len(top_groups) + 1,
+            "group_id": int(gid),
+            "label": g.get("label", "unknown"),
+            "top_feature": f["index"],
+            "top_drop": f["drop"],
+            "band": f["band"],
+            "n_features_in_group": len(group_features),
+            "n_positive_drop": len(positive_drops),
+            "cumulative_drop": cumulative_drop,
+            "n_models": g.get("n_models", len(models_in_group)),
+            "models": dict(models_in_group),
+            "tier": g.get("tier"),
+            "mean_r2": g.get("mean_r2", 0),
+            "top_probes": [
+                {"name": p[0], "n_models": p[1], "coeff": p[2]}
+                for p in probes[:5]
+            ],
+            "band_distribution": dict(band_counts),
+        })
+
+    # Summary statistics
+    total_positive = sum(f["drop"] for f in enriched if f["drop"] > 0)
+    top_cumulative = sum(g["cumulative_drop"] for g in top_groups)
+
+    # Band distribution of all important features
+    important_bands = Counter(
+        f["band"] for f in enriched if f["drop"] > 0.001
+    )
+
+    return {
+        "model": model_key,
+        "dataset": importance["dataset"],
+        "task": importance["task"],
+        "baseline_acc": importance["baseline_acc"],
+        "bands": bands,
+        "top_groups": top_groups,
+        "summary": {
+            "total_positive_drop": total_positive,
+            "top_n_cumulative_drop": top_cumulative,
+            "top_n_fraction": top_cumulative / total_positive if total_positive > 0 else 0,
+            "n_features_positive": sum(1 for f in enriched if f["drop"] > 0),
+            "n_features_above_1pp": sum(1 for f in enriched if f["drop"] > 0.01),
+            "important_band_distribution": dict(important_bands),
+        },
+    }
+
+
+def print_analysis(analysis: Dict) -> None:
+    """Pretty-print a concept importance analysis."""
+    print(f"\n{'='*100}")
+    print(f"Concept Importance Analysis: {analysis['model']} on {analysis['dataset']}")
+    print(f"{'='*100}")
+    print(f"Baseline accuracy: {analysis['baseline_acc']:.3f}")
+    print(f"Matryoshka bands: {analysis['bands']}")
+
+    s = analysis["summary"]
+    print(f"\nSummary:")
+    print(f"  Features with positive drop: {s['n_features_positive']}")
+    print(f"  Features >1pp drop:          {s['n_features_above_1pp']}")
+    print(f"  Band distribution (>0.1pp):  {s['important_band_distribution']}")
+
+    print(f"\nTop {len(analysis['top_groups'])} concept groups "
+          f"(explain {s['top_n_fraction']*100:.1f}% of total positive drop):")
+
+    for g in analysis["top_groups"]:
+        models_str = ", ".join(
+            f"{m}({n})" for m, n in sorted(g["models"].items())
+        )
+        probes_str = ", ".join(
+            f"{p['name']}({p['coeff']:+.2f})" for p in g["top_probes"][:3]
+        )
+
+        print(f"\n  #{g['rank']} Group {g['group_id']}: {g['label']}")
+        print(f"     Band: {g['band']} | Top drop: {g['top_drop']:+.4f} (feat {g['top_feature']})")
+        print(f"     {g['n_features_in_group']} features in group, "
+              f"{g['n_positive_drop']} with positive drop, "
+              f"cumulative: {g['cumulative_drop']:+.4f}")
+        print(f"     Cross-model: {g['n_models']} models — {models_str}")
+        print(f"     Tier: {g['tier']} | Mean R²: {g['mean_r2']:.3f}")
+        print(f"     Top probes: {probes_str}")
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Per-concept importance via single-feature ablation")
-    parser.add_argument("--model", type=str, required=True, choices=list(SWEEP_FN.keys()))
-    parser.add_argument("--dataset", type=str, required=True)
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--top", type=int, default=20, help="Show top N most important features")
-    parser.add_argument("--output", type=str, default=None, help="Output JSON path")
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-    from data.extended_loader import TABARENA_DATASETS, load_tabarena_dataset
-    from scripts.extract_layer_embeddings import get_dataset_task
+def load_tabarena_splits(dataset_name: str, task: str):
+    """Load and split a TabArena dataset for intervention experiments."""
+    from data.extended_loader import load_tabarena_dataset
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import LabelEncoder
 
-    task = get_dataset_task(args.dataset)
-    result = load_tabarena_dataset(args.dataset, max_samples=1100)
+    result = load_tabarena_dataset(dataset_name, max_samples=1100)
     X, y, _ = result
 
     if task == "classification":
@@ -615,6 +794,44 @@ def main():
 
     X_ctx, X_q = X_ctx[:600], X_q[:500]
     y_ctx, y_q = y_ctx[:600], y_q[:500]
+    return X_ctx, y_ctx, X_q, y_q
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Per-concept importance via single-feature ablation")
+    parser.add_argument("--model", type=str, required=True, choices=list(SWEEP_FN.keys()))
+    parser.add_argument("--dataset", type=str, required=True)
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--top", type=int, default=20, help="Show top N features/groups")
+    parser.add_argument("--output", type=str, default=None, help="Output JSON path")
+    parser.add_argument(
+        "--analyze", action="store_true",
+        help="Analyze existing results (skip sweep, load from --output or default path)"
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    from scripts.extract_layer_embeddings import get_dataset_task
+    task = get_dataset_task(args.dataset)
+
+    # Determine output path
+    output_path = args.output
+    if output_path is None:
+        output_dir = PROJECT_ROOT / "output" / "concept_importance"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(output_dir / f"{args.model}_{args.dataset}.json")
+
+    if args.analyze:
+        # Analysis-only mode: load existing results
+        analysis = analyze_importance(
+            Path(output_path), args.model, top_n=args.top,
+        )
+        print_analysis(analysis)
+        return
+
+    # Full sweep mode
+    X_ctx, y_ctx, X_q, y_q = load_tabarena_splits(args.dataset, task)
 
     logger.info(f"Dataset: {args.dataset} ({task})")
     logger.info(f"Context: {X_ctx.shape}, Query: {X_q.shape}")
@@ -674,12 +891,6 @@ def main():
     logger.info(f"  >5pp:         {(drops > 0.05).sum()}")
 
     # Save results
-    output_path = args.output
-    if output_path is None:
-        output_dir = PROJECT_ROOT / "output" / "concept_importance"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{args.model}_{args.dataset}.json"
-
     save_data = {
         "model": args.model,
         "dataset": args.dataset,
@@ -702,6 +913,13 @@ def main():
     with open(output_path, "w") as f:
         json.dump(save_data, f, indent=2)
     logger.info(f"\nSaved to {output_path}")
+
+    # Auto-run analysis
+    logger.info("")
+    analysis = analyze_importance(
+        Path(output_path), args.model, top_n=min(args.top, 10),
+    )
+    print_analysis(analysis)
 
 
 if __name__ == "__main__":
