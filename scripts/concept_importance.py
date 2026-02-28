@@ -38,6 +38,8 @@ from scripts.intervene_sae import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONCEPT_LABELS = PROJECT_ROOT / "output" / "cross_model_concept_labels.json"
+DEFAULT_CONCEPT_REGRESSION = PROJECT_ROOT / "output" / "concept_regression_with_pymfe.json"
+DEFAULT_PYMFE_CACHE = PROJECT_ROOT / "output" / "pymfe_tabarena_cache.json"
 
 # Map our model keys to the concept labels file keys
 MODEL_KEY_TO_LABEL_KEY = {
@@ -711,6 +713,14 @@ def analyze_importance(
         f["band"] for f in enriched if f["drop"] > 0.001
     )
 
+    # Causal chain analysis (if regression + pymfe data available)
+    causal_chain = []
+    if DEFAULT_CONCEPT_REGRESSION.exists() and DEFAULT_PYMFE_CACHE.exists():
+        causal_chain = analyze_causal_chain(
+            importance_path, model_key, importance["dataset"],
+            top_n=top_n, n_probes=5,
+        )
+
     return {
         "model": model_key,
         "dataset": importance["dataset"],
@@ -718,6 +728,7 @@ def analyze_importance(
         "baseline_acc": importance["baseline_acc"],
         "bands": bands,
         "top_groups": top_groups,
+        "causal_chain": causal_chain,
         "summary": {
             "total_positive_drop": total_positive,
             "top_n_cumulative_drop": top_cumulative,
@@ -762,6 +773,197 @@ def print_analysis(analysis: Dict) -> None:
         print(f"     Cross-model: {g['n_models']} models — {models_str}")
         print(f"     Tier: {g['tier']} | Mean R²: {g['mean_r2']:.3f}")
         print(f"     Top probes: {probes_str}")
+
+    # Print causal chain if available
+    chain = analysis.get("causal_chain", [])
+    if chain:
+        print_causal_chain(chain, analysis["dataset"])
+
+        # Summary: overall alignment rate across all features/probes
+        total_aligned = sum(f["n_aligned"] for f in chain)
+        total_checked = sum(f["n_probes_checked"] for f in chain)
+        if total_checked > 0:
+            print(f"\n  Overall probe alignment: {total_aligned}/{total_checked} "
+                  f"({total_aligned/total_checked*100:.0f}%)")
+
+
+# ── Causal chain analysis ────────────────────────────────────────────────────
+
+
+def load_probe_percentiles(
+    pymfe_cache_path: Path = DEFAULT_PYMFE_CACHE,
+) -> Dict[str, Dict[str, float]]:
+    """Compute percentile rank of each dataset for each PyMFE probe.
+
+    Returns:
+        Dict mapping probe_name -> {dataset_name: percentile_0_to_1}.
+        NaN values are excluded from ranking.
+    """
+    import math
+
+    with open(pymfe_cache_path) as f:
+        cache = json.load(f)
+
+    # Collect all probe names
+    all_probes = set()
+    for ds_vals in cache.values():
+        all_probes.update(ds_vals.keys())
+
+    percentiles = {}
+    for probe in all_probes:
+        # Gather (dataset, value) pairs, skip NaN/None
+        vals = []
+        for ds, ds_vals in cache.items():
+            v = ds_vals.get(probe)
+            if v is not None and not (isinstance(v, float) and math.isnan(v)):
+                vals.append((ds, v))
+        if not vals:
+            continue
+        # Sort by value and assign percentile ranks
+        vals.sort(key=lambda x: x[1])
+        n = len(vals)
+        pct = {}
+        for rank, (ds, _) in enumerate(vals):
+            pct[ds] = rank / max(n - 1, 1)
+        percentiles[probe] = pct
+
+    return percentiles
+
+
+def analyze_causal_chain(
+    importance_path: Path,
+    model_key: str,
+    dataset_name: str,
+    top_n: int = 5,
+    n_probes: int = 5,
+    regression_path: Path = DEFAULT_CONCEPT_REGRESSION,
+    pymfe_cache_path: Path = DEFAULT_PYMFE_CACHE,
+) -> List[Dict]:
+    """For top important features, trace the causal chain:
+
+    Dataset property (PyMFE) → SAE activation (feature fires) → Prediction (ablation drops)
+
+    For each feature's top probes, checks whether the dataset's actual value
+    on that probe aligns with the probe coefficient direction:
+    - Positive coeff + high percentile (>0.6) = ALIGNED
+    - Negative coeff + low percentile (<0.4) = ALIGNED
+    - Otherwise = OPPOSITE or NEUTRAL
+
+    Returns list of dicts, one per top feature, with probe alignment details.
+    """
+    import math
+
+    with open(importance_path) as f:
+        importance = json.load(f)
+
+    with open(regression_path) as f:
+        regression = json.load(f)
+
+    with open(pymfe_cache_path) as f:
+        pymfe_cache = json.load(f)
+
+    label_key = MODEL_KEY_TO_LABEL_KEY.get(model_key, model_key)
+    per_feature = regression["models"][label_key]["per_feature"]
+    ds_pymfe = pymfe_cache.get(dataset_name, {})
+
+    if not ds_pymfe:
+        logger.warning(f"Dataset '{dataset_name}' not found in PyMFE cache")
+        return []
+
+    # Pre-compute percentile ranks
+    percentiles = load_probe_percentiles(pymfe_cache_path)
+
+    # Get top features by ablation drop
+    features_sorted = sorted(importance["features"], key=lambda x: -x["drop"])
+
+    results = []
+    for feat in features_sorted[:top_n]:
+        if feat["drop"] <= 0:
+            break
+
+        feat_idx = str(feat["index"])
+        feat_reg = per_feature.get(feat_idx, {})
+        top_probes = feat_reg.get("top_probes", [])
+        feat_r2 = feat_reg.get("r2", 0)
+
+        probe_details = []
+        n_aligned = 0
+        n_opposite = 0
+
+        for probe_name, coeff, rank in top_probes[:n_probes]:
+            ds_value = ds_pymfe.get(probe_name)
+            pct_lookup = percentiles.get(probe_name, {})
+            ds_pct = pct_lookup.get(dataset_name)
+
+            if ds_value is None or ds_pct is None:
+                alignment = "MISSING"
+            elif isinstance(ds_value, float) and math.isnan(ds_value):
+                alignment = "NaN"
+            else:
+                if coeff > 0 and ds_pct > 0.6:
+                    alignment = "ALIGNED"
+                    n_aligned += 1
+                elif coeff < 0 and ds_pct < 0.4:
+                    alignment = "ALIGNED"
+                    n_aligned += 1
+                elif coeff > 0 and ds_pct < 0.4:
+                    alignment = "OPPOSITE"
+                    n_opposite += 1
+                elif coeff < 0 and ds_pct > 0.6:
+                    alignment = "OPPOSITE"
+                    n_opposite += 1
+                else:
+                    alignment = "NEUTRAL"
+
+            probe_details.append({
+                "probe": probe_name,
+                "coeff": coeff,
+                "rank": rank,
+                "ds_value": ds_value,
+                "ds_percentile": ds_pct,
+                "alignment": alignment,
+            })
+
+        results.append({
+            "feature_index": feat["index"],
+            "ablation_drop": feat["drop"],
+            "label": feat.get("label", "unknown"),
+            "probe_r2": feat_r2,
+            "n_aligned": n_aligned,
+            "n_opposite": n_opposite,
+            "n_probes_checked": len(probe_details),
+            "probes": probe_details,
+        })
+
+    return results
+
+
+def print_causal_chain(chain_results: List[Dict], dataset_name: str) -> None:
+    """Pretty-print causal chain analysis."""
+    if not chain_results:
+        print("  No causal chain data available.")
+        return
+
+    print(f"\n{'─'*100}")
+    print(f"CAUSAL CHAIN: {dataset_name}")
+    print(f"  Dataset property (PyMFE) → SAE feature fires → Ablation drops accuracy")
+    print(f"{'─'*100}")
+
+    for feat in chain_results:
+        aligned_frac = feat["n_aligned"] / max(feat["n_probes_checked"], 1)
+        print(f"\n  Feature {feat['feature_index']}: {feat['label']}")
+        print(f"    Ablation drop: {feat['ablation_drop']:+.4f} | "
+              f"Probe R²: {feat['probe_r2']:.3f} | "
+              f"Alignment: {feat['n_aligned']}/{feat['n_probes_checked']} "
+              f"({aligned_frac*100:.0f}%)")
+
+        for p in feat["probes"]:
+            pct_str = f"{p['ds_percentile']:.0%}" if p["ds_percentile"] is not None else "N/A"
+            val_str = f"{p['ds_value']:.4g}" if isinstance(p.get("ds_value"), (int, float)) else "N/A"
+            marker = {"ALIGNED": "+", "OPPOSITE": "x", "NEUTRAL": "~", "MISSING": "?", "NaN": "?"}
+            print(f"    [{marker.get(p['alignment'], '?')}] {p['probe']:<25s} "
+                  f"coeff={p['coeff']:+6.2f}  value={val_str:>10s}  "
+                  f"pctl={pct_str:>4s}  {p['alignment']}")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
