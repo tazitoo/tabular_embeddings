@@ -188,6 +188,11 @@ def intervene_tabpfn(
 ) -> Dict[str, np.ndarray]:
     """Run TabPFN with SAE feature ablation at extraction layer.
 
+    Ablates ALL positions (context + query) at layer L. If a concept matters
+    for predicting query samples, it matters equally for representing context
+    samples the model attends to. Ablating only query lets the model recover
+    via attention to intact context representations.
+
     Returns dict with: baseline_preds, ablated_preds, y_query
     """
     from models.tabpfn_utils import load_tabpfn
@@ -195,7 +200,6 @@ def intervene_tabpfn(
     clf = load_tabpfn(task=task, device=device, n_estimators=1)
     clf.fit(X_context, y_context)
     model = clf.model_
-    n_query = len(X_query)
     layers = model.transformer_encoder.layers
 
     # --- Pass 1: Capture hidden state + baseline predictions ---
@@ -216,26 +220,19 @@ def intervene_tabpfn(
         handle.remove()
 
     hidden_state = captured["hidden"]
-    # Shape: (1, seq_len, n_structure, hidden_dim)
-    # Query positions are last n_query along dim 1
-    query_hidden = hidden_state[0, -n_query:, :, :]  # (n_query, n_struct, hidden)
-    query_emb = query_hidden.mean(dim=1)  # (n_query, hidden) — mean-pool structure
+    # Shape: (1, seq_len, n_structure, hidden_dim) where seq_len = n_ctx + n_query
+    # Mean-pool structure dim for ALL positions (context + query)
+    all_emb = hidden_state[0].mean(dim=1)  # (seq_len, hidden)
 
-    # --- Compute delta ---
-    delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
-    # Broadcast delta back to structure dimension
-    # delta shape: (n_query, hidden) → (n_query, 1, hidden)
-    delta_broadcast = delta.unsqueeze(1)
+    # --- Compute delta for all positions ---
+    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
+    delta_broadcast = delta.unsqueeze(1)  # (seq_len, 1, hidden)
 
-    # --- Pass 2: Inject delta at layer L output ---
-    # The delta enters the residual stream at layer L and propagates naturally.
-    # Subsequent attention layers may partially recover by attending to
-    # unperturbed context tokens — this is expected and reflects the true
-    # causal importance of the SAE features in the presence of ICL redundancy.
+    # --- Pass 2: Inject delta at layer L output for all positions ---
     def modify_output_hook(module, input, output):
         if isinstance(output, torch.Tensor) and output.ndim == 4:
             output = output.clone()
-            output[0, -n_query:, :, :] += delta_broadcast
+            output[0] += delta_broadcast
             return output
         return output
 
@@ -274,7 +271,7 @@ def intervene_mitra(
     """Run Mitra with SAE feature ablation at extraction layer.
 
     Mitra has 12 Tab2D layers. Hidden state is 4D: (1, n_batch, n_feat+1, dim).
-    The y-token at position 0 on dim 2 is what becomes the embedding.
+    Ablates ALL positions (context + query) in each internal batch.
     """
     n_features = X_query.shape[1]
     max_context = max(100, 200_000 // max(n_features, 1))
@@ -315,25 +312,24 @@ def intervene_mitra(
     finally:
         handle.remove()
 
-    # Process hidden states: extract y-token embeddings from batched outputs
-    query_embs = []
+    # Extract y-token embeddings from ALL batched outputs (context + query)
+    all_embs = []
     for hidden in captured_hidden:
         if hidden.ndim == 4:
             # (1, n_batch, n_feat+1, dim) → y-token at position 0
-            y_tokens = hidden[:, :, 0, :]  # (1, n_batch, dim)
-            query_embs.append(y_tokens.squeeze(0))  # (n_batch, dim)
+            y_tokens = hidden[0, :, 0, :]  # (n_batch, dim)
+            all_embs.append(y_tokens)
         elif hidden.ndim == 3:
-            query_embs.append(hidden.squeeze(0))  # (n_batch, dim)
+            all_embs.append(hidden.squeeze(0))
         elif hidden.ndim == 2:
-            query_embs.append(hidden)
+            all_embs.append(hidden)
 
-    all_emb = torch.cat(query_embs, dim=0)
-    query_emb = all_emb[-n_query:]  # (n_query, dim)
+    all_emb = torch.cat(all_embs, dim=0)  # (total_samples, dim)
 
-    # --- Compute delta ---
-    delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
+    # --- Compute delta for ALL samples (context + query) ---
+    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
 
-    # --- Pass 2: Inject delta at layer L output ---
+    # --- Pass 2: Inject delta at layer L output for all batches ---
     batch_offset = [0]
 
     def modify_output_hook(module, input, output):
@@ -342,11 +338,10 @@ def intervene_mitra(
             out = out.clone()
             n_batch = out.shape[1]
             start = batch_offset[0]
-            end = min(start + n_batch, n_query)
-            actual = end - start
-            if actual > 0:
-                out[0, :actual, :, :] += delta[start:end].unsqueeze(1)
-                batch_offset[0] = end
+            end = start + n_batch
+            # Apply delta to all feature positions (broadcast from y-token space)
+            out[0] += delta[start:end].unsqueeze(1)
+            batch_offset[0] = end
             if isinstance(output, tuple):
                 return (out,) + output[1:]
             return out
@@ -388,14 +383,13 @@ def intervene_tabicl(
     """Run TabICL with SAE feature ablation at extraction layer.
 
     TabICL has 8 ICL predictor blocks. Hidden state is 3D: (n_ensemble, seq, 512).
-    Query positions are last n_query along dim 1.
+    Ablates ALL positions (context + query).
     """
     from tabicl import TabICLClassifier
 
     clf = TabICLClassifier(device=device, n_estimators=1)
     clf.fit(X_context, y_context)
 
-    n_query = len(X_query)
     model = clf.model_
     blocks = model.icl_predictor.tf_icl.blocks
 
@@ -415,20 +409,18 @@ def intervene_tabicl(
 
     hidden_state = captured["hidden"]
     # Shape: (n_ensemble, n_ctx+n_query, 512)
-    query_hidden = hidden_state[:, -n_query:, :]  # (n_ens, n_query, 512)
-    # Mean-pool ensemble dimension
-    query_emb = query_hidden.mean(dim=0)  # (n_query, 512)
+    # Mean-pool ensemble dim for ALL positions (context + query)
+    all_emb = hidden_state.mean(dim=0)  # (seq_len, 512)
 
-    # --- Compute delta ---
-    delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
-    # Broadcast to ensemble dimension: (1, n_query, 512)
-    delta_broadcast = delta.unsqueeze(0)
+    # --- Compute delta for all positions ---
+    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
+    delta_broadcast = delta.unsqueeze(0)  # (1, seq_len, 512)
 
-    # --- Pass 2: Inject delta at block L output ---
+    # --- Pass 2: Inject delta at block L output for all positions ---
     def modify_output_hook(module, input, output):
         if isinstance(output, torch.Tensor) and output.ndim == 3:
             output = output.clone()
-            output[:, -n_query:, :] += delta_broadcast
+            output += delta_broadcast
             return output
         return output
 
@@ -464,6 +456,7 @@ def intervene_tabdpt(
     """Run TabDPT with SAE feature ablation at extraction layer.
 
     TabDPT has 16 transformer encoder layers. Hidden state is 3D: (batch, seq, H).
+    Ablates ALL positions (context + query).
     """
     from tabdpt import TabDPTClassifier, TabDPTRegressor
 
@@ -473,7 +466,6 @@ def intervene_tabdpt(
         clf = TabDPTClassifier(device=device, compile=False)
     clf.fit(X_context, y_context)
 
-    n_query = len(X_query)
     model = clf.model
     encoder_layers = model.transformer_encoder
 
@@ -497,25 +489,25 @@ def intervene_tabdpt(
 
     hidden_state = captured["hidden"]
     if hidden_state.ndim == 3:
-        # (batch, seq, H) → mean over seq, take last n_query
-        query_emb = hidden_state.mean(dim=1)[-n_query:]
+        # (n_samples, seq, H) → mean over seq for ALL positions
+        all_emb = hidden_state.mean(dim=1)  # (n_samples, H)
     elif hidden_state.ndim == 2:
-        query_emb = hidden_state[-n_query:]
+        all_emb = hidden_state
     else:
         raise ValueError(f"Unexpected hidden state shape: {hidden_state.shape}")
 
-    # --- Compute delta ---
-    delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
+    # --- Compute delta for all positions ---
+    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
 
-    # --- Pass 2: Inject delta at layer L output ---
+    # --- Pass 2: Inject delta at layer L output for all positions ---
     def modify_output_hook(module, input, output):
         out = output[0] if isinstance(output, tuple) else output
         if isinstance(out, torch.Tensor):
             out = out.clone()
             if out.ndim == 3:
-                out[-n_query:] += delta.unsqueeze(1)
+                out += delta.unsqueeze(1)
             elif out.ndim == 2:
-                out[-n_query:] += delta
+                out += delta
             if isinstance(output, tuple):
                 return (out,) + output[1:]
             return out
