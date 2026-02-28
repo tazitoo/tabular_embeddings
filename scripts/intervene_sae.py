@@ -51,11 +51,6 @@ DEFAULT_SAE_DIR = PROJECT_ROOT / "output" / "sae_tabarena_sweep_round5"
 DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / "sae_training_round5"
 DEFAULT_LAYERS_PATH = PROJECT_ROOT / "config" / "optimal_extraction_layers.json"
 
-# Number of layers to patch after the extraction layer. Dose-response analysis
-# shows 1 layer is too few (attention fully recovers), while patching all remaining
-# layers over-amplifies. 2 layers is the saturation point on 3 test datasets.
-N_PATCH_LAYERS = 2
-
 # Model display name -> checkpoint key
 MODEL_KEYS = {
     "tabpfn": "tabpfn",
@@ -232,31 +227,19 @@ def intervene_tabpfn(
     # delta shape: (n_query, hidden) → (n_query, 1, hidden)
     delta_broadcast = delta.unsqueeze(1)
 
-    # --- Pass 2: Patch N_PATCH_LAYERS after extraction layer ---
-    # Single-layer patching is too weak (attention recovers in one layer).
-    # Patching all remaining layers over-amplifies (~Nx delta accumulation).
-    # Dose-response shows effect saturates at 2 layers for most datasets.
-    next_layer = extraction_layer + 1
-    end_layer = min(next_layer + N_PATCH_LAYERS, len(layers))
-    if next_layer >= len(layers):
-        raise ValueError(
-            f"Extraction layer {extraction_layer} is the last layer "
-            f"({len(layers)} total). Cannot place pre-hook on next layer."
-        )
+    # --- Pass 2: Inject delta at layer L output ---
+    # The delta enters the residual stream at layer L and propagates naturally.
+    # Subsequent attention layers may partially recover by attending to
+    # unperturbed context tokens — this is expected and reflects the true
+    # causal importance of the SAE features in the presence of ICL redundancy.
+    def modify_output_hook(module, input, output):
+        if isinstance(output, torch.Tensor) and output.ndim == 4:
+            output = output.clone()
+            output[0, -n_query:, :, :] += delta_broadcast
+            return output
+        return output
 
-    def make_modify_hook():
-        def modify_hook(module, args):
-            inp = args[0] if isinstance(args, tuple) else args
-            if isinstance(inp, torch.Tensor) and inp.ndim == 4:
-                modified = inp.clone()
-                modified[0, -n_query:, :, :] += delta_broadcast
-                return (modified,) + args[1:] if isinstance(args, tuple) else modified
-            return args
-        return modify_hook
-
-    handles = []
-    for layer_idx in range(next_layer, end_layer):
-        handles.append(layers[layer_idx].register_forward_pre_hook(make_modify_hook()))
+    handle = layers[extraction_layer].register_forward_hook(modify_output_hook)
     try:
         with torch.no_grad():
             if task == "regression":
@@ -264,8 +247,7 @@ def intervene_tabpfn(
             else:
                 ablated_preds = clf.predict_proba(X_query)
     finally:
-        for h in handles:
-            h.remove()
+        handle.remove()
 
     return {
         "baseline_preds": np.asarray(baseline_preds),
@@ -351,56 +333,35 @@ def intervene_mitra(
     # --- Compute delta ---
     delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
 
-    # --- Pass 2: Patch N_PATCH_LAYERS after extraction layer ---
-    next_layer = extraction_layer + 1
-    end_layer = min(next_layer + N_PATCH_LAYERS, len(layers))
-    if next_layer >= len(layers):
-        raise ValueError(
-            f"Extraction layer {extraction_layer} is the last layer "
-            f"({len(layers)} total)."
-        )
+    # --- Pass 2: Inject delta at layer L output ---
+    batch_offset = [0]
 
-    def make_mitra_modify_hook():
-        """Create a hook with its own batch offset tracker."""
-        batch_offset = [0]
+    def modify_output_hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor) and out.ndim == 4:
+            out = out.clone()
+            n_batch = out.shape[1]
+            start = batch_offset[0]
+            end = min(start + n_batch, n_query)
+            actual = end - start
+            if actual > 0:
+                out[0, :actual, :, :] += delta[start:end].unsqueeze(1)
+                batch_offset[0] = end
+            if isinstance(output, tuple):
+                return (out,) + output[1:]
+            return out
+        return output
 
-        def modify_hook(module, args):
-            inp = args[0] if isinstance(args, tuple) else args
-            if isinstance(inp, torch.Tensor):
-                modified = inp.clone()
-                if modified.ndim == 4:
-                    n_batch = modified.shape[1]
-                    start = batch_offset[0]
-                    end = min(start + n_batch, n_query)
-                    actual = end - start
-                    if actual > 0:
-                        modified[0, :actual, :, :] += delta[start:end].unsqueeze(1)
-                        batch_offset[0] = end
-                return (modified,) + args[1:] if isinstance(args, tuple) else modified
-            return args
-
-        def reset():
-            batch_offset[0] = 0
-
-        return modify_hook, reset
-
-    handles = []
-    resetters = []
-    for layer_idx in range(next_layer, end_layer):
-        hook, reset = make_mitra_modify_hook()
-        handles.append(layers[layer_idx].register_forward_pre_hook(hook))
-        resetters.append(reset)
+    handle = layers[extraction_layer].register_forward_hook(modify_output_hook)
     try:
         with torch.no_grad():
-            for r in resetters:
-                r()
+            batch_offset[0] = 0
             if task == "regression":
                 ablated_preds = clf.predict(X_query)
             else:
                 ablated_preds = clf.predict_proba(X_query)
     finally:
-        for h in handles:
-            h.remove()
+        handle.remove()
 
     return {
         "baseline_preds": np.asarray(baseline_preds),
@@ -463,34 +424,20 @@ def intervene_tabicl(
     # Broadcast to ensemble dimension: (1, n_query, 512)
     delta_broadcast = delta.unsqueeze(0)
 
-    # --- Pass 2: Patch N_PATCH_LAYERS after extraction layer ---
-    next_block = extraction_layer + 1
-    end_block = min(next_block + N_PATCH_LAYERS, len(blocks))
-    if next_block >= len(blocks):
-        raise ValueError(
-            f"Extraction block {extraction_layer} is the last block "
-            f"({len(blocks)} total)."
-        )
+    # --- Pass 2: Inject delta at block L output ---
+    def modify_output_hook(module, input, output):
+        if isinstance(output, torch.Tensor) and output.ndim == 3:
+            output = output.clone()
+            output[:, -n_query:, :] += delta_broadcast
+            return output
+        return output
 
-    def make_tabicl_modify_hook():
-        def modify_hook(module, args):
-            inp = args[0] if isinstance(args, tuple) else args
-            if isinstance(inp, torch.Tensor) and inp.ndim == 3:
-                modified = inp.clone()
-                modified[:, -n_query:, :] += delta_broadcast
-                return (modified,) + args[1:] if isinstance(args, tuple) else modified
-            return args
-        return modify_hook
-
-    handles = []
-    for block_idx in range(next_block, end_block):
-        handles.append(blocks[block_idx].register_forward_pre_hook(make_tabicl_modify_hook()))
+    handle = blocks[extraction_layer].register_forward_hook(modify_output_hook)
     try:
         with torch.no_grad():
             ablated_preds = clf.predict_proba(X_query)
     finally:
-        for h in handles:
-            h.remove()
+        handle.remove()
 
     return {
         "baseline_preds": np.asarray(baseline_preds),
@@ -560,31 +507,21 @@ def intervene_tabdpt(
     # --- Compute delta ---
     delta = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
 
-    # --- Pass 2: Patch N_PATCH_LAYERS after extraction layer ---
-    next_layer = extraction_layer + 1
-    end_layer = min(next_layer + N_PATCH_LAYERS, len(encoder_layers))
-    if next_layer >= len(encoder_layers):
-        raise ValueError(
-            f"Extraction layer {extraction_layer} is the last layer "
-            f"({len(encoder_layers)} total)."
-        )
+    # --- Pass 2: Inject delta at layer L output ---
+    def modify_output_hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            out = out.clone()
+            if out.ndim == 3:
+                out[-n_query:] += delta.unsqueeze(1)
+            elif out.ndim == 2:
+                out[-n_query:] += delta
+            if isinstance(output, tuple):
+                return (out,) + output[1:]
+            return out
+        return output
 
-    def make_tabdpt_modify_hook():
-        def modify_hook(module, args):
-            inp = args[0] if isinstance(args, tuple) else args
-            if isinstance(inp, torch.Tensor):
-                modified = inp.clone()
-                if modified.ndim == 3:
-                    modified[-n_query:] += delta.unsqueeze(1)
-                elif modified.ndim == 2:
-                    modified[-n_query:] += delta
-                return (modified,) + args[1:] if isinstance(args, tuple) else modified
-            return args
-        return modify_hook
-
-    handles = []
-    for layer_idx in range(next_layer, end_layer):
-        handles.append(encoder_layers[layer_idx].register_forward_pre_hook(make_tabdpt_modify_hook()))
+    handle = encoder_layers[extraction_layer].register_forward_hook(modify_output_hook)
     try:
         with torch.no_grad():
             if task == "regression":
@@ -592,8 +529,7 @@ def intervene_tabdpt(
             else:
                 ablated_preds = clf.predict_proba(X_query)
     finally:
-        for h in handles:
-            h.remove()
+        handle.remove()
 
     return {
         "baseline_preds": np.asarray(baseline_preds),
