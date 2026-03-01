@@ -52,8 +52,11 @@ DEFAULT_FIGURES_DIR = PROJECT_ROOT / "output" / "figures"
 # Models with intervention support (can get predictions via intervene_sae)
 INTERVENTION_MODELS = ["tabpfn", "mitra", "tabicl", "tabdpt", "hyperfast"]
 
-# All models (including those needing direct prediction)
+# All models with SAE checkpoints (for fingerprints)
 ALL_MODELS = ["tabpfn", "mitra", "tabicl", "tabdpt", "hyperfast", "carte", "tabula8b"]
+
+# Models that can produce predictions (intervention-ready or with predict API)
+PREDICTABLE_MODELS = ["tabpfn", "mitra", "tabicl", "tabdpt", "hyperfast", "carte"]
 
 # Display name mapping (matching MNN file convention)
 DISPLAY_NAMES = {
@@ -261,6 +264,13 @@ def collect_performance(
                 continue
 
         task = get_dataset_task(ds)
+
+        # Classification-only models: skip regression datasets
+        CLASSIFICATION_ONLY = {"tabicl", "hyperfast"}
+        if model_key in CLASSIFICATION_ONLY and task == "regression":
+            logger.info("  %s/%s: skipping (regression, model is classification-only)", model_key, ds)
+            continue
+
         logger.info("  %s/%s (%s)...", model_key, ds, task)
 
         try:
@@ -268,8 +278,6 @@ def collect_performance(
                 result = predict_intervention_model(model_key, ds, task, device)
             elif model_key == "carte":
                 result = predict_carte(ds, task, device)
-            elif model_key == "tabula8b":
-                result = predict_tabula8b(ds, task, device)
             else:
                 raise ValueError(f"Unknown model: {model_key}")
 

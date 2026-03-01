@@ -638,9 +638,9 @@ def intervene_hyperfast(
     delta at the extraction layer.
     """
     from hyperfast.hyperfast import forward_main_network, transform_data_for_main_network
-    from models.hyperfast_embeddings import HyperFastExtractor
+    from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
-    extractor = HyperFastExtractor(device=device)
+    extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.fit(X_context, y_context)
     clf = extractor._model
 

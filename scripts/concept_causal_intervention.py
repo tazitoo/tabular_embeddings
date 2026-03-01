@@ -836,9 +836,9 @@ def _boost_hyperfast(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
     import torch.nn.functional as F
     from scripts.intervene_sae import compute_boost_delta
     from hyperfast.hyperfast import forward_main_network, transform_data_for_main_network
-    from models.hyperfast_embeddings import HyperFastExtractor
+    from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
-    extractor = HyperFastExtractor(device=device)
+    extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.fit(X_ctx, y_ctx)
     clf = extractor._model
 
@@ -1346,9 +1346,9 @@ def _transplant_hyperfast(X_ctx, y_ctx, X_q, y_q, delta, extraction_layer, devic
     import torch
     import torch.nn.functional as F
     from hyperfast.hyperfast import forward_main_network, transform_data_for_main_network
-    from models.hyperfast_embeddings import HyperFastExtractor
+    from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
-    extractor = HyperFastExtractor(device=device)
+    extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.fit(X_ctx, y_ctx)
     clf = extractor._model
 
