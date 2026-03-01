@@ -256,10 +256,11 @@ def collect_performance(
 
     rows = []
     for ds in datasets:
-        # Skip if already collected
+        # Skip if already collected successfully (not error rows)
         if not existing.empty:
             mask = (existing["model"] == model_key) & (existing["dataset"] == ds)
-            if mask.any():
+            successful = mask & (existing["metric_name"] != "error")
+            if successful.any():
                 logger.info("  %s/%s: already collected, skipping", model_key, ds)
                 continue
 
