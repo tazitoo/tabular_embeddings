@@ -68,7 +68,31 @@ def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) 
         return float(-log_loss(y_true, preds, labels=np.arange(n_classes))), "neg_logloss"
 
 
-DEFAULT_CONCEPT_LABELS = PROJECT_ROOT / "output" / "cross_model_concept_labels.json"
+def compute_per_row_loss(y_true: np.ndarray, preds: np.ndarray, task: str) -> np.ndarray:
+    """Compute per-row loss (lower = better predictions).
+
+    - Binary/multiclass classification: cross-entropy -log(p_correct)
+    - Regression: squared error (y - y_hat)^2
+
+    Returns (n_samples,) array. Higher values = worse predictions.
+    Importance = ablated_loss - baseline_loss: positive means the feature helped.
+    """
+    eps = 1e-7
+    if task == "regression":
+        return (preds.ravel() - y_true.ravel()) ** 2
+
+    y_int = y_true.astype(int)
+    if preds.ndim == 2:
+        p_correct = preds[np.arange(len(y_int)), y_int]
+    else:
+        p = preds.ravel()
+        p_correct = np.where(y_int == 1, p, 1 - p)
+
+    p_correct = np.clip(p_correct, eps, 1 - eps)
+    return -np.log(p_correct)
+
+
+DEFAULT_CONCEPT_LABELS = PROJECT_ROOT / "output" / "cross_model_concept_labels_mnn_only.json"
 DEFAULT_CONCEPT_REGRESSION = PROJECT_ROOT / "output" / "concept_regression_with_pymfe.json"
 DEFAULT_PYMFE_CACHE = PROJECT_ROOT / "output" / "pymfe_tabarena_cache.json"
 
@@ -121,8 +145,9 @@ def sweep_tabdpt(
     Each iteration: compute delta for 1 feature, inject via hook, get predictions.
 
     Returns:
-        Dict with baseline_preds, baseline_acc, feature_indices, feature_accs,
-        feature_drops, y_query, metric_name.
+        Dict with baseline_preds, baseline_metric, feature_indices, feature_drops,
+        feature_firing_drops, feature_nonfiring_drops, feature_n_firing,
+        n_query, y_query, metric_name.
     """
     from tabdpt import TabDPTClassifier, TabDPTRegressor
 
@@ -170,11 +195,19 @@ def sweep_tabdpt(
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
-    baseline_acc, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_row_loss = compute_per_row_loss(y_query, baseline_preds_np, task)
+
+    # Query-row SAE activations for firing detection
+    n_query = len(y_query)
+    h_query = h_full[-n_query:]
 
     # --- Sweep: ablate one feature at a time ---
     n_features = len(alive_features)
-    feature_accs = np.zeros(n_features)
+    feature_drops = np.zeros(n_features)
+    feature_firing_drops = np.zeros(n_features)
+    feature_nonfiring_drops = np.zeros(n_features)
+    feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
     for i, feat_idx in enumerate(alive_features):
@@ -212,7 +245,18 @@ def sweep_tabdpt(
             handle.remove()
 
         preds_np = np.asarray(preds)
-        feature_accs[i], _ = compute_importance_metric(y_query, preds_np, task)
+        ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
+        row_importance = ablated_row_loss - baseline_row_loss
+
+        fires = (h_query[:, feat_idx] > 0).cpu().numpy()
+        n_fire = int(fires.sum())
+
+        feature_drops[i] = float(row_importance.mean())
+        feature_n_firing[i] = n_fire
+        if n_fire > 0:
+            feature_firing_drops[i] = float(row_importance[fires].mean())
+        if n_fire < n_query:
+            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -220,22 +264,23 @@ def sweep_tabdpt(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"{metric_name}={feature_accs[i]:.4f} drop={baseline_acc - feature_accs[i]:+.4f} "
+                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
-
-    feature_drops = baseline_acc - feature_accs
 
     # Count features that fire on at least one row
     n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
 
     return {
         "baseline_preds": baseline_preds_np,
-        "baseline_acc": baseline_acc,
+        "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_accs": feature_accs,
         "feature_drops": feature_drops,
+        "feature_firing_drops": feature_firing_drops,
+        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "feature_n_firing": feature_n_firing,
+        "n_query": n_query,
         "n_active_features": n_active,
         "y_query": np.asarray(y_query),
     }
@@ -299,10 +344,18 @@ def sweep_tabpfn(
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
-    baseline_acc, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_row_loss = compute_per_row_loss(y_query, baseline_preds_np, task)
+
+    # Query-row SAE activations for firing detection
+    n_query = len(y_query)
+    h_query = h_full[-n_query:]
 
     n_features = len(alive_features)
-    feature_accs = np.zeros(n_features)
+    feature_drops = np.zeros(n_features)
+    feature_firing_drops = np.zeros(n_features)
+    feature_nonfiring_drops = np.zeros(n_features)
+    feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
     for i, feat_idx in enumerate(alive_features):
@@ -338,7 +391,18 @@ def sweep_tabpfn(
             handle.remove()
 
         preds_np = np.asarray(preds)
-        feature_accs[i], _ = compute_importance_metric(y_query, preds_np, task)
+        ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
+        row_importance = ablated_row_loss - baseline_row_loss
+
+        fires = (h_query[:, feat_idx] > 0).cpu().numpy()
+        n_fire = int(fires.sum())
+
+        feature_drops[i] = float(row_importance.mean())
+        feature_n_firing[i] = n_fire
+        if n_fire > 0:
+            feature_firing_drops[i] = float(row_importance[fires].mean())
+        if n_fire < n_query:
+            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -346,22 +410,23 @@ def sweep_tabpfn(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"{metric_name}={feature_accs[i]:.4f} drop={baseline_acc - feature_accs[i]:+.4f} "
+                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
-
-    feature_drops = baseline_acc - feature_accs
 
     # Count features that fire on at least one row
     n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
 
     return {
         "baseline_preds": baseline_preds_np,
-        "baseline_acc": baseline_acc,
+        "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_accs": feature_accs,
         "feature_drops": feature_drops,
+        "feature_firing_drops": feature_firing_drops,
+        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "feature_n_firing": feature_n_firing,
+        "n_query": n_query,
         "n_active_features": n_active,
         "y_query": np.asarray(y_query),
     }
@@ -452,11 +517,18 @@ def sweep_mitra(
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
-    baseline_acc, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_row_loss = compute_per_row_loss(y_query, baseline_preds_np, task)
 
     n_sup = support_emb.shape[0]
+    n_query = len(y_query)
+    h_query = h_full[n_sup:]  # query portion of SAE activations
+
     n_features = len(alive_features)
-    feature_accs = np.zeros(n_features)
+    feature_drops = np.zeros(n_features)
+    feature_firing_drops = np.zeros(n_features)
+    feature_nonfiring_drops = np.zeros(n_features)
+    feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
     for i, feat_idx in enumerate(alive_features):
@@ -506,7 +578,18 @@ def sweep_mitra(
             handle.remove()
 
         preds_np = np.asarray(preds)
-        feature_accs[i], _ = compute_importance_metric(y_query, preds_np, task)
+        ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
+        row_importance = ablated_row_loss - baseline_row_loss
+
+        fires = (h_query[:, feat_idx] > 0).cpu().numpy()
+        n_fire = int(fires.sum())
+
+        feature_drops[i] = float(row_importance.mean())
+        feature_n_firing[i] = n_fire
+        if n_fire > 0:
+            feature_firing_drops[i] = float(row_importance[fires].mean())
+        if n_fire < n_query:
+            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -514,22 +597,23 @@ def sweep_mitra(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"{metric_name}={feature_accs[i]:.4f} drop={baseline_acc - feature_accs[i]:+.4f} "
+                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
-
-    feature_drops = baseline_acc - feature_accs
 
     # Count features that fire on at least one row
     n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
 
     return {
         "baseline_preds": baseline_preds_np,
-        "baseline_acc": baseline_acc,
+        "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_accs": feature_accs,
         "feature_drops": feature_drops,
+        "feature_firing_drops": feature_firing_drops,
+        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "feature_n_firing": feature_n_firing,
+        "n_query": n_query,
         "n_active_features": n_active,
         "y_query": np.asarray(y_query),
     }
@@ -592,10 +676,18 @@ def sweep_tabicl(
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
-    baseline_acc, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_row_loss = compute_per_row_loss(y_query, baseline_preds_np, task)
+
+    # Query-row SAE activations for firing detection
+    n_query = len(y_query)
+    h_query = h_full[-n_query:]
 
     n_features = len(alive_features)
-    feature_accs = np.zeros(n_features)
+    feature_drops = np.zeros(n_features)
+    feature_firing_drops = np.zeros(n_features)
+    feature_nonfiring_drops = np.zeros(n_features)
+    feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
     for i, feat_idx in enumerate(alive_features):
@@ -625,7 +717,18 @@ def sweep_tabicl(
             handle.remove()
 
         preds_np = np.asarray(preds)
-        feature_accs[i], _ = compute_importance_metric(y_query, preds_np, task)
+        ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
+        row_importance = ablated_row_loss - baseline_row_loss
+
+        fires = (h_query[:, feat_idx] > 0).cpu().numpy()
+        n_fire = int(fires.sum())
+
+        feature_drops[i] = float(row_importance.mean())
+        feature_n_firing[i] = n_fire
+        if n_fire > 0:
+            feature_firing_drops[i] = float(row_importance[fires].mean())
+        if n_fire < n_query:
+            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -633,22 +736,23 @@ def sweep_tabicl(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"{metric_name}={feature_accs[i]:.4f} drop={baseline_acc - feature_accs[i]:+.4f} "
+                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
-
-    feature_drops = baseline_acc - feature_accs
 
     # Count features that fire on at least one row
     n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
 
     return {
         "baseline_preds": baseline_preds_np,
-        "baseline_acc": baseline_acc,
+        "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_accs": feature_accs,
         "feature_drops": feature_drops,
+        "feature_firing_drops": feature_firing_drops,
+        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "feature_n_firing": feature_n_firing,
+        "n_query": n_query,
         "n_active_features": n_active,
         "y_query": np.asarray(y_query),
     }
@@ -675,7 +779,7 @@ def sweep_concept_importance(
 ) -> Dict:
     """Run single-feature ablation sweep for all alive features.
 
-    Returns dict with feature_indices, feature_drops, feature_labels, baseline_acc.
+    Returns dict with feature_indices, feature_drops, feature_labels, baseline_metric.
     """
     if model_key not in SWEEP_FN:
         raise ValueError(f"Unsupported model: {model_key}. Choose from {list(SWEEP_FN.keys())}")
@@ -761,10 +865,10 @@ def analyze_importance(
         importance_path: Path to saved importance JSON (from sweep)
         model_key: Model key (e.g. 'tabdpt')
         top_n: Number of top unique concept groups to return
-        labels_path: Path to cross_model_concept_labels.json
+        labels_path: Path to concept labels JSON (default: MNN-only hierarchy)
 
     Returns:
-        Dict with 'baseline_acc', 'dataset', 'model', 'bands', 'top_groups',
+        Dict with 'baseline_metric', 'dataset', 'model', 'bands', 'top_groups',
         and 'summary' fields.
     """
     from collections import Counter
@@ -861,7 +965,8 @@ def analyze_importance(
         "model": model_key,
         "dataset": importance["dataset"],
         "task": importance["task"],
-        "baseline_acc": importance["baseline_acc"],
+        "baseline_metric": importance.get("baseline_metric", importance.get("baseline_acc")),
+        "baseline_metric_name": importance.get("baseline_metric_name", importance.get("metric_name", "metric")),
         "bands": bands,
         "top_groups": top_groups,
         "causal_chain": causal_chain,
@@ -881,7 +986,8 @@ def print_analysis(analysis: Dict) -> None:
     print(f"\n{'='*100}")
     print(f"Concept Importance Analysis: {analysis['model']} on {analysis['dataset']}")
     print(f"{'='*100}")
-    print(f"Baseline accuracy: {analysis['baseline_acc']:.3f}")
+    metric = analysis.get("metric_name", analysis.get("baseline_metric_name", "metric"))
+    print(f"Baseline {metric}: {analysis['baseline_metric']:.3f}")
     print(f"Matryoshka bands: {analysis['bands']}")
 
     s = analysis["summary"]
@@ -1105,6 +1211,7 @@ def print_causal_chain(chain_results: List[Dict], dataset_name: str) -> None:
 # ── Pairwise concept bookkeeping ─────────────────────────────────────────────
 
 DEFAULT_MNN_PATH = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_t0.001_n500.json"
+DEFAULT_CORR_DIR = PROJECT_ROOT / "output" / "sae_cross_correlations"
 
 
 def compare_concept_importance(
@@ -1114,202 +1221,222 @@ def compare_concept_importance(
     importance_dir: Path = None,
     labels_path: Path = DEFAULT_CONCEPT_LABELS,
     mnn_path: Path = DEFAULT_MNN_PATH,
+    corr_dir: Path = DEFAULT_CORR_DIR,
 ) -> Dict:
     """Compare two models' concept importance on a dataset.
 
-    Walks both concept hierarchies and tallies:
-    - Shared concepts: same concept group, compare importance in each model
-    - Model-unique concepts: in one model but not the other
-    - Band breakdown: which Matryoshka scales drive the difference
+    Matching is driven by the cross-correlation matrix (row-level detail).
+    Labels come from the concept hierarchy (for display only).
+    For each important feature in A, finds its best correlate in B and reports
+    the importance differential.
 
-    Returns structured dict with per-concept and aggregate comparisons.
+    Features are classified as:
+    - MNN-matched: mutual nearest neighbor pair (highest confidence)
+    - Correlated: best |r| >= 0.20 but not MNN
+    - Unmatched: no correlate above threshold
+
+    Returns structured dict with per-feature comparisons and aggregate tallies.
     """
-    from collections import defaultdict
+    import numpy as _np
 
     if importance_dir is None:
         importance_dir = PROJECT_ROOT / "output" / "concept_importance"
 
     # Load importance results
-    imp_a_path = importance_dir / f"{model_a}_{dataset}.json"
-    imp_b_path = importance_dir / f"{model_b}_{dataset}.json"
-    with open(imp_a_path) as f:
+    with open(importance_dir / f"{model_a}_{dataset}.json") as f:
         imp_a = json.load(f)
-    with open(imp_b_path) as f:
+    with open(importance_dir / f"{model_b}_{dataset}.json") as f:
         imp_b = json.load(f)
 
-    # Build feature_idx -> drop lookup for each model
+    # Build feature_idx -> drop lookup
     drop_a = {f["index"]: f["drop"] for f in imp_a["features"]}
     drop_b = {f["index"]: f["drop"] for f in imp_b["features"]}
 
-    # Load concept labels
-    with open(labels_path) as f:
-        concept_data = json.load(f)
-
+    # Load labels (for display only)
     label_key_a = MODEL_KEY_TO_LABEL_KEY.get(model_a, model_a)
     label_key_b = MODEL_KEY_TO_LABEL_KEY.get(model_b, model_b)
-    lookup_a = concept_data["feature_lookup"][label_key_a]
-    lookup_b = concept_data["feature_lookup"][label_key_b]
-    groups = concept_data["concept_groups"]
+    labels_a = get_feature_labels(model_a, labels_path)
+    labels_b = get_feature_labels(model_b, labels_path)
 
-    # Get bands for each model
+    # Bands
     bands_a = get_matryoshka_bands(model_a)
     bands_b = get_matryoshka_bands(model_b)
 
-    # Load MNN matching
+    # Load MNN matches for this pair
     with open(mnn_path) as f:
         mnn_data = json.load(f)
 
-    # Find the right pair key (alphabetical by label_key)
     pair_key = None
+    a_is_first = True
     for k in mnn_data["pairs"]:
         parts = k.split("__")
         if set(parts) == {label_key_a, label_key_b}:
             pair_key = k
+            a_is_first = k.startswith(label_key_a)
             break
 
-    mnn_matched_a = set()  # feature indices in A that have an MNN match
-    mnn_matched_b = set()
+    mnn_pairs = {}  # feat_a -> (feat_b, r)
+    mnn_pairs_rev = {}  # feat_b -> (feat_a, r)
     if pair_key:
-        pair_data = mnn_data["pairs"][pair_key]
-        # Figure out which side is A vs B
-        if pair_key.startswith(label_key_a):
-            for m in pair_data["matches"]:
-                mnn_matched_a.add(m["idx_a"])
-                mnn_matched_b.add(m["idx_b"])
+        for m in mnn_data["pairs"][pair_key]["matches"]:
+            fa = m["idx_a"] if a_is_first else m["idx_b"]
+            fb = m["idx_b"] if a_is_first else m["idx_a"]
+            mnn_pairs[fa] = (fb, abs(m["r"]))
+            mnn_pairs_rev[fb] = (fa, abs(m["r"]))
+
+    # Load cross-correlation matrix
+    corr_matrix = None
+    idx_to_pos_a = {}
+    idx_to_pos_b = {}
+    abs_indices_b = []
+
+    for npz_name in [f"{label_key_a}__{label_key_b}", f"{label_key_b}__{label_key_a}"]:
+        npz_path = corr_dir / f"{npz_name}.npz"
+        if npz_path.exists():
+            d = _np.load(npz_path)
+            if str(d["model_a"]) == label_key_a:
+                corr_matrix = d["corr_matrix"]
+                indices_a = d["indices_a"]
+                indices_b = d["indices_b"]
+            else:
+                corr_matrix = d["corr_matrix"].T
+                indices_a = d["indices_b"]
+                indices_b = d["indices_a"]
+            idx_to_pos_a = {int(v): i for i, v in enumerate(indices_a)}
+            idx_to_pos_b = {int(v): i for i, v in enumerate(indices_b)}
+            abs_indices_b = [int(v) for v in indices_b]
+            break
+
+    # --- Build per-feature comparison ---
+    # For each feature in A (sorted by drop), find its best correlate in B
+    features_a = sorted(imp_a["features"], key=lambda x: -x["drop"])
+
+    matched_features = []   # MNN-matched pairs
+    correlated_features = []  # correlated but not MNN
+    unmatched_a = []  # no good correlate in B
+
+    matched_b_used = set()  # track which B features are accounted for
+
+    for feat in features_a:
+        fa = feat["index"]
+        drop_fa = feat["drop"]
+        band_a = feature_to_band(fa, bands_a)
+        label_a = labels_a.get(fa, "?")
+
+        if fa in mnn_pairs:
+            # MNN matched
+            fb, r = mnn_pairs[fa]
+            drop_fb = drop_b.get(fb, 0.0)
+            matched_features.append({
+                "feat_a": fa, "feat_b": fb,
+                "drop_a": drop_fa, "drop_b": drop_fb,
+                "band_a": band_a, "band_b": feature_to_band(fb, bands_b),
+                "label_a": label_a, "label_b": labels_b.get(fb, "?"),
+                "r": r, "match_type": "mnn",
+                "differential": drop_fa - drop_fb,
+            })
+            matched_b_used.add(fb)
+        elif corr_matrix is not None and fa in idx_to_pos_a:
+            # Find best available correlate (skip already-claimed B features)
+            pos_a = idx_to_pos_a[fa]
+            corr_row = corr_matrix[pos_a]
+            sorted_j = np.argsort(-corr_row)
+            best_r = 0.0
+            fb = -1
+            for j_cand in sorted_j:
+                fb_cand = abs_indices_b[j_cand]
+                if fb_cand not in matched_b_used:
+                    best_r = float(corr_row[j_cand])
+                    fb = fb_cand
+                    break
+            drop_fb = drop_b.get(fb, 0.0)
+
+            if best_r >= 0.20:
+                correlated_features.append({
+                    "feat_a": fa, "feat_b": fb,
+                    "drop_a": drop_fa, "drop_b": drop_fb,
+                    "band_a": band_a, "band_b": feature_to_band(fb, bands_b),
+                    "label_a": label_a, "label_b": labels_b.get(fb, "?"),
+                    "r": best_r, "match_type": "correlated",
+                    "differential": drop_fa - drop_fb,
+                })
+                matched_b_used.add(fb)
+            else:
+                unmatched_a.append({
+                    "feat_a": fa, "drop_a": drop_fa,
+                    "band_a": band_a, "label_a": label_a,
+                    "best_r": best_r,
+                })
         else:
-            for m in pair_data["matches"]:
-                mnn_matched_b.add(m["idx_a"])
-                mnn_matched_a.add(m["idx_b"])
+            unmatched_a.append({
+                "feat_a": fa, "drop_a": drop_fa,
+                "band_a": band_a, "label_a": label_a,
+                "best_r": 0.0,
+            })
 
-    # Map each feature to its concept group
-    feat_to_group_a = {}
-    for idx_str, info in lookup_a.items():
-        gid = info.get("group_id")
-        if gid is not None:
-            feat_to_group_a[int(idx_str)] = int(gid)
+    # B features not matched to any A feature
+    unmatched_b = []
+    for feat in sorted(imp_b["features"], key=lambda x: -x["drop"]):
+        fb = feat["index"]
+        if fb not in matched_b_used:
+            unmatched_b.append({
+                "feat_b": fb, "drop_b": feat["drop"],
+                "band_b": feature_to_band(fb, bands_b),
+                "label_b": labels_b.get(fb, "?"),
+            })
 
-    feat_to_group_b = {}
-    for idx_str, info in lookup_b.items():
-        gid = info.get("group_id")
-        if gid is not None:
-            feat_to_group_b[int(idx_str)] = int(gid)
+    # --- Tallies ---
+    from collections import defaultdict
 
-    # Invert: group_id -> list of feature indices
-    group_feats_a = defaultdict(list)
-    for feat, gid in feat_to_group_a.items():
-        group_feats_a[gid].append(feat)
+    def _band_tally(items, drop_key, band_key):
+        t = defaultdict(float)
+        for item in items:
+            d = item.get(drop_key, 0.0)
+            if d > 0:
+                t[item[band_key]] += d
+        return dict(t)
 
-    group_feats_b = defaultdict(list)
-    for feat, gid in feat_to_group_b.items():
-        group_feats_b[gid].append(feat)
+    # Matched (MNN + correlated): importance that both models share
+    all_matched = matched_features + correlated_features
+    matched_adv_a = sum(max(0, m["differential"]) for m in all_matched)
+    matched_adv_b = sum(max(0, -m["differential"]) for m in all_matched)
 
-    # All concept groups that have members from either model
-    all_groups = set(group_feats_a.keys()) | set(group_feats_b.keys())
-
-    # Classify each group
-    shared_concepts = []
-    unique_to_a = []
-    unique_to_b = []
-
-    for gid in sorted(all_groups):
-        feats_a = group_feats_a.get(gid, [])
-        feats_b = group_feats_b.get(gid, [])
-
-        g_info = groups.get(str(gid), {})
-        label = g_info.get("label", "unknown")
-        n_models = g_info.get("n_models", 0)
-        tier = g_info.get("tier")
-
-        # Best importance from each model in this group
-        best_drop_a = max((drop_a.get(f, 0.0) for f in feats_a), default=0.0)
-        best_feat_a = max(feats_a, key=lambda f: drop_a.get(f, 0.0)) if feats_a else None
-        best_drop_b = max((drop_b.get(f, 0.0) for f in feats_b), default=0.0)
-        best_feat_b = max(feats_b, key=lambda f: drop_b.get(f, 0.0)) if feats_b else None
-
-        # Sum of positive drops in this group
-        sum_drop_a = sum(max(0, drop_a.get(f, 0.0)) for f in feats_a)
-        sum_drop_b = sum(max(0, drop_b.get(f, 0.0)) for f in feats_b)
-
-        entry = {
-            "group_id": gid,
-            "label": label,
-            "n_models": n_models,
-            "tier": tier,
-            "n_feats_a": len(feats_a),
-            "n_feats_b": len(feats_b),
-            "best_drop_a": best_drop_a,
-            "best_drop_b": best_drop_b,
-            "best_feat_a": best_feat_a,
-            "best_feat_b": best_feat_b,
-            "sum_drop_a": sum_drop_a,
-            "sum_drop_b": sum_drop_b,
-            "band_a": feature_to_band(best_feat_a, bands_a) if best_feat_a is not None else None,
-            "band_b": feature_to_band(best_feat_b, bands_b) if best_feat_b is not None else None,
-            "differential": best_drop_a - best_drop_b,
-        }
-
-        if feats_a and feats_b:
-            shared_concepts.append(entry)
-        elif feats_a:
-            unique_to_a.append(entry)
-        else:
-            unique_to_b.append(entry)
-
-    # Sort by differential (A's advantage)
-    shared_concepts.sort(key=lambda x: -x["differential"])
-    unique_to_a.sort(key=lambda x: -x["best_drop_a"])
-    unique_to_b.sort(key=lambda x: -x["best_drop_b"])
-
-    # Aggregate tallies
-    def tally_by_band(concepts, model_side):
-        """Sum importance by band."""
-        band_totals = defaultdict(float)
-        band_key = f"band_{model_side}"
-        drop_key = f"best_drop_{model_side}"
-        for c in concepts:
-            band = c.get(band_key)
-            drop = c.get(drop_key, 0.0)
-            if band and drop > 0:
-                band_totals[band] += drop
-        return dict(band_totals)
-
-    # Net advantage from shared concepts
-    shared_net_a = sum(max(0, c["differential"]) for c in shared_concepts)
-    shared_net_b = sum(max(0, -c["differential"]) for c in shared_concepts)
-
-    # Advantage from unique concepts
-    unique_a_total = sum(max(0, c["best_drop_a"]) for c in unique_to_a)
-    unique_b_total = sum(max(0, c["best_drop_b"]) for c in unique_to_b)
+    # Unmatched: importance unique to each model
+    unique_a_total = sum(max(0, u["drop_a"]) for u in unmatched_a)
+    unique_b_total = sum(max(0, u.get("drop_b", 0)) for u in unmatched_b)
 
     result = {
         "model_a": model_a,
         "model_b": model_b,
         "dataset": dataset,
-        "baseline_a": imp_a["baseline_acc"],
-        "baseline_b": imp_b["baseline_acc"],
+        "baseline_a": imp_a.get("baseline_metric", imp_a.get("baseline_acc")),
+        "baseline_b": imp_b.get("baseline_metric", imp_b.get("baseline_acc")),
         "metric": imp_a.get("metric_name", "auc"),
         "n_active_a": imp_a.get("n_active_features", -1),
         "n_active_b": imp_b.get("n_active_features", -1),
-        "n_mnn_matched": len(mnn_matched_a),
-        "n_shared_groups": len(shared_concepts),
-        "n_unique_to_a": len(unique_to_a),
-        "n_unique_to_b": len(unique_to_b),
-        "shared_concepts": shared_concepts,
-        "unique_to_a": unique_to_a,
-        "unique_to_b": unique_to_b,
+        "n_mnn_matched": len(matched_features),
+        "n_correlated": len(correlated_features),
+        "n_unmatched_a": len(unmatched_a),
+        "n_unmatched_b": len(unmatched_b),
+        "matched_features": matched_features,
+        "correlated_features": correlated_features,
+        "unmatched_a": unmatched_a,
+        "unmatched_b": unmatched_b,
         "tally": {
-            "shared_advantage_a": shared_net_a,
-            "shared_advantage_b": shared_net_b,
+            "matched_advantage_a": matched_adv_a,
+            "matched_advantage_b": matched_adv_b,
             "unique_advantage_a": unique_a_total,
             "unique_advantage_b": unique_b_total,
-            "total_advantage_a": shared_net_a + unique_a_total,
-            "total_advantage_b": shared_net_b + unique_b_total,
-            "band_breakdown_shared_a": tally_by_band(
-                [c for c in shared_concepts if c["differential"] > 0], "a"),
-            "band_breakdown_shared_b": tally_by_band(
-                [c for c in shared_concepts if c["differential"] < 0], "b"),
-            "band_breakdown_unique_a": tally_by_band(unique_to_a, "a"),
-            "band_breakdown_unique_b": tally_by_band(unique_to_b, "b"),
+            "total_advantage_a": matched_adv_a + unique_a_total,
+            "total_advantage_b": matched_adv_b + unique_b_total,
+            "band_matched_a": _band_tally(
+                [m for m in all_matched if m["differential"] > 0], "differential", "band_a"),
+            "band_matched_b": _band_tally(
+                [{"differential": -m["differential"], "band_b": m["band_b"]}
+                 for m in all_matched if m["differential"] < 0],
+                "differential", "band_b"),
+            "band_unique_a": _band_tally(unmatched_a, "drop_a", "band_a"),
+            "band_unique_b": _band_tally(unmatched_b, "drop_b", "band_b"),
         },
     }
     return result
@@ -1330,84 +1457,73 @@ def print_concept_comparison(result: Dict) -> None:
           f"{result['n_active_a']} active features")
     print(f"  {disp_b}: baseline {result['metric']}={result['baseline_b']:.4f}, "
           f"{result['n_active_b']} active features")
-    print(f"  MNN matched features: {result['n_mnn_matched']}")
-    print(f"  Concept groups: {result['n_shared_groups']} shared, "
-          f"{result['n_unique_to_a']} {disp_a}-only, "
-          f"{result['n_unique_to_b']} {disp_b}-only")
+    print(f"  Feature matching: {result['n_mnn_matched']} MNN, "
+          f"{result['n_correlated']} correlated, "
+          f"{result['n_unmatched_a']} {disp_a}-only, "
+          f"{result['n_unmatched_b']} {disp_b}-only")
 
+    perf_gap = result["baseline_a"] - result["baseline_b"]
     print(f"\n{'─'*100}")
-    print(f"TALLY (sum of best-drop per concept group)")
+    print(f"TALLY (sum of single-feature ablation drops; not additive across features)")
     print(f"{'─'*100}")
-    print(f"  Shared concepts:  {disp_a} advantage = {t['shared_advantage_a']:+.3f}, "
-          f"{disp_b} advantage = {t['shared_advantage_b']:+.3f}")
-    print(f"  Unique concepts:  {disp_a} advantage = {t['unique_advantage_a']:+.3f}, "
+    print(f"  Actual {result['metric']} gap: {disp_a} - {disp_b} = {perf_gap:+.4f}")
+    print(f"  Matched features: {disp_a} advantage = {t['matched_advantage_a']:+.3f}, "
+          f"{disp_b} advantage = {t['matched_advantage_b']:+.3f}")
+    print(f"  Unmatched:        {disp_a} advantage = {t['unique_advantage_a']:+.3f}, "
           f"{disp_b} advantage = {t['unique_advantage_b']:+.3f}")
-    print(f"  ────────────────")
-    print(f"  TOTAL:            {disp_a} = {t['total_advantage_a']:+.3f}, "
-          f"{disp_b} = {t['total_advantage_b']:+.3f}")
-    print(f"  Net {disp_a} edge: {t['total_advantage_a'] - t['total_advantage_b']:+.3f}")
 
     # Band breakdown
-    print(f"\n  Band breakdown ({disp_a} advantage from shared concepts):")
-    for band in ["S1", "S2", "S3", "S4", "S5"]:
-        v = t["band_breakdown_shared_a"].get(band, 0)
-        if v > 0:
-            print(f"    {band}: {v:+.3f}")
+    for label, key in [
+        (f"{disp_a} advantage (matched)", "band_matched_a"),
+        (f"{disp_b} advantage (matched)", "band_matched_b"),
+        (f"{disp_a}-only", "band_unique_a"),
+        (f"{disp_b}-only", "band_unique_b"),
+    ]:
+        bands = t.get(key, {})
+        if any(v > 0 for v in bands.values()):
+            print(f"\n  {label}:")
+            for band in ["S1", "S2", "S3", "S4", "S5"]:
+                v = bands.get(band, 0)
+                if v > 0.001:
+                    print(f"    {band}: {v:+.3f}")
 
-    print(f"  Band breakdown ({disp_a}-only concepts):")
-    for band in ["S1", "S2", "S3", "S4", "S5"]:
-        v = t["band_breakdown_unique_a"].get(band, 0)
-        if v > 0:
-            print(f"    {band}: {v:+.3f}")
+    # Top matched features (by |differential|)
+    all_matched = result["matched_features"] + result["correlated_features"]
+    important = [m for m in all_matched if abs(m["differential"]) > 0.005]
+    important.sort(key=lambda x: -abs(x["differential"]))
 
-    print(f"  Band breakdown ({disp_b}-only concepts):")
-    for band in ["S1", "S2", "S3", "S4", "S5"]:
-        v = t["band_breakdown_unique_b"].get(band, 0)
-        if v > 0:
-            print(f"    {band}: {v:+.3f}")
-
-    # Top shared concepts favoring A
-    shared_favor_a = [c for c in result["shared_concepts"] if c["differential"] > 0.005]
-    if shared_favor_a:
+    if important:
         print(f"\n{'─'*100}")
-        print(f"Top shared concepts favoring {disp_a} (drop_A > drop_B):")
+        print(f"Top matched features (by importance differential):")
         print(f"{'─'*100}")
-        print(f"  {'Group':>5} {'Band_A':>6} {'Drop_A':>7} {'Drop_B':>7} {'Diff':>7}  Label")
-        for c in shared_favor_a[:15]:
-            print(f"  {c['group_id']:>5} {c['band_a'] or '':>6} "
-                  f"{c['best_drop_a']:>+7.3f} {c['best_drop_b']:>+7.3f} "
-                  f"{c['differential']:>+7.3f}  {c['label']}")
+        print(f"  {'Type':>4} {'|r|':>5} {'Feat_A':>6} {'Drop_A':>7} "
+              f"{'Feat_B':>6} {'Drop_B':>7} {'Diff':>7}  {'Band':>4}  Label")
+        for m in important[:20]:
+            mtype = "MNN" if m["match_type"] == "mnn" else "corr"
+            winner = disp_a if m["differential"] > 0 else disp_b
+            print(f"  {mtype:>4} {m['r']:>5.2f} {m['feat_a']:>6} {m['drop_a']:>+7.3f} "
+                  f"{m['feat_b']:>6} {m['drop_b']:>+7.3f} "
+                  f"{m['differential']:>+7.3f}  {m['band_a']:>4}  {m['label_a']}")
 
-    # Top shared concepts favoring B
-    shared_favor_b = [c for c in result["shared_concepts"] if c["differential"] < -0.005]
-    if shared_favor_b:
-        print(f"\n  Top shared concepts favoring {disp_b}:")
-        for c in shared_favor_b[-15:]:
-            print(f"  {c['group_id']:>5} {c['band_b'] or '':>6} "
-                  f"{c['best_drop_a']:>+7.3f} {c['best_drop_b']:>+7.3f} "
-                  f"{c['differential']:>+7.3f}  {c['label']}")
-
-    # Top unique-to-A concepts
-    important_unique_a = [c for c in result["unique_to_a"] if c["best_drop_a"] > 0.005]
-    if important_unique_a:
+    # Top unmatched A features
+    imp_unmatched_a = [u for u in result["unmatched_a"] if u["drop_a"] > 0.005]
+    if imp_unmatched_a:
         print(f"\n{'─'*100}")
-        print(f"{disp_a}-only concepts (not in {disp_b}'s hierarchy):")
+        print(f"{disp_a}-only features (no match in {disp_b}):")
         print(f"{'─'*100}")
-        print(f"  {'Group':>5} {'Band':>6} {'Drop':>7} {'#Feat':>5} {'Models':>6}  Label")
-        for c in important_unique_a[:15]:
-            print(f"  {c['group_id']:>5} {c['band_a'] or '':>6} "
-                  f"{c['best_drop_a']:>+7.3f} {c['n_feats_a']:>5} "
-                  f"{c['n_models']:>6}  {c['label']}")
+        print(f"  {'Feat':>6} {'Drop':>7} {'Band':>4} {'Best_r':>6}  Label")
+        for u in imp_unmatched_a[:15]:
+            print(f"  {u['feat_a']:>6} {u['drop_a']:>+7.3f} {u['band_a']:>4} "
+                  f"{u['best_r']:>6.3f}  {u['label_a']}")
 
-    # Top unique-to-B concepts
-    important_unique_b = [c for c in result["unique_to_b"] if c["best_drop_b"] > 0.005]
-    if important_unique_b:
-        print(f"\n  {disp_b}-only concepts (not in {disp_a}'s hierarchy):")
-        print(f"  {'Group':>5} {'Band':>6} {'Drop':>7} {'#Feat':>5} {'Models':>6}  Label")
-        for c in important_unique_b[:15]:
-            print(f"  {c['group_id']:>5} {c['band_b'] or '':>6} "
-                  f"{c['best_drop_b']:>+7.3f} {c['n_feats_b']:>5} "
-                  f"{c['n_models']:>6}  {c['label']}")
+    # Top unmatched B features
+    imp_unmatched_b = [u for u in result["unmatched_b"] if u.get("drop_b", 0) > 0.005]
+    if imp_unmatched_b:
+        print(f"\n  {disp_b}-only features (no match in {disp_a}):")
+        print(f"  {'Feat':>6} {'Drop':>7} {'Band':>4}  Label")
+        for u in imp_unmatched_b[:15]:
+            print(f"  {u['feat_b']:>6} {u.get('drop_b', 0):>+7.3f} {u['band_b']:>4}  "
+                  f"{u['label_b']}")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -1514,44 +1630,53 @@ def main():
 
     # Display results
     metric_name = result.get("metric_name", "accuracy")
-    logger.info(f"\nBaseline {metric_name}: {result['baseline_acc']:.4f}")
+    logger.info(f"\nBaseline {metric_name}: {result['baseline_metric']:.4f}")
     logger.info(f"Sweep completed in {elapsed:.1f}s ({len(result['feature_indices'])} features)")
     logger.info("")
 
     # Sort by importance (largest drop first)
     order = np.argsort(-result["feature_drops"])
+    n_query = result.get("n_query", len(result["y_query"]))
 
-    logger.info(f"Top {args.top} most important features:")
-    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {metric_name:>8} {'Label'}")
-    logger.info("-" * 70)
+    logger.info(f"Top {args.top} most important features (per-row logloss):")
+    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {'FireDrop':>8} {'N_fire':>8} {'Label'}")
+    logger.info("-" * 80)
     for rank, idx in enumerate(order[:args.top]):
         feat_idx = result["feature_indices"][idx]
         drop = result["feature_drops"][idx]
-        acc = result["feature_accs"][idx]
+        fire_drop = result["feature_firing_drops"][idx]
+        n_fire = result["feature_n_firing"][idx]
         label = result["feature_labels"][idx]
-        logger.info(f"{rank+1:>4} {feat_idx:>6} {drop:>+8.4f} {acc:>8.4f} {label}")
+        logger.info(
+            f"{rank+1:>4} {feat_idx:>6} {drop:>+8.4f} {fire_drop:>+8.4f} "
+            f"{n_fire:>4}/{n_query:<3} {label}"
+        )
 
-    # Also show bottom features (least important / helpful when ablated)
+    # Also show bottom features (least important / improve when ablated)
     logger.info(f"\nBottom {min(10, args.top)} features (least important / improve when ablated):")
-    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {metric_name:>8} {'Label'}")
-    logger.info("-" * 70)
+    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {'FireDrop':>8} {'N_fire':>8} {'Label'}")
+    logger.info("-" * 80)
     for rank, idx in enumerate(order[-min(10, args.top):]):
         feat_idx = result["feature_indices"][idx]
         drop = result["feature_drops"][idx]
-        acc = result["feature_accs"][idx]
+        fire_drop = result["feature_firing_drops"][idx]
+        n_fire = result["feature_n_firing"][idx]
         label = result["feature_labels"][idx]
-        logger.info(f"{'':>4} {feat_idx:>6} {drop:>+8.4f} {acc:>8.4f} {label}")
+        logger.info(
+            f"{'':>4} {feat_idx:>6} {drop:>+8.4f} {fire_drop:>+8.4f} "
+            f"{n_fire:>4}/{n_query:<3} {label}"
+        )
 
     # Summary stats
     drops = result["feature_drops"]
-    logger.info(f"\nImportance distribution:")
+    fire_counts = result["feature_n_firing"]
+    logger.info(f"\nImportance distribution (per-row logloss):")
     logger.info(f"  Mean drop:   {drops.mean():+.4f}")
     logger.info(f"  Std drop:    {drops.std():.4f}")
     logger.info(f"  Max drop:    {drops.max():+.4f}")
     logger.info(f"  Min drop:    {drops.min():+.4f}")
     logger.info(f"  >0 (helpful): {(drops > 0).sum()} ({(drops > 0).mean()*100:.1f}%)")
-    logger.info(f"  >1pp:         {(drops > 0.01).sum()}")
-    logger.info(f"  >5pp:         {(drops > 0.05).sum()}")
+    logger.info(f"  Median fire count: {int(np.median(fire_counts))}/{n_query}")
 
     n_active = result.get("n_active_features", -1)
     logger.info(f"  Active features (fire on >=1 row): {n_active}")
@@ -1561,8 +1686,10 @@ def main():
         "model": args.model,
         "dataset": args.dataset,
         "task": task,
-        "metric_name": metric_name,
-        "baseline_acc": float(result["baseline_acc"]),
+        "metric_name": "per_row_logloss",
+        "baseline_metric": float(result["baseline_metric"]),
+        "baseline_metric_name": metric_name,
+        "n_query": n_query,
         "n_active_features": n_active,
         "n_features": len(result["feature_indices"]),
         "elapsed_seconds": elapsed,
@@ -1572,7 +1699,9 @@ def main():
         save_data["features"].append({
             "index": int(result["feature_indices"][i]),
             "drop": float(result["feature_drops"][i]),
-            "acc": float(result["feature_accs"][i]),
+            "firing_drop": float(result["feature_firing_drops"][i]),
+            "nonfiring_drop": float(result["feature_nonfiring_drops"][i]),
+            "n_firing": int(result["feature_n_firing"][i]),
             "label": result["feature_labels"][i],
         })
     # Sort by drop descending
