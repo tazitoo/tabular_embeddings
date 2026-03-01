@@ -37,6 +37,37 @@ from scripts.intervene_sae import (
 
 logger = logging.getLogger(__name__)
 
+
+def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) -> tuple:
+    """Compute the appropriate metric for importance measurement.
+
+    Uses TabArena-compatible metrics so importance is meaningful on imbalanced data:
+    - Binary classification: AUC (from probabilities)
+    - Multiclass classification: neg_logloss (higher = better)
+    - Regression: neg_RMSE (higher = better)
+
+    Returns (metric_value, metric_name) where higher is always better,
+    so drop = baseline - ablated is positive when ablation hurts.
+    """
+    from sklearn.metrics import roc_auc_score, log_loss
+
+    if task == "regression":
+        rmse = float(np.sqrt(np.mean((preds - y_true) ** 2)))
+        return -rmse, "neg_rmse"
+
+    # Classification: check binary vs multiclass
+    n_classes = preds.shape[1] if preds.ndim == 2 else len(np.unique(y_true))
+    if n_classes == 2:
+        proba = preds[:, 1] if preds.ndim == 2 else preds
+        try:
+            return float(roc_auc_score(y_true, proba)), "auc"
+        except ValueError:
+            # Fallback if only one class in y_true
+            return float(-log_loss(y_true, preds, labels=np.arange(n_classes))), "neg_logloss"
+    else:
+        return float(-log_loss(y_true, preds, labels=np.arange(n_classes))), "neg_logloss"
+
+
 DEFAULT_CONCEPT_LABELS = PROJECT_ROOT / "output" / "cross_model_concept_labels.json"
 DEFAULT_CONCEPT_REGRESSION = PROJECT_ROOT / "output" / "concept_regression_with_pymfe.json"
 DEFAULT_PYMFE_CACHE = PROJECT_ROOT / "output" / "pymfe_tabarena_cache.json"
@@ -90,15 +121,9 @@ def sweep_tabdpt(
     Each iteration: compute delta for 1 feature, inject via hook, get predictions.
 
     Returns:
-        Dict with:
-            baseline_preds: (n_query, n_classes) baseline probabilities
-            baseline_acc: float
-            feature_indices: (n_features,) which features were tested
-            feature_accs: (n_features,) accuracy after ablating each feature
-            feature_drops: (n_features,) baseline_acc - feature_acc (positive = important)
-            y_query: ground truth labels
+        Dict with baseline_preds, baseline_acc, feature_indices, feature_accs,
+        feature_drops, y_query, metric_name.
     """
-    from sklearn.metrics import accuracy_score
     from tabdpt import TabDPTClassifier, TabDPTRegressor
 
     if task == "regression":
@@ -145,10 +170,7 @@ def sweep_tabdpt(
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
-    if task == "classification":
-        baseline_acc = accuracy_score(y_query, baseline_preds_np.argmax(axis=1))
-    else:
-        baseline_acc = float(np.mean((baseline_preds_np - y_query) ** 2))
+    baseline_acc, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
 
     # --- Sweep: ablate one feature at a time ---
     n_features = len(alive_features)
@@ -190,10 +212,7 @@ def sweep_tabdpt(
             handle.remove()
 
         preds_np = np.asarray(preds)
-        if task == "classification":
-            feature_accs[i] = accuracy_score(y_query, preds_np.argmax(axis=1))
-        else:
-            feature_accs[i] = float(np.mean((preds_np - y_query) ** 2))
+        feature_accs[i], _ = compute_importance_metric(y_query, preds_np, task)
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -201,7 +220,7 @@ def sweep_tabdpt(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"acc={feature_accs[i]:.3f} drop={baseline_acc - feature_accs[i]:+.3f} "
+                f"{metric_name}={feature_accs[i]:.4f} drop={baseline_acc - feature_accs[i]:+.4f} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -210,6 +229,7 @@ def sweep_tabdpt(
     return {
         "baseline_preds": baseline_preds_np,
         "baseline_acc": baseline_acc,
+        "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
         "feature_accs": feature_accs,
         "feature_drops": feature_drops,
@@ -233,14 +253,9 @@ def sweep_tabpfn(
     data_mean: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for TabPFN."""
-    from sklearn.metrics import accuracy_score
+    from models.tabpfn_utils import load_tabpfn
 
-    if task == "regression":
-        from tabpfn import TabPFNRegressor
-        clf = TabPFNRegressor(device=device)
-    else:
-        from tabpfn import TabPFNClassifier
-        clf = TabPFNClassifier(device=device)
+    clf = load_tabpfn(task=task, device=device, n_estimators=1)
     clf.fit(X_context, y_context)
 
     model = clf.model_ if hasattr(clf, "model_") else clf.transformer_
@@ -280,10 +295,7 @@ def sweep_tabpfn(
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
-    if task == "classification":
-        baseline_acc = accuracy_score(y_query, baseline_preds_np.argmax(axis=1))
-    else:
-        baseline_acc = float(np.mean((baseline_preds_np - y_query) ** 2))
+    baseline_acc, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
 
     n_features = len(alive_features)
     feature_accs = np.zeros(n_features)
@@ -322,10 +334,7 @@ def sweep_tabpfn(
             handle.remove()
 
         preds_np = np.asarray(preds)
-        if task == "classification":
-            feature_accs[i] = accuracy_score(y_query, preds_np.argmax(axis=1))
-        else:
-            feature_accs[i] = float(np.mean((preds_np - y_query) ** 2))
+        feature_accs[i], _ = compute_importance_metric(y_query, preds_np, task)
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -333,7 +342,7 @@ def sweep_tabpfn(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"acc={feature_accs[i]:.3f} drop={baseline_acc - feature_accs[i]:+.3f} "
+                f"{metric_name}={feature_accs[i]:.4f} drop={baseline_acc - feature_accs[i]:+.4f} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -342,6 +351,7 @@ def sweep_tabpfn(
     return {
         "baseline_preds": baseline_preds_np,
         "baseline_acc": baseline_acc,
+        "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
         "feature_accs": feature_accs,
         "feature_drops": feature_drops,
@@ -369,7 +379,6 @@ def sweep_mitra(
     Mitra layers return (support, query) tuples. Must modify both.
     Must save/restore RNG state for determinism.
     """
-    from sklearn.metrics import accuracy_score
     from autogluon.tabular.models.mitra import MitraModel
 
     ag_model = MitraModel(path="/tmp/mitra_importance", name="mitra_imp")
@@ -435,10 +444,7 @@ def sweep_mitra(
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
-    if task == "classification":
-        baseline_acc = accuracy_score(y_query, baseline_preds_np.argmax(axis=1))
-    else:
-        baseline_acc = float(np.mean((baseline_preds_np - y_query) ** 2))
+    baseline_acc, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
 
     n_sup = support_emb.shape[0]
     n_features = len(alive_features)
@@ -492,10 +498,7 @@ def sweep_mitra(
             handle.remove()
 
         preds_np = np.asarray(preds)
-        if task == "classification":
-            feature_accs[i] = accuracy_score(y_query, preds_np.argmax(axis=1))
-        else:
-            feature_accs[i] = float(np.mean((preds_np - y_query) ** 2))
+        feature_accs[i], _ = compute_importance_metric(y_query, preds_np, task)
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -503,7 +506,7 @@ def sweep_mitra(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"acc={feature_accs[i]:.3f} drop={baseline_acc - feature_accs[i]:+.3f} "
+                f"{metric_name}={feature_accs[i]:.4f} drop={baseline_acc - feature_accs[i]:+.4f} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -512,6 +515,7 @@ def sweep_mitra(
     return {
         "baseline_preds": baseline_preds_np,
         "baseline_acc": baseline_acc,
+        "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
         "feature_accs": feature_accs,
         "feature_drops": feature_drops,
@@ -541,7 +545,6 @@ def sweep_tabicl(
     architecture produces dataset-specific representations orthogonal to the pooled
     training mean.
     """
-    from sklearn.metrics import accuracy_score
     from tabicl import TabICLClassifier
 
     clf = TabICLClassifier(device=device, n_estimators=1)
@@ -577,7 +580,7 @@ def sweep_tabicl(
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
-    baseline_acc = accuracy_score(y_query, baseline_preds_np.argmax(axis=1))
+    baseline_acc, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
 
     n_features = len(alive_features)
     feature_accs = np.zeros(n_features)
@@ -610,7 +613,7 @@ def sweep_tabicl(
             handle.remove()
 
         preds_np = np.asarray(preds)
-        feature_accs[i] = accuracy_score(y_query, preds_np.argmax(axis=1))
+        feature_accs[i], _ = compute_importance_metric(y_query, preds_np, task)
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -618,7 +621,7 @@ def sweep_tabicl(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"acc={feature_accs[i]:.3f} drop={baseline_acc - feature_accs[i]:+.3f} "
+                f"{metric_name}={feature_accs[i]:.4f} drop={baseline_acc - feature_accs[i]:+.4f} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -627,6 +630,7 @@ def sweep_tabicl(
     return {
         "baseline_preds": baseline_preds_np,
         "baseline_acc": baseline_acc,
+        "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
         "feature_accs": feature_accs,
         "feature_drops": feature_drops,
@@ -1169,7 +1173,8 @@ def main():
     elapsed = time.time() - t0
 
     # Display results
-    logger.info(f"\nBaseline accuracy: {result['baseline_acc']:.3f}")
+    metric_name = result.get("metric_name", "accuracy")
+    logger.info(f"\nBaseline {metric_name}: {result['baseline_acc']:.4f}")
     logger.info(f"Sweep completed in {elapsed:.1f}s ({len(result['feature_indices'])} features)")
     logger.info("")
 
@@ -1177,25 +1182,25 @@ def main():
     order = np.argsort(-result["feature_drops"])
 
     logger.info(f"Top {args.top} most important features:")
-    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {'Acc':>8} {'Label'}")
+    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {metric_name:>8} {'Label'}")
     logger.info("-" * 70)
     for rank, idx in enumerate(order[:args.top]):
         feat_idx = result["feature_indices"][idx]
         drop = result["feature_drops"][idx]
         acc = result["feature_accs"][idx]
         label = result["feature_labels"][idx]
-        logger.info(f"{rank+1:>4} {feat_idx:>6} {drop:>+8.4f} {acc:>8.3f} {label}")
+        logger.info(f"{rank+1:>4} {feat_idx:>6} {drop:>+8.4f} {acc:>8.4f} {label}")
 
     # Also show bottom features (least important / helpful when ablated)
     logger.info(f"\nBottom {min(10, args.top)} features (least important / improve when ablated):")
-    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {'Acc':>8} {'Label'}")
+    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {metric_name:>8} {'Label'}")
     logger.info("-" * 70)
     for rank, idx in enumerate(order[-min(10, args.top):]):
         feat_idx = result["feature_indices"][idx]
         drop = result["feature_drops"][idx]
         acc = result["feature_accs"][idx]
         label = result["feature_labels"][idx]
-        logger.info(f"{'':>4} {feat_idx:>6} {drop:>+8.4f} {acc:>8.3f} {label}")
+        logger.info(f"{'':>4} {feat_idx:>6} {drop:>+8.4f} {acc:>8.4f} {label}")
 
     # Summary stats
     drops = result["feature_drops"]
@@ -1213,6 +1218,7 @@ def main():
         "model": args.model,
         "dataset": args.dataset,
         "task": task,
+        "metric_name": metric_name,
         "baseline_acc": float(result["baseline_acc"]),
         "n_features": len(result["feature_indices"]),
         "elapsed_seconds": elapsed,
