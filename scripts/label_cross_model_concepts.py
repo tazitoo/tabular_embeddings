@@ -3,14 +3,18 @@
 Cross-model SAE concept labeling with LLM.
 
 Labels concept groups identified by cross-model feature matching. Runs in three
-phases: Phase 1 labels MNN-matched groups, Phase 2 adds Hungarian matches,
-Phase 3 labels unmatched features.
+phases: Phase 1 labels MNN-matched groups, Phase 2 extends groups via
+cross-correlation direct assignment, Phase 3 labels unmatched features.
+
+Phase 2 uses pre-computed cross-correlation matrices (row-level detail) with
+greedy direct assignment — no union-find transitive closure, preventing
+mega-groups. Requires running match_sae_features.py --save-correlations first.
 
 Usage:
     # Phase 1: MNN groups
     python scripts/label_cross_model_concepts.py --phase 1
 
-    # Phase 2: Add Hungarian matches (loads phase 1 output)
+    # Phase 2: Extend via cross-correlation (requires pre-computed matrices)
     python scripts/label_cross_model_concepts.py --phase 2
 
     # Phase 3: Label unmatched features
@@ -396,6 +400,56 @@ def run_phase1(
     }
 
 
+def _load_cross_correlations(
+    corr_dir: Path,
+) -> Dict[str, dict]:
+    """Load pre-computed cross-correlation matrices for all model pairs.
+
+    Returns dict keyed by pair_key (e.g. 'Mitra__TabPFN') with:
+        corr_matrix: (n_alive_a, n_alive_b) ndarray
+        indices_a: absolute feature indices for model A
+        indices_b: absolute feature indices for model B
+        model_a, model_b: model display names
+    """
+    import numpy as _np
+
+    corr_data = {}
+    for npz_path in sorted(corr_dir.glob("*.npz")):
+        d = _np.load(npz_path, allow_pickle=True)
+        pair_key = npz_path.stem
+        corr_data[pair_key] = {
+            "corr_matrix": d["corr_matrix"],
+            "indices_a": d["indices_a"],
+            "indices_b": d["indices_b"],
+            "model_a": str(d["model_a"]),
+            "model_b": str(d["model_b"]),
+        }
+    return corr_data
+
+
+def _build_corr_lookup(
+    corr_data: Dict[str, dict],
+) -> Dict[Tuple[str, str], dict]:
+    """Build bidirectional lookup: (model_x, model_y) -> correlation info.
+
+    For pair (A, B) with corr_matrix shape (n_alive_A, n_alive_B):
+    - (A, B) returns corr_matrix, indices_a=A's indices, indices_b=B's indices
+    - (B, A) returns corr_matrix.T, indices_a=B's indices, indices_b=A's indices
+    """
+    lookup = {}
+    for pair_key, info in corr_data.items():
+        ma, mb = info["model_a"], info["model_b"]
+        lookup[(ma, mb)] = info
+        lookup[(mb, ma)] = {
+            "corr_matrix": info["corr_matrix"].T,
+            "indices_a": info["indices_b"],
+            "indices_b": info["indices_a"],
+            "model_a": mb,
+            "model_b": ma,
+        }
+    return lookup
+
+
 def run_phase2(
     prev_output: dict,
     matching: dict,
@@ -406,123 +460,323 @@ def run_phase2(
     no_llm: bool,
     max_group_size: int,
     relabel_threshold: float,
+    corr_dir: Optional[Path] = None,
 ) -> dict:
-    """Phase 2: Add tier-2 (Hungarian) edges, merge/extend groups."""
-    print("\n── Phase 2: Adding Hungarian matches ──")
+    """Phase 2: Extend groups using cross-correlation direct assignment.
 
-    # Rebuild union-find from phase 1 edges
-    uf = build_match_graph(matching, tier=1, min_r=min_r)
-    old_components = uf.components()
-    old_group_map = {}  # node → old_group_id
-    for gid, (root, members) in enumerate(sorted(old_components.items(), key=lambda x: -len(x[1]))):
-        for node in members:
-            old_group_map[node] = gid
+    Unlike the original approach (Hungarian + union-find), this uses:
+    1. Pre-computed cross-correlation matrices (row-level detail)
+    2. Direct greedy assignment (no transitive closure)
 
-    # Add tier-2 edges
-    uf = build_match_graph(matching, tier=2, min_r=min_r, uf=uf)
-    new_components = uf.components()
-    print(f"  {len(new_components)} groups after adding tier-2 edges")
+    For each unmatched feature:
+    - Find its best correlate across ALL other models
+    - If that correlate is in a tier-1 group, add the feature to that group
+    - If no grouped correlate found, pair with best unmatched counterpart
+    - Respects max_group_size constraint
+    """
+    print("\n── Phase 2: Extending groups via cross-correlation ──")
 
-    # Detect which groups are new vs extended
+    if corr_dir is None:
+        corr_dir = Path(__file__).parent.parent / "output" / "sae_cross_correlations"
+
+    if not corr_dir.exists():
+        print(f"  ERROR: No cross-correlation directory at {corr_dir}")
+        print(f"  Run: python scripts/match_sae_features.py --save-correlations")
+        return {
+            "metadata": {"phase": 2, "n_llm_calls": 0},
+            "concept_groups": dict(prev_output["concept_groups"]),
+        }
+
+    corr_data = _load_cross_correlations(corr_dir)
+    if not corr_data:
+        print(f"  ERROR: No .npz files in {corr_dir}")
+        return {
+            "metadata": {"phase": 2, "n_llm_calls": 0},
+            "concept_groups": dict(prev_output["concept_groups"]),
+        }
+
+    corr_lookup = _build_corr_lookup(corr_data)
+    print(f"  Loaded {len(corr_data)} cross-correlation matrices")
+
+    # Pre-build absolute→relative index maps for each pair (avoids linear scans)
+    import numpy as _np
+
+    abs_to_rel = {}  # (model_x, model_y) → {abs_feat_idx_in_x: relative_position}
+    for pair_key, info in corr_lookup.items():
+        abs_to_rel[pair_key] = {
+            int(idx): i for i, idx in enumerate(info["indices_a"])
+        }
+
+    # Build node → group_id mapping from phase 1
     concept_groups = dict(prev_output["concept_groups"])
+    node_to_group = {}  # (model, feat_idx) → group_id
+    for gid, group in concept_groups.items():
+        for model, feat_idx in group["members"]:
+            node_to_group[(model, feat_idx)] = gid
+
+    # Pre-build per-model grouped feature masks for each pair
+    # grouped_mask[(model_x, model_y)][j] = True if indices_b[j] is in a group
+    grouped_mask_cache = {}
+    for pair_key, info in corr_lookup.items():
+        other_model = info["model_b"]
+        idx_b = info["indices_b"]
+        mask = _np.zeros(len(idx_b), dtype=bool)
+        group_ids = [None] * len(idx_b)
+        for j, abs_idx in enumerate(idx_b):
+            abs_j = int(abs_idx)
+            gid = node_to_group.get((other_model, abs_j))
+            if gid is not None:
+                mask[j] = True
+                group_ids[j] = gid
+        grouped_mask_cache[pair_key] = (mask, group_ids)
+
+    # Collect all models and all alive features per model from probe lookup
+    all_models = set()
+    alive_per_model = {}  # model → set of alive feature indices
+    for model, features in probe_lookup.items():
+        all_models.add(model)
+        alive_per_model[model] = set(int(k) for k in features.keys())
+
+    # Identify unmatched features (alive but not in any group)
+    unmatched = []  # list of (model, feat_idx)
+    for model in sorted(all_models):
+        for feat_idx in sorted(alive_per_model.get(model, set())):
+            if (model, feat_idx) not in node_to_group:
+                unmatched.append((model, feat_idx))
+
+    print(f"  {len(unmatched)} unmatched features across {len(all_models)} models")
+
+    # --- Pass 1: Assign unmatched features to existing groups ---
     next_id = max((int(k) for k in concept_groups), default=-1) + 1
-    n_llm = n_rule = n_relabel = n_new = n_skip = 0
+    n_extended = 0
+    n_new = 0
+    n_skip_size = 0
+    n_skip_r = 0
+    n_llm = 0
 
-    for root, members in sorted(new_components.items(), key=lambda x: -len(x[1])):
-        # Find which old group IDs are represented
-        old_gids = set()
-        for node in members:
-            if node in old_group_map:
-                old_gids.add(old_group_map[node])
+    still_unmatched = []
 
-        agg = aggregate_group_probes(members, probe_lookup)
+    for model, feat_idx in unmatched:
+        best_r = 0.0
+        best_group = None
 
-        if len(old_gids) == 1:
-            # Extended existing group
-            gid = str(list(old_gids)[0])
-            old_size = len(concept_groups[gid]["members"])
-            growth = (len(members) - old_size) / old_size if old_size else 1.0
+        # Search across all other models for the best correlating grouped feature
+        for other_model in sorted(all_models):
+            if other_model == model:
+                continue
 
-            # Update members
-            concept_groups[gid]["members"] = [[m, f] for m, f in members]
-            concept_groups[gid]["n_models"] = agg["n_models"]
-            concept_groups[gid]["mean_r2"] = agg["mean_r2"]
-            concept_groups[gid]["top_probes"] = agg["top_probes"][:5]
+            pair = (model, other_model)
+            if pair not in corr_lookup:
+                continue
 
-            if growth > relabel_threshold and len(members) <= max_group_size:
-                label, method, rule_label = _label_group(int(gid), agg, client, dry_run, no_llm)
-                concept_groups[gid]["label"] = label
-                concept_groups[gid]["label_method"] = method
-                concept_groups[gid]["rule_label"] = rule_label
-                concept_groups[gid]["phase_relabeled"] = 2
-                n_relabel += 1
-                if method == "llm":
-                    n_llm += 1
+            # Fast lookup: is this feature in the alive set for this pair?
+            pos_a = abs_to_rel.get(pair, {}).get(feat_idx)
+            if pos_a is None:
+                continue
 
-        elif len(old_gids) > 1:
-            # Merged multiple old groups — create new group, remove old ones
-            for old_gid in old_gids:
-                concept_groups.pop(str(old_gid), None)
+            info = corr_lookup[pair]
+            corr_row = info["corr_matrix"][pos_a]  # (n_alive_b,)
+            mask, group_ids = grouped_mask_cache[pair]
 
-            gid = str(next_id)
-            next_id += 1
+            # Vectorized: find best grouped correlate
+            grouped_corr = _np.where(mask, corr_row, 0.0)
+            j_best = int(grouped_corr.argmax())
+            r = float(grouped_corr[j_best])
+            if r > best_r and group_ids[j_best] is not None:
+                best_r = r
+                best_group = group_ids[j_best]
 
-            if len(members) > max_group_size:
-                concept_groups[gid] = {
-                    "members": [[m, f] for m, f in members],
-                    "n_models": agg["n_models"], "tier": 2,
-                    "mean_r2": agg["mean_r2"],
-                    "label": "too_large", "label_method": "skip",
-                    "rule_label": "", "top_probes": agg["top_probes"][:5],
-                    "phase_added": 2,
-                }
-                n_skip += 1
+        if best_r >= min_r and best_group is not None:
+            # Check group size
+            current_size = len(concept_groups[best_group]["members"])
+            if current_size >= max_group_size:
+                n_skip_size += 1
+                still_unmatched.append((model, feat_idx))
             else:
-                label, method, rule_label = _label_group(int(gid), agg, client, dry_run, no_llm)
-                concept_groups[gid] = {
-                    "members": [[m, f] for m, f in members],
-                    "n_models": agg["n_models"], "tier": 2,
-                    "mean_r2": agg["mean_r2"],
-                    "label": label, "label_method": method,
-                    "rule_label": rule_label,
-                    "top_probes": agg["top_probes"][:5],
-                    "phase_added": 2,
-                }
-                n_new += 1
-                if method == "llm":
-                    n_llm += 1
-
+                concept_groups[best_group]["members"].append([model, feat_idx])
+                node_to_group[(model, feat_idx)] = best_group
+                n_extended += 1
         else:
-            # Entirely new group (no overlap with phase 1)
-            gid = str(next_id)
-            next_id += 1
+            n_skip_r += 1
+            still_unmatched.append((model, feat_idx))
 
-            if len(members) > max_group_size:
-                concept_groups[gid] = {
-                    "members": [[m, f] for m, f in members],
-                    "n_models": agg["n_models"], "tier": 2,
-                    "mean_r2": agg["mean_r2"],
-                    "label": "too_large", "label_method": "skip",
-                    "rule_label": "", "top_probes": agg["top_probes"][:5],
-                    "phase_added": 2,
-                }
-                n_skip += 1
-            else:
-                label, method, rule_label = _label_group(int(gid), agg, client, dry_run, no_llm)
-                concept_groups[gid] = {
-                    "members": [[m, f] for m, f in members],
-                    "n_models": agg["n_models"], "tier": 2,
-                    "mean_r2": agg["mean_r2"],
-                    "label": label, "label_method": method,
-                    "rule_label": rule_label,
-                    "top_probes": agg["top_probes"][:5],
-                    "phase_added": 2,
-                }
-                n_new += 1
-                if method == "llm":
-                    n_llm += 1
+    print(f"  Pass 1 (extend existing groups): {n_extended} assigned, "
+          f"{n_skip_r} below threshold, {n_skip_size} hit size limit")
 
-    print(f"  Re-labeled: {n_relabel}, new: {n_new}, skipped: {n_skip}, LLM calls: {n_llm}")
+    # --- Pass 2: Pair remaining unmatched features into new groups ---
+    # For each still-unmatched feature, find its best still-unmatched counterpart
+    still_unmatched_set = set(still_unmatched)
+    assigned_pass2 = set()
+
+    # Build unmatched masks for each pair
+    unmatched_mask_cache = {}
+    for pair_key, info in corr_lookup.items():
+        other_model = info["model_b"]
+        idx_b = info["indices_b"]
+        mask = _np.zeros(len(idx_b), dtype=bool)
+        for j, abs_idx in enumerate(idx_b):
+            if (other_model, int(abs_idx)) in still_unmatched_set:
+                mask[j] = True
+        unmatched_mask_cache[pair_key] = mask
+
+    # Collect all candidate pairs with their correlations
+    candidate_pairs = []
+    for model, feat_idx in still_unmatched:
+        for other_model in sorted(all_models):
+            if other_model == model:
+                continue
+            pair = (model, other_model)
+            if pair not in corr_lookup:
+                continue
+
+            pos_a = abs_to_rel.get(pair, {}).get(feat_idx)
+            if pos_a is None:
+                continue
+
+            info = corr_lookup[pair]
+            corr_row = info["corr_matrix"][pos_a]
+            um_mask = unmatched_mask_cache[pair]
+            idx_b = info["indices_b"]
+
+            # Find best unmatched correlate
+            masked_corr = _np.where(um_mask, corr_row, 0.0)
+            j_best = int(masked_corr.argmax())
+            r = float(masked_corr[j_best])
+            if r >= min_r:
+                abs_j = int(idx_b[j_best])
+                candidate_pairs.append((r, model, feat_idx, other_model, abs_j))
+
+    # Greedy: process highest-correlation pairs first
+    candidate_pairs.sort(reverse=True)
+    for r, m_a, f_a, m_b, f_b in candidate_pairs:
+        if (m_a, f_a) in assigned_pass2 or (m_b, f_b) in assigned_pass2:
+            continue
+
+        # Check if either was assigned to a group in the meantime (by a previous pair)
+        if (m_a, f_a) in node_to_group or (m_b, f_b) in node_to_group:
+            continue
+
+        # Create new tier-2 group
+        gid = str(next_id)
+        next_id += 1
+
+        members = [(m_a, f_a), (m_b, f_b)]
+        agg = aggregate_group_probes(members, probe_lookup)
+        label, method, rule_label = _label_group(int(gid), agg, client, dry_run, no_llm)
+        if method == "llm":
+            n_llm += 1
+
+        concept_groups[gid] = {
+            "members": [[m, f] for m, f in members],
+            "n_models": agg["n_models"],
+            "tier": 2,
+            "mean_r2": agg["mean_r2"],
+            "label": label,
+            "label_method": method,
+            "rule_label": rule_label,
+            "top_probes": agg["top_probes"][:5],
+            "phase_added": 2,
+            "match_r": round(r, 4),
+        }
+
+        node_to_group[(m_a, f_a)] = gid
+        node_to_group[(m_b, f_b)] = gid
+        assigned_pass2.add((m_a, f_a))
+        assigned_pass2.add((m_b, f_b))
+        n_new += 1
+
+    # --- Pass 3: Extend new tier-2 groups with more unmatched features ---
+    # Features still unmatched after pass 2 can join tier-2 groups
+    remaining = [
+        (m, f) for m, f in still_unmatched
+        if (m, f) not in node_to_group
+    ]
+    n_extended_t2 = 0
+
+    # Rebuild grouped masks to include pass-2 assignments
+    for pair_key, info in corr_lookup.items():
+        other_model = info["model_b"]
+        idx_b = info["indices_b"]
+        mask = _np.zeros(len(idx_b), dtype=bool)
+        group_ids = [None] * len(idx_b)
+        for j, abs_idx in enumerate(idx_b):
+            abs_j = int(abs_idx)
+            gid = node_to_group.get((other_model, abs_j))
+            if gid is not None:
+                mask[j] = True
+                group_ids[j] = gid
+        grouped_mask_cache[pair_key] = (mask, group_ids)
+
+    for model, feat_idx in remaining:
+        best_r = 0.0
+        best_group = None
+
+        for other_model in sorted(all_models):
+            if other_model == model:
+                continue
+            pair = (model, other_model)
+            if pair not in corr_lookup:
+                continue
+
+            pos_a = abs_to_rel.get(pair, {}).get(feat_idx)
+            if pos_a is None:
+                continue
+
+            info = corr_lookup[pair]
+            corr_row = info["corr_matrix"][pos_a]
+            mask, group_ids = grouped_mask_cache[pair]
+
+            grouped_corr = _np.where(mask, corr_row, 0.0)
+            j_best = int(grouped_corr.argmax())
+            r = float(grouped_corr[j_best])
+            if r > best_r and group_ids[j_best] is not None:
+                best_r = r
+                best_group = group_ids[j_best]
+
+        if best_r >= min_r and best_group is not None:
+            current_size = len(concept_groups[best_group]["members"])
+            if current_size < max_group_size:
+                concept_groups[best_group]["members"].append([model, feat_idx])
+                node_to_group[(model, feat_idx)] = best_group
+                n_extended_t2 += 1
+
+    # Re-label extended groups that grew significantly
+    n_relabel = 0
+    for gid, group in concept_groups.items():
+        if group.get("phase_added") == 2:
+            continue  # Already labeled in this phase
+        prev_members = prev_output["concept_groups"].get(gid, {}).get("members", [])
+        if not prev_members:
+            continue
+        growth = (len(group["members"]) - len(prev_members)) / len(prev_members)
+        if growth > relabel_threshold and len(group["members"]) <= max_group_size:
+            agg = aggregate_group_probes(
+                [(m, f) for m, f in group["members"]], probe_lookup
+            )
+            label, method, rule_label = _label_group(int(gid), agg, client, dry_run, no_llm)
+            group["label"] = label
+            group["label_method"] = method
+            group["rule_label"] = rule_label
+            group["n_models"] = agg["n_models"]
+            group["mean_r2"] = agg["mean_r2"]
+            group["top_probes"] = agg["top_probes"][:5]
+            group["phase_relabeled"] = 2
+            n_relabel += 1
+            if method == "llm":
+                n_llm += 1
+
+    # Summary
+    total_grouped = sum(
+        len(g["members"]) for g in concept_groups.values()
+    )
+    max_size = max(
+        (len(g["members"]) for g in concept_groups.values()), default=0
+    )
+    print(f"  Pass 2 (new tier-2 pairs): {n_new} new groups")
+    print(f"  Pass 3 (extend tier-2): {n_extended_t2} more assigned")
+    print(f"  Re-labeled: {n_relabel}, LLM calls: {n_llm}")
+    print(f"  Total grouped: {total_grouped}, max group size: {max_size}")
+
     return {
         "metadata": {"phase": 2, "n_llm_calls": n_llm},
         "concept_groups": concept_groups,
@@ -701,7 +955,7 @@ def main():
     parser.add_argument("--relabel-threshold", type=float, default=0.3)
     parser.add_argument(
         "--matching", type=str,
-        default="output/sae_feature_matching_tiered_t0.001_n500.json",
+        default="output/sae_feature_matching_mnn_t0.001_n500.json",
     )
     parser.add_argument(
         "--concepts", type=str,
@@ -710,6 +964,11 @@ def main():
     parser.add_argument(
         "--output", type=str,
         default="output/cross_model_concept_labels.json",
+    )
+    parser.add_argument(
+        "--corr-dir", type=str,
+        default="output/sae_cross_correlations",
+        help="Directory with pre-computed cross-correlation NPZ files (for phase 2)",
     )
     args = parser.parse_args()
 
@@ -757,6 +1016,7 @@ def main():
         result = run_phase2(
             prev, matching, probe_lookup, args.min_r, client, args.dry_run,
             args.no_llm, args.max_group_size, args.relabel_threshold,
+            corr_dir=PROJECT_ROOT / args.corr_dir,
         )
     elif args.phase == 3:
         if out_path.exists():

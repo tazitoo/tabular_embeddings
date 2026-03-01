@@ -1102,6 +1102,314 @@ def print_causal_chain(chain_results: List[Dict], dataset_name: str) -> None:
                   f"pctl={pct_str:>4s}  {p['alignment']}")
 
 
+# ── Pairwise concept bookkeeping ─────────────────────────────────────────────
+
+DEFAULT_MNN_PATH = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_t0.001_n500.json"
+
+
+def compare_concept_importance(
+    model_a: str,
+    model_b: str,
+    dataset: str,
+    importance_dir: Path = None,
+    labels_path: Path = DEFAULT_CONCEPT_LABELS,
+    mnn_path: Path = DEFAULT_MNN_PATH,
+) -> Dict:
+    """Compare two models' concept importance on a dataset.
+
+    Walks both concept hierarchies and tallies:
+    - Shared concepts: same concept group, compare importance in each model
+    - Model-unique concepts: in one model but not the other
+    - Band breakdown: which Matryoshka scales drive the difference
+
+    Returns structured dict with per-concept and aggregate comparisons.
+    """
+    from collections import defaultdict
+
+    if importance_dir is None:
+        importance_dir = PROJECT_ROOT / "output" / "concept_importance"
+
+    # Load importance results
+    imp_a_path = importance_dir / f"{model_a}_{dataset}.json"
+    imp_b_path = importance_dir / f"{model_b}_{dataset}.json"
+    with open(imp_a_path) as f:
+        imp_a = json.load(f)
+    with open(imp_b_path) as f:
+        imp_b = json.load(f)
+
+    # Build feature_idx -> drop lookup for each model
+    drop_a = {f["index"]: f["drop"] for f in imp_a["features"]}
+    drop_b = {f["index"]: f["drop"] for f in imp_b["features"]}
+
+    # Load concept labels
+    with open(labels_path) as f:
+        concept_data = json.load(f)
+
+    label_key_a = MODEL_KEY_TO_LABEL_KEY.get(model_a, model_a)
+    label_key_b = MODEL_KEY_TO_LABEL_KEY.get(model_b, model_b)
+    lookup_a = concept_data["feature_lookup"][label_key_a]
+    lookup_b = concept_data["feature_lookup"][label_key_b]
+    groups = concept_data["concept_groups"]
+
+    # Get bands for each model
+    bands_a = get_matryoshka_bands(model_a)
+    bands_b = get_matryoshka_bands(model_b)
+
+    # Load MNN matching
+    with open(mnn_path) as f:
+        mnn_data = json.load(f)
+
+    # Find the right pair key (alphabetical by label_key)
+    pair_key = None
+    for k in mnn_data["pairs"]:
+        parts = k.split("__")
+        if set(parts) == {label_key_a, label_key_b}:
+            pair_key = k
+            break
+
+    mnn_matched_a = set()  # feature indices in A that have an MNN match
+    mnn_matched_b = set()
+    if pair_key:
+        pair_data = mnn_data["pairs"][pair_key]
+        # Figure out which side is A vs B
+        if pair_key.startswith(label_key_a):
+            for m in pair_data["matches"]:
+                mnn_matched_a.add(m["idx_a"])
+                mnn_matched_b.add(m["idx_b"])
+        else:
+            for m in pair_data["matches"]:
+                mnn_matched_b.add(m["idx_a"])
+                mnn_matched_a.add(m["idx_b"])
+
+    # Map each feature to its concept group
+    feat_to_group_a = {}
+    for idx_str, info in lookup_a.items():
+        gid = info.get("group_id")
+        if gid is not None:
+            feat_to_group_a[int(idx_str)] = int(gid)
+
+    feat_to_group_b = {}
+    for idx_str, info in lookup_b.items():
+        gid = info.get("group_id")
+        if gid is not None:
+            feat_to_group_b[int(idx_str)] = int(gid)
+
+    # Invert: group_id -> list of feature indices
+    group_feats_a = defaultdict(list)
+    for feat, gid in feat_to_group_a.items():
+        group_feats_a[gid].append(feat)
+
+    group_feats_b = defaultdict(list)
+    for feat, gid in feat_to_group_b.items():
+        group_feats_b[gid].append(feat)
+
+    # All concept groups that have members from either model
+    all_groups = set(group_feats_a.keys()) | set(group_feats_b.keys())
+
+    # Classify each group
+    shared_concepts = []
+    unique_to_a = []
+    unique_to_b = []
+
+    for gid in sorted(all_groups):
+        feats_a = group_feats_a.get(gid, [])
+        feats_b = group_feats_b.get(gid, [])
+
+        g_info = groups.get(str(gid), {})
+        label = g_info.get("label", "unknown")
+        n_models = g_info.get("n_models", 0)
+        tier = g_info.get("tier")
+
+        # Best importance from each model in this group
+        best_drop_a = max((drop_a.get(f, 0.0) for f in feats_a), default=0.0)
+        best_feat_a = max(feats_a, key=lambda f: drop_a.get(f, 0.0)) if feats_a else None
+        best_drop_b = max((drop_b.get(f, 0.0) for f in feats_b), default=0.0)
+        best_feat_b = max(feats_b, key=lambda f: drop_b.get(f, 0.0)) if feats_b else None
+
+        # Sum of positive drops in this group
+        sum_drop_a = sum(max(0, drop_a.get(f, 0.0)) for f in feats_a)
+        sum_drop_b = sum(max(0, drop_b.get(f, 0.0)) for f in feats_b)
+
+        entry = {
+            "group_id": gid,
+            "label": label,
+            "n_models": n_models,
+            "tier": tier,
+            "n_feats_a": len(feats_a),
+            "n_feats_b": len(feats_b),
+            "best_drop_a": best_drop_a,
+            "best_drop_b": best_drop_b,
+            "best_feat_a": best_feat_a,
+            "best_feat_b": best_feat_b,
+            "sum_drop_a": sum_drop_a,
+            "sum_drop_b": sum_drop_b,
+            "band_a": feature_to_band(best_feat_a, bands_a) if best_feat_a is not None else None,
+            "band_b": feature_to_band(best_feat_b, bands_b) if best_feat_b is not None else None,
+            "differential": best_drop_a - best_drop_b,
+        }
+
+        if feats_a and feats_b:
+            shared_concepts.append(entry)
+        elif feats_a:
+            unique_to_a.append(entry)
+        else:
+            unique_to_b.append(entry)
+
+    # Sort by differential (A's advantage)
+    shared_concepts.sort(key=lambda x: -x["differential"])
+    unique_to_a.sort(key=lambda x: -x["best_drop_a"])
+    unique_to_b.sort(key=lambda x: -x["best_drop_b"])
+
+    # Aggregate tallies
+    def tally_by_band(concepts, model_side):
+        """Sum importance by band."""
+        band_totals = defaultdict(float)
+        band_key = f"band_{model_side}"
+        drop_key = f"best_drop_{model_side}"
+        for c in concepts:
+            band = c.get(band_key)
+            drop = c.get(drop_key, 0.0)
+            if band and drop > 0:
+                band_totals[band] += drop
+        return dict(band_totals)
+
+    # Net advantage from shared concepts
+    shared_net_a = sum(max(0, c["differential"]) for c in shared_concepts)
+    shared_net_b = sum(max(0, -c["differential"]) for c in shared_concepts)
+
+    # Advantage from unique concepts
+    unique_a_total = sum(max(0, c["best_drop_a"]) for c in unique_to_a)
+    unique_b_total = sum(max(0, c["best_drop_b"]) for c in unique_to_b)
+
+    result = {
+        "model_a": model_a,
+        "model_b": model_b,
+        "dataset": dataset,
+        "baseline_a": imp_a["baseline_acc"],
+        "baseline_b": imp_b["baseline_acc"],
+        "metric": imp_a.get("metric_name", "auc"),
+        "n_active_a": imp_a.get("n_active_features", -1),
+        "n_active_b": imp_b.get("n_active_features", -1),
+        "n_mnn_matched": len(mnn_matched_a),
+        "n_shared_groups": len(shared_concepts),
+        "n_unique_to_a": len(unique_to_a),
+        "n_unique_to_b": len(unique_to_b),
+        "shared_concepts": shared_concepts,
+        "unique_to_a": unique_to_a,
+        "unique_to_b": unique_to_b,
+        "tally": {
+            "shared_advantage_a": shared_net_a,
+            "shared_advantage_b": shared_net_b,
+            "unique_advantage_a": unique_a_total,
+            "unique_advantage_b": unique_b_total,
+            "total_advantage_a": shared_net_a + unique_a_total,
+            "total_advantage_b": shared_net_b + unique_b_total,
+            "band_breakdown_shared_a": tally_by_band(
+                [c for c in shared_concepts if c["differential"] > 0], "a"),
+            "band_breakdown_shared_b": tally_by_band(
+                [c for c in shared_concepts if c["differential"] < 0], "b"),
+            "band_breakdown_unique_a": tally_by_band(unique_to_a, "a"),
+            "band_breakdown_unique_b": tally_by_band(unique_to_b, "b"),
+        },
+    }
+    return result
+
+
+def print_concept_comparison(result: Dict) -> None:
+    """Pretty-print a pairwise concept importance comparison."""
+    a = result["model_a"]
+    b = result["model_b"]
+    disp_a = MODEL_KEY_TO_LABEL_KEY.get(a, a)
+    disp_b = MODEL_KEY_TO_LABEL_KEY.get(b, b)
+    t = result["tally"]
+
+    print(f"\n{'='*100}")
+    print(f"Concept Bookkeeping: {disp_a} vs {disp_b} on {result['dataset']}")
+    print(f"{'='*100}")
+    print(f"  {disp_a}: baseline {result['metric']}={result['baseline_a']:.4f}, "
+          f"{result['n_active_a']} active features")
+    print(f"  {disp_b}: baseline {result['metric']}={result['baseline_b']:.4f}, "
+          f"{result['n_active_b']} active features")
+    print(f"  MNN matched features: {result['n_mnn_matched']}")
+    print(f"  Concept groups: {result['n_shared_groups']} shared, "
+          f"{result['n_unique_to_a']} {disp_a}-only, "
+          f"{result['n_unique_to_b']} {disp_b}-only")
+
+    print(f"\n{'─'*100}")
+    print(f"TALLY (sum of best-drop per concept group)")
+    print(f"{'─'*100}")
+    print(f"  Shared concepts:  {disp_a} advantage = {t['shared_advantage_a']:+.3f}, "
+          f"{disp_b} advantage = {t['shared_advantage_b']:+.3f}")
+    print(f"  Unique concepts:  {disp_a} advantage = {t['unique_advantage_a']:+.3f}, "
+          f"{disp_b} advantage = {t['unique_advantage_b']:+.3f}")
+    print(f"  ────────────────")
+    print(f"  TOTAL:            {disp_a} = {t['total_advantage_a']:+.3f}, "
+          f"{disp_b} = {t['total_advantage_b']:+.3f}")
+    print(f"  Net {disp_a} edge: {t['total_advantage_a'] - t['total_advantage_b']:+.3f}")
+
+    # Band breakdown
+    print(f"\n  Band breakdown ({disp_a} advantage from shared concepts):")
+    for band in ["S1", "S2", "S3", "S4", "S5"]:
+        v = t["band_breakdown_shared_a"].get(band, 0)
+        if v > 0:
+            print(f"    {band}: {v:+.3f}")
+
+    print(f"  Band breakdown ({disp_a}-only concepts):")
+    for band in ["S1", "S2", "S3", "S4", "S5"]:
+        v = t["band_breakdown_unique_a"].get(band, 0)
+        if v > 0:
+            print(f"    {band}: {v:+.3f}")
+
+    print(f"  Band breakdown ({disp_b}-only concepts):")
+    for band in ["S1", "S2", "S3", "S4", "S5"]:
+        v = t["band_breakdown_unique_b"].get(band, 0)
+        if v > 0:
+            print(f"    {band}: {v:+.3f}")
+
+    # Top shared concepts favoring A
+    shared_favor_a = [c for c in result["shared_concepts"] if c["differential"] > 0.005]
+    if shared_favor_a:
+        print(f"\n{'─'*100}")
+        print(f"Top shared concepts favoring {disp_a} (drop_A > drop_B):")
+        print(f"{'─'*100}")
+        print(f"  {'Group':>5} {'Band_A':>6} {'Drop_A':>7} {'Drop_B':>7} {'Diff':>7}  Label")
+        for c in shared_favor_a[:15]:
+            print(f"  {c['group_id']:>5} {c['band_a'] or '':>6} "
+                  f"{c['best_drop_a']:>+7.3f} {c['best_drop_b']:>+7.3f} "
+                  f"{c['differential']:>+7.3f}  {c['label']}")
+
+    # Top shared concepts favoring B
+    shared_favor_b = [c for c in result["shared_concepts"] if c["differential"] < -0.005]
+    if shared_favor_b:
+        print(f"\n  Top shared concepts favoring {disp_b}:")
+        for c in shared_favor_b[-15:]:
+            print(f"  {c['group_id']:>5} {c['band_b'] or '':>6} "
+                  f"{c['best_drop_a']:>+7.3f} {c['best_drop_b']:>+7.3f} "
+                  f"{c['differential']:>+7.3f}  {c['label']}")
+
+    # Top unique-to-A concepts
+    important_unique_a = [c for c in result["unique_to_a"] if c["best_drop_a"] > 0.005]
+    if important_unique_a:
+        print(f"\n{'─'*100}")
+        print(f"{disp_a}-only concepts (not in {disp_b}'s hierarchy):")
+        print(f"{'─'*100}")
+        print(f"  {'Group':>5} {'Band':>6} {'Drop':>7} {'#Feat':>5} {'Models':>6}  Label")
+        for c in important_unique_a[:15]:
+            print(f"  {c['group_id']:>5} {c['band_a'] or '':>6} "
+                  f"{c['best_drop_a']:>+7.3f} {c['n_feats_a']:>5} "
+                  f"{c['n_models']:>6}  {c['label']}")
+
+    # Top unique-to-B concepts
+    important_unique_b = [c for c in result["unique_to_b"] if c["best_drop_b"] > 0.005]
+    if important_unique_b:
+        print(f"\n  {disp_b}-only concepts (not in {disp_a}'s hierarchy):")
+        print(f"  {'Group':>5} {'Band':>6} {'Drop':>7} {'#Feat':>5} {'Models':>6}  Label")
+        for c in important_unique_b[:15]:
+            print(f"  {c['group_id']:>5} {c['band_b'] or '':>6} "
+                  f"{c['best_drop_b']:>+7.3f} {c['n_feats_b']:>5} "
+                  f"{c['n_models']:>6}  {c['label']}")
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -1146,9 +1454,25 @@ def main():
         "--analyze", action="store_true",
         help="Analyze existing results (skip sweep, load from --output or default path)"
     )
+    parser.add_argument(
+        "--compare", type=str, default=None, metavar="MODEL_B",
+        help="Compare --model vs MODEL_B using existing importance JSONs"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    if args.compare:
+        result = compare_concept_importance(args.model, args.compare, args.dataset)
+        print_concept_comparison(result)
+        # Save comparison
+        out_dir = PROJECT_ROOT / "output" / "concept_importance"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"compare_{args.model}_vs_{args.compare}_{args.dataset}.json"
+        with open(out_path, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"\nSaved to {out_path}")
+        return
 
     from scripts.extract_layer_embeddings import get_dataset_task
     task = get_dataset_task(args.dataset)

@@ -315,6 +315,7 @@ def match_model_pair(
     method: str = "mnn",
     alive_threshold: float = 0.001,
     max_per_dataset: int = 500,
+    return_corr_matrix: bool = False,
 ) -> dict:
     """
     Match SAE features between two models across shared datasets.
@@ -417,6 +418,8 @@ def match_model_pair(
         "n_matched": len(matches),
         "mean_match_r": mean_r,
         "n_samples": len(pooled_A),
+        "indices_a": indices_A,
+        "indices_b": indices_B,
         "matches": match_list,
         "unmatched_a": unmatched_A,
         "unmatched_b": unmatched_B,
@@ -424,6 +427,9 @@ def match_model_pair(
     if tier_counts:
         result["tier_counts"] = tier_counts
         result["tier_mean_r"] = tier_mean_r
+
+    if return_corr_matrix:
+        result["corr_matrix"] = mean_corr
 
     return result
 
@@ -470,6 +476,11 @@ def main():
         type=int,
         default=None,
         help=f"SAE sweep round (default: {DEFAULT_SAE_ROUND})",
+    )
+    parser.add_argument(
+        "--save-correlations",
+        action="store_true",
+        help="Save full cross-correlation matrices to output/sae_cross_correlations/",
     )
     args = parser.parse_args()
 
@@ -520,6 +531,12 @@ def main():
         saes[name] = model
         print(f"  hidden_dim={config.hidden_dim}, topk={config.topk}")
 
+    # Optionally prepare correlation output dir
+    corr_dir = None
+    if args.save_correlations:
+        corr_dir = PROJECT_ROOT / "output" / "sae_cross_correlations"
+        corr_dir.mkdir(parents=True, exist_ok=True)
+
     # Match all pairs
     pairs = {}
     summary = {}
@@ -535,7 +552,28 @@ def main():
             method=args.method,
             alive_threshold=args.alive_threshold,
             max_per_dataset=args.max_per_dataset,
+            return_corr_matrix=args.save_correlations,
         )
+
+        # Save correlation matrix if requested
+        if corr_dir is not None and "corr_matrix" in result:
+            npz_path = corr_dir / f"{pair_key}.npz"
+            np.savez_compressed(
+                npz_path,
+                corr_matrix=result["corr_matrix"],
+                indices_a=result["indices_a"],
+                indices_b=result["indices_b"],
+                model_a=name_a,
+                model_b=name_b,
+            )
+            print(f"  Saved correlation matrix: {npz_path} "
+                  f"({result['corr_matrix'].shape[0]}×{result['corr_matrix'].shape[1]})")
+            del result["corr_matrix"]
+
+        # Strip numpy arrays before JSON serialization
+        result.pop("indices_a", None)
+        result.pop("indices_b", None)
+
         pairs[pair_key] = result
 
         frac_a = result["n_matched"] / max(result["n_alive_a"], 1)
