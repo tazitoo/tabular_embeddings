@@ -664,6 +664,8 @@ def analyze_concept_performance(
             continue
 
         # Merge performance gap into concept gaps
+        # Normalize perf_gap to make AUC (~0-1) and neg_RMSE (~-100K) comparable.
+        # Use relative gap: (A - B) / mean(|A|, |B|) to get a -2..+2 range.
         perf_gaps = []
         for ds in common:
             if ds in perf_a.index and ds in perf_b.index:
@@ -673,7 +675,13 @@ def analyze_concept_performance(
                     va = va.iloc[0]
                 if isinstance(vb, pd.Series):
                     vb = vb.iloc[0]
-                perf_gaps.append({"dataset": ds, "perf_gap": float(va) - float(vb)})
+                va, vb = float(va), float(vb)
+                scale = (abs(va) + abs(vb)) / 2.0
+                if scale > 1e-8:
+                    perf_gap = (va - vb) / scale
+                else:
+                    perf_gap = 0.0
+                perf_gaps.append({"dataset": ds, "perf_gap": perf_gap})
 
         perf_df = pd.DataFrame(perf_gaps)
         merged = gaps.merge(perf_df, on="dataset", how="inner")
