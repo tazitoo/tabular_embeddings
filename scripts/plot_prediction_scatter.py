@@ -47,18 +47,19 @@ def get_predictions(model_key: str, dataset: str, task: str, device: str) -> np.
 
 
 def get_active_feature_count(model_key: str, dataset: str) -> int:
-    """Get number of SAE features that fire on a specific dataset."""
-    fp_path = PROJECT_ROOT / "output" / "concept_fingerprints" / f"{model_key}_fingerprints.json"
-    if not fp_path.exists():
-        return -1
-    with open(fp_path) as f:
-        fp = json.load(f)
-    if dataset in fp["dataset_means"]:
-        acts = np.array(fp["dataset_means"][dataset])
-    else:
-        acts = np.array(fp["global_mean"])
-    alive = fp["alive_features"]
-    return sum(1 for i in alive if abs(acts[i]) > 1e-3)
+    """Get number of SAE features that fire on a specific dataset.
+
+    Reads from importance JSON (authoritative — counts features that fire on
+    at least one query row). Falls back to -1 if not available.
+    """
+    imp_path = PROJECT_ROOT / "output" / "concept_importance" / f"{model_key}_{dataset}.json"
+    if imp_path.exists():
+        with open(imp_path) as f:
+            imp = json.load(f)
+        n = imp.get("n_active_features", -1)
+        if n >= 0:
+            return n
+    return -1
 
 
 def plot_prediction_scatter(

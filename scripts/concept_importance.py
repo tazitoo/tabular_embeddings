@@ -226,6 +226,9 @@ def sweep_tabdpt(
 
     feature_drops = baseline_acc - feature_accs
 
+    # Count features that fire on at least one row
+    n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
+
     return {
         "baseline_preds": baseline_preds_np,
         "baseline_acc": baseline_acc,
@@ -233,6 +236,7 @@ def sweep_tabdpt(
         "feature_indices": np.array(alive_features),
         "feature_accs": feature_accs,
         "feature_drops": feature_drops,
+        "n_active_features": n_active,
         "y_query": np.asarray(y_query),
     }
 
@@ -348,6 +352,9 @@ def sweep_tabpfn(
 
     feature_drops = baseline_acc - feature_accs
 
+    # Count features that fire on at least one row
+    n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
+
     return {
         "baseline_preds": baseline_preds_np,
         "baseline_acc": baseline_acc,
@@ -355,6 +362,7 @@ def sweep_tabpfn(
         "feature_indices": np.array(alive_features),
         "feature_accs": feature_accs,
         "feature_drops": feature_drops,
+        "n_active_features": n_active,
         "y_query": np.asarray(y_query),
     }
 
@@ -512,6 +520,9 @@ def sweep_mitra(
 
     feature_drops = baseline_acc - feature_accs
 
+    # Count features that fire on at least one row
+    n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
+
     return {
         "baseline_preds": baseline_preds_np,
         "baseline_acc": baseline_acc,
@@ -519,6 +530,7 @@ def sweep_mitra(
         "feature_indices": np.array(alive_features),
         "feature_accs": feature_accs,
         "feature_drops": feature_drops,
+        "n_active_features": n_active,
         "y_query": np.asarray(y_query),
     }
 
@@ -627,6 +639,9 @@ def sweep_tabicl(
 
     feature_drops = baseline_acc - feature_accs
 
+    # Count features that fire on at least one row
+    n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
+
     return {
         "baseline_preds": baseline_preds_np,
         "baseline_acc": baseline_acc,
@@ -634,6 +649,7 @@ def sweep_tabicl(
         "feature_indices": np.array(alive_features),
         "feature_accs": feature_accs,
         "feature_drops": feature_drops,
+        "n_active_features": n_active,
         "y_query": np.asarray(y_query),
     }
 
@@ -1213,6 +1229,9 @@ def main():
     logger.info(f"  >1pp:         {(drops > 0.01).sum()}")
     logger.info(f"  >5pp:         {(drops > 0.05).sum()}")
 
+    n_active = result.get("n_active_features", -1)
+    logger.info(f"  Active features (fire on >=1 row): {n_active}")
+
     # Save results
     save_data = {
         "model": args.model,
@@ -1220,6 +1239,7 @@ def main():
         "task": task,
         "metric_name": metric_name,
         "baseline_acc": float(result["baseline_acc"]),
+        "n_active_features": n_active,
         "n_features": len(result["feature_indices"]),
         "elapsed_seconds": elapsed,
         "features": [],
