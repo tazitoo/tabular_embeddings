@@ -171,6 +171,52 @@ def compute_ablation_delta(
     return delta
 
 
+def compute_boost_delta(
+    sae: torch.nn.Module,
+    embeddings: torch.Tensor,
+    boost_features: List[int],
+    target_activations: List[float],
+    data_mean: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Compute the delta from boosting SAE features to target activation levels.
+
+    Like compute_ablation_delta but sets features to specified target values
+    instead of zeroing them. Boosting to 0.0 is equivalent to ablation.
+
+    Args:
+        sae: Trained SAE in eval mode
+        embeddings: (n_query, emb_dim) mean-pooled query embeddings (raw, uncentered)
+        boost_features: Feature indices to modify
+        target_activations: Target activation value for each feature
+        data_mean: (emb_dim,) training pool mean for centering. If None, no centering.
+
+    Returns:
+        delta: (n_query, emb_dim) to add to hidden states
+    """
+    if len(boost_features) != len(target_activations):
+        raise ValueError(
+            f"boost_features ({len(boost_features)}) and "
+            f"target_activations ({len(target_activations)}) must have same length"
+        )
+
+    with torch.no_grad():
+        x = embeddings
+        if data_mean is not None:
+            x = x - data_mean
+
+        h = sae.encode(x)
+        original_recon = sae.decode(h)
+
+        h_boosted = h.clone()
+        for feat, target in zip(boost_features, target_activations):
+            h_boosted[:, feat] = target
+        boosted_recon = sae.decode(h_boosted)
+
+        delta = boosted_recon - original_recon
+
+    return delta
+
+
 # ── TabPFN Intervention ─────────────────────────────────────────────────────
 
 
