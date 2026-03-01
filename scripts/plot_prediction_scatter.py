@@ -154,35 +154,23 @@ def plot_prediction_scatter(
     ax.scatter(preds_a[mask1], preds_b[mask1], c="#d62728", s=40, alpha=0.9,
                edgecolors="k", linewidths=0.5, label=f"Class 1 (n={mask1.sum()})", zorder=3)
 
-    # Ablation overlay: arrows from original to ablated position
+    # Ablation overlay: plot ablated positions as distinct markers
     if ablated_preds is not None and ablated_model is not None:
-        min_shift = 0.005  # skip negligible arrows
         if ablated_model == "a":
-            dx = ablated_preds - preds_a
-            dy = np.zeros_like(dx)
-            orig_x, orig_y = preds_a, preds_b
+            abl_x, abl_y = ablated_preds, preds_b
         else:
-            dx = np.zeros_like(preds_b)
-            dy = ablated_preds - preds_b
-            orig_x, orig_y = preds_a, preds_b
+            abl_x, abl_y = preds_a, ablated_preds
 
-        shift_mag = np.sqrt(dx**2 + dy**2)
-        moved = shift_mag > min_shift
+        mean_shift = float(np.abs(ablated_preds - (preds_a if ablated_model == "a" else preds_b)).mean())
+        label = ablation_label or "ablated"
 
-        if moved.any():
-            ax.quiver(
-                orig_x[moved], orig_y[moved],
-                dx[moved], dy[moved],
-                angles="xy", scale_units="xy", scale=1,
-                color="#ff7f0e", alpha=0.6, width=0.003,
-                headwidth=4, headlength=5, zorder=4,
-            )
-
-            n_moved = int(moved.sum())
-            mean_shift = float(shift_mag[moved].mean())
-            label = ablation_label or "ablated"
-            ax.scatter([], [], c="#ff7f0e", marker=">", s=30,
-                       label=f"{label} ({n_moved} rows, mean shift={mean_shift:.3f})")
+        ax.scatter(abl_x[mask0], abl_y[mask0], c="none", s=15, alpha=0.5,
+                   edgecolors="#ff7f0e", linewidths=0.6, zorder=4)
+        ax.scatter(abl_x[mask1], abl_y[mask1], c="none", s=40, alpha=0.9,
+                   edgecolors="#ff7f0e", linewidths=1.5, zorder=5)
+        # Legend entry
+        ax.scatter([], [], c="none", edgecolors="#ff7f0e", linewidths=1.0, s=30,
+                   label=f"{label} (mean shift={mean_shift:.3f})")
 
     # y=x reference line
     ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.5, label="y = x")
