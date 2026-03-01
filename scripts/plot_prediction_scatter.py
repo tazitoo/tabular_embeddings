@@ -46,21 +46,14 @@ def get_predictions(model_key: str, dataset: str, task: str, device: str) -> np.
     return preds
 
 
-def get_alive_feature_count(model_key: str, dataset: str) -> int:
-    """Get number of alive SAE features active on this dataset."""
+def get_alive_feature_count(model_key: str) -> int:
+    """Get total alive SAE feature count for a model."""
     fp_path = PROJECT_ROOT / "output" / "concept_fingerprints" / f"{model_key}_fingerprints.json"
     if not fp_path.exists():
         return -1
     with open(fp_path) as f:
         fp = json.load(f)
-    # Count features with non-negligible activation on this dataset
-    if dataset in fp["dataset_means"]:
-        acts = np.array(fp["dataset_means"][dataset])
-    else:
-        acts = np.array(fp["global_mean"])
-    alive = fp["alive_features"]
-    active = sum(1 for i in alive if abs(acts[i]) > 0.01)
-    return active
+    return len(fp["alive_features"])
 
 
 def plot_prediction_scatter(
@@ -81,37 +74,39 @@ def plot_prediction_scatter(
 
     event_rate = y_true.mean()
 
-    # Color by true class
-    colors = np.where(y_true == 1, "#d62728", "#1f77b4")
-    labels_plotted = set()
-    for i in range(len(preds_a)):
-        label = None
-        cls = int(y_true[i])
-        if cls not in labels_plotted:
-            label = f"Class {cls}"
-            labels_plotted.add(cls)
-        ax.scatter(
-            preds_a[i], preds_b[i],
-            c=colors[i], s=15, alpha=0.6, edgecolors="none",
-            label=label,
-        )
+    # Auto-zoom to data range with padding
+    all_preds = np.concatenate([preds_a, preds_b])
+    lo = max(0, all_preds.min() - 0.02)
+    hi = min(1, all_preds.max() + 0.02)
+    # Ensure event rate is visible
+    hi = max(hi, event_rate + 0.02)
+
+    # Plot class 0 first (background), then class 1 on top
+    mask0 = y_true == 0
+    mask1 = y_true == 1
+    ax.scatter(preds_a[mask0], preds_b[mask0], c="#1f77b4", s=15, alpha=0.5,
+               edgecolors="none", label=f"Class 0 (n={mask0.sum()})", zorder=2)
+    ax.scatter(preds_a[mask1], preds_b[mask1], c="#d62728", s=40, alpha=0.9,
+               edgecolors="k", linewidths=0.5, label=f"Class 1 (n={mask1.sum()})", zorder=3)
 
     # y=x reference line
-    ax.plot([0, 1], [0, 1], "k--", lw=0.8, alpha=0.5, label="y = x")
+    ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.5, label="y = x")
 
     # Event rate lines
     ax.axhline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
     ax.axvline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
-    ax.text(0.02, event_rate + 0.01, f"event rate = {event_rate:.3f}",
-            fontsize=7, color="gray", transform=ax.get_yaxis_transform())
+    # Place label in top-left area of the plot
+    ax.text(0.97, event_rate, f" event rate = {event_rate:.3f}",
+            fontsize=7, color="gray", va="bottom", ha="right",
+            transform=ax.get_yaxis_transform())
 
     disp_a = DISPLAY_NAMES.get(model_a, model_a)
     disp_b = DISPLAY_NAMES.get(model_b, model_b)
 
     ax.set_xlabel(f"{disp_a}  P(class=1)", fontsize=10)
     ax.set_ylabel(f"{disp_b}  P(class=1)", fontsize=10)
-    ax.set_xlim(-0.02, 1.02)
-    ax.set_ylim(-0.02, 1.02)
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
     ax.set_aspect("equal")
     ax.legend(fontsize=8, loc="upper left")
 
@@ -160,8 +155,8 @@ def main():
     logger.info("%s AUC=%.3f, %s AUC=%.3f", args.model_a, auc_a, args.model_b, auc_b)
 
     # Feature counts
-    features_a = get_alive_feature_count(args.model_a, args.dataset)
-    features_b = get_alive_feature_count(args.model_b, args.dataset)
+    features_a = get_alive_feature_count(args.model_a)
+    features_b = get_alive_feature_count(args.model_b)
     logger.info("%s features=%d, %s features=%d",
                 args.model_a, features_a, args.model_b, features_b)
 
