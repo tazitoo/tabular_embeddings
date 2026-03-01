@@ -46,14 +46,19 @@ def get_predictions(model_key: str, dataset: str, task: str, device: str) -> np.
     return preds
 
 
-def get_alive_feature_count(model_key: str) -> int:
-    """Get total alive SAE feature count for a model."""
+def get_active_feature_count(model_key: str, dataset: str) -> int:
+    """Get number of SAE features that fire on a specific dataset."""
     fp_path = PROJECT_ROOT / "output" / "concept_fingerprints" / f"{model_key}_fingerprints.json"
     if not fp_path.exists():
         return -1
     with open(fp_path) as f:
         fp = json.load(f)
-    return len(fp["alive_features"])
+    if dataset in fp["dataset_means"]:
+        acts = np.array(fp["dataset_means"][dataset])
+    else:
+        acts = np.array(fp["global_mean"])
+    alive = fp["alive_features"]
+    return sum(1 for i in alive if abs(acts[i]) > 1e-3)
 
 
 def plot_prediction_scatter(
@@ -111,8 +116,8 @@ def plot_prediction_scatter(
     ax.legend(fontsize=8, loc="upper left")
 
     # Title with AUC and feature counts
-    feat_a_str = f"{features_a} features" if features_a >= 0 else "? features"
-    feat_b_str = f"{features_b} features" if features_b >= 0 else "? features"
+    feat_a_str = f"{features_a} active" if features_a >= 0 else "? active"
+    feat_b_str = f"{features_b} active" if features_b >= 0 else "? active"
     ax.set_title(
         f"{dataset}\n"
         f"{disp_a}: AUC={auc_a:.3f}, {feat_a_str}   |   "
@@ -154,9 +159,9 @@ def main():
     auc_b = roc_auc_score(y_q, preds_b)
     logger.info("%s AUC=%.3f, %s AUC=%.3f", args.model_a, auc_a, args.model_b, auc_b)
 
-    # Feature counts
-    features_a = get_alive_feature_count(args.model_a)
-    features_b = get_alive_feature_count(args.model_b)
+    # Feature counts (active on this dataset)
+    features_a = get_active_feature_count(args.model_a, args.dataset)
+    features_b = get_active_feature_count(args.model_b, args.dataset)
     logger.info("%s features=%d, %s features=%d",
                 args.model_a, features_a, args.model_b, features_b)
 
