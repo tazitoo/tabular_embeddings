@@ -625,7 +625,7 @@ def analyze_concept_performance(
     from scipy.stats import spearmanr
 
     if pairs is None:
-        # Generate all pairs from models present in both performance and fingerprints
+        # Generate all unique pairs (orientation fixed in second pass below).
         perf_models = set(performance["model"].unique())
         fp_models = set(fingerprints.keys())
         available = sorted(perf_models & fp_models)
@@ -633,6 +633,23 @@ def analyze_concept_performance(
         for i, a in enumerate(available):
             for b in available[i + 1:]:
                 pairs.append((a, b))
+
+    # Orient each pair so mean concept_asymmetry is positive across datasets.
+    # This ensures the x-axis cloud is consistently in the positive direction,
+    # making it easy to read: "does A's extra concept activity help A?"
+    oriented_pairs = []
+    for model_a, model_b in pairs:
+        try:
+            gaps = compute_concept_gaps(fingerprints, mnn_data, model_a, model_b)
+        except (ValueError, KeyError):
+            oriented_pairs.append((model_a, model_b))
+            continue
+        mean_asym = gaps["concept_asymmetry"].mean()
+        if mean_asym < 0:
+            oriented_pairs.append((model_b, model_a))
+        else:
+            oriented_pairs.append((model_a, model_b))
+    pairs = oriented_pairs
 
     pair_results = {}
     correlation_matrix = {}
