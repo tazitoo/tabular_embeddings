@@ -519,12 +519,128 @@ def sweep_mitra(
     }
 
 
+# ── TabICL single-feature sweep ─────────────────────────────────────────────
+
+
+def sweep_tabicl(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    sae: torch.nn.Module,
+    alive_features: List[int],
+    extraction_layer: int,
+    device: str = "cuda",
+    task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
+) -> Dict[str, np.ndarray]:
+    """Sweep single-feature ablation for TabICL.
+
+    TabICL has ICL predictor blocks with 3D hidden state (n_ensemble, seq, 512).
+    Uses batch-mean centering (not training-mean) because TabICL's column-then-row
+    architecture produces dataset-specific representations orthogonal to the pooled
+    training mean.
+    """
+    from sklearn.metrics import accuracy_score
+    from tabicl import TabICLClassifier
+
+    clf = TabICLClassifier(device=device, n_estimators=1)
+    clf.fit(X_context, y_context)
+
+    model = clf.model_
+    blocks = model.icl_predictor.tf_icl.blocks
+
+    # --- Pass 1: Capture hidden state + baseline predictions ---
+    captured = {}
+
+    def capture_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["hidden"] = output.detach()
+
+    handle = blocks[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            baseline_preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    hidden_state = captured["hidden"]
+    # Shape: (n_ensemble, n_ctx+n_query, 512) — mean-pool ensemble dim
+    all_emb = hidden_state.mean(dim=0)  # (seq_len, 512)
+
+    # Batch-mean centering for TabICL
+    batch_mean = all_emb.mean(dim=0)  # (512,)
+
+    with torch.no_grad():
+        x_centered = all_emb - batch_mean
+        h_full = sae.encode(x_centered)
+        recon_full = sae.decode(h_full)
+
+    baseline_preds_np = np.asarray(baseline_preds)
+    baseline_acc = accuracy_score(y_query, baseline_preds_np.argmax(axis=1))
+
+    n_features = len(alive_features)
+    feature_accs = np.zeros(n_features)
+
+    t0 = time.time()
+    for i, feat_idx in enumerate(alive_features):
+        with torch.no_grad():
+            h_ablated = h_full.clone()
+            h_ablated[:, feat_idx] = 0.0
+            recon_ablated = sae.decode(h_ablated)
+            delta = recon_ablated - recon_full
+
+        # Broadcast delta to (1, seq_len, 512) for ensemble dim
+        delta_broadcast = delta.unsqueeze(0)
+
+        def make_hook(d):
+            def modify_hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 3:
+                    out = output.clone()
+                    out += d
+                    return out
+                return output
+            return modify_hook
+
+        handle = blocks[extraction_layer].register_forward_hook(make_hook(delta_broadcast))
+        try:
+            with torch.no_grad():
+                preds = clf.predict_proba(X_query)
+        finally:
+            handle.remove()
+
+        preds_np = np.asarray(preds)
+        feature_accs[i] = accuracy_score(y_query, preds_np.argmax(axis=1))
+
+        if (i + 1) % 100 == 0 or i == 0:
+            elapsed = time.time() - t0
+            rate = (i + 1) / elapsed
+            eta = (n_features - i - 1) / rate
+            logger.info(
+                f"  [{i+1}/{n_features}] feat={feat_idx} "
+                f"acc={feature_accs[i]:.3f} drop={baseline_acc - feature_accs[i]:+.3f} "
+                f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
+            )
+
+    feature_drops = baseline_acc - feature_accs
+
+    return {
+        "baseline_preds": baseline_preds_np,
+        "baseline_acc": baseline_acc,
+        "feature_indices": np.array(alive_features),
+        "feature_accs": feature_accs,
+        "feature_drops": feature_drops,
+        "y_query": np.asarray(y_query),
+    }
+
+
 # ── Dispatcher ───────────────────────────────────────────────────────────────
 
 SWEEP_FN = {
     "tabpfn": sweep_tabpfn,
     "mitra": sweep_mitra,
     "tabdpt": sweep_tabdpt,
+    "tabicl": sweep_tabicl,
 }
 
 
