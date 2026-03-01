@@ -182,6 +182,32 @@ def predict_intervention_model(
     }
 
 
+def predict_hyperfast(
+    dataset: str,
+    task: str,
+    device: str = "cuda",
+) -> Dict:
+    """Get predictions from HyperFast model (classification only)."""
+    from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
+
+    X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
+
+    extractor = HyperFastEmbeddingExtractor(device=device)
+    extractor.load_model()
+    X_ctx_clean = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0)
+    X_q_clean = np.nan_to_num(np.asarray(X_q, dtype=np.float32), nan=0.0)
+    y_ctx_clean = np.asarray(y_ctx, dtype=np.int64)
+    extractor._model.fit(X_ctx_clean, y_ctx_clean)
+    preds = extractor._model.predict_proba(X_q_clean)
+
+    return {
+        "preds": np.asarray(preds),
+        "y_true": np.asarray(y_q),
+        "task": task,
+        "n_query": len(y_q),
+    }
+
+
 def predict_carte(
     dataset: str,
     task: str,
@@ -275,7 +301,9 @@ def collect_performance(
         logger.info("  %s/%s (%s)...", model_key, ds, task)
 
         try:
-            if model_key in INTERVENTION_MODELS:
+            if model_key == "hyperfast":
+                result = predict_hyperfast(ds, task, device)
+            elif model_key in INTERVENTION_MODELS:
                 result = predict_intervention_model(model_key, ds, task, device)
             elif model_key == "carte":
                 result = predict_carte(ds, task, device)
