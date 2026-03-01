@@ -839,7 +839,10 @@ def _boost_hyperfast(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
     from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
     extractor = HyperFastEmbeddingExtractor(device=device)
-    extractor.fit(X_ctx, y_ctx)
+    extractor.load_model()
+    X_ctx_clean = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0)
+    y_ctx_clean = np.asarray(y_ctx, dtype=np.int64)
+    extractor._model.fit(X_ctx_clean, y_ctx_clean)
     clf = extractor._model
 
     X_q_t = torch.tensor(X_q, dtype=torch.float32).to(device)
@@ -1349,7 +1352,10 @@ def _transplant_hyperfast(X_ctx, y_ctx, X_q, y_q, delta, extraction_layer, devic
     from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
     extractor = HyperFastEmbeddingExtractor(device=device)
-    extractor.fit(X_ctx, y_ctx)
+    extractor.load_model()
+    X_ctx_clean = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0)
+    y_ctx_clean = np.asarray(y_ctx, dtype=np.int64)
+    extractor._model.fit(X_ctx_clean, y_ctx_clean)
     clf = extractor._model
 
     X_q_t = torch.tensor(X_q, dtype=torch.float32).to(device)

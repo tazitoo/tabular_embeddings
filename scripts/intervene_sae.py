@@ -641,7 +641,10 @@ def intervene_hyperfast(
     from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
     extractor = HyperFastEmbeddingExtractor(device=device)
-    extractor.fit(X_context, y_context)
+    extractor.load_model()
+    X_ctx_clean = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0)
+    y_ctx_clean = np.asarray(y_context, dtype=np.int64)
+    extractor._model.fit(X_ctx_clean, y_ctx_clean)
     clf = extractor._model
 
     n_query = len(X_query)
