@@ -4,22 +4,21 @@
 Produces a scatter of P(class=1) from model A vs model B on the same query rows,
 with y=x reference line and event-rate decision boundaries.
 
-Optionally overlays ablated predictions: ablate top-N SAE features from one model
-and draw arrows showing how each query row's prediction shifts.
+Optionally overlays ablated predictions as hollow markers, showing how removing
+model-A-only SAE concepts shifts predictions toward model B.
 
 Usage:
     # Basic scatter
     python scripts/plot_prediction_scatter.py --dataset kddcup09_appetency \
         --model-a tabpfn --model-b tabicl --device cuda
 
-    # With ablation overlay (top 5 features from model A)
+    # Ablate unmatched features (3 levels: top5, top10, all)
     python scripts/plot_prediction_scatter.py --dataset kddcup09_appetency \
-        --model-a tabpfn --model-b tabicl --ablate-model tabpfn --ablate-top 5 --device cuda
+        --model-a tabpfn --model-b tabicl --ablate-unmatched --device cuda
 
-    # With specific features ablated
+    # Ablate specific features
     python scripts/plot_prediction_scatter.py --dataset kddcup09_appetency \
-        --model-a tabpfn --model-b tabicl --ablate-model tabpfn \
-        --ablate-features 42,108,305 --device cuda
+        --model-a tabpfn --model-b tabicl --ablate-features 68,79,144 --device cuda
 """
 
 import argparse
@@ -78,6 +77,44 @@ def get_top_features(model_key: str, dataset: str, top_n: int) -> list:
     return [f["index"] for f in features[:top_n]]
 
 
+def get_differential_features(
+    model_a: str, model_b: str, dataset: str,
+    ablate_model: str, top_n: int,
+) -> list:
+    """Get top N features where ablate_model's importance far exceeds the other's.
+
+    Reads the pairwise comparison JSON and returns features from the ablated
+    model that have the largest positive differential (matched concepts where
+    the ablated model relies on them much more than the other model).
+    """
+    # Try both orderings
+    for a, b in [(model_a, model_b), (model_b, model_a)]:
+        cmp_path = (PROJECT_ROOT / "output" / "concept_importance"
+                    / f"compare_{a}_vs_{b}_{dataset}.json")
+        if cmp_path.exists():
+            with open(cmp_path) as f:
+                cmp = json.load(f)
+            break
+    else:
+        raise FileNotFoundError(
+            f"No comparison data for {model_a} vs {model_b} on {dataset}. "
+            f"Run: python scripts/concept_importance.py --model {model_a} "
+            f"--compare {model_b} --dataset {dataset}"
+        )
+
+    # Matched features (MNN + correlated) sorted by differential
+    all_matched = cmp["matched_features"] + cmp.get("correlated_features", [])
+
+    if ablate_model == cmp["model_a"]:
+        # Positive differential = model_a relies more
+        ranked = sorted(all_matched, key=lambda m: -m["differential"])
+        return [m["feat_a"] for m in ranked[:top_n]]
+    else:
+        # Negative differential = model_b relies more
+        ranked = sorted(all_matched, key=lambda m: m["differential"])
+        return [m["feat_b"] for m in ranked[:top_n]]
+
+
 def get_predictions(model_key: str, dataset: str, task: str, device: str) -> np.ndarray:
     """Get P(class=1) predictions from a model on query rows."""
     from scripts.concept_performance_diagnostic import (
@@ -112,6 +149,34 @@ def get_active_feature_count(model_key: str, dataset: str) -> int:
     return -1
 
 
+def get_unmatched_features(model_a: str, model_b: str, dataset: str) -> list:
+    """Get all unmatched features with positive drop for model_a (not in model_b).
+
+    Returns list of (feature_index, drop) sorted by drop descending.
+    """
+    for a, b in [(model_a, model_b), (model_b, model_a)]:
+        cmp_path = (PROJECT_ROOT / "output" / "concept_importance"
+                    / f"compare_{a}_vs_{b}_{dataset}.json")
+        if cmp_path.exists():
+            with open(cmp_path) as f:
+                cmp = json.load(f)
+            break
+    else:
+        raise FileNotFoundError(
+            f"No comparison data for {model_a} vs {model_b} on {dataset}."
+        )
+
+    if model_a == cmp["model_a"]:
+        unmatched = cmp["unmatched_a"]
+        feat_key, drop_key = "feat_a", "drop_a"
+    else:
+        unmatched = cmp["unmatched_b"]
+        feat_key, drop_key = "feat_b", "drop_b"
+
+    ranked = sorted(unmatched, key=lambda u: -u[drop_key])
+    return [(u[feat_key], u[drop_key]) for u in ranked if u[drop_key] > 0]
+
+
 def plot_prediction_scatter(
     preds_a: np.ndarray,
     preds_b: np.ndarray,
@@ -124,26 +189,24 @@ def plot_prediction_scatter(
     features_a: int,
     features_b: int,
     output_path: Path,
-    ablated_preds: np.ndarray = None,
-    ablated_model: str = None,
-    ablation_label: str = None,
+    ablation_levels: list = None,
 ):
     """Create scatter plot of predictions from two models.
 
-    If ablated_preds is provided, draws arrows from original to ablated position
-    for each query row. ablated_model is "a" or "b" indicating which axis moves.
+    ablation_levels: list of (label, color, ablated_preds_array).
+    Each level is overlaid as hollow markers at the ablated positions.
     """
-    fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+    fig, ax = plt.subplots(1, 1, figsize=(7, 7))
 
     event_rate = y_true.mean()
 
-    # Auto-zoom to data range with padding (include ablated preds in range)
+    # Auto-zoom to data range with padding
     all_preds = np.concatenate([preds_a, preds_b])
-    if ablated_preds is not None:
-        all_preds = np.concatenate([all_preds, ablated_preds])
+    if ablation_levels:
+        for _, _, abl_p in ablation_levels:
+            all_preds = np.concatenate([all_preds, abl_p])
     lo = max(0, all_preds.min() - 0.02)
     hi = min(1, all_preds.max() + 0.02)
-    # Ensure event rate is visible
     hi = max(hi, event_rate + 0.02)
 
     # Plot class 0 first (background), then class 1 on top
@@ -154,23 +217,19 @@ def plot_prediction_scatter(
     ax.scatter(preds_a[mask1], preds_b[mask1], c="#d62728", s=40, alpha=0.9,
                edgecolors="k", linewidths=0.5, label=f"Class 1 (n={mask1.sum()})", zorder=3)
 
-    # Ablation overlay: plot ablated positions as distinct markers
-    if ablated_preds is not None and ablated_model is not None:
-        if ablated_model == "a":
-            abl_x, abl_y = ablated_preds, preds_b
-        else:
-            abl_x, abl_y = preds_a, ablated_preds
+    # Ablation overlays
+    if ablation_levels:
+        for label, color, abl_p in ablation_levels:
+            abl_x = abl_p  # ablating model A → x-axis shifts
+            abl_y = preds_b
+            mean_shift = float(np.abs(abl_p - preds_a).mean())
 
-        mean_shift = float(np.abs(ablated_preds - (preds_a if ablated_model == "a" else preds_b)).mean())
-        label = ablation_label or "ablated"
-
-        ax.scatter(abl_x[mask0], abl_y[mask0], c="none", s=15, alpha=0.5,
-                   edgecolors="#ff7f0e", linewidths=0.6, zorder=4)
-        ax.scatter(abl_x[mask1], abl_y[mask1], c="none", s=40, alpha=0.9,
-                   edgecolors="#ff7f0e", linewidths=1.5, zorder=5)
-        # Legend entry
-        ax.scatter([], [], c="none", edgecolors="#ff7f0e", linewidths=1.0, s=30,
-                   label=f"{label} (mean shift={mean_shift:.3f})")
+            ax.scatter(abl_x[mask0], abl_y[mask0], c="none", s=15, alpha=0.4,
+                       edgecolors=color, linewidths=0.6, zorder=4)
+            ax.scatter(abl_x[mask1], abl_y[mask1], c="none", s=40, alpha=0.9,
+                       edgecolors=color, linewidths=1.5, zorder=5)
+            ax.scatter([], [], c="none", edgecolors=color, linewidths=1.0, s=30,
+                       label=f"{label} (shift={mean_shift:.3f})")
 
     # y=x reference line
     ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.5, label="y = x")
@@ -178,7 +237,6 @@ def plot_prediction_scatter(
     # Event rate lines
     ax.axhline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
     ax.axvline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
-    # Place label in top-left area of the plot
     ax.text(0.97, event_rate, f" event rate = {event_rate:.3f}",
             fontsize=7, color="gray", va="bottom", ha="right",
             transform=ax.get_yaxis_transform())
@@ -191,9 +249,8 @@ def plot_prediction_scatter(
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_aspect("equal")
-    ax.legend(fontsize=8, loc="upper left")
+    ax.legend(fontsize=7, loc="upper left")
 
-    # Title with AUC and feature counts
     feat_a_str = f"{features_a} active" if features_a >= 0 else "? active"
     feat_b_str = f"{features_b} active" if features_b >= 0 else "? active"
     ax.set_title(
@@ -207,7 +264,48 @@ def plot_prediction_scatter(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    logger.info("Saved to %s", output_path)
+    logger.info("Saved scatter to %s", output_path)
+
+
+def plot_shift_distribution(
+    preds_a: np.ndarray,
+    preds_b: np.ndarray,
+    ablation_levels: list,
+    model_a: str,
+    model_b: str,
+    dataset: str,
+    output_path: Path,
+):
+    """Plot distribution of per-row prediction shifts for each ablation level.
+
+    ablation_levels: list of (label, color, ablated_preds_array).
+    Includes vertical line at mean(preds_a - preds_b) as reference.
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+
+    disp_a = DISPLAY_NAMES.get(model_a, model_a)
+    disp_b = DISPLAY_NAMES.get(model_b, model_b)
+
+    for label, color, abl_p in ablation_levels:
+        shifts = abl_p - preds_a  # per-row shift (positive = increased P)
+        ax.hist(shifts, bins=50, alpha=0.4, color=color, edgecolor=color,
+                linewidth=0.8, label=label)
+
+    # Reference: mean original prediction difference
+    mean_gap = float((preds_a - preds_b).mean())
+    ax.axvline(-mean_gap, color="black", lw=1.5, ls="--",
+               label=f"mean({disp_b} - {disp_a}) = {-mean_gap:+.3f}")
+
+    ax.set_xlabel(f"Prediction shift (ablated {disp_a} - original {disp_a})", fontsize=10)
+    ax.set_ylabel("Count", fontsize=10)
+    ax.set_title(f"{dataset}: effect of ablating {disp_a}-only concepts", fontsize=10)
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved distribution to %s", output_path)
 
 
 def main():
@@ -219,13 +317,13 @@ def main():
     parser.add_argument("--output", type=Path,
                         default=PROJECT_ROOT / "output" / "figures" / "prediction_scatter.pdf")
 
-    # Ablation overlay
-    parser.add_argument("--ablate-model", type=str, default=None,
-                        help="Which model to ablate (must be model-a or model-b)")
-    parser.add_argument("--ablate-top", type=int, default=None,
-                        help="Ablate top N features by importance drop")
-    parser.add_argument("--ablate-features", type=str, default=None,
-                        help="Comma-separated feature indices to ablate")
+    # Ablation modes (mutually exclusive)
+    abl_group = parser.add_mutually_exclusive_group()
+    abl_group.add_argument("--ablate-unmatched", action="store_true",
+                           help="Ablate unmatched features from model-a at 3 levels "
+                                "(top5, top10, all positive-drop)")
+    abl_group.add_argument("--ablate-features", type=str, default=None,
+                           help="Comma-separated feature indices to ablate from model-a")
 
     args = parser.parse_args()
 
@@ -252,45 +350,67 @@ def main():
     logger.info("%s features=%d, %s features=%d",
                 args.model_a, features_a, args.model_b, features_b)
 
-    # Ablation overlay
-    ablated_preds = None
-    ablated_model = None
-    ablation_label = None
+    ablation_levels = None
 
-    if args.ablate_model:
-        if args.ablate_model not in (args.model_a, args.model_b):
-            parser.error(f"--ablate-model must be {args.model_a} or {args.model_b}")
-
-        # Determine which features to ablate
-        if args.ablate_top:
-            ablate_features = get_top_features(
-                args.ablate_model, args.dataset, args.ablate_top,
-            )
-            logger.info("Ablating top %d features from %s: %s",
-                        args.ablate_top, args.ablate_model, ablate_features)
-        elif args.ablate_features:
-            ablate_features = [int(x.strip()) for x in args.ablate_features.split(",")]
-            logger.info("Ablating features %s from %s", ablate_features, args.ablate_model)
+    if args.ablate_unmatched:
+        # Get unmatched features (model_a concepts that model_b lacks)
+        unmatched = get_unmatched_features(args.model_a, args.model_b, args.dataset)
+        if not unmatched:
+            logger.warning("No unmatched features with positive drop found.")
         else:
-            parser.error("--ablate-model requires --ablate-top or --ablate-features")
+            logger.info("Found %d unmatched features with positive drop", len(unmatched))
+            for feat, drop in unmatched[:10]:
+                logger.info("  feature %d: drop=%.4f", feat, drop)
 
-        logger.info("Running ablation on %s...", args.ablate_model)
-        ablated_preds = get_ablated_predictions(
-            args.ablate_model, args.dataset, task, ablate_features, args.device,
+            # Define 3 ablation levels
+            levels_spec = [
+                ("top 5", "#e377c2", 5),
+                ("top 10", "#ff7f0e", 10),
+                (f"all {len(unmatched)}", "#2ca02c", len(unmatched)),
+            ]
+            # Skip levels that exceed available features
+            levels_spec = [(l, c, n) for l, c, n in levels_spec if n <= len(unmatched)]
+            # Always include "all" if not already there
+            if levels_spec[-1][2] < len(unmatched):
+                levels_spec.append((f"all {len(unmatched)}", "#2ca02c", len(unmatched)))
+
+            ablation_levels = []
+            for label, color, n in levels_spec:
+                feats = [f for f, _ in unmatched[:n]]
+                logger.info("Running ablation: %s (features: %s)...", label, feats)
+                abl_preds = get_ablated_predictions(
+                    args.model_a, args.dataset, task, feats, args.device,
+                )
+                ablation_levels.append((label, color, abl_preds))
+
+    elif args.ablate_features:
+        feats = [int(x.strip()) for x in args.ablate_features.split(",")]
+        logger.info("Ablating features %s from %s...", feats, args.model_a)
+        abl_preds = get_ablated_predictions(
+            args.model_a, args.dataset, task, feats, args.device,
         )
-        ablated_model = "a" if args.ablate_model == args.model_a else "b"
-        disp = DISPLAY_NAMES.get(args.ablate_model, args.ablate_model)
-        ablation_label = f"ablate {len(ablate_features)}f from {disp}"
+        disp = DISPLAY_NAMES.get(args.model_a, args.model_a)
+        ablation_levels = [(f"ablate {len(feats)}f from {disp}", "#e377c2", abl_preds)]
 
+    # Scatter plot
     plot_prediction_scatter(
         preds_a, preds_b, y_q,
         args.model_a, args.model_b, args.dataset,
         auc_a, auc_b, features_a, features_b,
         args.output,
-        ablated_preds=ablated_preds,
-        ablated_model=ablated_model,
-        ablation_label=ablation_label,
+        ablation_levels=ablation_levels,
     )
+
+    # Shift distribution (only for multi-level ablation)
+    if ablation_levels and len(ablation_levels) > 1:
+        dist_path = args.output.with_name(
+            args.output.stem + "_shift_distribution" + args.output.suffix
+        )
+        plot_shift_distribution(
+            preds_a, preds_b, ablation_levels,
+            args.model_a, args.model_b, args.dataset,
+            dist_path,
+        )
 
 
 if __name__ == "__main__":
