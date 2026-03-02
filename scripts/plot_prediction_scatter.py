@@ -746,9 +746,8 @@ def main():
             ablation_levels = [(label, "#0072B2", sweep["optimal_preds"])]
 
             # Save logloss curve plot
-            curve_path = args.output.with_name(
-                args.output.stem + "_logloss_curve" + args.output.suffix
-            )
+            fig_dir = args.output.parent
+            curve_path = fig_dir / f"loss_search{args.output.suffix}"
             plot_logloss_curve(
                 sweep["logloss_curve"], sweep["baseline_logloss"],
                 sweep["target_logloss"], k,
@@ -783,9 +782,8 @@ def main():
             )
 
             # Save per-row results plot
-            perrow_path = args.output.with_name(
-                args.output.stem + "_perrow" + args.output.suffix
-            )
+            fig_dir = args.output.parent
+            perrow_path = fig_dir / f"perrow_ablation{args.output.suffix}"
             plot_perrow_results(
                 perrow["optimal_k"], perrow["row_gap_closed"],
                 perrow["max_k_per_row"], perrow["perrow_rankings"],
@@ -803,9 +801,7 @@ def main():
             label = f"ablate {k}/{len(unmatched)} {disp}-only"
             ablation_levels = [(label, "#0072B2", sweep["optimal_preds"])]
 
-            curve_path = args.output.with_name(
-                args.output.stem + "_logloss_curve" + args.output.suffix
-            )
+            curve_path = fig_dir / f"loss_search{args.output.suffix}"
             plot_logloss_curve(
                 sweep["logloss_curve"], sweep["baseline_logloss"],
                 sweep["target_logloss"], k,
