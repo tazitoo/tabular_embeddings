@@ -110,7 +110,7 @@ def make_figure(
 
     # --- Data for Panel B: universality (# shared by N models per band) ---
     # For each band, count how many models cover each meta-feature
-    universality = np.zeros((4, n_bands))  # rows: shared by 4, 3, 2, 1
+    universality = np.zeros((n_models, n_bands))  # rows: shared by N, N-1, ..., 1
     for bi in range(n_bands):
         coverage_count = Counter()
         for name in model_names:
@@ -130,7 +130,7 @@ def make_figure(
         for meta in all_covered:
             overall_coverage[meta] += 1
 
-    overall_universality = np.zeros(4)
+    overall_universality = np.zeros(n_models)
     for meta, count in overall_coverage.items():
         overall_universality[count - 1] += 1
 
@@ -140,11 +140,12 @@ def make_figure(
     # --- Figure ---
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
 
-    # Colors for models
-    model_colors = ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3']
+    # Colors for models (extend colormap for arbitrary count)
+    cmap = plt.cm.tab10
+    model_colors = [cmap(i / max(n_models, 1)) for i in range(n_models)]
 
     # Panel A: Grouped bar chart — completeness
-    bar_width = 0.18
+    bar_width = min(0.18, 0.8 / n_models)
     x = np.arange(n_bands + 1)  # +1 for "Overall" column
 
     for i, name in enumerate(model_names):
@@ -159,36 +160,39 @@ def make_figure(
     ax1.axhline(y=n_total, color='gray', linestyle='--', alpha=0.5, linewidth=0.8)
     ax1.text(n_bands + 0.5, n_total + 0.3, f'{n_total} total', fontsize=8, color='gray',
              ha='right')
-    ax1.legend(fontsize=9, loc='upper left')
+    ax1.legend(fontsize=8, loc='upper left', ncol=2 if n_models > 4 else 1)
     ax1.set_ylim(0, n_total + 3)
     ax1.spines['top'].set_visible(False)
     ax1.spines['right'].set_visible(False)
 
     # Panel B: Stacked bar chart — universality
-    stack_colors = ['#2166ac', '#67a9cf', '#fddbc7', '#ef8a62']
-    stack_labels = ['All 4 models', '3 models', '2 models', '1 model']
+    # Generate colors from blue (all models) to red (1 model)
+    stack_cmap = plt.cm.RdYlBu_r
+    stack_colors = [stack_cmap(i / max(n_models - 1, 1)) for i in range(n_models)]
+    stack_labels = [f'All {n_models} models' if i == n_models - 1
+                    else f'{i + 1} model{"s" if i > 0 else ""}'
+                    for i in range(n_models)]
 
     x2 = np.arange(n_bands + 1)
     # Add "Overall" column
     univ_with_overall = np.column_stack([universality, overall_universality])
-    # Reorder: plot from "All 4" (bottom) to "1 model" (top)
-    # universality[3] = shared by 4, [2] = shared by 3, etc.
+    # Plot from "All N" (bottom) to "1 model" (top)
     bottom = np.zeros(n_bands + 1)
-    for level in [3, 2, 1, 0]:  # 4 models first (bottom), then 3, 2, 1
+    for level in range(n_models - 1, -1, -1):  # All models first (bottom)
         vals = univ_with_overall[level]
         ax2.bar(x2, vals, 0.6, bottom=bottom,
-                label=stack_labels[3 - level], color=stack_colors[3 - level], alpha=0.85)
+                label=stack_labels[level], color=stack_colors[level], alpha=0.85)
         bottom += vals
 
     # Add count labels inside bars
     bottom = np.zeros(n_bands + 1)
-    for level in [3, 2, 1, 0]:
+    for level in range(n_models - 1, -1, -1):
         vals = univ_with_overall[level]
         for xi in range(n_bands + 1):
             if vals[xi] > 0:
                 ax2.text(xi, bottom[xi] + vals[xi] / 2, f'{int(vals[xi])}',
-                         ha='center', va='center', fontsize=8, fontweight='bold',
-                         color='white' if level >= 2 else 'black')
+                         ha='center', va='center', fontsize=7, fontweight='bold',
+                         color='white' if level >= n_models // 2 else 'black')
         bottom += vals
 
     # Mark uncovered concepts
