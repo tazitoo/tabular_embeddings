@@ -397,12 +397,6 @@ def make_reconstruction_figure(
     output_path: Path,
 ):
     """Domain reconstruction R² vs Matryoshka scale — faceted by model."""
-    # Use only the standard Matryoshka dims shared by all models (32-256).
-    # Full-dim R² varies wildly because models have different hidden_dim
-    # and TopK sparsity, making cross-model averaging meaningless at full scale.
-    scales = [32, 64, 128, 256]
-    scale_labels = [str(s) for s in scales]
-
     domains = sorted(
         d for d in DOMAIN_COLORS.keys()
         if any(d in model_r2 for model_r2 in all_r2.values())
@@ -415,23 +409,28 @@ def make_reconstruction_figure(
     # Layout: 2 rows × 4 cols for up to 7 models
     ncols = 4
     nrows = (n_models + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 3 * nrows), sharex=True, sharey=True)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 3 * nrows), sharey=True)
     axes = np.atleast_2d(axes).flatten()
 
     for mi, model_name in enumerate(models):
         ax = axes[mi]
         model_r2 = all_r2[model_name]
 
+        # Derive per-model scales from the data
+        first_domain_r2 = next(iter(model_r2.values()))
+        model_scales = sorted(first_domain_r2.keys())
+        model_scale_labels = [str(s) for s in model_scales]
+
         for domain in domains:
             if domain not in model_r2:
                 continue
-            vals = [model_r2[domain].get(s, np.nan) for s in scales]
+            vals = [model_r2[domain].get(s, np.nan) for s in model_scales]
             if any(np.isnan(v) for v in vals):
                 continue
 
             short = DOMAIN_SHORT.get(domain, domain)
             color = DOMAIN_COLORS[domain]
-            ax.plot(range(len(scales)), vals, 'o-', color=color, label=short,
+            ax.plot(range(len(model_scales)), vals, 'o-', color=color, label=short,
                     markersize=3, linewidth=1.2, zorder=3)
 
         ax.set_title(model_name, fontsize=9, fontweight='bold')
@@ -439,11 +438,8 @@ def make_reconstruction_figure(
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.tick_params(labelsize=7)
-
-        # Only show x-labels on bottom row
-        if mi >= n_models - ncols:
-            ax.set_xticks(range(len(scales)))
-            ax.set_xticklabels(scale_labels, fontsize=7)
+        ax.set_xticks(range(len(model_scales)))
+        ax.set_xticklabels(model_scale_labels, fontsize=6, rotation=45)
 
         # Only show y-labels on leftmost column
         if mi % ncols == 0:
@@ -521,8 +517,8 @@ def main():
     print(f"Datasets with domain labels: {len(domain_datasets)} "
           f"(excluded {len(excluded)}: {excluded})")
 
-    # Matryoshka cumulative scales for Layer 0
-    cumulative_scales = [32, 64, 128, 256]
+    # Matryoshka cumulative scales: derived per-model from config below
+    cumulative_scales = None  # set from first model's config
 
     # Results accumulators
     all_selectivity = {}
@@ -537,10 +533,17 @@ def main():
         print(f"  SAE: {config.input_dim} → {config.hidden_dim} "
               f"(topk={config.topk})")
 
-        # Add full hidden dim to scales if not already there
-        scales = [s for s in cumulative_scales if s <= config.hidden_dim]
+        # Derive cumulative scales from config matryoshka_dims
+        mat_dims = getattr(config, 'matryoshka_dims', None)
+        if mat_dims:
+            scales = sorted([d for d in mat_dims if d <= config.hidden_dim])
+        else:
+            scales = [config.hidden_dim]
         if config.hidden_dim not in scales:
             scales.append(config.hidden_dim)
+        if cumulative_scales is None:
+            cumulative_scales = scales
+            print(f"  Matryoshka scales: {scales}")
 
         # Pool embeddings with offset tracking
         pooled, offsets = pool_embeddings_with_offsets(
