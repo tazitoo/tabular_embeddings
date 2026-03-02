@@ -46,7 +46,7 @@ def get_dataset_domain(dataset_name: str) -> str:
     return 'Adult'
 
 
-def load_embeddings_by_domain(model_name: str = "tabicl_layer10"):
+def load_embeddings_by_domain(model_name: str = "tabicl"):
     """Load TabICL embeddings grouped by domain."""
     from data.extended_loader import TABARENA_DATASETS
 
@@ -138,13 +138,13 @@ def main():
     models = [
         ("Matryoshka", "sae_matryoshka_validated.pt"),
         ("Mat-Arch", "sae_matryoshka_archetypal_validated.pt"),
-        ("Mat-BatchTopK-Arch", "sae_matryoshka_batchtopk_archetypal_validated.pt"),
+        ("Mat-BatchTopK-Arch", "sae_matryoshka_batchtopk_archetypal_unvalidated.pt"),
     ]
 
-    model_dir = sae_sweep_dir() / "tabicl_layer10"
+    model_dir = sae_sweep_dir() / "tabicl"
 
-    # Matryoshka scales to evaluate
-    scales = [32, 64, 128, 256]
+    # Matryoshka scales: read from first checkpoint config
+    scales = None  # will be set from first model's config
 
     # Create figure
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
@@ -162,7 +162,18 @@ def main():
         checkpoint = torch.load(model_dir / model_file, map_location='cpu')
         config = checkpoint['config']
         if isinstance(config, dict):
+            config_dict = config
             config = SAEConfig(**config)
+        else:
+            config_dict = None
+
+        # Read matryoshka scales from config
+        mat_dims = getattr(config, 'matryoshka_dims', None)
+        if mat_dims is None and config_dict is not None:
+            mat_dims = config_dict.get('matryoshka_dims')
+        if mat_dims is not None and scales is None:
+            scales = sorted(mat_dims)
+            print(f"Matryoshka scales from config: {scales}")
 
         model = SparseAutoencoder(config)
 

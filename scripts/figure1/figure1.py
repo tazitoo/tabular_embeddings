@@ -42,7 +42,16 @@ from scripts.compare_sae_cross_model import (
 )
 from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
 
-BAND_LABELS = ['S1 [0,32)', 'S2 [32,64)', 'S3 [64,128)', 'S4 [128,256)', 'S5 [256,N)']
+def band_labels_from_config(config, sep=' ') -> List[str]:
+    """Generate band labels like 'S1 [0,256)' from SAE config."""
+    mat_dims = [d for d in config.matryoshka_dims if d <= config.hidden_dim]
+    boundaries = [0] + mat_dims
+    if boundaries[-1] < config.hidden_dim:
+        boundaries.append(config.hidden_dim)
+    labels = []
+    for bi in range(len(boundaries) - 1):
+        labels.append(f"S{bi+1}{sep}[{boundaries[bi]},{boundaries[bi+1]})")
+    return labels
 
 
 def get_band_activations(
@@ -186,6 +195,7 @@ def make_figure(
     all_presence: List[np.ndarray],
     model_names: List[str],
     output_path: Path,
+    band_labels: List[str] = None,
 ):
     """Pairwise Jaccard similarity heatmap per Matryoshka scale band.
 
@@ -211,7 +221,9 @@ def make_figure(
 
     # Figure: 2 rows x 3 cols — Overall + 5 bands
     panels = [(-1, overall_sim)] + band_sims
-    panel_titles = ['Overall'] + [BAND_LABELS[bi] for bi, _ in band_sims]
+    if band_labels is None:
+        band_labels = [f"S{i+1}" for i in range(len(all_presence))]
+    panel_titles = ['Overall'] + [band_labels[bi] for bi, _ in band_sims]
 
     fig, axes = plt.subplots(
         2, 3,
@@ -349,9 +361,13 @@ def main():
 
     n_bands = min(len(model_bands[name]) for name in model_names)
 
+    # Generate band labels from first model's config
+    ref_config = model_configs_loaded[model_names[0]]
+    labels = band_labels_from_config(ref_config)
+
     all_presence = []
     for bi in range(n_bands):
-        print(f"\nClustering band {bi} ({BAND_LABELS[bi]})...")
+        print(f"\nClustering band {bi} ({labels[bi]})...")
         band_acts = {}
         for name in model_names:
             band_acts[name] = model_bands[name][bi][0]  # (n_samples, n_alive)
@@ -377,7 +393,7 @@ def main():
 
     # Generate figure
     print("\nGenerating figure...")
-    make_figure(all_presence, model_names, Path(args.output))
+    make_figure(all_presence, model_names, Path(args.output), band_labels=labels)
 
 
 if __name__ == "__main__":

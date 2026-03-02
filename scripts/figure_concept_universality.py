@@ -41,7 +41,6 @@ from scripts.compare_sae_cross_model import (
 from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
 
 
-BAND_LABELS = ['S1\n[0,32)', 'S2\n[32,64)', 'S3\n[64,128)', 'S4\n[128,256)', 'S5\n[256,N)']
 BAND_LABELS_SHORT = ['S1', 'S2', 'S3', 'S4', 'S5']
 D_THRESHOLD = 1.0
 

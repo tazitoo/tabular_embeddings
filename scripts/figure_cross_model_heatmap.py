@@ -224,9 +224,10 @@ def make_figure(
     ordered_meta = get_ordered_meta_features()
     n_meta = len(ordered_meta)
 
-    # Use 5 scale bands (shared Matryoshka dims + remainder)
-    band_labels = ['S1\n[0,32)', 'S2\n[32,64)', 'S3\n[64,128)', 'S4\n[128,256)', 'S5\n[256,N)']
-    n_bands = 5
+    # Derive scale bands from data keys (e.g. "[0,256)", "[256,512)", ...)
+    ref_bands = list(all_band_coverage[model_names[0]].keys())
+    n_bands = len(ref_bands)
+    band_labels = [f"S{i+1}\n{ref_bands[i]}" for i in range(n_bands)]
 
     # Build data matrices: one per model
     matrices = {}
