@@ -992,12 +992,15 @@ def perrow_sweep_intervene_tabpfn(
         handle.remove()
 
     all_emb = captured["hidden"][0].mean(dim=1)  # (seq_len, hidden)
+    # Use -n_query indexing: TabPFN seq_len may differ from len(X_ctx)+len(X_query)
+    query_emb = all_emb[-n_query:]   # last n_query positions = query rows
+    ctx_emb = all_emb[:-n_query]     # everything before = context
 
     # SAE encode query rows for activation detection
     with torch.no_grad():
-        x_centered = all_emb - data_mean if data_mean is not None else all_emb
+        x_centered = query_emb - data_mean if data_mean is not None else query_emb
         h_encoded = sae.encode(x_centered)
-    query_acts = h_encoded[n_ctx:].cpu().numpy()
+    query_acts = h_encoded.cpu().numpy()  # (n_query, sae_hidden)
 
     # --- Phase 1: per-feature importance ---
     logger.info("Phase 1: per-row importance for %d features (%d forward passes)...",
@@ -1043,7 +1046,7 @@ def perrow_sweep_intervene_tabpfn(
         for r in rankings:
             all_feats_k.update(r[:k])
         ctx_delta = compute_ablation_delta(
-            sae, all_emb[:n_ctx], list(all_feats_k), data_mean=data_mean,
+            sae, ctx_emb, list(all_feats_k), data_mean=data_mean,
         )
 
         # Query: per-row ablation via feature masks
@@ -1053,7 +1056,7 @@ def perrow_sweep_intervene_tabpfn(
             if feats:
                 masks[row_idx, feats] = True
         query_delta = compute_ablation_delta_perrow(
-            sae, all_emb[n_ctx:], masks, data_mean=data_mean,
+            sae, query_emb, masks, data_mean=data_mean,
         )
 
         combined = torch.cat([ctx_delta, query_delta], dim=0).unsqueeze(1)
@@ -1120,12 +1123,15 @@ def perrow_sweep_intervene_tabicl(
 
     all_emb = captured["hidden"].mean(dim=0)  # (seq_len, 512)
     batch_mean = all_emb.mean(dim=0)  # batch-mean centering for TabICL
+    # Use -n_query indexing: seq_len may differ from len(X_ctx)+len(X_query)
+    query_emb = all_emb[-n_query:]
+    ctx_emb = all_emb[:-n_query]
 
     # SAE encode query rows for activation detection
     with torch.no_grad():
-        x_centered = all_emb - batch_mean
+        x_centered = query_emb - batch_mean
         h_encoded = sae.encode(x_centered)
-    query_acts = h_encoded[n_ctx:].cpu().numpy()
+    query_acts = h_encoded.cpu().numpy()  # (n_query, sae_hidden)
 
     # --- Phase 1: per-feature importance ---
     logger.info("Phase 1: per-row importance for %d features (%d forward passes)...",
@@ -1170,7 +1176,7 @@ def perrow_sweep_intervene_tabicl(
         for r in rankings:
             all_feats_k.update(r[:k])
         ctx_delta = compute_ablation_delta(
-            sae, all_emb[:n_ctx], list(all_feats_k), data_mean=batch_mean,
+            sae, ctx_emb, list(all_feats_k), data_mean=batch_mean,
         )
 
         # Query: per-row ablation via feature masks
@@ -1180,7 +1186,7 @@ def perrow_sweep_intervene_tabicl(
             if feats:
                 masks[row_idx, feats] = True
         query_delta = compute_ablation_delta_perrow(
-            sae, all_emb[n_ctx:], masks, data_mean=batch_mean,
+            sae, query_emb, masks, data_mean=batch_mean,
         )
 
         combined = torch.cat([ctx_delta, query_delta], dim=0).unsqueeze(0)
