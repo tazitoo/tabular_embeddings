@@ -360,7 +360,7 @@ def main():
 
     # Meta-features (once)
     print(f"\nComputing meta-features for {len(common_datasets)} datasets...")
-    meta_array, loaded_datasets = collect_meta_for_datasets(
+    meta_array, loaded_datasets, _ = collect_meta_for_datasets(
         common_datasets, model_configs[0][2], max_per_dataset=args.max_per_dataset
     )
     print(f"  {meta_array.shape} from {len(loaded_datasets)} datasets")
