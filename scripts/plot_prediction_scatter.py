@@ -177,6 +177,105 @@ def get_unmatched_features(model_a: str, model_b: str, dataset: str) -> list:
     return [(u[feat_key], u[drop_key]) for u in ranked if u[drop_key] > 0]
 
 
+def find_optimal_ablation(
+    ablate_model: str, dataset: str, task: str, device: str,
+    ranked_features: list, target_preds: np.ndarray,
+) -> dict:
+    """Sweep k=1..N unmatched features, find k minimizing MSE to target_preds.
+
+    Args:
+        ablate_model: Model to ablate
+        ranked_features: list of (feature_index, drop) sorted by importance
+        target_preds: P(class=1) from the other model (what we're trying to match)
+
+    Returns:
+        dict with: optimal_k, optimal_features, mse_curve, all_ablated_preds
+    """
+    from scripts.intervene_sae import sweep_intervene
+    from scripts.concept_performance_diagnostic import _load_splits
+
+    X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
+
+    # Build cumulative feature lists: top-1, top-2, ..., top-N
+    feat_indices = [f for f, _ in ranked_features]
+    feature_lists = [feat_indices[:k] for k in range(1, len(feat_indices) + 1)]
+
+    logger.info("Sweeping k=1..%d ablation levels for %s...", len(feature_lists), ablate_model)
+    baseline_preds_raw, ablated_list = sweep_intervene(
+        model_key=ablate_model,
+        X_context=X_ctx, y_context=y_ctx,
+        X_query=X_q, y_query=y_q,
+        feature_lists=feature_lists,
+        device=device, task=task,
+    )
+
+    # Extract P(class=1) from each level
+    ablated_p1 = []
+    for preds in ablated_list:
+        if preds.ndim == 2:
+            ablated_p1.append(preds[:, 1])
+        else:
+            ablated_p1.append(preds)
+
+    # MSE to target at each k
+    mse_curve = [float(np.mean((ap - target_preds) ** 2)) for ap in ablated_p1]
+    baseline_mse = float(np.mean((target_preds - (baseline_preds_raw[:, 1] if baseline_preds_raw.ndim == 2 else baseline_preds_raw)) ** 2))
+
+    optimal_k = int(np.argmin(mse_curve)) + 1  # 1-indexed
+    logger.info("Optimal k=%d (MSE=%.4f, baseline MSE=%.4f, reduction=%.1f%%)",
+                optimal_k, mse_curve[optimal_k - 1], baseline_mse,
+                100 * (1 - mse_curve[optimal_k - 1] / baseline_mse) if baseline_mse > 0 else 0)
+
+    return {
+        "optimal_k": optimal_k,
+        "optimal_features": feat_indices[:optimal_k],
+        "optimal_preds": ablated_p1[optimal_k - 1],
+        "mse_curve": mse_curve,
+        "baseline_mse": baseline_mse,
+        "all_ablated_preds": ablated_p1,
+    }
+
+
+def plot_mse_curve(
+    mse_curve: list,
+    baseline_mse: float,
+    optimal_k: int,
+    ranked_features: list,
+    ablate_model: str,
+    other_model: str,
+    dataset: str,
+    output_path: Path,
+):
+    """Plot MSE(ablated, target) vs number of ablated features."""
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+
+    ks = np.arange(1, len(mse_curve) + 1)
+    ax.plot(ks, mse_curve, color="#0072B2", lw=1.5)
+    ax.axhline(baseline_mse, color="gray", ls="--", lw=1, label="no ablation")
+    ax.axvline(optimal_k, color="#D55E00", ls=":", lw=1,
+               label=f"optimal k={optimal_k}")
+    ax.plot(optimal_k, mse_curve[optimal_k - 1], "o", color="#D55E00", ms=8, zorder=5)
+
+    disp_abl = DISPLAY_NAMES.get(ablate_model, ablate_model)
+    disp_oth = DISPLAY_NAMES.get(other_model, other_model)
+
+    ax.set_xlabel(f"Number of {disp_abl}-only concepts ablated", fontsize=10)
+    ax.set_ylabel(f"MSE(ablated {disp_abl}, {disp_oth})", fontsize=10)
+    ax.set_title(f"{dataset}: optimal ablation of {disp_abl}-only concepts", fontsize=10)
+    ax.legend(fontsize=8)
+
+    # Annotate top features near the curve
+    for i, (feat, drop) in enumerate(ranked_features[:min(5, optimal_k)]):
+        ax.annotate(f"f{feat}", (i + 1, mse_curve[i]),
+                    textcoords="offset points", xytext=(5, 5), fontsize=7, color="#555555")
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved MSE curve to %s", output_path)
+
+
 def plot_prediction_scatter(
     preds_a: np.ndarray,
     preds_b: np.ndarray,
@@ -388,13 +487,27 @@ def main():
             for feat, drop in unmatched[:10]:
                 logger.info("  feature %d: drop=%.4f", feat, drop)
 
-            feats = [f for f, _ in unmatched]
-            label = f"ablate {len(feats)} {disp}-only"
-            logger.info("Running ablation: %s (features: %s)...", label, feats)
-            abl_preds = get_ablated_predictions(
-                ablate_model, args.dataset, task, feats, args.device,
+            # Target: the other model's predictions on the relevant axis
+            target_preds = preds_b if ablate_axis == "x" else preds_a
+
+            # Sweep to find optimal k
+            sweep = find_optimal_ablation(
+                ablate_model, args.dataset, task, args.device,
+                unmatched, target_preds,
             )
-            ablation_levels = [(label, "#0072B2", abl_preds)]
+            k = sweep["optimal_k"]
+            label = f"ablate {k}/{len(unmatched)} {disp}-only"
+            ablation_levels = [(label, "#0072B2", sweep["optimal_preds"])]
+
+            # Save MSE curve plot
+            mse_path = args.output.with_name(
+                args.output.stem + "_mse_curve" + args.output.suffix
+            )
+            plot_mse_curve(
+                sweep["mse_curve"], sweep["baseline_mse"], k,
+                unmatched, ablate_model, other_model, args.dataset,
+                mse_path,
+            )
 
     elif args.ablate_features:
         feats = [int(x.strip()) for x in args.ablate_features.split(",")]

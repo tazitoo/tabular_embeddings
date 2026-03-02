@@ -710,6 +710,209 @@ def intervene_hyperfast(
     }
 
 
+# ── Sweep (one model load, many ablation levels) ─────────────────────────────
+
+
+def sweep_intervene_tabpfn(
+    X_context, y_context, X_query, y_query, sae,
+    feature_lists, extraction_layer, device, task, data_mean,
+):
+    """Sweep multiple ablation levels for TabPFN (one load, one capture)."""
+    from models.tabpfn_utils import load_tabpfn
+
+    clf = load_tabpfn(task=task, device=device, n_estimators=1)
+    clf.fit(X_context, y_context)
+    layers = clf.model_.transformer_encoder.layers
+
+    captured = {}
+
+    def capture_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["hidden"] = output.detach()
+
+    handle = layers[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            baseline_preds = clf.predict(X_query) if task == "regression" else clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    all_emb = captured["hidden"][0].mean(dim=1)  # (seq_len, hidden)
+
+    results = []
+    for features in feature_lists:
+        delta = compute_ablation_delta(sae, all_emb, features, data_mean=data_mean)
+        delta_broadcast = delta.unsqueeze(1)
+
+        def make_hook(db):
+            def hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 4:
+                    output = output.clone()
+                    output[0] += db
+                    return output
+                return output
+            return hook
+
+        handle = layers[extraction_layer].register_forward_hook(make_hook(delta_broadcast))
+        try:
+            with torch.no_grad():
+                preds = clf.predict(X_query) if task == "regression" else clf.predict_proba(X_query)
+        finally:
+            handle.remove()
+        results.append(np.asarray(preds))
+
+    return np.asarray(baseline_preds), results
+
+
+def sweep_intervene_tabicl(
+    X_context, y_context, X_query, y_query, sae,
+    feature_lists, extraction_layer, device, task, data_mean,
+):
+    """Sweep multiple ablation levels for TabICL (one load, one capture)."""
+    from tabicl import TabICLClassifier
+
+    clf = TabICLClassifier(device=device, n_estimators=1)
+    clf.fit(X_context, y_context)
+    blocks = clf.model_.icl_predictor.tf_icl.blocks
+
+    captured = {}
+
+    def capture_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["hidden"] = output.detach()
+
+    handle = blocks[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            baseline_preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    all_emb = captured["hidden"].mean(dim=0)  # (seq_len, 512)
+    batch_mean = all_emb.mean(dim=0)
+
+    results = []
+    for features in feature_lists:
+        delta = compute_ablation_delta(sae, all_emb, features, data_mean=batch_mean)
+        delta_broadcast = delta.unsqueeze(0)
+
+        def make_hook(db):
+            def hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 3:
+                    output = output.clone()
+                    output += db
+                    return output
+                return output
+            return hook
+
+        handle = blocks[extraction_layer].register_forward_hook(make_hook(delta_broadcast))
+        try:
+            with torch.no_grad():
+                preds = clf.predict_proba(X_query)
+        finally:
+            handle.remove()
+        results.append(np.asarray(preds))
+
+    return np.asarray(baseline_preds), results
+
+
+def sweep_intervene_tabdpt(
+    X_context, y_context, X_query, y_query, sae,
+    feature_lists, extraction_layer, device, task, data_mean,
+):
+    """Sweep multiple ablation levels for TabDPT (one load, one capture)."""
+    from tabdpt import TabDPTClassifier, TabDPTRegressor
+
+    clf = TabDPTRegressor(device=device, compile=False) if task == "regression" \
+        else TabDPTClassifier(device=device, compile=False)
+    clf.fit(X_context, y_context)
+    encoder_layers = clf.model.transformer_encoder
+
+    captured = {}
+
+    def capture_hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            captured["hidden"] = out.detach()
+
+    handle = encoder_layers[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            baseline_preds = clf.predict(X_query) if task == "regression" else clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    hidden = captured["hidden"]
+    all_emb = hidden.mean(dim=1) if hidden.ndim == 3 else hidden
+
+    results = []
+    for features in feature_lists:
+        delta = compute_ablation_delta(sae, all_emb, features, data_mean=data_mean)
+
+        def make_hook(d):
+            def hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    out += d.unsqueeze(1) if out.ndim == 3 else d
+                    return (out,) + output[1:] if isinstance(output, tuple) else out
+                return output
+            return hook
+
+        handle = encoder_layers[extraction_layer].register_forward_hook(make_hook(delta))
+        try:
+            with torch.no_grad():
+                preds = clf.predict(X_query) if task == "regression" else clf.predict_proba(X_query)
+        finally:
+            handle.remove()
+        results.append(np.asarray(preds))
+
+    return np.asarray(baseline_preds), results
+
+
+SWEEP_FN = {
+    "tabpfn": sweep_intervene_tabpfn,
+    "tabicl": sweep_intervene_tabicl,
+    "tabdpt": sweep_intervene_tabdpt,
+}
+
+
+def sweep_intervene(
+    model_key: str,
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    feature_lists: List[List[int]],
+    device: str = "cuda",
+    task: str = "classification",
+    sae_dir: Path = DEFAULT_SAE_DIR,
+    layers_path: Path = DEFAULT_LAYERS_PATH,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
+) -> Tuple[np.ndarray, List[np.ndarray]]:
+    """Sweep multiple ablation levels efficiently (one model load).
+
+    Args:
+        feature_lists: List of feature index lists, e.g. [[0], [0,1], [0,1,2], ...]
+
+    Returns:
+        (baseline_preds, list_of_ablated_preds)
+    """
+    if model_key not in SWEEP_FN:
+        raise ValueError(f"Sweep not supported for {model_key}. Choose from {list(SWEEP_FN.keys())}")
+
+    sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
+    extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
+    data_mean = load_training_mean(
+        model_key, training_dir=training_dir, layers_path=layers_path, device=device,
+    )
+
+    return SWEEP_FN[model_key](
+        X_context, y_context, X_query, y_query, sae,
+        feature_lists, extraction_layer, device, task, data_mean,
+    )
+
+
 # ── Dispatcher ────────────────────────────────────────────────────────────────
 
 INTERVENE_FN = {
