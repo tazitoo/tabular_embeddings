@@ -194,7 +194,7 @@ def plot_prediction_scatter(
     """Create scatter plot of predictions from two models.
 
     ablation_levels: list of (label, color, ablated_preds_array).
-    Each level is overlaid as hollow markers at the ablated positions.
+    Each level is overlaid as colored markers (filled for class 1, hollow for class 0).
     """
     fig, ax = plt.subplots(1, 1, figsize=(7, 7))
 
@@ -209,13 +209,22 @@ def plot_prediction_scatter(
     hi = min(1, all_preds.max() + 0.02)
     hi = max(hi, event_rate + 0.02)
 
-    # Plot class 0 first (background), then class 1 on top
+    # Grid for visual alignment
+    ax.grid(True, which="major", color="#cccccc", lw=0.5, alpha=0.7, zorder=0)
+    ax.grid(True, which="minor", color="#eeeeee", lw=0.3, alpha=0.5, zorder=0)
+    ax.minorticks_on()
+
     mask0 = y_true == 0
     mask1 = y_true == 1
-    ax.scatter(preds_a[mask0], preds_b[mask0], c="#1f77b4", s=15, alpha=0.5,
-               edgecolors="none", label=f"Class 0 (n={mask0.sum()})", zorder=2)
-    ax.scatter(preds_a[mask1], preds_b[mask1], c="#d62728", s=40, alpha=0.9,
-               edgecolors="k", linewidths=0.5, label=f"Class 1 (n={mask1.sum()})", zorder=3)
+    orig_color = "#999999"
+
+    # Original predictions: faint, small — just a hint of spread
+    ax.scatter(preds_a[mask0], preds_b[mask0], facecolors="none",
+               edgecolors=orig_color, s=10, alpha=0.4, linewidths=0.5,
+               label=f"Class 0 (n={mask0.sum()})", zorder=2)
+    ax.scatter(preds_a[mask1], preds_b[mask1], c=orig_color,
+               s=10, alpha=0.4, edgecolors="none",
+               label=f"Class 1 (n={mask1.sum()})", zorder=2)
 
     # Ablation overlays
     if ablation_levels:
@@ -224,11 +233,11 @@ def plot_prediction_scatter(
             abl_y = preds_b
             mean_shift = float(np.abs(abl_p - preds_a).mean())
 
-            ax.scatter(abl_x[mask0], abl_y[mask0], c="none", s=15, alpha=0.4,
-                       edgecolors=color, linewidths=0.6, zorder=4)
-            ax.scatter(abl_x[mask1], abl_y[mask1], c="none", s=40, alpha=0.9,
-                       edgecolors=color, linewidths=1.5, zorder=5)
-            ax.scatter([], [], c="none", edgecolors=color, linewidths=1.0, s=30,
+            ax.scatter(abl_x[mask0], abl_y[mask0], facecolors="none",
+                       edgecolors=color, s=12, alpha=0.6, linewidths=0.7, zorder=4)
+            ax.scatter(abl_x[mask1], abl_y[mask1], c=color,
+                       s=12, alpha=0.6, edgecolors="none", zorder=4)
+            ax.scatter([], [], c=color, s=20,
                        label=f"{label} (shift={mean_shift:.3f})")
 
     # y=x reference line
@@ -362,26 +371,14 @@ def main():
             for feat, drop in unmatched[:10]:
                 logger.info("  feature %d: drop=%.4f", feat, drop)
 
-            # Define 3 ablation levels
-            levels_spec = [
-                ("top 5", "#e377c2", 5),
-                ("top 10", "#ff7f0e", 10),
-                (f"all {len(unmatched)}", "#2ca02c", len(unmatched)),
-            ]
-            # Skip levels that exceed available features
-            levels_spec = [(l, c, n) for l, c, n in levels_spec if n <= len(unmatched)]
-            # Always include "all" if not already there
-            if levels_spec[-1][2] < len(unmatched):
-                levels_spec.append((f"all {len(unmatched)}", "#2ca02c", len(unmatched)))
-
-            ablation_levels = []
-            for label, color, n in levels_spec:
-                feats = [f for f, _ in unmatched[:n]]
-                logger.info("Running ablation: %s (features: %s)...", label, feats)
-                abl_preds = get_ablated_predictions(
-                    args.model_a, args.dataset, task, feats, args.device,
-                )
-                ablation_levels.append((label, color, abl_preds))
+            feats = [f for f, _ in unmatched]
+            disp_a = DISPLAY_NAMES.get(args.model_a, args.model_a)
+            label = f"ablate {len(feats)} {disp_a}-only"
+            logger.info("Running ablation: %s (features: %s)...", label, feats)
+            abl_preds = get_ablated_predictions(
+                args.model_a, args.dataset, task, feats, args.device,
+            )
+            ablation_levels = [(label, "#2ca02c", abl_preds)]
 
     elif args.ablate_features:
         feats = [int(x.strip()) for x in args.ablate_features.split(",")]
