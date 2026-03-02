@@ -190,11 +190,12 @@ def plot_prediction_scatter(
     features_b: int,
     output_path: Path,
     ablation_levels: list = None,
+    ablate_axis: str = "x",
 ):
     """Create scatter plot of predictions from two models.
 
     ablation_levels: list of (label, color, ablated_preds_array).
-    Each level is overlaid as colored markers (filled for class 1, hollow for class 0).
+    ablate_axis: "x" if ablating model_a (x-axis shifts), "y" if ablating model_b.
     """
     fig, ax = plt.subplots(1, 1, figsize=(7, 7))
 
@@ -229,9 +230,12 @@ def plot_prediction_scatter(
     # Ablation overlays
     if ablation_levels:
         for label, color, abl_p in ablation_levels:
-            abl_x = abl_p  # ablating model A → x-axis shifts
-            abl_y = preds_b
-            mean_shift = float(np.abs(abl_p - preds_a).mean())
+            if ablate_axis == "x":
+                abl_x, abl_y = abl_p, preds_b
+                mean_shift = float(np.abs(abl_p - preds_a).mean())
+            else:
+                abl_x, abl_y = preds_a, abl_p
+                mean_shift = float(np.abs(abl_p - preds_b).mean())
 
             ax.scatter(abl_x[mask0], abl_y[mask0], facecolors="none",
                        edgecolors=color, s=12, alpha=0.6, linewidths=0.7, zorder=4)
@@ -329,8 +333,8 @@ def main():
     # Ablation modes (mutually exclusive)
     abl_group = parser.add_mutually_exclusive_group()
     abl_group.add_argument("--ablate-unmatched", action="store_true",
-                           help="Ablate unmatched features from model-a at 3 levels "
-                                "(top5, top10, all positive-drop)")
+                           help="Ablate unmatched features from the stronger model "
+                                "(auto-detected by AUC)")
     abl_group.add_argument("--ablate-features", type=str, default=None,
                            help="Comma-separated feature indices to ablate from model-a")
 
@@ -360,10 +364,23 @@ def main():
                 args.model_a, features_a, args.model_b, features_b)
 
     ablation_levels = None
+    ablate_axis = "x"  # default: ablating model_a shifts x-axis
 
     if args.ablate_unmatched:
-        # Get unmatched features (model_a concepts that model_b lacks)
-        unmatched = get_unmatched_features(args.model_a, args.model_b, args.dataset)
+        # Ablate the stronger model's unique concepts
+        if auc_a >= auc_b:
+            ablate_model, other_model = args.model_a, args.model_b
+            ablate_axis = "x"
+        else:
+            ablate_model, other_model = args.model_b, args.model_a
+            ablate_axis = "y"
+
+        disp = DISPLAY_NAMES.get(ablate_model, ablate_model)
+        disp_other = DISPLAY_NAMES.get(other_model, other_model)
+        logger.info("Ablating stronger model: %s (AUC=%.3f) vs %s (AUC=%.3f)",
+                    disp, max(auc_a, auc_b), disp_other, min(auc_a, auc_b))
+
+        unmatched = get_unmatched_features(ablate_model, other_model, args.dataset)
         if not unmatched:
             logger.warning("No unmatched features with positive drop found.")
         else:
@@ -372,13 +389,12 @@ def main():
                 logger.info("  feature %d: drop=%.4f", feat, drop)
 
             feats = [f for f, _ in unmatched]
-            disp_a = DISPLAY_NAMES.get(args.model_a, args.model_a)
-            label = f"ablate {len(feats)} {disp_a}-only"
+            label = f"ablate {len(feats)} {disp}-only"
             logger.info("Running ablation: %s (features: %s)...", label, feats)
             abl_preds = get_ablated_predictions(
-                args.model_a, args.dataset, task, feats, args.device,
+                ablate_model, args.dataset, task, feats, args.device,
             )
-            ablation_levels = [(label, "#2ca02c", abl_preds)]
+            ablation_levels = [(label, "#0072B2", abl_preds)]
 
     elif args.ablate_features:
         feats = [int(x.strip()) for x in args.ablate_features.split(",")]
@@ -387,7 +403,7 @@ def main():
             args.model_a, args.dataset, task, feats, args.device,
         )
         disp = DISPLAY_NAMES.get(args.model_a, args.model_a)
-        ablation_levels = [(f"ablate {len(feats)}f from {disp}", "#e377c2", abl_preds)]
+        ablation_levels = [(f"ablate {len(feats)}f from {disp}", "#0072B2", abl_preds)]
 
     # Scatter plot
     plot_prediction_scatter(
@@ -396,18 +412,8 @@ def main():
         auc_a, auc_b, features_a, features_b,
         args.output,
         ablation_levels=ablation_levels,
+        ablate_axis=ablate_axis,
     )
-
-    # Shift distribution (only for multi-level ablation)
-    if ablation_levels and len(ablation_levels) > 1:
-        dist_path = args.output.with_name(
-            args.output.stem + "_shift_distribution" + args.output.suffix
-        )
-        plot_shift_distribution(
-            preds_a, preds_b, ablation_levels,
-            args.model_a, args.model_b, args.dataset,
-            dist_path,
-        )
 
 
 if __name__ == "__main__":
