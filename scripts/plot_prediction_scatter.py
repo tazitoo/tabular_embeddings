@@ -397,6 +397,46 @@ def plot_prediction_scatter(
         fontsize=9,
     )
 
+    # Inset zoom if data is very skewed (most points in a small region)
+    from matplotlib.patches import Rectangle
+    p95_a = np.percentile(preds_a, 95)
+    p95_b = np.percentile(preds_b, 95)
+    zoom_hi = max(p95_a, p95_b) * 1.2
+    # Add inset if the dense region is < 40% of the full range
+    if zoom_hi < 0.4 * (hi - lo) + lo:
+        zoom_hi = min(zoom_hi, hi * 0.5)
+        zoom_lo = lo
+        axins = ax.inset_axes([0.45, 0.45, 0.52, 0.52])  # upper-right
+        axins.grid(True, which="major", color="#cccccc", lw=0.3, alpha=0.5)
+        axins.grid(True, which="minor", color="#eeeeee", lw=0.2, alpha=0.3)
+        axins.minorticks_on()
+
+        # Replot data in inset
+        axins.scatter(preds_a[mask0], preds_b[mask0], facecolors="none",
+                      edgecolors=orig_color, s=12, alpha=0.4, linewidths=0.5, zorder=2)
+        axins.scatter(preds_a[mask1], preds_b[mask1], c=orig_color,
+                      s=15, alpha=0.5, edgecolors="none", zorder=2)
+        if ablation_levels:
+            for _, color, abl_p in ablation_levels:
+                if ablate_axis == "x":
+                    abl_x, abl_y = abl_p, preds_b
+                else:
+                    abl_x, abl_y = preds_a, abl_p
+                axins.scatter(abl_x[mask0], abl_y[mask0], facecolors="none",
+                              edgecolors=color, s=14, alpha=0.6, linewidths=0.7, zorder=4)
+                axins.scatter(abl_x[mask1], abl_y[mask1], c=color,
+                              s=18, alpha=0.7, edgecolors="none", zorder=4)
+        axins.plot([zoom_lo, zoom_hi], [zoom_lo, zoom_hi], "k--", lw=0.6, alpha=0.4)
+        axins.set_xlim(zoom_lo, zoom_hi)
+        axins.set_ylim(zoom_lo, zoom_hi)
+        axins.set_aspect("equal")
+        axins.tick_params(labelsize=7)
+
+        # Draw rectangle on main axes showing inset region
+        rect = Rectangle((zoom_lo, zoom_lo), zoom_hi - zoom_lo, zoom_hi - zoom_lo,
+                          lw=0.8, edgecolor="#555555", facecolor="none", ls="--", zorder=6)
+        ax.add_patch(rect)
+
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
