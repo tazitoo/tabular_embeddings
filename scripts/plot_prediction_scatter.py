@@ -177,19 +177,30 @@ def get_unmatched_features(model_a: str, model_b: str, dataset: str) -> list:
     return [(u[feat_key], u[drop_key]) for u in ranked if u[drop_key] > 0]
 
 
+def _logloss(y_true: np.ndarray, p1: np.ndarray) -> float:
+    """Mean per-row cross-entropy loss for binary classification."""
+    eps = 1e-7
+    p = np.clip(p1, eps, 1 - eps)
+    return float(-np.mean(y_true * np.log(p) + (1 - y_true) * np.log(1 - p)))
+
+
 def find_optimal_ablation(
     ablate_model: str, dataset: str, task: str, device: str,
-    ranked_features: list, target_preds: np.ndarray,
+    ranked_features: list, target_logloss: float,
 ) -> dict:
-    """Sweep k=1..N unmatched features, find k minimizing MSE to target_preds.
+    """Sweep k=1..N unmatched features, find k where ablated logloss best matches target.
+
+    The target is the weaker model's logloss. We ablate the stronger model's unique
+    concepts to degrade it, looking for the k that brings its logloss closest to
+    the weaker model's. This tells us how many unique concepts explain the gap.
 
     Args:
-        ablate_model: Model to ablate
+        ablate_model: Model to ablate (the stronger one)
         ranked_features: list of (feature_index, drop) sorted by importance
-        target_preds: P(class=1) from the other model (what we're trying to match)
+        target_logloss: Logloss of the weaker model (what we're trying to match)
 
     Returns:
-        dict with: optimal_k, optimal_features, mse_curve, all_ablated_preds
+        dict with: optimal_k, optimal_features, logloss_curve, etc.
     """
     from scripts.intervene_sae import sweep_intervene
     from scripts.concept_performance_diagnostic import _load_splits
@@ -217,28 +228,38 @@ def find_optimal_ablation(
         else:
             ablated_p1.append(preds)
 
-    # MSE to target at each k
-    mse_curve = [float(np.mean((ap - target_preds) ** 2)) for ap in ablated_p1]
-    baseline_mse = float(np.mean((target_preds - (baseline_preds_raw[:, 1] if baseline_preds_raw.ndim == 2 else baseline_preds_raw)) ** 2))
+    baseline_p1 = baseline_preds_raw[:, 1] if baseline_preds_raw.ndim == 2 else baseline_preds_raw
+    y = y_q.astype(float)
 
-    optimal_k = int(np.argmin(mse_curve)) + 1  # 1-indexed
-    logger.info("Optimal k=%d (MSE=%.4f, baseline MSE=%.4f, reduction=%.1f%%)",
-                optimal_k, mse_curve[optimal_k - 1], baseline_mse,
-                100 * (1 - mse_curve[optimal_k - 1] / baseline_mse) if baseline_mse > 0 else 0)
+    # Logloss at each k
+    logloss_curve = [_logloss(y, ap) for ap in ablated_p1]
+    baseline_logloss = _logloss(y, baseline_p1)
+
+    # Find k where ablated logloss is closest to target (weaker model's logloss)
+    gaps = [abs(ll - target_logloss) for ll in logloss_curve]
+    optimal_k = int(np.argmin(gaps)) + 1  # 1-indexed
+
+    logger.info("Baseline logloss=%.4f, target (weaker model)=%.4f",
+                baseline_logloss, target_logloss)
+    logger.info("Optimal k=%d (logloss=%.4f, gap to target=%.4f)",
+                optimal_k, logloss_curve[optimal_k - 1],
+                logloss_curve[optimal_k - 1] - target_logloss)
 
     return {
         "optimal_k": optimal_k,
         "optimal_features": feat_indices[:optimal_k],
         "optimal_preds": ablated_p1[optimal_k - 1],
-        "mse_curve": mse_curve,
-        "baseline_mse": baseline_mse,
+        "logloss_curve": logloss_curve,
+        "baseline_logloss": baseline_logloss,
+        "target_logloss": target_logloss,
         "all_ablated_preds": ablated_p1,
     }
 
 
-def plot_mse_curve(
-    mse_curve: list,
-    baseline_mse: float,
+def plot_logloss_curve(
+    logloss_curve: list,
+    baseline_logloss: float,
+    target_logloss: float,
     optimal_k: int,
     ranked_features: list,
     ablate_model: str,
@@ -246,34 +267,38 @@ def plot_mse_curve(
     dataset: str,
     output_path: Path,
 ):
-    """Plot MSE(ablated, target) vs number of ablated features."""
+    """Plot logloss vs number of ablated features, with target line."""
     fig, ax = plt.subplots(1, 1, figsize=(8, 4))
 
-    ks = np.arange(1, len(mse_curve) + 1)
-    ax.plot(ks, mse_curve, color="#0072B2", lw=1.5)
-    ax.axhline(baseline_mse, color="gray", ls="--", lw=1, label="no ablation")
-    ax.axvline(optimal_k, color="#D55E00", ls=":", lw=1,
-               label=f"optimal k={optimal_k}")
-    ax.plot(optimal_k, mse_curve[optimal_k - 1], "o", color="#D55E00", ms=8, zorder=5)
+    ks = np.arange(1, len(logloss_curve) + 1)
+    ax.plot(ks, logloss_curve, color="#0072B2", lw=1.5)
 
     disp_abl = DISPLAY_NAMES.get(ablate_model, ablate_model)
     disp_oth = DISPLAY_NAMES.get(other_model, other_model)
 
+    ax.axhline(baseline_logloss, color="gray", ls="--", lw=1,
+               label=f"{disp_abl} logloss={baseline_logloss:.3f}")
+    ax.axhline(target_logloss, color="#009E73", ls="--", lw=1,
+               label=f"{disp_oth} logloss={target_logloss:.3f}")
+    ax.axvline(optimal_k, color="#D55E00", ls=":", lw=1,
+               label=f"optimal k={optimal_k}")
+    ax.plot(optimal_k, logloss_curve[optimal_k - 1], "o", color="#D55E00", ms=8, zorder=5)
+
     ax.set_xlabel(f"Number of {disp_abl}-only concepts ablated", fontsize=10)
-    ax.set_ylabel(f"MSE(ablated {disp_abl}, {disp_oth})", fontsize=10)
-    ax.set_title(f"{dataset}: optimal ablation of {disp_abl}-only concepts", fontsize=10)
+    ax.set_ylabel("Logloss", fontsize=10)
+    ax.set_title(f"{dataset}: ablating {disp_abl}-only concepts", fontsize=10)
     ax.legend(fontsize=8)
 
     # Annotate top features near the curve
     for i, (feat, drop) in enumerate(ranked_features[:min(5, optimal_k)]):
-        ax.annotate(f"f{feat}", (i + 1, mse_curve[i]),
+        ax.annotate(f"f{feat}", (i + 1, logloss_curve[i]),
                     textcoords="offset points", xytext=(5, 5), fontsize=7, color="#555555")
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    logger.info("Saved MSE curve to %s", output_path)
+    logger.info("Saved logloss curve to %s", output_path)
 
 
 def plot_prediction_scatter(
@@ -487,26 +512,28 @@ def main():
             for feat, drop in unmatched[:10]:
                 logger.info("  feature %d: drop=%.4f", feat, drop)
 
-            # Target: the other model's predictions on the relevant axis
-            target_preds = preds_b if ablate_axis == "x" else preds_a
+            # Compute target logloss (the weaker model's logloss)
+            other_preds = preds_b if ablate_axis == "x" else preds_a
+            target_logloss = _logloss(y_q.astype(float), other_preds)
 
             # Sweep to find optimal k
             sweep = find_optimal_ablation(
                 ablate_model, args.dataset, task, args.device,
-                unmatched, target_preds,
+                unmatched, target_logloss,
             )
             k = sweep["optimal_k"]
             label = f"ablate {k}/{len(unmatched)} {disp}-only"
             ablation_levels = [(label, "#0072B2", sweep["optimal_preds"])]
 
-            # Save MSE curve plot
-            mse_path = args.output.with_name(
-                args.output.stem + "_mse_curve" + args.output.suffix
+            # Save logloss curve plot
+            curve_path = args.output.with_name(
+                args.output.stem + "_logloss_curve" + args.output.suffix
             )
-            plot_mse_curve(
-                sweep["mse_curve"], sweep["baseline_mse"], k,
+            plot_logloss_curve(
+                sweep["logloss_curve"], sweep["baseline_logloss"],
+                sweep["target_logloss"], k,
                 unmatched, ablate_model, other_model, args.dataset,
-                mse_path,
+                curve_path,
             )
 
     elif args.ablate_features:
