@@ -877,6 +877,388 @@ SWEEP_FN = {
 }
 
 
+# ── Per-row heterogeneous sweep ───────────────────────────────────────────────
+
+
+def compute_ablation_delta_perrow(
+    sae: torch.nn.Module,
+    embeddings: torch.Tensor,
+    feature_masks: torch.Tensor,
+    data_mean: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Compute per-row ablation deltas with different features zeroed per row.
+
+    Args:
+        sae: Trained SAE in eval mode
+        embeddings: (n_rows, emb_dim) raw embeddings
+        feature_masks: (n_rows, sae_hidden) boolean, True = ABLATE this feature
+        data_mean: (emb_dim,) centering mean
+
+    Returns:
+        delta: (n_rows, emb_dim) per-row deltas
+    """
+    with torch.no_grad():
+        x = embeddings - data_mean if data_mean is not None else embeddings
+        h = sae.encode(x)
+        original_recon = sae.decode(h)
+        h_ablated = h.clone()
+        h_ablated[feature_masks] = 0.0
+        ablated_recon = sae.decode(h_ablated)
+        return ablated_recon - original_recon
+
+
+def _perrow_importance(
+    baseline_preds: np.ndarray,
+    individual_preds: List[np.ndarray],
+    y_query: np.ndarray,
+) -> np.ndarray:
+    """Compute per-row importance matrix from individual feature ablation predictions.
+
+    Returns:
+        (n_features, n_query) array. Positive = ablation increased logloss (feature helpful).
+    """
+    y = y_query.astype(float)
+    eps = 1e-7
+    bp1 = baseline_preds[:, 1] if baseline_preds.ndim == 2 else baseline_preds
+    bp = np.clip(bp1, eps, 1 - eps)
+    base_ll = -(y * np.log(bp) + (1 - y) * np.log(1 - bp))
+
+    n_feat = len(individual_preds)
+    n_query = len(y_query)
+    importance = np.zeros((n_feat, n_query))
+
+    for i, preds in enumerate(individual_preds):
+        ap1 = preds[:, 1] if preds.ndim == 2 else preds
+        ap = np.clip(ap1, eps, 1 - eps)
+        abl_ll = -(y * np.log(ap) + (1 - y) * np.log(1 - ap))
+        importance[i] = abl_ll - base_ll
+
+    return importance
+
+
+def _perrow_rankings(
+    importance: np.ndarray,
+    feature_indices: List[int],
+    query_activations: np.ndarray,
+) -> List[List[int]]:
+    """Build per-row feature rankings: only firing features, sorted by per-row importance.
+
+    Returns:
+        List of n_query lists, each containing feature indices sorted by importance desc.
+    """
+    _, n_query = importance.shape
+    rankings = []
+    for row in range(n_query):
+        row_feats = []
+        for i, feat_idx in enumerate(feature_indices):
+            if query_activations[row, feat_idx] > 0:
+                row_feats.append((feat_idx, importance[i, row]))
+        row_feats.sort(key=lambda x: -x[1])
+        rankings.append([f for f, _ in row_feats])
+    return rankings
+
+
+def perrow_sweep_intervene_tabpfn(
+    X_context, y_context, X_query, y_query, sae,
+    unmatched_features, extraction_layer, device, task, data_mean,
+):
+    """Per-row heterogeneous ablation sweep for TabPFN.
+
+    Phase 1: individual feature importance (N forward passes)
+    Phase 2: per-row ranking (sort by per-row importance, only firing features)
+    Phase 3: heterogeneous sweep (max_k forward passes, per-row delta at each k)
+    """
+    from models.tabpfn_utils import load_tabpfn
+
+    clf = load_tabpfn(task=task, device=device, n_estimators=1)
+    clf.fit(X_context, y_context)
+    layers = clf.model_.transformer_encoder.layers
+    n_ctx = len(X_context)
+    n_query = len(X_query)
+
+    # --- Capture hidden state + baseline ---
+    captured = {}
+
+    def capture_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["hidden"] = output.detach()
+
+    handle = layers[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            baseline_preds = clf.predict(X_query) if task == "regression" \
+                else clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    all_emb = captured["hidden"][0].mean(dim=1)  # (seq_len, hidden)
+
+    # SAE encode query rows for activation detection
+    with torch.no_grad():
+        x_centered = all_emb - data_mean if data_mean is not None else all_emb
+        h_encoded = sae.encode(x_centered)
+    query_acts = h_encoded[n_ctx:].cpu().numpy()
+
+    # --- Phase 1: per-feature importance ---
+    logger.info("Phase 1: per-row importance for %d features (%d forward passes)...",
+                len(unmatched_features), len(unmatched_features))
+    individual_preds = []
+    for feat_idx in unmatched_features:
+        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=data_mean)
+        db = delta.unsqueeze(1)
+
+        def make_hook(d):
+            def hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 4:
+                    out = output.clone()
+                    out[0] += d
+                    return out
+                return output
+            return hook
+
+        h = layers[extraction_layer].register_forward_hook(make_hook(db))
+        try:
+            with torch.no_grad():
+                preds = clf.predict(X_query) if task == "regression" \
+                    else clf.predict_proba(X_query)
+        finally:
+            h.remove()
+        individual_preds.append(np.asarray(preds))
+
+    baseline_np = np.asarray(baseline_preds)
+    importance = _perrow_importance(baseline_np, individual_preds, y_query)
+    rankings = _perrow_rankings(importance, unmatched_features, query_acts)
+
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: heterogeneous sweep ---
+    logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
+    sae_hidden = h_encoded.shape[1]
+    sweep_preds = []
+
+    for k in range(1, max_k + 1):
+        # Context: ablate union of all features at this k
+        all_feats_k = set()
+        for r in rankings:
+            all_feats_k.update(r[:k])
+        ctx_delta = compute_ablation_delta(
+            sae, all_emb[:n_ctx], list(all_feats_k), data_mean=data_mean,
+        )
+
+        # Query: per-row ablation via feature masks
+        masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool, device=device)
+        for row_idx in range(n_query):
+            feats = rankings[row_idx][:k]
+            if feats:
+                masks[row_idx, feats] = True
+        query_delta = compute_ablation_delta_perrow(
+            sae, all_emb[n_ctx:], masks, data_mean=data_mean,
+        )
+
+        combined = torch.cat([ctx_delta, query_delta], dim=0).unsqueeze(1)
+
+        def make_hook(d):
+            def hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 4:
+                    out = output.clone()
+                    out[0] += d
+                    return out
+                return output
+            return hook
+
+        h = layers[extraction_layer].register_forward_hook(make_hook(combined))
+        try:
+            with torch.no_grad():
+                preds = clf.predict(X_query) if task == "regression" \
+                    else clf.predict_proba(X_query)
+        finally:
+            h.remove()
+        sweep_preds.append(np.asarray(preds))
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": sweep_preds,
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "query_activations": query_acts,
+        "unmatched_features": list(unmatched_features),
+    }
+
+
+def perrow_sweep_intervene_tabicl(
+    X_context, y_context, X_query, y_query, sae,
+    unmatched_features, extraction_layer, device, task, data_mean,
+):
+    """Per-row heterogeneous ablation sweep for TabICL.
+
+    Same structure as TabPFN version but with TabICL-specific hook patterns
+    and batch-mean centering.
+    """
+    from tabicl import TabICLClassifier
+
+    clf = TabICLClassifier(device=device, n_estimators=1)
+    clf.fit(X_context, y_context)
+    blocks = clf.model_.icl_predictor.tf_icl.blocks
+    n_ctx = len(X_context)
+    n_query = len(X_query)
+
+    # --- Capture hidden state + baseline ---
+    captured = {}
+
+    def capture_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["hidden"] = output.detach()
+
+    handle = blocks[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            baseline_preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    all_emb = captured["hidden"].mean(dim=0)  # (seq_len, 512)
+    batch_mean = all_emb.mean(dim=0)  # batch-mean centering for TabICL
+
+    # SAE encode query rows for activation detection
+    with torch.no_grad():
+        x_centered = all_emb - batch_mean
+        h_encoded = sae.encode(x_centered)
+    query_acts = h_encoded[n_ctx:].cpu().numpy()
+
+    # --- Phase 1: per-feature importance ---
+    logger.info("Phase 1: per-row importance for %d features (%d forward passes)...",
+                len(unmatched_features), len(unmatched_features))
+    individual_preds = []
+    for feat_idx in unmatched_features:
+        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=batch_mean)
+        db = delta.unsqueeze(0)  # (1, seq_len, 512) broadcast over ensemble
+
+        def make_hook(d):
+            def hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 3:
+                    out = output.clone()
+                    out += d
+                    return out
+                return output
+            return hook
+
+        h = blocks[extraction_layer].register_forward_hook(make_hook(db))
+        try:
+            with torch.no_grad():
+                preds = clf.predict_proba(X_query)
+        finally:
+            h.remove()
+        individual_preds.append(np.asarray(preds))
+
+    baseline_np = np.asarray(baseline_preds)
+    importance = _perrow_importance(baseline_np, individual_preds, y_query)
+    rankings = _perrow_rankings(importance, unmatched_features, query_acts)
+
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: heterogeneous sweep ---
+    logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
+    sae_hidden = h_encoded.shape[1]
+    sweep_preds = []
+
+    for k in range(1, max_k + 1):
+        # Context: ablate union of all features at this k
+        all_feats_k = set()
+        for r in rankings:
+            all_feats_k.update(r[:k])
+        ctx_delta = compute_ablation_delta(
+            sae, all_emb[:n_ctx], list(all_feats_k), data_mean=batch_mean,
+        )
+
+        # Query: per-row ablation via feature masks
+        masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool, device=device)
+        for row_idx in range(n_query):
+            feats = rankings[row_idx][:k]
+            if feats:
+                masks[row_idx, feats] = True
+        query_delta = compute_ablation_delta_perrow(
+            sae, all_emb[n_ctx:], masks, data_mean=batch_mean,
+        )
+
+        combined = torch.cat([ctx_delta, query_delta], dim=0).unsqueeze(0)
+
+        def make_hook(d):
+            def hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 3:
+                    out = output.clone()
+                    out += d
+                    return out
+                return output
+            return hook
+
+        h = blocks[extraction_layer].register_forward_hook(make_hook(combined))
+        try:
+            with torch.no_grad():
+                preds = clf.predict_proba(X_query)
+        finally:
+            h.remove()
+        sweep_preds.append(np.asarray(preds))
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": sweep_preds,
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "query_activations": query_acts,
+        "unmatched_features": list(unmatched_features),
+    }
+
+
+PERROW_SWEEP_FN = {
+    "tabpfn": perrow_sweep_intervene_tabpfn,
+    "tabicl": perrow_sweep_intervene_tabicl,
+}
+
+
+def perrow_sweep_intervene(
+    model_key: str,
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    unmatched_features: List[int],
+    device: str = "cuda",
+    task: str = "classification",
+    sae_dir: Path = DEFAULT_SAE_DIR,
+    layers_path: Path = DEFAULT_LAYERS_PATH,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
+) -> dict:
+    """Per-row heterogeneous ablation sweep (one model load, per-row feature ranking).
+
+    Args:
+        unmatched_features: Feature indices unique to this model (not in the other).
+
+    Returns:
+        Dict with baseline_preds, perrow_importance, perrow_rankings,
+        sweep_preds, max_k_per_row, query_activations, unmatched_features.
+    """
+    if model_key not in PERROW_SWEEP_FN:
+        raise ValueError(
+            f"Per-row sweep not supported for {model_key}. "
+            f"Choose from {list(PERROW_SWEEP_FN.keys())}"
+        )
+
+    sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
+    extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
+    data_mean = load_training_mean(
+        model_key, training_dir=training_dir, layers_path=layers_path, device=device,
+    )
+
+    return PERROW_SWEEP_FN[model_key](
+        X_context, y_context, X_query, y_query, sae,
+        unmatched_features, extraction_layer, device, task, data_mean,
+    )
+
+
 def sweep_intervene(
     model_key: str,
     X_context: np.ndarray,

@@ -444,6 +444,183 @@ def plot_prediction_scatter(
     logger.info("Saved scatter to %s", output_path)
 
 
+def find_per_row_optimal_ablation(
+    ablate_model: str, other_model: str, dataset: str, task: str, device: str,
+    unmatched_features: list, preds_other: np.ndarray, y_query: np.ndarray,
+) -> dict:
+    """Per-row sweep: find optimal k for each row individually.
+
+    For each row, ranks unmatched features by that row's per-row importance
+    (only features that fire on the row), then sweeps k to find the minimum
+    number of concepts that closes the row's logloss gap to the other model.
+
+    Args:
+        unmatched_features: list of (feature_index, drop) sorted by aggregate drop
+        preds_other: P(class=1) from the weaker model for per-row target logloss
+    """
+    from scripts.intervene_sae import perrow_sweep_intervene
+    from scripts.concept_performance_diagnostic import _load_splits
+
+    X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
+    feat_indices = [f for f, _ in unmatched_features]
+
+    result = perrow_sweep_intervene(
+        model_key=ablate_model,
+        X_context=X_ctx, y_context=y_ctx,
+        X_query=X_q, y_query=y_q,
+        unmatched_features=feat_indices,
+        device=device, task=task,
+    )
+
+    # Per-row target and baseline logloss
+    eps = 1e-7
+    y = y_q.astype(float)
+    p_other = np.clip(preds_other, eps, 1 - eps)
+    target_row_ll = -(y * np.log(p_other) + (1 - y) * np.log(1 - p_other))
+
+    bp1 = result["baseline_preds"][:, 1] if result["baseline_preds"].ndim == 2 \
+        else result["baseline_preds"]
+    bp = np.clip(bp1, eps, 1 - eps)
+    baseline_row_ll = -(y * np.log(bp) + (1 - y) * np.log(1 - bp))
+
+    n_query = len(y_q)
+    optimal_k = np.zeros(n_query, dtype=int)
+    row_gap_closed = np.zeros(n_query)  # fraction of gap closed at optimal k
+
+    for row_idx in range(n_query):
+        orig_gap = target_row_ll[row_idx] - baseline_row_ll[row_idx]
+        if orig_gap <= 0:
+            # Stronger model is already worse on this row — no ablation needed
+            optimal_k[row_idx] = 0
+            row_gap_closed[row_idx] = 1.0
+            continue
+
+        max_k_row = result["max_k_per_row"][row_idx]
+        best_k = 0
+        best_gap_remaining = orig_gap
+
+        for k in range(1, max_k_row + 1):
+            if k - 1 >= len(result["sweep_preds"]):
+                break
+            preds_k = result["sweep_preds"][k - 1]
+            p1 = preds_k[row_idx, 1] if preds_k.ndim == 2 else preds_k[row_idx]
+            p = np.clip(float(p1), eps, 1 - eps)
+            row_ll = -(y[row_idx] * np.log(p) + (1 - y[row_idx]) * np.log(1 - p))
+            gap_remaining = abs(row_ll - target_row_ll[row_idx])
+            if gap_remaining < best_gap_remaining:
+                best_gap_remaining = gap_remaining
+                best_k = k
+
+        optimal_k[row_idx] = best_k
+        row_gap_closed[row_idx] = 1.0 - best_gap_remaining / orig_gap if orig_gap > 0 else 1.0
+
+    logger.info("Per-row optimal k: mean=%.1f, median=%d, max=%d",
+                optimal_k.mean(), np.median(optimal_k), optimal_k.max())
+    logger.info("Rows needing 0 concepts: %d (%.1f%%)",
+                (optimal_k == 0).sum(), 100 * (optimal_k == 0).mean())
+
+    return {
+        "optimal_k": optimal_k,
+        "row_gap_closed": row_gap_closed,
+        "perrow_rankings": result["perrow_rankings"],
+        "perrow_importance": result["perrow_importance"],
+        "sweep_preds": result["sweep_preds"],
+        "baseline_preds": result["baseline_preds"],
+        "max_k_per_row": result["max_k_per_row"],
+        "target_row_ll": target_row_ll,
+        "baseline_row_ll": baseline_row_ll,
+        "unmatched_features": result["unmatched_features"],
+    }
+
+
+def plot_perrow_results(
+    optimal_k: np.ndarray,
+    row_gap_closed: np.ndarray,
+    max_k_per_row: np.ndarray,
+    perrow_rankings: list,
+    ablate_model: str,
+    other_model: str,
+    dataset: str,
+    output_path: Path,
+):
+    """Plot per-row ablation results: histogram + cumulative coverage curve."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+
+    disp_abl = DISPLAY_NAMES.get(ablate_model, ablate_model)
+    disp_oth = DISPLAY_NAMES.get(other_model, other_model)
+    n_query = len(optimal_k)
+
+    # --- Left: histogram of per-row optimal k ---
+    ax = axes[0]
+    max_k = int(optimal_k.max())
+    bins = np.arange(-0.5, max_k + 1.5, 1)
+    ax.hist(optimal_k, bins=bins, color="#0072B2", edgecolor="white", alpha=0.8)
+    ax.axvline(np.median(optimal_k), color="#D55E00", ls="--", lw=1.5,
+               label=f"median = {np.median(optimal_k):.0f}")
+    ax.axvline(optimal_k.mean(), color="#E69F00", ls=":", lw=1.5,
+               label=f"mean = {optimal_k.mean():.1f}")
+    ax.set_xlabel(f"Concepts ablated (per-row optimal k)", fontsize=10)
+    ax.set_ylabel("Number of rows", fontsize=10)
+    ax.set_title(f"{dataset}: per-row concept count", fontsize=10)
+    ax.legend(fontsize=8)
+
+    # Annotate k=0 bar
+    n_zero = int((optimal_k == 0).sum())
+    if n_zero > 0:
+        ax.annotate(f"k=0: {n_zero} rows\n(no gap or reversed)",
+                    xy=(0, n_zero), xytext=(max(2, max_k * 0.3), n_zero * 0.8),
+                    fontsize=7, color="#555555",
+                    arrowprops=dict(arrowstyle="->", color="#999999"))
+
+    # --- Right: cumulative coverage curve ---
+    ax = axes[1]
+    ks = np.arange(0, max_k + 1)
+    coverage = np.array([(optimal_k <= k).mean() for k in ks])
+    ax.plot(ks, coverage * 100, color="#0072B2", lw=2)
+    ax.fill_between(ks, 0, coverage * 100, alpha=0.1, color="#0072B2")
+    ax.axhline(50, color="#999999", ls=":", lw=0.8, alpha=0.6)
+    ax.axhline(90, color="#999999", ls=":", lw=0.8, alpha=0.6)
+
+    # Find k for 50% and 90% coverage
+    k50 = int(ks[np.searchsorted(coverage, 0.5)])
+    k90 = int(ks[np.searchsorted(coverage, 0.9)]) if coverage[-1] >= 0.9 else max_k
+    ax.plot(k50, 50, "o", color="#D55E00", ms=6, zorder=5)
+    ax.plot(k90, 90, "o", color="#D55E00", ms=6, zorder=5)
+    ax.annotate(f"k={k50}", (k50, 50), textcoords="offset points",
+                xytext=(8, -5), fontsize=8, color="#D55E00")
+    ax.annotate(f"k={k90}", (k90, 90), textcoords="offset points",
+                xytext=(8, -5), fontsize=8, color="#D55E00")
+
+    ax.set_xlabel(f"Max concepts ablated (k)", fontsize=10)
+    ax.set_ylabel(f"% rows where gap to {disp_oth} is closed", fontsize=10)
+    ax.set_title(f"{dataset}: cumulative coverage", fontsize=10)
+    ax.set_ylim(0, 105)
+    ax.set_xlim(-0.5, max_k + 0.5)
+
+    # Feature frequency: which features appear most often in per-row explanations?
+    from collections import Counter
+    feat_counts = Counter()
+    for row_idx, k in enumerate(optimal_k):
+        if k > 0:
+            feat_counts.update(perrow_rankings[row_idx][:k])
+    if feat_counts:
+        top5 = feat_counts.most_common(5)
+        text = "Top features (by row frequency):\n"
+        text += "\n".join(f"  f{f}: {c}/{n_query} rows ({100*c/n_query:.0f}%)"
+                          for f, c in top5)
+        ax.text(0.98, 0.05, text, transform=ax.transAxes, fontsize=7,
+                va="bottom", ha="right", family="monospace",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+
+    fig.suptitle(f"Ablating {disp_abl}-only concepts → matching {disp_oth}",
+                 fontsize=11, y=1.02)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved per-row results to %s", output_path)
+
+
 def plot_shift_distribution(
     preds_a: np.ndarray,
     preds_b: np.ndarray,
@@ -499,6 +676,9 @@ def main():
     abl_group.add_argument("--ablate-unmatched", action="store_true",
                            help="Ablate unmatched features from the stronger model "
                                 "(auto-detected by AUC)")
+    abl_group.add_argument("--perrow", action="store_true",
+                           help="Per-row heterogeneous ablation: find minimal concept "
+                                "set per row to close the logloss gap")
     abl_group.add_argument("--ablate-features", type=str, default=None,
                            help="Comma-separated feature indices to ablate from model-a")
 
@@ -566,6 +746,63 @@ def main():
             ablation_levels = [(label, "#0072B2", sweep["optimal_preds"])]
 
             # Save logloss curve plot
+            curve_path = args.output.with_name(
+                args.output.stem + "_logloss_curve" + args.output.suffix
+            )
+            plot_logloss_curve(
+                sweep["logloss_curve"], sweep["baseline_logloss"],
+                sweep["target_logloss"], k,
+                unmatched, ablate_model, other_model, args.dataset,
+                curve_path,
+            )
+
+    elif args.perrow:
+        # Per-row heterogeneous ablation
+        if auc_a >= auc_b:
+            ablate_model, other_model = args.model_a, args.model_b
+            ablate_axis = "x"
+        else:
+            ablate_model, other_model = args.model_b, args.model_a
+            ablate_axis = "y"
+
+        disp = DISPLAY_NAMES.get(ablate_model, ablate_model)
+        disp_other = DISPLAY_NAMES.get(other_model, other_model)
+        logger.info("Per-row ablation of %s (AUC=%.3f) → %s (AUC=%.3f)",
+                    disp, max(auc_a, auc_b), disp_other, min(auc_a, auc_b))
+
+        unmatched = get_unmatched_features(ablate_model, other_model, args.dataset)
+        if not unmatched:
+            logger.warning("No unmatched features with positive drop found.")
+        else:
+            logger.info("Found %d unmatched features with positive drop", len(unmatched))
+            other_preds = preds_b if ablate_axis == "x" else preds_a
+
+            perrow = find_per_row_optimal_ablation(
+                ablate_model, other_model, args.dataset, task, args.device,
+                unmatched, other_preds, y_q,
+            )
+
+            # Save per-row results plot
+            perrow_path = args.output.with_name(
+                args.output.stem + "_perrow" + args.output.suffix
+            )
+            plot_perrow_results(
+                perrow["optimal_k"], perrow["row_gap_closed"],
+                perrow["max_k_per_row"], perrow["perrow_rankings"],
+                ablate_model, other_model, args.dataset,
+                perrow_path,
+            )
+
+            # Also run the dataset-level sweep for scatter + logloss curve
+            target_logloss = _logloss(y_q.astype(float), other_preds)
+            sweep = find_optimal_ablation(
+                ablate_model, args.dataset, task, args.device,
+                unmatched, target_logloss,
+            )
+            k = sweep["optimal_k"]
+            label = f"ablate {k}/{len(unmatched)} {disp}-only"
+            ablation_levels = [(label, "#0072B2", sweep["optimal_preds"])]
+
             curve_path = args.output.with_name(
                 args.output.stem + "_logloss_curve" + args.output.suffix
             )
