@@ -621,6 +621,146 @@ def plot_perrow_results(
     logger.info("Saved per-row results to %s", output_path)
 
 
+def extract_perrow_ablated_preds(
+    optimal_k: np.ndarray,
+    sweep_preds: list,
+    baseline_preds: np.ndarray,
+) -> np.ndarray:
+    """Extract each row's ablated prediction at its own optimal k.
+
+    Returns P(class=1) array with the same shape as baseline_preds.
+    Rows with optimal_k=0 keep their baseline prediction.
+    """
+    bp = baseline_preds[:, 1] if baseline_preds.ndim == 2 else baseline_preds
+    ablated = np.copy(bp)
+    for i, k in enumerate(optimal_k):
+        if k > 0 and k - 1 < len(sweep_preds):
+            pk = sweep_preds[k - 1]
+            ablated[i] = pk[i, 1] if pk.ndim == 2 else pk[i]
+    return ablated
+
+
+def plot_perrow_scatter(
+    preds_strong: np.ndarray,
+    preds_weak: np.ndarray,
+    ablated_strong: np.ndarray,
+    optimal_k: np.ndarray,
+    y_true: np.ndarray,
+    model_strong: str,
+    model_weak: str,
+    dataset: str,
+    auc_strong: float,
+    auc_weak: float,
+    output_path: Path,
+    ablate_axis: str = "x",
+):
+    """Scatter showing only rows where the stronger model outperforms the weaker,
+    with original positions (open circles) and per-row ablated positions (filled).
+
+    Filtered to rows where optimal_k > 0 (the stronger model genuinely has a
+    logloss advantage on that row, and ablation can close the gap).
+    """
+    fixable = optimal_k > 0
+    n_fixable = fixable.sum()
+    n_total = len(optimal_k)
+    logger.info("Fixable rows: %d / %d (%.1f%%)",
+                n_fixable, n_total, 100 * n_fixable / n_total)
+
+    if n_fixable == 0:
+        logger.warning("No fixable rows — skipping per-row scatter.")
+        return
+
+    # Filter to fixable rows
+    ps = preds_strong[fixable]
+    pw = preds_weak[fixable]
+    ab = ablated_strong[fixable]
+    yt = y_true[fixable]
+    ok = optimal_k[fixable]
+
+    disp_s = DISPLAY_NAMES.get(model_strong, model_strong)
+    disp_w = DISPLAY_NAMES.get(model_weak, model_weak)
+
+    fig, ax = plt.subplots(1, 1, figsize=(7, 7))
+    event_rate = y_true.mean()  # full dataset event rate
+
+    # Axis assignments
+    if ablate_axis == "x":
+        orig_x, orig_y = ps, pw
+        abl_x, abl_y = ab, pw
+        xlabel = f"{disp_s}  P(class=1)"
+        ylabel = f"{disp_w}  P(class=1)"
+    else:
+        orig_x, orig_y = pw, ps
+        abl_x, abl_y = pw, ab
+        xlabel = f"{disp_w}  P(class=1)"
+        ylabel = f"{disp_s}  P(class=1)"
+
+    # Auto-zoom
+    all_vals = np.concatenate([orig_x, orig_y, abl_x, abl_y])
+    lo = max(0, all_vals.min() - 0.02)
+    hi = min(1, all_vals.max() + 0.02)
+    hi = max(hi, event_rate + 0.02)
+
+    # Grid
+    ax.grid(True, which="major", color="#cccccc", lw=0.5, alpha=0.7, zorder=0)
+    ax.grid(True, which="minor", color="#eeeeee", lw=0.3, alpha=0.5, zorder=0)
+    ax.minorticks_on()
+
+    mask0 = yt == 0
+    mask1 = yt == 1
+
+    # Original positions: open circles, faint gray
+    orig_color = "#999999"
+    ax.scatter(orig_x[mask0], orig_y[mask0], facecolors="none",
+               edgecolors=orig_color, s=14, alpha=0.5, linewidths=0.6,
+               label=f"Original class 0 (n={mask0.sum()})", zorder=2)
+    ax.scatter(orig_x[mask1], orig_y[mask1], facecolors="none",
+               edgecolors=orig_color, s=14, alpha=0.5, linewidths=0.6,
+               marker="s",
+               label=f"Original class 1 (n={mask1.sum()})", zorder=2)
+
+    # Ablated positions: filled, colored by class
+    color0 = "#0072B2"  # blue
+    color1 = "#D55E00"  # orange
+    ax.scatter(abl_x[mask0], abl_y[mask0], c=color0,
+               s=14, alpha=0.6, edgecolors="none",
+               label=f"Ablated class 0", zorder=4)
+    ax.scatter(abl_x[mask1], abl_y[mask1], c=color1,
+               s=14, alpha=0.6, edgecolors="none",
+               marker="s",
+               label=f"Ablated class 1", zorder=4)
+
+    # y=x reference
+    ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.5, label="y = x")
+
+    # Event rate lines
+    ax.axhline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
+    ax.axvline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
+    ax.text(0.97, event_rate, f" event rate = {event_rate:.3f}",
+            fontsize=7, color="gray", va="bottom", ha="right",
+            transform=ax.get_yaxis_transform())
+
+    ax.set_xlabel(xlabel, fontsize=10)
+    ax.set_ylabel(ylabel, fontsize=10)
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_aspect("equal")
+    ax.legend(fontsize=7, loc="upper left")
+
+    ax.set_title(
+        f"{dataset} — per-row ablation ({n_fixable}/{n_total} fixable rows)\n"
+        f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}\n"
+        f"median k={np.median(ok):.0f}, mean k={ok.mean():.1f}",
+        fontsize=9,
+    )
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved per-row scatter to %s", output_path)
+
+
 def plot_shift_distribution(
     preds_a: np.ndarray,
     preds_b: np.ndarray,
@@ -789,6 +929,25 @@ def main():
                 perrow["max_k_per_row"], perrow["perrow_rankings"],
                 ablate_model, other_model, args.dataset,
                 perrow_path,
+            )
+
+            # Per-row scatter: filtered to fixable rows
+            ablated_preds = extract_perrow_ablated_preds(
+                perrow["optimal_k"], perrow["sweep_preds"],
+                perrow["baseline_preds"],
+            )
+            strong_preds = preds_a if ablate_axis == "x" else preds_b
+            weak_preds = preds_b if ablate_axis == "x" else preds_a
+            auc_strong = max(auc_a, auc_b)
+            auc_weak = min(auc_a, auc_b)
+            perrow_scatter_path = fig_dir / f"perrow_scatter{args.output.suffix}"
+            plot_perrow_scatter(
+                strong_preds, weak_preds, ablated_preds,
+                perrow["optimal_k"], y_q,
+                ablate_model, other_model, args.dataset,
+                auc_strong, auc_weak,
+                perrow_scatter_path,
+                ablate_axis=ablate_axis,
             )
 
             # Also run the dataset-level sweep for scatter + logloss curve
