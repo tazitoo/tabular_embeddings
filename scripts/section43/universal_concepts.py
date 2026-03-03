@@ -173,11 +173,13 @@ def compute_domain_reconstruction_fve(
     scales: List[int],
 ) -> Dict[str, Dict[int, float]]:
     """
-    Fraction of variance explained by SAE reconstruction, per domain per scale.
+    Cumulative fraction of variance explained per domain per Matryoshka scale.
 
-    Training loss is MSE(decode(encode(x)), x) — the decoder reconstructs the
-    raw input (pre-BatchNorm). So we compare x_hat against x directly.
-    FVE = 1 - ||x - x_hat||² / ||x - mean(x)||².
+    FVE(scale) = (MSE_null - MSE_scale) / (MSE_null - MSE_full)
+
+    where MSE_null is the error from predicting the domain mean (no SAE),
+    MSE_full is the error using all features, and MSE_scale uses only the
+    first `scale` features. Goes from ~0 (S1) to 1.0 (full) monotonically.
     """
     model.eval()
     results = {}
@@ -186,17 +188,27 @@ def compute_domain_reconstruction_fve(
         with torch.no_grad():
             x = torch.tensor(pooled_raw[indices], dtype=torch.float32)
             h = model.encode(x)
-            ss_tot = ((x - x.mean(dim=0)) ** 2).sum().item()
-            if ss_tot == 0:
+
+            # Null model: predict domain mean
+            mse_null = ((x - x.mean(dim=0)) ** 2).mean().item()
+
+            # Full reconstruction
+            x_hat_full = model.decode(h)
+            mse_full = ((x - x_hat_full) ** 2).mean().item()
+
+            denom = mse_null - mse_full
+            if denom <= 0:
+                # SAE doesn't beat the mean — set all scales to 0
                 for scale in scales:
                     results[domain][scale] = 0.0
                 continue
+
             for scale in scales:
                 h_trunc = h.clone()
                 h_trunc[:, scale:] = 0.0
                 x_hat = model.decode(h_trunc)
-                ss_res = ((x - x_hat) ** 2).sum().item()
-                results[domain][scale] = float(1.0 - ss_res / ss_tot)
+                mse_scale = ((x - x_hat) ** 2).mean().item()
+                results[domain][scale] = float((mse_null - mse_scale) / denom)
     return results
 
 
@@ -436,7 +448,7 @@ def make_reconstruction_figure(
                     markersize=3, linewidth=1.2, zorder=3)
 
         ax.set_title(model_name, fontsize=9, fontweight='bold')
-        ax.set_ylim(0, 0.7)
+        ax.set_ylim(0, 1.05)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.tick_params(labelsize=7)
@@ -569,10 +581,10 @@ def main():
         )
         all_r2[display_name] = r2
         for domain in sorted(r2.keys()):
-            r2_full = r2[domain][scales[-1]]
-            r2_32 = r2[domain][32] if 32 in r2[domain] else float('nan')
-            print(f"    R² {DOMAIN_SHORT.get(domain, domain)}: "
-                  f"scale=32 → {r2_32:.3f}, full → {r2_full:.3f}")
+            fve_s1 = r2[domain][scales[0]]
+            fve_full = r2[domain][scales[-1]]
+            print(f"    FVE {DOMAIN_SHORT.get(domain, domain)}: "
+                  f"S1={fve_s1:.3f}, full={fve_full:.3f}")
 
         # Layer 1: Feature selectivity
         selectivity = compute_feature_selectivity(
