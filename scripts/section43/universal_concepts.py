@@ -196,13 +196,13 @@ def compute_domain_reconstruction_fve(
     centering_mean: np.ndarray,
 ) -> Dict[str, Dict[int, float]]:
     """
-    Cumulative fraction of variance explained per domain per Matryoshka scale.
+    Fraction of variance explained per domain per Matryoshka scale.
 
-    FVE(scale) = (MSE_null - MSE_scale) / (MSE_null - MSE_full)
+    FVE(scale) = 1 - Var(x - x_hat) / Var(x)
 
-    where MSE_null is the error from predicting the domain mean (no SAE),
-    MSE_full is the error using all features, and MSE_scale uses only the
-    first `scale` features. Goes from ~0 (S1) to 1.0 (full) monotonically.
+    Standard R² metric: ratio of reconstruction error variance to input
+    variance. Measures how much of the original activation variability
+    is captured by the first `scale` sparse features.
 
     Args:
         centering_mean: Mean of the SAE training data. The SAE was trained on
@@ -218,15 +218,9 @@ def compute_domain_reconstruction_fve(
             x = torch.tensor(pooled_raw[indices], dtype=torch.float32) - mean_t
             h = model.encode(x)
 
-            # Null model: predict domain mean
-            mse_null = ((x - x.mean(dim=0)) ** 2).mean().item()
-
-            # Full reconstruction
-            x_hat_full = model.decode(h)
-            mse_full = ((x - x_hat_full) ** 2).mean().item()
-
-            denom = mse_null - mse_full
-            if denom <= 0:
+            # Total variance of input
+            var_x = ((x - x.mean(dim=0)) ** 2).mean().item()
+            if var_x <= 0:
                 for scale in scales:
                     results[domain][scale] = 0.0
                 continue
@@ -235,8 +229,8 @@ def compute_domain_reconstruction_fve(
                 h_trunc = h.clone()
                 h_trunc[:, scale:] = 0.0
                 x_hat = model.decode(h_trunc)
-                mse_scale = ((x - x_hat) ** 2).mean().item()
-                results[domain][scale] = float((mse_null - mse_scale) / denom)
+                var_residual = ((x - x_hat) ** 2).mean().item()
+                results[domain][scale] = float(1.0 - var_residual / var_x)
     return results
 
 
