@@ -175,19 +175,18 @@ def compute_domain_reconstruction_fve(
     """
     Fraction of variance explained by SAE reconstruction, per domain per scale.
 
-    Uses full forward pass (encode→decode) matching training, then measures
-    FVE = 1 - ||x_bn - x_hat||² / ||x_bn - mean(x_bn)||² in BN-normalized space.
-    For truncated scales, zeroes out activations beyond max_dim before decoding.
+    Training loss is MSE(decode(encode(x)), x) — the decoder reconstructs the
+    raw input (pre-BatchNorm). So we compare x_hat against x directly.
+    FVE = 1 - ||x - x_hat||² / ||x - mean(x)||².
     """
     model.eval()
     results = {}
     for domain, indices in domain_row_indices.items():
         results[domain] = {}
         with torch.no_grad():
-            x_raw = torch.tensor(pooled_raw[indices], dtype=torch.float32)
-            x_bn = model.bn(x_raw)
-            h = model.encode(x_raw)
-            ss_tot = ((x_bn - x_bn.mean(dim=0)) ** 2).sum().item()
+            x = torch.tensor(pooled_raw[indices], dtype=torch.float32)
+            h = model.encode(x)
+            ss_tot = ((x - x.mean(dim=0)) ** 2).sum().item()
             if ss_tot == 0:
                 for scale in scales:
                     results[domain][scale] = 0.0
@@ -196,7 +195,7 @@ def compute_domain_reconstruction_fve(
                 h_trunc = h.clone()
                 h_trunc[:, scale:] = 0.0
                 x_hat = model.decode(h_trunc)
-                ss_res = ((x_bn - x_hat) ** 2).sum().item()
+                ss_res = ((x - x_hat) ** 2).sum().item()
                 results[domain][scale] = float(1.0 - ss_res / ss_tot)
     return results
 
