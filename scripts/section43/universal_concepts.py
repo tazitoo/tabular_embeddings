@@ -38,14 +38,18 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.compare_sae_cross_model import (
     DEFAULT_MODELS,
-    find_common_datasets,
     sae_sweep_dir,
 )
-from scripts.compare_sae_architectures import (
-    compute_activations,
-    get_train_test_split,
-)
 from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
+
+# Map display names to prebuilt training data base names
+_MODEL_BASE_NAMES = {
+    'TabPFN': 'tabpfn', 'CARTE': 'carte', 'TabICL': 'tabicl',
+    'TabDPT': 'tabdpt', 'Mitra': 'mitra', 'HyperFast': 'hyperfast',
+    'Tabula-8B': 'tabula8b',
+}
+
+PREBUILT_DIR = PROJECT_ROOT / "output" / "sae_training_round5"
 
 # ---------------------------------------------------------------------------
 # Domain taxonomy with merges
@@ -92,7 +96,7 @@ def pool_embeddings_with_offsets(
     datasets: List[str],
     max_per_dataset: int = 500,
 ) -> Tuple[np.ndarray, Dict[str, Tuple[int, int]]]:
-    """Pool embeddings and track per-dataset row offsets.
+    """Pool embeddings from per-dataset NPZ files and track row offsets.
 
     Returns:
         pooled: (n_total, dim) concatenated embeddings
@@ -117,36 +121,54 @@ def pool_embeddings_with_offsets(
     return np.concatenate(all_embs), offsets
 
 
-def compute_train_stats(
-    emb_dir: Path,
-    datasets: List[str],
-    max_per_dataset: int = 500,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute normalization stats from train split only.
+def load_prebuilt_sae_data(
+    display_name: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Tuple[int, int]], List[str]]:
+    """Load prebuilt SAE training/test data with known provenance.
+
+    The SAE was trained on centered data: X_centered = X - X.mean(dim=0).
+    We load that same training data to compute the exact centering mean,
+    and use the test split (same extraction pipeline) for evaluation.
 
     Returns:
-        train_std: (1, dim)
-        train_mean: (1, dim) — mean of std-normalized train data
+        test_embeddings: (n_test, dim) raw test embeddings
+        centering_mean: (dim,) mean of training data (for centering)
+        train_embeddings: (n_train, dim) raw training embeddings
+        test_offsets: {dataset_name: (start, end)} per-dataset row offsets in test
+        source_datasets: list of dataset names
     """
-    train_datasets, _ = get_train_test_split(datasets)
-    train_embs = []
-    for ds in train_datasets:
-        path = emb_dir / f"tabarena_{ds}.npz"
-        if not path.exists():
-            continue
-        data = np.load(path, allow_pickle=True)
-        emb = data['embeddings'].astype(np.float32)
-        if len(emb) > max_per_dataset:
-            np.random.seed(42)
-            idx = np.random.choice(len(emb), max_per_dataset, replace=False)
-            emb = emb[idx]
-        train_embs.append(emb)
-    train_pooled = np.concatenate(train_embs)
-    train_std = train_pooled.std(axis=0, keepdims=True)
-    train_std[train_std < 1e-8] = 1.0
-    train_norm = train_pooled / train_std
-    train_mean = train_norm.mean(axis=0, keepdims=True)
-    return train_std, train_mean
+    base = _MODEL_BASE_NAMES.get(display_name, display_name.lower())
+    candidates = sorted(PREBUILT_DIR.glob(f"{base}_layer*_sae_training.npz"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No prebuilt training data for {display_name} in {PREBUILT_DIR}"
+        )
+
+    # Load training data → centering mean
+    train_data = np.load(candidates[0], allow_pickle=True)
+    train_emb = train_data['embeddings'].astype(np.float32)
+    centering_mean = train_emb.mean(axis=0)
+    source_datasets = list(train_data['source_datasets'])
+
+    # Load test data → evaluation embeddings with per-dataset offsets
+    test_path = Path(str(candidates[0]).replace('_sae_training.npz', '_sae_test.npz'))
+    if not test_path.exists():
+        raise FileNotFoundError(f"No test data: {test_path}")
+
+    test_data = np.load(test_path, allow_pickle=True)
+    test_emb = test_data['embeddings'].astype(np.float32)
+    samples_per_dataset = test_data['samples_per_dataset']
+
+    # Reconstruct per-dataset offsets from structured array
+    test_offsets = {}
+    cursor = 0
+    for entry in samples_per_dataset:
+        ds_name = str(entry['dataset'])
+        count = int(entry['count'])
+        test_offsets[ds_name] = (cursor, cursor + count)
+        cursor += count
+
+    return test_emb, centering_mean, train_emb, test_offsets, source_datasets
 
 
 def build_domain_row_indices(
@@ -171,6 +193,7 @@ def compute_domain_reconstruction_fve(
     model, pooled_raw: np.ndarray,
     domain_row_indices: Dict[str, np.ndarray],
     scales: List[int],
+    centering_mean: np.ndarray,
 ) -> Dict[str, Dict[int, float]]:
     """
     Cumulative fraction of variance explained per domain per Matryoshka scale.
@@ -180,18 +203,19 @@ def compute_domain_reconstruction_fve(
     where MSE_null is the error from predicting the domain mean (no SAE),
     MSE_full is the error using all features, and MSE_scale uses only the
     first `scale` features. Goes from ~0 (S1) to 1.0 (full) monotonically.
+
+    Args:
+        centering_mean: Mean of the SAE training data. The SAE was trained on
+            X_centered = X - X.mean(), so we must center eval data identically.
     """
     model.eval()
-
-    # Center all embeddings to match training (train_sae centers X before fitting)
-    all_raw = torch.tensor(pooled_raw, dtype=torch.float32)
-    global_mean = all_raw.mean(dim=0)
+    mean_t = torch.tensor(centering_mean, dtype=torch.float32)
 
     results = {}
     for domain, indices in domain_row_indices.items():
         results[domain] = {}
         with torch.no_grad():
-            x = torch.tensor(pooled_raw[indices], dtype=torch.float32) - global_mean
+            x = torch.tensor(pooled_raw[indices], dtype=torch.float32) - mean_t
             h = model.encode(x)
 
             # Null model: predict domain mean
@@ -203,7 +227,6 @@ def compute_domain_reconstruction_fve(
 
             denom = mse_null - mse_full
             if denom <= 0:
-                # SAE doesn't beat the mean — set all scales to 0
                 for scale in scales:
                     results[domain][scale] = 0.0
                 continue
@@ -497,6 +520,21 @@ class NumpyEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def compute_centered_activations(
+    model, embeddings: np.ndarray, centering_mean: np.ndarray,
+) -> np.ndarray:
+    """Compute SAE activations on centered embeddings.
+
+    Centers with the training mean to match the distribution the SAE
+    was trained on (train_sae centers with X.mean before fitting).
+    """
+    with torch.no_grad():
+        x = torch.tensor(embeddings, dtype=torch.float32)
+        x = x - torch.tensor(centering_mean, dtype=torch.float32)
+        h = model.encode(x).numpy()
+    return h
+
+
 def main():
     print("=" * 60)
     print("Section 4.3: Universal vs. Model-Specific Concepts")
@@ -508,33 +546,23 @@ def main():
     print(f"\nDomains ({len(domains_used)}): {domains_used}")
     print(f"Datasets with domain labels: {len(dataset_domain)}")
 
-    # Resolve model paths
+    # Resolve model paths (SAE checkpoints only — embeddings come from prebuilt data)
     base_sae = sae_sweep_dir()
-    base_emb = PROJECT_ROOT / "output" / "embeddings" / "tabarena"
 
     model_configs = []
-    emb_dirs = {}
-    for display_name, sweep_dir, emb_dir_name in DEFAULT_MODELS:
+    for display_name, sweep_dir, _ in DEFAULT_MODELS:
         sae_path = base_sae / sweep_dir / "sae_matryoshka_archetypal_validated.pt"
-        emb_dir = base_emb / emb_dir_name
         if not sae_path.exists():
             print(f"  Warning: SAE not found for {display_name}: {sae_path}")
             continue
-        if not emb_dir.exists():
-            print(f"  Warning: embeddings not found for {display_name}: {emb_dir}")
+        # Verify prebuilt data exists
+        base = _MODEL_BASE_NAMES.get(display_name, display_name.lower())
+        if not list(PREBUILT_DIR.glob(f"{base}_layer*_sae_training.npz")):
+            print(f"  Warning: no prebuilt data for {display_name}")
             continue
-        model_configs.append((display_name, sae_path, emb_dir))
-        emb_dirs[display_name] = emb_dir
+        model_configs.append((display_name, sae_path))
 
-    # Find common datasets across all models
-    common_datasets = find_common_datasets(emb_dirs)
-    print(f"Common datasets across {len(emb_dirs)} models: {len(common_datasets)}")
-
-    # Filter to datasets that have domain labels (excluding singletons)
-    domain_datasets = [ds for ds in common_datasets if ds in dataset_domain]
-    excluded = [ds for ds in common_datasets if ds not in dataset_domain]
-    print(f"Datasets with domain labels: {len(domain_datasets)} "
-          f"(excluded {len(excluded)}: {excluded})")
+    print(f"Models: {[m[0] for m in model_configs]}")
 
     # Matryoshka cumulative scales: derived per-model from config below
     cumulative_scales = None  # set from first model's config
@@ -544,7 +572,7 @@ def main():
     all_r2 = {}
     all_taxonomy = {}
 
-    for display_name, sae_path, emb_dir in model_configs:
+    for display_name, sae_path in model_configs:
         print(f"\n--- {display_name} ---")
 
         # Load SAE
@@ -564,25 +592,34 @@ def main():
             cumulative_scales = scales
             print(f"  Matryoshka scales: {scales}")
 
-        # Pool embeddings with offset tracking
-        pooled, offsets = pool_embeddings_with_offsets(
-            emb_dir, domain_datasets, max_per_dataset=500
+        # Load prebuilt test data (same extraction pipeline as SAE training)
+        test_emb, centering_mean, _, offsets, source_ds = load_prebuilt_sae_data(
+            display_name
         )
-        print(f"  Pooled: {pooled.shape[0]} samples × {pooled.shape[1]} dims")
+        print(f"  Test data: {test_emb.shape[0]} samples × {test_emb.shape[1]} dims")
+        print(f"  Source datasets: {len(source_ds)}")
 
-        # Compute activations from raw embeddings (BatchNorm handles normalization)
-        activations = compute_activations(model, pooled)
+        # Filter offsets to datasets with domain labels
+        domain_offsets = {
+            ds: span for ds, span in offsets.items() if ds in dataset_domain
+        }
+        excluded = [ds for ds in offsets if ds not in dataset_domain]
+        if excluded:
+            print(f"  Excluded (no domain label): {excluded}")
+
+        # Compute activations with training centering
+        activations = compute_centered_activations(model, test_emb, centering_mean)
         alive = (activations.max(axis=0) > 0.001).sum()
         print(f"  Activations: {activations.shape}, alive={alive}/{activations.shape[1]}")
 
         # Build domain → row indices
-        domain_row_indices = build_domain_row_indices(offsets, dataset_domain)
+        domain_row_indices = build_domain_row_indices(domain_offsets, dataset_domain)
         for d, idx in sorted(domain_row_indices.items()):
             print(f"    {d}: {len(idx)} rows")
 
-        # Layer 0: Domain reconstruction FVE (full forward pass, BN-normalized space)
+        # Layer 0: Domain reconstruction FVE
         r2 = compute_domain_reconstruction_fve(
-            model, pooled, domain_row_indices, scales,
+            model, test_emb, domain_row_indices, scales, centering_mean,
         )
         all_r2[display_name] = r2
         for domain in sorted(r2.keys()):
@@ -605,7 +642,7 @@ def main():
 
         # Layer 2: Data-driven domain taxonomy
         taxonomy = compute_domain_taxonomy_agreement(
-            activations, offsets, dataset_domain
+            activations, domain_offsets, dataset_domain
         )
         all_taxonomy[display_name] = taxonomy
         print(f"  Taxonomy: ARI={taxonomy['ari']:.3f}, NMI={taxonomy['nmi']:.3f}")
@@ -617,8 +654,7 @@ def main():
             "n_models": len(model_configs),
             "n_domains": len(domains_used),
             "domains": domains_used,
-            "n_datasets": len(domain_datasets),
-            "excluded_datasets": excluded,
+            "data_source": "output/sae_training_round5 (prebuilt test split)",
             "cumulative_scales": cumulative_scales,
         },
         "reconstruction_r2": all_r2,

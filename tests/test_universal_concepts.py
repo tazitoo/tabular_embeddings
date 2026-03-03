@@ -17,7 +17,7 @@ from scripts.section43.universal_concepts import (
     DOMAIN_MERGES,
     EXCLUDED_DOMAINS,
     build_domain_row_indices,
-    compute_domain_reconstruction_r2,
+    compute_domain_reconstruction_fve,
     compute_domain_taxonomy_agreement,
     compute_feature_selectivity,
     load_domain_taxonomy,
@@ -181,62 +181,62 @@ class TestFeatureSelectivity:
 
 
 # ---------------------------------------------------------------------------
-# Tests for compute_domain_reconstruction_r2
+# Tests for compute_domain_reconstruction_fve
 # ---------------------------------------------------------------------------
 
-class TestDomainReconstructionR2:
+class TestDomainReconstructionFVE:
     def test_perfect_reconstruction(self):
-        """When decode gives back the input, R² should be ~1.0."""
-        n = 100
-        dim = 8
-        x_true = np.random.randn(n, dim).astype(np.float32)
-
-        mock_model = MagicMock()
-        mock_model.decode.return_value = torch.tensor(x_true)
-
-        domain_idx = {"A": np.arange(n)}
-        result = compute_domain_reconstruction_r2(
-            mock_model, np.zeros((n, 16)), x_true, domain_idx, [16]
-        )
-        assert abs(result["A"][16] - 1.0) < 1e-5
-
-    def test_zero_reconstruction(self):
-        """When decode returns zeros, R² should be negative."""
-        n = 100
-        dim = 8
-        np.random.seed(0)
-        x_true = np.random.randn(n, dim).astype(np.float32)
-
-        mock_model = MagicMock()
-        mock_model.decode.return_value = torch.zeros(n, dim)
-
-        domain_idx = {"A": np.arange(n)}
-        result = compute_domain_reconstruction_r2(
-            mock_model, np.zeros((n, 16)), x_true, domain_idx, [16]
-        )
-        assert result["A"][16] < 0
-
-    def test_multiple_scales(self):
-        """R² should improve with more features (higher scale)."""
+        """When SAE reconstructs perfectly, FVE at full scale should be 1.0."""
+        np.random.seed(42)
         n = 200
         dim = 8
-        np.random.seed(42)
-        x_true = np.random.randn(n, dim).astype(np.float32)
-
-        # Simulate: small scale = noisy, full scale = exact
-        def mock_decode(h, max_dim=None):
-            if max_dim == 4:
-                return torch.tensor(x_true * 0.5 + 0.5 * np.random.randn(n, dim).astype(np.float32))
-            return torch.tensor(x_true)
+        # Create data with non-trivial structure (domain mean != 0)
+        x_raw = np.random.randn(n, dim).astype(np.float32) + 2.0
+        centering_mean = x_raw.mean(axis=0)
+        x_centered = x_raw - centering_mean
 
         mock_model = MagicMock()
+        mock_model.eval.return_value = None
+        mock_model.encode.return_value = torch.randn(n, 16)
+        # decode returns the centered input exactly
+        mock_model.decode.return_value = torch.tensor(x_centered)
+
+        domain_idx = {"A": np.arange(n)}
+        result = compute_domain_reconstruction_fve(
+            mock_model, x_raw, domain_idx, [16], centering_mean
+        )
+        assert abs(result["A"][16] - 1.0) < 1e-4
+
+    def test_null_reconstruction_gives_zero(self):
+        """When SAE output equals domain mean, FVE should be 0."""
+        np.random.seed(42)
+        n = 200
+        dim = 8
+        x_raw = np.random.randn(n, dim).astype(np.float32) + 2.0
+        centering_mean = x_raw.mean(axis=0)
+        x_centered = x_raw - centering_mean
+        domain_mean = x_centered.mean(axis=0)
+
+        mock_model = MagicMock()
+        mock_model.eval.return_value = None
+        mock_model.encode.return_value = torch.randn(n, 16)
+
+        # Full decode: returns domain mean (same as null model)
+        full_out = torch.tensor(
+            np.tile(domain_mean, (n, 1)).astype(np.float32)
+        )
+
+        def mock_decode(h):
+            return full_out
+
         mock_model.decode.side_effect = mock_decode
 
         domain_idx = {"A": np.arange(n)}
-        result = compute_domain_reconstruction_r2(
-            mock_model, np.zeros((n, 16)), x_true, domain_idx, [4, 16]
+        result = compute_domain_reconstruction_fve(
+            mock_model, x_raw, domain_idx, [16], centering_mean
         )
-        assert result["A"][16] > result["A"][4]
+        # denom ≈ 0 → all FVE = 0
+        assert result["A"][16] == 0.0
 
 
 # ---------------------------------------------------------------------------
