@@ -28,7 +28,13 @@ OUTPUT_DIR = PROJECT_ROOT / "output" / "paper_figures" / "appendix_d"
 # Plotting constants
 # ---------------------------------------------------------------------------
 
-MODEL_ORDER = ["TabPFN", "CARTE", "TabICL", "TabDPT", "Mitra", "HyperFast", "Tabula-8B"]
+# Architecture clusters, then by descending full-scale R²
+MODEL_ORDER = [
+    # Transformers (ICL)
+    "Mitra", "TabPFN", "TabICL", "TabDPT",
+    # Non-transformers
+    "CARTE", "HyperFast", "Tabula-8B",
+]
 
 DOMAIN_COLORS = {
     "Business & Marketing": "#1b9e77",
@@ -37,6 +43,15 @@ DOMAIN_COLORS = {
     "Healthcare & Life Sciences": "#e7298a",
     "Engineering & Industry": "#66a61e",
     "Technology & Security": "#e6ab02",
+}
+
+DOMAIN_MARKERS = {
+    "Business & Marketing": "o",
+    "Finance & Insurance": "s",
+    "Science & Materials": "^",
+    "Healthcare & Life Sciences": "D",
+    "Engineering & Industry": "v",
+    "Technology & Security": "P",
 }
 
 DOMAIN_SHORT = {
@@ -99,11 +114,14 @@ def make_reconstruction_figure(
 
             short = DOMAIN_SHORT.get(domain, domain)
             color = DOMAIN_COLORS[domain]
-            ax.plot(range(len(scales)), vals, 'o-', color=color, label=short,
-                    markersize=3, linewidth=1.2, zorder=3)
+            marker = DOMAIN_MARKERS.get(domain, "o")
+            ax.plot(range(len(scales)), vals, marker=marker, linestyle='-',
+                    color=color, label=short,
+                    markersize=4, linewidth=1.2, zorder=3)
 
         ax.set_title(model_name, fontsize=9, fontweight='bold')
-        ax.set_ylim(0.9, 1.005)
+        ax.set_ylim(0.80, 1.005)
+        ax.yaxis.grid(True, linewidth=0.3, color='#cccccc', zorder=0)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.tick_params(labelsize=7)
