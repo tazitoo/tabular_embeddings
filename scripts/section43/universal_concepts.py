@@ -167,34 +167,37 @@ def build_domain_row_indices(
 # Layer 0: Domain reconstruction R²
 # ---------------------------------------------------------------------------
 
-def compute_domain_reconstruction_r2(
-    model, activations: np.ndarray, pooled_raw: np.ndarray,
+def compute_domain_reconstruction_fve(
+    model, pooled_raw: np.ndarray,
     domain_row_indices: Dict[str, np.ndarray],
     scales: List[int],
 ) -> Dict[str, Dict[int, float]]:
     """
-    R² of SAE reconstruction per domain at each Matryoshka scale.
+    Fraction of variance explained by SAE reconstruction, per domain per scale.
 
-    With BatchNorm in the SAE:
-    - Pass raw embeddings through model.bn() to get normalized inputs
-    - Compare against decoder outputs (which are in same normalized space)
-    - This ensures fair comparison in BatchNorm-normalized space
+    Uses full forward pass (encode→decode) matching training, then measures
+    FVE = 1 - ||x_bn - x_hat||² / ||x_bn - mean(x_bn)||² in BN-normalized space.
+    For truncated scales, zeroes out activations beyond max_dim before decoding.
     """
+    model.eval()
     results = {}
     for domain, indices in domain_row_indices.items():
         results[domain] = {}
-        # Get BatchNorm-normalized inputs for this domain
         with torch.no_grad():
             x_raw = torch.tensor(pooled_raw[indices], dtype=torch.float32)
-            x_true = model.bn(x_raw).numpy()  # Apply learned normalization
-        h_domain = torch.tensor(activations[indices], dtype=torch.float32)
-        for scale in scales:
-            with torch.no_grad():
-                x_hat = model.decode(h_domain, max_dim=scale).numpy()
-            ss_res = np.sum((x_true - x_hat) ** 2)
-            ss_tot = np.sum((x_true - x_true.mean(axis=0)) ** 2)
-            r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-            results[domain][scale] = float(r2)
+            x_bn = model.bn(x_raw)
+            h = model.encode(x_raw)
+            ss_tot = ((x_bn - x_bn.mean(dim=0)) ** 2).sum().item()
+            if ss_tot == 0:
+                for scale in scales:
+                    results[domain][scale] = 0.0
+                continue
+            for scale in scales:
+                h_trunc = h.clone()
+                h_trunc[:, scale:] = 0.0
+                x_hat = model.decode(h_trunc)
+                ss_res = ((x_bn - x_hat) ** 2).sum().item()
+                results[domain][scale] = float(1.0 - ss_res / ss_tot)
     return results
 
 
@@ -443,7 +446,7 @@ def make_reconstruction_figure(
 
         # Only show y-labels on leftmost column
         if mi % ncols == 0:
-            ax.set_ylabel('Reconstruction R²', fontsize=8)
+            ax.set_ylabel('Fraction of variance explained', fontsize=8)
 
     # Hide unused subplots
     for mi in range(n_models, len(axes)):
@@ -561,10 +564,9 @@ def main():
         for d, idx in sorted(domain_row_indices.items()):
             print(f"    {d}: {len(idx)} rows")
 
-        # Layer 0: Domain reconstruction R² (using raw embeddings, BatchNorm in model handles normalization)
-        r2 = compute_domain_reconstruction_r2(
-            model, activations, pooled,  # Pass raw embeddings
-            domain_row_indices, scales,
+        # Layer 0: Domain reconstruction FVE (full forward pass, BN-normalized space)
+        r2 = compute_domain_reconstruction_fve(
+            model, pooled, domain_row_indices, scales,
         )
         all_r2[display_name] = r2
         for domain in sorted(r2.keys()):
