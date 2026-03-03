@@ -182,11 +182,16 @@ def compute_domain_reconstruction_fve(
     first `scale` features. Goes from ~0 (S1) to 1.0 (full) monotonically.
     """
     model.eval()
+
+    # Center all embeddings to match training (train_sae centers X before fitting)
+    all_raw = torch.tensor(pooled_raw, dtype=torch.float32)
+    global_mean = all_raw.mean(dim=0)
+
     results = {}
     for domain, indices in domain_row_indices.items():
         results[domain] = {}
         with torch.no_grad():
-            x = torch.tensor(pooled_raw[indices], dtype=torch.float32)
+            x = torch.tensor(pooled_raw[indices], dtype=torch.float32) - global_mean
             h = model.encode(x)
 
             # Null model: predict domain mean
