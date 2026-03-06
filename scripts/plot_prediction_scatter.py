@@ -561,7 +561,11 @@ def plot_perrow_results(
     output_path: Path,
     action: str = "ablating",
 ):
-    """Plot per-row results: histogram + cumulative coverage curve."""
+    """Plot per-row results: histogram + cumulative coverage curve.
+
+    Filters to fixable rows (optimal_k > 0) so the distribution shows
+    the actual concept counts needed, not dominated by rows with no gap.
+    """
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
 
     verb = "transferred" if action == "transferring" else "ablated"
@@ -572,34 +576,37 @@ def plot_perrow_results(
     # For ablation: ablate_model = model being modified, other_model = reference
     disp_abl = DISPLAY_NAMES.get(ablate_model, ablate_model)
     disp_oth = DISPLAY_NAMES.get(other_model, other_model)
-    n_query = len(optimal_k)
+    n_total = len(optimal_k)
 
-    # --- Left: histogram of per-row optimal k ---
+    # Filter to fixable rows (optimal_k > 0)
+    fixable = optimal_k > 0
+    n_fixable = int(fixable.sum())
+    ok_fixable = optimal_k[fixable]
+
+    if n_fixable == 0:
+        logger.warning("No fixable rows — skipping per-row results plot.")
+        plt.close(fig)
+        return
+
+    # --- Left: histogram of per-row optimal k (fixable rows only) ---
     ax = axes[0]
-    max_k = int(optimal_k.max())
-    bins = np.arange(-0.5, max_k + 1.5, 1)
-    ax.hist(optimal_k, bins=bins, color="#0072B2", edgecolor="white", alpha=0.8)
-    ax.axvline(np.median(optimal_k), color="#D55E00", ls="--", lw=1.5,
-               label=f"median = {np.median(optimal_k):.0f}")
-    ax.axvline(optimal_k.mean(), color="#E69F00", ls=":", lw=1.5,
-               label=f"mean = {optimal_k.mean():.1f}")
+    max_k = int(ok_fixable.max())
+    bins = np.arange(0.5, max_k + 1.5, 1)  # start at 0.5 since k >= 1
+    ax.hist(ok_fixable, bins=bins, color="#0072B2", edgecolor="white", alpha=0.8)
+    ax.axvline(np.median(ok_fixable), color="#D55E00", ls="--", lw=1.5,
+               label=f"median = {np.median(ok_fixable):.0f}")
+    ax.axvline(ok_fixable.mean(), color="#E69F00", ls=":", lw=1.5,
+               label=f"mean = {ok_fixable.mean():.1f}")
     ax.set_xlabel(f"{concept_label} (per-row optimal k)", fontsize=10)
     ax.set_ylabel("Number of rows", fontsize=10)
-    ax.set_title(f"{dataset}: per-row concept count", fontsize=10)
+    ax.set_title(f"{dataset}: per-row concept count ({n_fixable}/{n_total} fixable)",
+                 fontsize=10)
     ax.legend(fontsize=8)
 
-    # Annotate k=0 bar
-    n_zero = int((optimal_k == 0).sum())
-    if n_zero > 0:
-        ax.annotate(f"k=0: {n_zero} rows\n(no gap or reversed)",
-                    xy=(0, n_zero), xytext=(max(2, max_k * 0.3), n_zero * 0.8),
-                    fontsize=7, color="#555555",
-                    arrowprops=dict(arrowstyle="->", color="#999999"))
-
-    # --- Right: cumulative coverage curve ---
+    # --- Right: cumulative coverage curve (fixable rows only) ---
     ax = axes[1]
-    ks = np.arange(0, max_k + 1)
-    coverage = np.array([(optimal_k <= k).mean() for k in ks])
+    ks = np.arange(1, max_k + 1)
+    coverage = np.array([(ok_fixable <= k).mean() for k in ks])
     ax.plot(ks, coverage * 100, color="#0072B2", lw=2)
     ax.fill_between(ks, 0, coverage * 100, alpha=0.1, color="#0072B2")
     ax.axhline(50, color="#999999", ls=":", lw=0.8, alpha=0.6)
@@ -616,10 +623,10 @@ def plot_perrow_results(
                 xytext=(8, -5), fontsize=8, color="#D55E00")
 
     ax.set_xlabel(f"Max concepts {verb} (k)", fontsize=10)
-    ax.set_ylabel(f"% rows where gap to {disp_oth} is closed", fontsize=10)
+    ax.set_ylabel(f"% fixable rows covered", fontsize=10)
     ax.set_title(f"{dataset}: cumulative coverage", fontsize=10)
     ax.set_ylim(0, 105)
-    ax.set_xlim(-0.5, max_k + 0.5)
+    ax.set_xlim(0.5, max_k + 0.5)
 
     # Feature frequency: which features appear most often in per-row explanations?
     from collections import Counter
@@ -630,7 +637,7 @@ def plot_perrow_results(
     if feat_counts:
         top5 = feat_counts.most_common(5)
         text = "Top features (by row frequency):\n"
-        text += "\n".join(f"  f{f}: {c}/{n_query} rows ({100*c/n_query:.0f}%)"
+        text += "\n".join(f"  f{f}: {c}/{n_fixable} rows ({100*c/n_fixable:.0f}%)"
                           for f, c in top5)
         ax.text(0.98, 0.05, text, transform=ax.transAxes, fontsize=7,
                 va="bottom", ha="right", family="monospace",
