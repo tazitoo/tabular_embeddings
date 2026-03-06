@@ -149,8 +149,17 @@ def get_active_feature_count(model_key: str, dataset: str) -> int:
     return -1
 
 
-def get_unmatched_features(model_a: str, model_b: str, dataset: str) -> list:
-    """Get all unmatched features with positive drop for model_a (not in model_b).
+def get_unmatched_features(
+    model_a: str, model_b: str, dataset: str,
+    positive_only: bool = True,
+) -> list:
+    """Get unmatched features for model_a (not in model_b).
+
+    Args:
+        positive_only: If True, only return features with positive ablation drop.
+            Use True for ablation (no point ablating zero-drop features).
+            Use False for transfer (weak model may benefit from features the
+            strong model doesn't rely on).
 
     Returns list of (feature_index, drop) sorted by drop descending.
     """
@@ -174,7 +183,9 @@ def get_unmatched_features(model_a: str, model_b: str, dataset: str) -> list:
         feat_key, drop_key = "feat_b", "drop_b"
 
     ranked = sorted(unmatched, key=lambda u: -u[drop_key])
-    return [(u[feat_key], u[drop_key]) for u in ranked if u[drop_key] > 0]
+    if positive_only:
+        ranked = [u for u in ranked if u[drop_key] > 0]
+    return [(u[feat_key], u[drop_key]) for u in ranked]
 
 
 def _logloss(y_true: np.ndarray, p1: np.ndarray) -> float:
@@ -266,8 +277,9 @@ def plot_logloss_curve(
     other_model: str,
     dataset: str,
     output_path: Path,
+    action: str = "ablating",
 ):
-    """Plot logloss vs number of ablated features, with target line."""
+    """Plot logloss vs number of ablated/transferred features, with target line."""
     fig, ax = plt.subplots(1, 1, figsize=(8, 4))
 
     ks = np.arange(1, len(logloss_curve) + 1)
@@ -275,6 +287,9 @@ def plot_logloss_curve(
 
     disp_abl = DISPLAY_NAMES.get(ablate_model, ablate_model)
     disp_oth = DISPLAY_NAMES.get(other_model, other_model)
+
+    # Past participle for axis label: "ablating" → "ablated", "transferring" → "transferred"
+    action_pp = action.rstrip("ing") + "ed" if action.endswith("ing") else action
 
     ax.axhline(baseline_logloss, color="gray", ls="--", lw=1,
                label=f"{disp_abl} logloss={baseline_logloss:.3f}")
@@ -284,9 +299,11 @@ def plot_logloss_curve(
                label=f"optimal k={optimal_k}")
     ax.plot(optimal_k, logloss_curve[optimal_k - 1], "o", color="#D55E00", ms=8, zorder=5)
 
-    ax.set_xlabel(f"Number of {disp_abl}-only concepts ablated", fontsize=10)
+    # Ablation removes ablate_model's concepts; transfer injects other_model's concepts
+    concept_owner = disp_oth if action == "transferring" else disp_abl
+    ax.set_xlabel(f"Number of {concept_owner}-only concepts {action_pp}", fontsize=10)
     ax.set_ylabel("Logloss", fontsize=10)
-    ax.set_title(f"{dataset}: ablating {disp_abl}-only concepts", fontsize=10)
+    ax.set_title(f"{dataset}: {action} {concept_owner}-only concepts", fontsize=10)
     ax.legend(fontsize=8)
 
     # Annotate top features near the curve
@@ -542,10 +559,17 @@ def plot_perrow_results(
     other_model: str,
     dataset: str,
     output_path: Path,
+    action: str = "ablating",
 ):
-    """Plot per-row ablation results: histogram + cumulative coverage curve."""
+    """Plot per-row results: histogram + cumulative coverage curve."""
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
 
+    verb = "transferred" if action == "transferring" else "ablated"
+    verb_ing = "Transferring" if action == "transferring" else "Ablating"
+    concept_label = f"Concepts {verb}"
+
+    # For transfer: ablate_model = concept owner (source), other_model = model being modified (target)
+    # For ablation: ablate_model = model being modified, other_model = reference
     disp_abl = DISPLAY_NAMES.get(ablate_model, ablate_model)
     disp_oth = DISPLAY_NAMES.get(other_model, other_model)
     n_query = len(optimal_k)
@@ -559,7 +583,7 @@ def plot_perrow_results(
                label=f"median = {np.median(optimal_k):.0f}")
     ax.axvline(optimal_k.mean(), color="#E69F00", ls=":", lw=1.5,
                label=f"mean = {optimal_k.mean():.1f}")
-    ax.set_xlabel(f"Concepts ablated (per-row optimal k)", fontsize=10)
+    ax.set_xlabel(f"{concept_label} (per-row optimal k)", fontsize=10)
     ax.set_ylabel("Number of rows", fontsize=10)
     ax.set_title(f"{dataset}: per-row concept count", fontsize=10)
     ax.legend(fontsize=8)
@@ -591,7 +615,7 @@ def plot_perrow_results(
     ax.annotate(f"k={k90}", (k90, 90), textcoords="offset points",
                 xytext=(8, -5), fontsize=8, color="#D55E00")
 
-    ax.set_xlabel(f"Max concepts ablated (k)", fontsize=10)
+    ax.set_xlabel(f"Max concepts {verb} (k)", fontsize=10)
     ax.set_ylabel(f"% rows where gap to {disp_oth} is closed", fontsize=10)
     ax.set_title(f"{dataset}: cumulative coverage", fontsize=10)
     ax.set_ylim(0, 105)
@@ -612,7 +636,7 @@ def plot_perrow_results(
                 va="bottom", ha="right", family="monospace",
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
 
-    fig.suptitle(f"Ablating {disp_abl}-only concepts → matching {disp_oth}",
+    fig.suptitle(f"{verb_ing} {disp_abl}-only concepts → matching {disp_oth}",
                  fontsize=11, y=1.02)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -653,13 +677,16 @@ def plot_perrow_scatter(
     auc_weak: float,
     output_path: Path,
     ablate_axis: str = "x",
+    action: str = "ablating",
 ):
     """Scatter showing only rows where the stronger model outperforms the weaker,
-    with original positions (open circles) and per-row ablated positions (filled).
+    with original positions (open circles) and per-row modified positions (filled).
 
     Filtered to rows where optimal_k > 0 (the stronger model genuinely has a
-    logloss advantage on that row, and ablation can close the gap).
+    logloss advantage on that row, and ablation/transfer can close the gap).
     """
+    verb = "Transferred" if action == "transferring" else "Ablated"
+    verb_lower = "transfer" if action == "transferring" else "ablation"
     fixable = optimal_k > 0
     n_fixable = fixable.sum()
     n_total = len(optimal_k)
@@ -724,11 +751,11 @@ def plot_perrow_scatter(
     color1 = "#D55E00"  # orange
     ax.scatter(abl_x[mask0], abl_y[mask0], c=color0,
                s=14, alpha=0.6, edgecolors="none",
-               label=f"Ablated class 0", zorder=4)
+               label=f"{verb} class 0", zorder=4)
     ax.scatter(abl_x[mask1], abl_y[mask1], c=color1,
                s=14, alpha=0.6, edgecolors="none",
                marker="s",
-               label=f"Ablated class 1", zorder=4)
+               label=f"{verb} class 1", zorder=4)
 
     # y=x reference
     ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.5, label="y = x")
@@ -748,7 +775,7 @@ def plot_perrow_scatter(
     ax.legend(fontsize=7, loc="upper left")
 
     ax.set_title(
-        f"{dataset} — per-row ablation ({n_fixable}/{n_total} fixable rows)\n"
+        f"{dataset} — per-row {verb_lower} ({n_fixable}/{n_total} fixable rows)\n"
         f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}\n"
         f"median k={np.median(ok):.0f}, mean k={ok.mean():.1f}",
         fontsize=9,

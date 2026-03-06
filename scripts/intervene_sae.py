@@ -231,6 +231,7 @@ def intervene_tabpfn(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    external_delta: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run TabPFN with SAE feature ablation at extraction layer.
 
@@ -238,6 +239,9 @@ def intervene_tabpfn(
     for predicting query samples, it matters equally for representing context
     samples the model attends to. Ablating only query lets the model recover
     via attention to intact context representations.
+
+    If external_delta is provided, skip SAE delta computation and inject it
+    directly (used by concept transfer from another model's SAE space).
 
     Returns dict with: baseline_preds, ablated_preds, y_query
     """
@@ -271,7 +275,10 @@ def intervene_tabpfn(
     all_emb = hidden_state[0].mean(dim=1)  # (seq_len, hidden)
 
     # --- Compute delta for all positions ---
-    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
+    if external_delta is not None:
+        delta = external_delta
+    else:
+        delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
     delta_broadcast = delta.unsqueeze(1)  # (seq_len, 1, hidden)
 
     # --- Pass 2: Inject delta at layer L output for all positions ---
@@ -453,6 +460,7 @@ def intervene_tabicl(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    external_delta: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run TabICL with SAE feature ablation at extraction layer.
 
@@ -465,6 +473,9 @@ def intervene_tabicl(
     making the pooled SAE unable to reconstruct with training-mean centering
     (R²=-1.2). Batch-mean centering gives R²=0.35 and genuine (though weaker)
     ablation effects that consistently outperform random noise controls.
+
+    If external_delta is provided, skip SAE delta computation and inject it
+    directly (used by concept transfer from another model's SAE space).
     """
     from tabicl import TabICLClassifier
 
@@ -499,7 +510,10 @@ def intervene_tabicl(
     batch_mean = all_emb.mean(dim=0)  # (512,)
 
     # --- Compute delta for all positions ---
-    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=batch_mean)
+    if external_delta is not None:
+        delta = external_delta
+    else:
+        delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=batch_mean)
     delta_broadcast = delta.unsqueeze(0)  # (1, seq_len, 512)
 
     # --- Pass 2: Inject delta at block L output for all positions ---
@@ -1318,12 +1332,13 @@ def intervene(
     y_context: np.ndarray,
     X_query: np.ndarray,
     y_query: np.ndarray,
-    ablate_features: List[int],
+    ablate_features: Optional[List[int]] = None,
     device: str = "cuda",
     task: str = "classification",
     sae_dir: Path = DEFAULT_SAE_DIR,
     layers_path: Path = DEFAULT_LAYERS_PATH,
     training_dir: Path = DEFAULT_TRAINING_DIR,
+    external_delta: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run a model with SAE feature ablation at its optimal extraction layer.
 
@@ -1331,12 +1346,14 @@ def intervene(
         model_key: One of 'tabpfn', 'mitra', 'tabicl', 'tabdpt', 'hyperfast'
         X_context, y_context: ICL context data
         X_query, y_query: Query data (y_query for evaluation only)
-        ablate_features: SAE feature indices to zero out
+        ablate_features: SAE feature indices to zero out (optional when external_delta given)
         device: Torch device
         task: 'classification' or 'regression'
         sae_dir: Path to SAE checkpoints
         layers_path: Path to optimal_extraction_layers.json
         training_dir: Path to SAE training data (for centering mean)
+        external_delta: Pre-computed delta to inject directly, skipping SAE computation.
+            Used by concept transfer to inject deltas translated from another model's space.
 
     Returns:
         Dict with 'baseline_preds', 'ablated_preds', 'y_query'
@@ -1344,13 +1361,28 @@ def intervene(
     if model_key not in INTERVENE_FN:
         raise ValueError(f"Unsupported model: {model_key}. Choose from {list(INTERVENE_FN.keys())}")
 
-    sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
-    extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
-    data_mean = load_training_mean(
-        model_key, training_dir=training_dir, layers_path=layers_path, device=device,
-    )
+    # Deterministic forward passes (TabPFN resamples context internally)
+    torch.manual_seed(42)
+    np.random.seed(42)
 
-    return INTERVENE_FN[model_key](
+    extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
+
+    if external_delta is not None:
+        # External delta provided — SAE not needed for delta computation.
+        # Still need a dummy sae/features for model-specific fn signature.
+        sae = None
+        if ablate_features is None:
+            ablate_features = []
+        data_mean = None
+    else:
+        sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
+        if ablate_features is None:
+            ablate_features = []
+        data_mean = load_training_mean(
+            model_key, training_dir=training_dir, layers_path=layers_path, device=device,
+        )
+
+    kwargs = dict(
         X_context=X_context,
         y_context=y_context,
         X_query=X_query,
@@ -1362,6 +1394,14 @@ def intervene(
         task=task,
         data_mean=data_mean,
     )
+
+    # Only pass external_delta to functions that support it
+    import inspect
+    fn = INTERVENE_FN[model_key]
+    if "external_delta" in inspect.signature(fn).parameters:
+        kwargs["external_delta"] = external_delta
+
+    return fn(**kwargs)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
