@@ -537,19 +537,9 @@ def perrow_sweep_transfer(
     # --- Phase 3: heterogeneous sweep (max_k forward passes) ---
     logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
     sae_hidden = h_encoded.shape[1]
-    ctx_source = emb_source[:-n_query]
     sweep_preds = []
 
     for k in range(1, max_k + 1):
-        # Context: transfer union of all features at this k
-        all_feats_k = set()
-        for r in rankings:
-            all_feats_k.update(r[:k])
-        ctx_delta = compute_transfer_delta(
-            sae_source, ctx_source, W, b,
-            list(all_feats_k), data_mean=data_mean,
-        )
-
         # Query: per-row transfer via feature masks
         masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
                             device=query_source.device)
@@ -561,7 +551,8 @@ def perrow_sweep_transfer(
             sae_source, query_source, W, b, masks, data_mean=data_mean,
         )
 
-        full_delta = torch.cat([ctx_delta, query_delta], dim=0)
+        # Context: mean query delta expanded to target's context length
+        full_delta = _build_full_delta(query_delta, n_total_target, n_query)
 
         result = intervene(
             model_key=target_model,
