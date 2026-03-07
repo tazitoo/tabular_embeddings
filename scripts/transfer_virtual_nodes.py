@@ -1142,8 +1142,7 @@ def main():
         args.dataset,
         auc_s, auc_t,
         fig_dir / "vnode_transfer_perrow_scatter.pdf",
-        ablate_axis="y",
-        action="transferring",
+        mode="transfer",
     )
 
     # Diagnostic: logloss distributions + concept budget + accept rate

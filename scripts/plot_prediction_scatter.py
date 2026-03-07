@@ -790,7 +790,7 @@ def extract_perrow_ablated_preds(
 def plot_perrow_scatter(
     preds_strong: np.ndarray,
     preds_weak: np.ndarray,
-    ablated_strong: np.ndarray,
+    preds_intervened: np.ndarray,
     optimal_k: np.ndarray,
     y_true: np.ndarray,
     model_strong: str,
@@ -799,17 +799,22 @@ def plot_perrow_scatter(
     auc_strong: float,
     auc_weak: float,
     output_path: Path,
-    ablate_axis: str = "x",
-    action: str = "ablating",
+    mode: str = "ablation",
 ):
-    """Scatter showing only rows where the stronger model outperforms the weaker,
-    with original positions (open circles) and per-row modified positions (filled).
+    """Scatter showing fixable rows with original (open) and intervened (filled).
 
-    Filtered to rows where optimal_k > 0 (the stronger model genuinely has a
-    logloss advantage on that row, and ablation/transfer can close the gap).
+    Convention: x = strong model, y = weak model, always.
+      - Ablation (mode="ablation"): strong model's predictions change.
+        Intervened points move LEFT toward the diagonal.
+      - Transfer (mode="transfer"): weak model's predictions change.
+        Intervened points move UP toward the diagonal.
+
+    Filtered to rows where optimal_k > 0.
     """
-    verb = "Transferred" if action == "transferring" else "Ablated"
-    verb_lower = "transfer" if action == "transferring" else "ablation"
+    is_transfer = mode == "transfer"
+    verb = "Intervened"
+    verb_lower = "transfer" if is_transfer else "ablation"
+
     fixable = optimal_k > 0
     n_fixable = fixable.sum()
     n_total = len(optimal_k)
@@ -823,7 +828,7 @@ def plot_perrow_scatter(
     # Filter to fixable rows
     ps = preds_strong[fixable]
     pw = preds_weak[fixable]
-    ab = ablated_strong[fixable]
+    pi = preds_intervened[fixable]
     yt = y_true[fixable]
     ok = optimal_k[fixable]
 
@@ -831,22 +836,21 @@ def plot_perrow_scatter(
     disp_w = DISPLAY_NAMES.get(model_weak, model_weak)
 
     fig, ax = plt.subplots(1, 1, figsize=(7, 7))
-    event_rate = y_true.mean()  # full dataset event rate
+    event_rate = y_true.mean()
 
-    # Axis assignments
-    if ablate_axis == "x":
-        orig_x, orig_y = ps, pw
-        abl_x, abl_y = ab, pw
-        xlabel = f"{disp_s}  P(class=1)"
-        ylabel = f"{disp_w}  P(class=1)"
+    # x = strong, y = weak, always.
+    # Ablation changes x (strong model weakened).
+    # Transfer changes y (weak model strengthened).
+    orig_x, orig_y = ps, pw
+    if is_transfer:
+        int_x, int_y = ps, pi  # y changes
     else:
-        orig_x, orig_y = pw, ps
-        abl_x, abl_y = pw, ab
-        xlabel = f"{disp_w}  P(class=1)"
-        ylabel = f"{disp_s}  P(class=1)"
+        int_x, int_y = pi, pw  # x changes
+    xlabel = f"{disp_s}  P(class=1)"
+    ylabel = f"{disp_w}  P(class=1)"
 
     # Auto-zoom
-    all_vals = np.concatenate([orig_x, orig_y, abl_x, abl_y])
+    all_vals = np.concatenate([orig_x, orig_y, int_x, int_y])
     lo = max(0, all_vals.min() - 0.02)
     hi = min(1, all_vals.max() + 0.02)
     hi = max(hi, event_rate + 0.02)
@@ -859,7 +863,7 @@ def plot_perrow_scatter(
     mask0 = yt == 0
     mask1 = yt == 1
 
-    # Original positions: open circles, faint gray
+    # Original positions: open markers, faint gray
     orig_color = "#999999"
     ax.scatter(orig_x[mask0], orig_y[mask0], facecolors="none",
                edgecolors=orig_color, s=14, alpha=0.5, linewidths=0.6,
@@ -869,13 +873,13 @@ def plot_perrow_scatter(
                marker="s",
                label=f"Original class 1 (n={mask1.sum()})", zorder=2)
 
-    # Ablated positions: filled, colored by class
+    # Intervened positions: filled, colored by class
     color0 = "#0072B2"  # blue
     color1 = "#D55E00"  # orange
-    ax.scatter(abl_x[mask0], abl_y[mask0], c=color0,
+    ax.scatter(int_x[mask0], int_y[mask0], c=color0,
                s=14, alpha=0.6, edgecolors="none",
                label=f"{verb} class 0", zorder=4)
-    ax.scatter(abl_x[mask1], abl_y[mask1], c=color1,
+    ax.scatter(int_x[mask1], int_y[mask1], c=color1,
                s=14, alpha=0.6, edgecolors="none",
                marker="s",
                label=f"{verb} class 1", zorder=4)
@@ -1097,7 +1101,7 @@ def main():
                 ablate_model, other_model, args.dataset,
                 auc_strong, auc_weak,
                 perrow_scatter_path,
-                ablate_axis=ablate_axis,
+                mode="ablation",
             )
 
             # Also run the dataset-level sweep for scatter + logloss curve

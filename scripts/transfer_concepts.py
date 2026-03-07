@@ -847,8 +847,7 @@ def main():
             args.dataset,
             auc_s, auc_t,
             fig_dir / "transfer_perrow_scatter.pdf",
-            ablate_axis="y",  # target is y-axis, transfer shifts it toward source
-            action="transferring",
+            mode="transfer",
         )
 
         # Diagnostic: logloss distributions + concept budget + accept rate
