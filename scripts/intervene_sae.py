@@ -1311,6 +1311,10 @@ def perrow_sweep_intervene(
             f"Choose from {list(PERROW_SWEEP_FN.keys())}"
         )
 
+    # Deterministic forward passes (match intervene() seeding)
+    torch.manual_seed(42)
+    np.random.seed(42)
+
     sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
     extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
     data_mean = load_training_mean(
