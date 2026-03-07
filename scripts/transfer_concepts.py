@@ -534,24 +534,34 @@ def perrow_sweep_transfer(
     max_k = max((len(r) for r in rankings), default=0)
     logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
 
-    # --- Phase 3: heterogeneous sweep (max_k forward passes) ---
-    logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
+    # --- Phase 3: selective sweep (max_k forward passes) ---
+    # Unlike ablation's cumulative sweep, transfer is selective: at each step k,
+    # tentatively add the k-th ranked feature and keep it only if it improves
+    # that row's logloss. This avoids accumulating noisy concepts.
+    logger.info("Phase 3: selective sweep k=1..%d...", max_k)
     sae_hidden = h_encoded.shape[1]
     sweep_preds = []
+    eps = 1e-7
+    y = y_q.astype(float)
+
+    # Track accepted masks and current-best logloss per row
+    accepted_masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
+                                 device=query_source.device)
+    # Baseline logloss per row
+    bp1 = baseline_np[:, 1] if baseline_np.ndim == 2 else baseline_np
+    bp_clipped = np.clip(bp1, eps, 1 - eps)
+    best_ll = -(y * np.log(bp_clipped) + (1 - y) * np.log(1 - bp_clipped))
 
     for k in range(1, max_k + 1):
-        # Query: per-row transfer via feature masks
-        masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
-                            device=query_source.device)
+        # Build tentative masks: accepted + k-th ranked feature per row
+        tentative_masks = accepted_masks.clone()
         for row_idx in range(n_query):
-            feats = rankings[row_idx][:k]
-            if feats:
-                masks[row_idx, feats] = True
-        query_delta = compute_transfer_delta_perrow(
-            sae_source, query_source, W, b, masks, data_mean=data_mean,
-        )
+            if k - 1 < len(rankings[row_idx]):
+                tentative_masks[row_idx, rankings[row_idx][k - 1]] = True
 
-        # Context: mean query delta expanded to target's context length
+        query_delta = compute_transfer_delta_perrow(
+            sae_source, query_source, W, b, tentative_masks, data_mean=data_mean,
+        )
         full_delta = _build_full_delta(query_delta, n_total_target, n_query)
 
         result = intervene(
@@ -562,14 +572,50 @@ def perrow_sweep_transfer(
             device=device, task=task,
             layers_path=layers_path,
         )
-        sweep_preds.append(result["ablated_preds"])
+        preds_k = result["ablated_preds"]
+
+        # Per-row accept/reject: keep feature only if logloss improved
+        p1_k = preds_k[:, 1] if preds_k.ndim == 2 else preds_k
+        p_clipped = np.clip(p1_k, eps, 1 - eps)
+        ll_k = -(y * np.log(p_clipped) + (1 - y) * np.log(1 - p_clipped))
+
+        for row_idx in range(n_query):
+            if ll_k[row_idx] < best_ll[row_idx] - 1e-8:
+                # Accept: update mask and best logloss
+                accepted_masks[row_idx] = tentative_masks[row_idx]
+                best_ll[row_idx] = ll_k[row_idx]
+
+        # Record tentative preds (for diagnostic trajectory visualization)
+        sweep_preds.append(preds_k)
+
+    n_accepted = accepted_masks.sum(dim=1)
+    logger.info("Selective sweep: mean %.1f, median %.0f, max %d concepts accepted/row",
+                n_accepted.float().mean(), n_accepted.float().median(),
+                int(n_accepted.max()))
+
+    # Final accepted predictions: one forward pass with the accepted masks
+    query_delta_final = compute_transfer_delta_perrow(
+        sae_source, query_source, W, b, accepted_masks, data_mean=data_mean,
+    )
+    full_delta_final = _build_full_delta(query_delta_final, n_total_target, n_query)
+    result_final = intervene(
+        model_key=target_model,
+        X_context=X_ctx, y_context=y_ctx,
+        X_query=X_q, y_query=y_q,
+        external_delta=full_delta_final.to(device),
+        device=device, task=task,
+        layers_path=layers_path,
+    )
 
     return {
         "baseline_preds": baseline_np,
         "perrow_importance": importance,
         "perrow_rankings": rankings,
         "sweep_preds": sweep_preds,
+        "accepted_preds": result_final["ablated_preds"],
+        "accepted_counts": n_accepted.cpu().numpy(),
         "max_k_per_row": np.array([len(r) for r in rankings]),
+        "accepted_masks": accepted_masks.cpu(),
         "query_activations": query_acts,
         "unmatched_features": list(feat_indices),
         "source_preds": source_preds,
@@ -587,13 +633,11 @@ def find_per_row_optimal_transfer(
     target_baseline_preds: np.ndarray,
     y_query: np.ndarray,
 ) -> Dict:
-    """Find per-row optimal k for transfer (reversed gap from ablation).
+    """Compute per-row gap closed using selective transfer results.
 
-    For each row, the gap is baseline_row_ll - target_row_ll where:
-    - target_row_ll = source (strong) model's per-row logloss (the goal)
-    - baseline_row_ll = target (weak) model's per-row logloss before transfer
-
-    Positive gap = weak model is worse on this row → transfer can help.
+    With selective transfer, Phase 3 already determined the optimal set per row
+    (accepted_counts). This function computes the gap-closed metric and packages
+    results for plotting.
     """
     eps = 1e-7
     y = y_query.astype(float)
@@ -608,40 +652,28 @@ def find_per_row_optimal_transfer(
     bp = np.clip(bp1, eps, 1 - eps)
     baseline_row_ll = -(y * np.log(bp) + (1 - y) * np.log(1 - bp))
 
-    n_query = len(y_query)
-    optimal_k = np.zeros(n_query, dtype=int)
-    row_gap_closed = np.zeros(n_query)
+    # Accepted predictions — the final state after selective accept/reject
+    ap = perrow_result["accepted_preds"]
+    ap1 = ap[:, 1] if ap.ndim == 2 else ap
+    ap_clipped = np.clip(ap1, eps, 1 - eps)
+    accepted_row_ll = -(y * np.log(ap_clipped) + (1 - y) * np.log(1 - ap_clipped))
 
+    # optimal_k = number of concepts accepted per row
+    optimal_k = perrow_result["accepted_counts"].astype(int)
+
+    n_query = len(y_query)
+    row_gap_closed = np.zeros(n_query)
     for row_idx in range(n_query):
         orig_gap = baseline_row_ll[row_idx] - target_row_ll[row_idx]
         if orig_gap <= 0:
-            # Weak model already equal or better on this row — no transfer needed
-            optimal_k[row_idx] = 0
             row_gap_closed[row_idx] = 1.0
-            continue
+        else:
+            gap_remaining = abs(accepted_row_ll[row_idx] - target_row_ll[row_idx])
+            row_gap_closed[row_idx] = 1.0 - gap_remaining / orig_gap
 
-        max_k_row = perrow_result["max_k_per_row"][row_idx]
-        best_k = 0
-        best_gap_remaining = orig_gap
-
-        for k in range(1, max_k_row + 1):
-            if k - 1 >= len(perrow_result["sweep_preds"]):
-                break
-            preds_k = perrow_result["sweep_preds"][k - 1]
-            p1 = preds_k[row_idx, 1] if preds_k.ndim == 2 else preds_k[row_idx]
-            p = np.clip(float(p1), eps, 1 - eps)
-            row_ll = -(y[row_idx] * np.log(p) + (1 - y[row_idx]) * np.log(1 - p))
-            gap_remaining = abs(row_ll - target_row_ll[row_idx])
-            if gap_remaining < best_gap_remaining:
-                best_gap_remaining = gap_remaining
-                best_k = k
-
-        optimal_k[row_idx] = best_k
-        row_gap_closed[row_idx] = 1.0 - best_gap_remaining / orig_gap if orig_gap > 0 else 1.0
-
-    logger.info("Per-row optimal k: mean=%.1f, median=%d, max=%d",
+    logger.info("Per-row accepted concepts: mean=%.1f, median=%d, max=%d",
                 optimal_k.mean(), np.median(optimal_k), optimal_k.max())
-    logger.info("Rows needing 0 concepts: %d (%.1f%%)",
+    logger.info("Rows with 0 concepts accepted: %d (%.1f%%)",
                 (optimal_k == 0).sum(), 100 * (optimal_k == 0).mean())
 
     return {
@@ -651,6 +683,7 @@ def find_per_row_optimal_transfer(
         "perrow_importance": perrow_result["perrow_importance"],
         "sweep_preds": perrow_result["sweep_preds"],
         "baseline_preds": perrow_result["baseline_preds"],
+        "accepted_preds": perrow_result["accepted_preds"],
         "max_k_per_row": perrow_result["max_k_per_row"],
         "target_row_ll": target_row_ll,
         "baseline_row_ll": baseline_row_ll,
@@ -747,7 +780,6 @@ def main():
     # ── Per-row transfer mode ───────────────────────────────────────────────
     if args.perrow:
         from scripts.plot_prediction_scatter import (
-            extract_perrow_ablated_preds,
             plot_perrow_diagnostic,
             plot_perrow_results,
             plot_perrow_scatter,
@@ -777,12 +809,9 @@ def main():
             perrow_result, source_preds, target_preds, y_q,
         )
 
-        # Extract per-row transferred predictions at each row's optimal k
-        transferred_p1 = extract_perrow_ablated_preds(
-            optimal["optimal_k"],
-            optimal["sweep_preds"],
-            optimal["baseline_preds"],
-        )
+        # Use accepted predictions directly (selective transfer already optimal)
+        ap = optimal["accepted_preds"]
+        transferred_p1 = ap[:, 1] if ap.ndim == 2 else ap
 
         # Histogram + coverage curve
         plot_perrow_results(
