@@ -866,8 +866,10 @@ def plot_perrow_scatter(
     mask0 = yt == 0
     mask1 = yt == 1
     modified = ok > 0  # rows where intervention actually changed predictions
+    unmodified = ~modified
+    n_unmodified = int(unmodified.sum())
 
-    # All rows where strong > weak: open markers, faint gray
+    # Layer 1: All improvable rows — open markers, faint gray
     orig_color = "#999999"
     ax.scatter(orig_x[mask0], orig_y[mask0], facecolors="none",
                edgecolors=orig_color, s=14, alpha=0.5, linewidths=0.6,
@@ -877,7 +879,18 @@ def plot_perrow_scatter(
                marker="s",
                label=f"Original class 1 (n={mask1.sum()})", zorder=2)
 
-    # Intervened positions: only for rows with k > 0
+    # Layer 2: Improvable but not modified — filled gray
+    um0 = mask0 & unmodified
+    um1 = mask1 & unmodified
+    unmoved_color = "#aaaaaa"
+    ax.scatter(orig_x[um0], orig_y[um0], c=unmoved_color,
+               s=14, alpha=0.5, edgecolors="none",
+               label=f"Unmoved (n={n_unmodified})", zorder=3)
+    ax.scatter(orig_x[um1], orig_y[um1], c=unmoved_color,
+               s=14, alpha=0.5, edgecolors="none",
+               marker="s", zorder=3)
+
+    # Layer 3: Intervened positions — filled color, k > 0
     color0 = "#0072B2"  # blue
     color1 = "#D55E00"  # orange
     m0 = mask0 & modified
@@ -1192,24 +1205,6 @@ def main():
                 mode="ablation",
             )
 
-            # Also run the dataset-level sweep for scatter + logloss curve
-            target_logloss = _logloss(y_q.astype(float), other_preds)
-            sweep = find_optimal_ablation(
-                ablate_model, args.dataset, task, args.device,
-                unmatched, target_logloss,
-            )
-            k = sweep["optimal_k"]
-            label = f"ablate {k}/{len(unmatched)} {disp}-only"
-            ablation_levels = [(label, "#0072B2", sweep["optimal_preds"])]
-
-            curve_path = fig_dir / f"loss_search{args.output.suffix}"
-            plot_logloss_curve(
-                sweep["logloss_curve"], sweep["baseline_logloss"],
-                sweep["target_logloss"], k,
-                unmatched, ablate_model, other_model, args.dataset,
-                curve_path,
-            )
-
     elif args.ablate_features:
         feats = [int(x.strip()) for x in args.ablate_features.split(",")]
         logger.info("Ablating features %s from %s...", feats, args.model_a)
@@ -1219,15 +1214,16 @@ def main():
         disp = DISPLAY_NAMES.get(args.model_a, args.model_a)
         ablation_levels = [(f"ablate {len(feats)}f from {disp}", "#0072B2", abl_preds)]
 
-    # Scatter plot
-    plot_prediction_scatter(
-        preds_a, preds_b, y_q,
-        args.model_a, args.model_b, args.dataset,
-        auc_a, auc_b, features_a, features_b,
-        args.output,
-        ablation_levels=ablation_levels,
-        ablate_axis=ablate_axis,
-    )
+    # Global scatter plot (skip for --perrow which produces its own scatter)
+    if not args.perrow:
+        plot_prediction_scatter(
+            preds_a, preds_b, y_q,
+            args.model_a, args.model_b, args.dataset,
+            auc_a, auc_b, features_a, features_b,
+            args.output,
+            ablation_levels=ablation_levels,
+            ablate_axis=ablate_axis,
+        )
 
 
 if __name__ == "__main__":
