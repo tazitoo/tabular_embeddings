@@ -659,15 +659,20 @@ def find_per_row_optimal_transfer(
     accepted_row_ll = -(y * np.log(ap_clipped) + (1 - y) * np.log(1 - ap_clipped))
 
     # optimal_k = number of concepts accepted per row
-    optimal_k = perrow_result["accepted_counts"].astype(int)
+    # Zero out for rows where weak model is already better (no transfer needed)
+    raw_counts = perrow_result["accepted_counts"].astype(int)
+    optimal_k = np.zeros_like(raw_counts)
 
     n_query = len(y_query)
     row_gap_closed = np.zeros(n_query)
     for row_idx in range(n_query):
         orig_gap = baseline_row_ll[row_idx] - target_row_ll[row_idx]
         if orig_gap <= 0:
+            # Weak model already equal or better — no transfer needed
+            optimal_k[row_idx] = 0
             row_gap_closed[row_idx] = 1.0
         else:
+            optimal_k[row_idx] = raw_counts[row_idx]
             gap_remaining = abs(accepted_row_ll[row_idx] - target_row_ll[row_idx])
             row_gap_closed[row_idx] = 1.0 - gap_remaining / orig_gap
 
@@ -809,9 +814,10 @@ def main():
             perrow_result, source_preds, target_preds, y_q,
         )
 
-        # Use accepted predictions directly (selective transfer already optimal)
+        # Use accepted predictions for fixable rows, baseline for non-fixable
         ap = optimal["accepted_preds"]
-        transferred_p1 = ap[:, 1] if ap.ndim == 2 else ap
+        ap1 = ap[:, 1] if ap.ndim == 2 else ap
+        transferred_p1 = np.where(optimal["optimal_k"] > 0, ap1, tp1_pr)
 
         # Histogram + coverage curve
         plot_perrow_results(
