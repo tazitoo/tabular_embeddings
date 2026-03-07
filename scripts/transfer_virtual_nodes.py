@@ -21,13 +21,26 @@ Usage:
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.intervene_sae import (
+    DEFAULT_LAYERS_PATH,
+    DEFAULT_SAE_DIR,
+    DEFAULT_TRAINING_DIR,
+    get_extraction_layer,
+    intervene,
+    load_sae,
+    load_training_mean,
+)
+from scripts.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
+from scripts.plot_prediction_scatter import _logloss
+from scripts.transfer_concepts import capture_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -357,4 +370,214 @@ def build_concept_bridge(
         "matched_pairs": matched_pairs,
         "unmatched_indices": list(unmatched_source_features),
         "concept_map_M": M,
+    }
+
+
+# -- Encoding & delta helpers -------------------------------------------------
+
+
+def _encode_unmatched_activations(
+    sae_source: torch.nn.Module,
+    emb_source: torch.Tensor,
+    unmatched_indices: List[int],
+    data_mean: Optional[torch.Tensor] = None,
+) -> np.ndarray:
+    """Encode source embeddings and extract activations for unmatched features.
+
+    Returns:
+        (n_rows, n_unmatched) activation matrix.
+    """
+    with torch.no_grad():
+        x = emb_source
+        if data_mean is not None:
+            x = x - data_mean
+        h = sae_source.encode(x)
+    return h[:, unmatched_indices].cpu().numpy()
+
+
+def _make_virtual_delta(
+    activations: np.ndarray,
+    virtual_atoms: np.ndarray,
+    feature_mask: Optional[np.ndarray] = None,
+) -> torch.Tensor:
+    """Build delta from activations and virtual atoms, optionally masked.
+
+    Args:
+        activations: (n_rows, n_unmatched) source activations.
+        virtual_atoms: (n_unmatched, d_target) virtual decoder atoms.
+        feature_mask: (n_unmatched,) boolean -- only include these features.
+
+    Returns:
+        (n_rows, d_target) delta tensor.
+    """
+    if feature_mask is not None:
+        activations = activations[:, feature_mask]
+        virtual_atoms = virtual_atoms[feature_mask]
+    delta = compute_virtual_delta(activations, virtual_atoms)
+    return torch.tensor(delta, dtype=torch.float32)
+
+
+def _build_full_delta_from_parts(
+    delta_ctx: torch.Tensor,
+    delta_query: torch.Tensor,
+) -> torch.Tensor:
+    """Concatenate context and query deltas into a single full-sequence delta."""
+    return torch.cat([delta_ctx, delta_query], dim=0)
+
+
+# -- Cumulative sweep ---------------------------------------------------------
+
+
+def sweep_virtual_transfer(
+    source_model: str,
+    target_model: str,
+    dataset: str,
+    bridge: Dict,
+    device: str,
+    task: str = "classification",
+    sae_dir: Path = DEFAULT_SAE_DIR,
+    layers_path: Path = DEFAULT_LAYERS_PATH,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
+    emb_source: Optional[torch.Tensor] = None,
+    emb_target: Optional[torch.Tensor] = None,
+    source_preds: Optional[np.ndarray] = None,
+    target_baseline_preds: Optional[np.ndarray] = None,
+) -> Dict:
+    """Cumulative sweep: transfer top-1, top-2, ..., top-N virtual concepts.
+
+    Accumulates unmatched source concepts via virtual decoder atoms, tracking
+    logloss at each k. Finds the optimal k where the target model's transferred
+    logloss best matches the source model's logloss.
+
+    Args:
+        source_model: Source model key (e.g. "tabpfn").
+        target_model: Target model key (e.g. "tabicl").
+        dataset: TabArena dataset name.
+        bridge: Dict from build_concept_bridge() with keys: virtual_atoms,
+            unmatched_indices, concept_map_r2, n_matched_pairs.
+        device: Torch device string.
+        task: "classification" or "regression".
+        sae_dir: Path to SAE checkpoints.
+        layers_path: Path to optimal_extraction_layers.json.
+        training_dir: Path to SAE training data.
+        emb_source: Pre-captured source embeddings (optional).
+        emb_target: Pre-captured target embeddings (optional).
+        source_preds: Pre-captured source predictions (optional).
+        target_baseline_preds: Pre-captured target baseline predictions (optional).
+
+    Returns:
+        Dict with: optimal_k, optimal_features, optimal_preds, logloss_curve,
+        baseline_logloss, target_logloss, all_transferred_preds,
+        source_preds_p1, target_baseline_p1, y_query, concept_map_r2,
+        n_matched_pairs.
+    """
+    # 1. Load data splits
+    X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
+    n_query = len(X_q)
+
+    # 2. Capture embeddings if not provided
+    if emb_source is None or source_preds is None:
+        source_layer = get_extraction_layer(source_model, layers_path)
+        logger.info("Capturing %s embeddings (layer %d)...", source_model, source_layer)
+        emb_source, source_preds = capture_embeddings(
+            source_model, X_ctx, y_ctx, X_q, source_layer, device, task,
+        )
+    if emb_target is None or target_baseline_preds is None:
+        target_layer = get_extraction_layer(target_model, layers_path)
+        logger.info("Capturing %s embeddings (layer %d)...", target_model, target_layer)
+        emb_target, target_baseline_preds = capture_embeddings(
+            target_model, X_ctx, y_ctx, X_q, target_layer, device, task,
+        )
+
+    # 3. Load source SAE and compute data mean for centering
+    sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
+    if source_model == "tabicl":
+        data_mean = emb_source.mean(dim=0)
+    else:
+        data_mean = load_training_mean(
+            source_model, training_dir=training_dir,
+            layers_path=layers_path, device=device,
+        )
+
+    # 4. Encode all source positions and split into context / query
+    acts_all = _encode_unmatched_activations(
+        sae_source, emb_source, bridge["unmatched_indices"], data_mean,
+    )
+    acts_ctx = acts_all[:-n_query]
+    acts_query = acts_all[-n_query:]
+
+    # 5. Compute baselines
+    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
+    tp1 = target_baseline_preds[:, 1] if target_baseline_preds.ndim == 2 else target_baseline_preds
+    target_logloss = _logloss(y_q.astype(float), sp1)
+    baseline_logloss = _logloss(y_q.astype(float), tp1)
+
+    logger.info(
+        "Target (weaker) baseline logloss=%.4f, source logloss=%.4f",
+        baseline_logloss, target_logloss,
+    )
+
+    # 6. Cumulative sweep k=1..N
+    virtual_atoms = bridge["virtual_atoms"]
+    n_unmatched = len(bridge["unmatched_indices"])
+    all_transferred_p1 = []
+
+    logger.info("Sweeping k=1..%d virtual concept transfer levels...", n_unmatched)
+    for k in range(1, n_unmatched + 1):
+        mask = np.zeros(n_unmatched, dtype=bool)
+        mask[:k] = True
+
+        delta_ctx = _make_virtual_delta(acts_ctx, virtual_atoms, feature_mask=mask)
+        delta_query = _make_virtual_delta(acts_query, virtual_atoms, feature_mask=mask)
+        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query)
+
+        result = intervene(
+            model_key=target_model,
+            X_context=X_ctx,
+            y_context=y_ctx,
+            X_query=X_q,
+            y_query=y_q,
+            external_delta=full_delta.to(device),
+            device=device,
+            task=task,
+            layers_path=layers_path,
+        )
+
+        preds_k = result["ablated_preds"]
+        pk1 = preds_k[:, 1] if preds_k.ndim == 2 else preds_k
+        all_transferred_p1.append(pk1)
+
+        ll = _logloss(y_q.astype(float), pk1)
+        delta_ll = ll - baseline_logloss
+        logger.info(
+            "  k=%d (f%d): logloss=%.4f (delta=%+.4f from baseline)",
+            k, bridge["unmatched_indices"][k - 1], ll, delta_ll,
+        )
+
+    # 7. Find optimal k
+    logloss_curve = [_logloss(y_q.astype(float), p) for p in all_transferred_p1]
+    gaps = [abs(ll - target_logloss) for ll in logloss_curve]
+    optimal_k = int(np.argmin(gaps)) + 1
+
+    logger.info(
+        "Optimal k=%d (logloss=%.4f, gap to source=%.4f)",
+        optimal_k,
+        logloss_curve[optimal_k - 1],
+        logloss_curve[optimal_k - 1] - target_logloss,
+    )
+
+    # 8. Return results
+    return {
+        "optimal_k": optimal_k,
+        "optimal_features": bridge["unmatched_indices"][:optimal_k],
+        "optimal_preds": all_transferred_p1[optimal_k - 1],
+        "logloss_curve": logloss_curve,
+        "baseline_logloss": baseline_logloss,
+        "target_logloss": target_logloss,
+        "all_transferred_preds": all_transferred_p1,
+        "source_preds_p1": sp1,
+        "target_baseline_p1": tp1,
+        "y_query": y_q,
+        "concept_map_r2": bridge["concept_map_r2"],
+        "n_matched_pairs": bridge["n_matched_pairs"],
     }
