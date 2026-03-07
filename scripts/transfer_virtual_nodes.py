@@ -187,6 +187,49 @@ def compute_virtual_atoms(
     return atoms_source_unmatched @ M.T
 
 
+def calibrate_virtual_atom_norms(
+    virtual_atoms: np.ndarray,
+    source_unmatched_norms: np.ndarray,
+    matched_source_norms: np.ndarray,
+    matched_target_norms: np.ndarray,
+) -> np.ndarray:
+    """Rescale virtual atoms using landmark norm calibration.
+
+    The relationship between source and target decoder atom norms is learned
+    from matched landmark pairs (r ~ -0.92 for TabICL/TabPFN). Each virtual
+    atom is rescaled so its norm matches the predicted target norm for a
+    source atom of that size.
+
+    Args:
+        virtual_atoms: (n_unmatched, d_target) raw virtual atoms from ridge map.
+        source_unmatched_norms: (n_unmatched,) norms of source decoder atoms.
+        matched_source_norms: (n_landmarks,) norms of matched source atoms.
+        matched_target_norms: (n_landmarks,) norms of matched target atoms.
+
+    Returns:
+        (n_unmatched, d_target) rescaled virtual atoms.
+    """
+    # Fit: target_norm = a * source_norm + b from landmarks
+    a, b = np.polyfit(matched_source_norms, matched_target_norms, 1)
+    r = np.corrcoef(matched_source_norms, matched_target_norms)[0, 1]
+    logger.info(
+        "Norm calibration: target_norm = %.3f * source_norm + %.3f (r=%.3f)",
+        a, b, r,
+    )
+
+    rescaled = np.empty_like(virtual_atoms)
+    for i in range(len(virtual_atoms)):
+        v = virtual_atoms[i]
+        v_norm = np.linalg.norm(v)
+        predicted_norm = max(a * source_unmatched_norms[i] + b, 1e-8)
+        if v_norm > 1e-12:
+            rescaled[i] = v * (predicted_norm / v_norm)
+        else:
+            rescaled[i] = v
+
+    return rescaled
+
+
 # -- Transfer delta computation ------------------------------------------------
 
 
@@ -302,9 +345,12 @@ def build_concept_bridge(
 ) -> Dict:
     """Build a concept bridge from source SAE to target SAE.
 
-    Orchestrates the full pipeline: extract decoder atoms, find MNN matches,
-    fit a concept-level linear map on matched pairs, and project unmatched
-    source features into the target's embedding space as virtual decoder atoms.
+    Pipeline: extract decoder atoms → MNN matching → fit ridge map on matched
+    pairs → project unmatched atoms → calibrate norms from landmarks.
+
+    The ridge map determines direction; landmark norm calibration determines
+    magnitude. Matched pairs' decoder atom norms correlate strongly across
+    spaces (r ~ -0.92), enabling per-concept magnitude prediction.
 
     Args:
         sae_source: Source SAE model.
@@ -319,12 +365,11 @@ def build_concept_bridge(
 
     Returns:
         Dict with keys:
-            virtual_atoms: (n_unmatched, d_target) virtual decoder atoms.
-            concept_map_r2: float, cross-validated R^2 of the concept map.
-            n_matched_pairs: int, number of MNN-matched decoder atom pairs.
+            virtual_atoms: (n_unmatched, d_target) norm-calibrated virtual atoms.
+            concept_map_r2: float, cross-validated R² of the ridge map.
+            n_matched_pairs: int, number of MNN-matched landmark pairs.
             matched_pairs: list of (source_global, target_global) tuples.
             unmatched_indices: list of ints (the input unmatched feature indices).
-            concept_map_M: (d_target, d_source) concept-level linear map.
     """
     # 1. Extract full decoder atom matrices
     atoms_source = extract_decoder_atoms(sae_source).numpy()  # (H_s, d_s)
@@ -349,24 +394,32 @@ def build_concept_bridge(
     # 4. Gather matched decoder atoms using global indices
     matched_source_atoms = np.stack(
         [atoms_source[gi] for gi, _ in matched_pairs], axis=0
-    )  # (n_matched, d_source)
+    )
     matched_target_atoms = np.stack(
         [atoms_target[gj] for _, gj in matched_pairs], axis=0
-    )  # (n_matched, d_target)
+    )
 
-    # 5. Fit concept-level linear map on matched pairs
+    # 5. Fit concept-level linear map on matched pairs (direction)
     M, r2 = fit_concept_map(matched_source_atoms, matched_target_atoms, alpha=ridge_alpha)
     logger.info("Concept map: R²=%.4f, shape=%s", r2, M.shape)
 
-    # 6. Compute virtual atoms for unmatched source features
+    # 6. Project unmatched source atoms into target space
     unmatched_atoms = np.stack(
         [atoms_source[gi] for gi in unmatched_source_features], axis=0
-    )  # (n_unmatched, d_source)
+    )
     virtual = compute_virtual_atoms(unmatched_atoms, M)
+
+    # 7. Calibrate magnitude: rescale each virtual atom norm using
+    #    the landmark norm relationship (source_norm → target_norm)
+    matched_src_norms = np.linalg.norm(matched_source_atoms, axis=1)
+    matched_tgt_norms = np.linalg.norm(matched_target_atoms, axis=1)
+    unmatched_src_norms = np.linalg.norm(unmatched_atoms, axis=1)
+    virtual = calibrate_virtual_atom_norms(
+        virtual, unmatched_src_norms, matched_src_norms, matched_tgt_norms,
+    )
     logger.info(
-        "Virtual atoms: %d unmatched -> shape %s",
-        len(unmatched_source_features),
-        virtual.shape,
+        "Virtual atoms: %d unmatched -> shape %s (norm-calibrated)",
+        len(unmatched_source_features), virtual.shape,
     )
 
     return {
@@ -375,7 +428,6 @@ def build_concept_bridge(
         "n_matched_pairs": len(matched_pairs),
         "matched_pairs": matched_pairs,
         "unmatched_indices": list(unmatched_source_features),
-        "concept_map_M": M,
     }
 
 

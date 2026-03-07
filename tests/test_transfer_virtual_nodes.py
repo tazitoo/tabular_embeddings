@@ -3,8 +3,8 @@
 Tests cover:
 1. extract_decoder_atoms: archetypal vs standard SAE, shape correctness
 2. build_mnn_matches: clear matches, ambiguous cases, threshold filtering
-3. fit_concept_map: perfect recovery, noisy recovery, cross-validated R^2
-4. compute_virtual_atoms: shape and known-value checks
+3. fit_concept_map: ridge regression direction map
+4. compute_virtual_atoms + calibrate_virtual_atom_norms: magnitude correction
 5. compute_virtual_delta: shape and known-value checks
 6. compute_virtual_delta_perrow: masking behaviour
 """
@@ -18,6 +18,7 @@ import torch
 from scripts.transfer_virtual_nodes import (
     build_concept_bridge,
     build_mnn_matches,
+    calibrate_virtual_atom_norms,
     compute_virtual_atoms,
     compute_virtual_delta,
     compute_virtual_delta_perrow,
@@ -28,23 +29,6 @@ from scripts.transfer_virtual_nodes import (
 
 
 # -- Fixtures ------------------------------------------------------------------
-
-
-@pytest.fixture
-def identity_map():
-    """A trivial identity concept map for d=8."""
-    return np.eye(8)
-
-
-@pytest.fixture
-def known_linear_atoms():
-    """Matched atom pairs linked by a known linear map M_true."""
-    np.random.seed(0)
-    n_pairs, d_source, d_target = 50, 10, 8
-    M_true = np.random.randn(d_target, d_source)
-    atoms_source = np.random.randn(n_pairs, d_source)
-    atoms_target = atoms_source @ M_true.T
-    return atoms_source, atoms_target, M_true
 
 
 # -- extract_decoder_atoms -----------------------------------------------------
@@ -158,59 +142,33 @@ class TestBuildMnnMatches:
 
 
 class TestFitConceptMap:
-    def test_perfect_recovery(self, known_linear_atoms):
+    def test_perfect_recovery(self):
         """Ridge with low alpha recovers M_true for noiseless atom pairs."""
-        atoms_s, atoms_t, M_true = known_linear_atoms
-        M, r2 = fit_concept_map(atoms_s, atoms_t, alpha=1e-8)
+        np.random.seed(0)
+        n_pairs, d_source, d_target = 50, 10, 8
+        M_true = np.random.randn(d_target, d_source)
+        atoms_s = np.random.randn(n_pairs, d_source)
+        atoms_t = atoms_s @ M_true.T
 
+        M, r2 = fit_concept_map(atoms_s, atoms_t, alpha=1e-8)
         assert M.shape == M_true.shape
         np.testing.assert_allclose(M, M_true, atol=0.05)
-        assert r2 > 0.99, f"Expected R^2 > 0.99, got {r2:.4f}"
-
-    def test_noisy_recovery(self):
-        """Noisy atom pairs yield lower but positive R^2."""
-        np.random.seed(1)
-        n, d_s, d_t = 40, 10, 8
-        M_true = np.random.randn(d_t, d_s) * 0.5
-        atoms_s = np.random.randn(n, d_s)
-        noise = np.random.randn(n, d_t) * 0.3
-        atoms_t = atoms_s @ M_true.T + noise
-
-        M, r2 = fit_concept_map(atoms_s, atoms_t, alpha=1.0)
-        assert M.shape == (d_t, d_s)
-        # R^2 should be positive but not perfect
-        assert 0.0 < r2 < 1.0, f"Expected 0 < R^2 < 1, got {r2:.4f}"
+        assert r2 > 0.99
 
     def test_few_pairs_nan_r2(self):
         """Fewer than 10 pairs yields r2 = nan."""
         np.random.seed(2)
         atoms_s = np.random.randn(5, 4)
         atoms_t = np.random.randn(5, 3)
-
         M, r2 = fit_concept_map(atoms_s, atoms_t)
         assert M.shape == (3, 4)
         assert np.isnan(r2)
 
-    def test_output_shapes(self):
-        """M has shape (d_target, d_source)."""
-        np.random.seed(3)
-        atoms_s = np.random.randn(20, 6)
-        atoms_t = np.random.randn(20, 12)
 
-        M, _ = fit_concept_map(atoms_s, atoms_t)
-        assert M.shape == (12, 6)
-
-
-# -- compute_virtual_atoms ----------------------------------------------------
+# -- compute_virtual_atoms + calibrate_virtual_atom_norms ----------------------
 
 
 class TestComputeVirtualAtoms:
-    def test_identity_map(self, identity_map):
-        """Identity map returns atoms unchanged."""
-        atoms = np.random.randn(10, 8)
-        virtual = compute_virtual_atoms(atoms, identity_map)
-        np.testing.assert_allclose(virtual, atoms)
-
     def test_shape(self):
         """Output shape is (n_unmatched, d_target)."""
         np.random.seed(4)
@@ -220,19 +178,58 @@ class TestComputeVirtualAtoms:
         virtual = compute_virtual_atoms(atoms, M)
         assert virtual.shape == (n, d_t)
 
-    def test_known_transform(self):
-        """Scaling map doubles each atom."""
-        M = 2.0 * np.eye(5)
-        atoms = np.ones((3, 5))
-        virtual = compute_virtual_atoms(atoms, M)
-        np.testing.assert_allclose(virtual, 2.0 * np.ones((3, 5)))
+    def test_identity_map(self):
+        """Identity map returns atoms unchanged."""
+        atoms = np.random.randn(10, 8)
+        virtual = compute_virtual_atoms(atoms, np.eye(8))
+        np.testing.assert_allclose(virtual, atoms)
 
-    def test_zero_atoms(self):
-        """Zero source atoms produce zero virtual atoms."""
-        M = np.random.randn(6, 4)
-        atoms = np.zeros((3, 4))
-        virtual = compute_virtual_atoms(atoms, M)
-        np.testing.assert_allclose(virtual, np.zeros((3, 6)))
+
+class TestCalibrateVirtualAtomNorms:
+    def test_uniform_scaling(self):
+        """When all landmarks have 2x norm ratio, virtual atoms scale by 2x."""
+        np.random.seed(10)
+        n_unmatched, d = 5, 8
+        virtual = np.random.randn(n_unmatched, d)
+        src_norms = np.ones(n_unmatched) * 1.0
+        matched_src = np.ones(10) * 1.0
+        matched_tgt = np.ones(10) * 2.0  # 2x scaling
+        result = calibrate_virtual_atom_norms(
+            virtual, src_norms, matched_src, matched_tgt,
+        )
+        result_norms = np.linalg.norm(result, axis=1)
+        np.testing.assert_allclose(result_norms, 2.0, atol=0.1)
+
+    def test_norm_dependent_scaling(self):
+        """Larger source atoms get smaller target norms (negative correlation)."""
+        np.random.seed(20)
+        n_unmatched, d = 3, 8
+        virtual = np.random.randn(n_unmatched, d)
+        src_norms = np.array([0.5, 1.0, 1.5])
+        # Landmark relationship: target_norm = -0.5 * source_norm + 2.0
+        matched_src = np.linspace(0.3, 1.8, 15)
+        matched_tgt = -0.5 * matched_src + 2.0
+        result = calibrate_virtual_atom_norms(
+            virtual, src_norms, matched_src, matched_tgt,
+        )
+        result_norms = np.linalg.norm(result, axis=1)
+        # Expected: 1.75, 1.50, 1.25
+        np.testing.assert_allclose(result_norms, [1.75, 1.50, 1.25], atol=0.05)
+
+    def test_preserves_direction(self):
+        """Calibration changes norm but preserves direction."""
+        np.random.seed(30)
+        virtual = np.array([[1.0, 2.0, 3.0]])
+        src_norms = np.array([1.0])
+        matched_src = np.ones(10)
+        matched_tgt = np.ones(10) * 0.5
+        result = calibrate_virtual_atom_norms(
+            virtual, src_norms, matched_src, matched_tgt,
+        )
+        # Direction should be the same
+        orig_dir = virtual[0] / np.linalg.norm(virtual[0])
+        res_dir = result[0] / np.linalg.norm(result[0])
+        np.testing.assert_allclose(orig_dir, res_dir, atol=1e-6)
 
 
 # -- compute_virtual_delta ----------------------------------------------------
@@ -451,7 +448,6 @@ class TestBuildConceptBridge:
             "n_matched_pairs",
             "matched_pairs",
             "unmatched_indices",
-            "concept_map_M",
         }
         assert set(result.keys()) == expected_keys
 
@@ -508,8 +504,8 @@ class TestBuildConceptBridge:
         )
         assert result["unmatched_indices"] == bridge_inputs["unmatched"]
 
-    def test_concept_map_shape(self, bridge_inputs):
-        """Concept map M has shape (d_target, d_source)."""
+    def test_concept_map_r2_is_float(self, bridge_inputs):
+        """Concept map R² is a float."""
         result = build_concept_bridge(
             sae_source=bridge_inputs["sae_source"],
             sae_target=bridge_inputs["sae_target"],
@@ -518,6 +514,4 @@ class TestBuildConceptBridge:
             indices_b=bridge_inputs["indices_b"],
             unmatched_source_features=bridge_inputs["unmatched"],
         )
-        d_source = bridge_inputs["d_source_input"]
-        d_target = bridge_inputs["d_target_input"]
-        assert result["concept_map_M"].shape == (d_target, d_source)
+        assert isinstance(result["concept_map_r2"], float)

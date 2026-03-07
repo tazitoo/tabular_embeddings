@@ -801,7 +801,7 @@ def plot_perrow_scatter(
     output_path: Path,
     mode: str = "ablation",
 ):
-    """Scatter showing fixable rows with original (open) and intervened (filled).
+    """Scatter showing rows where strong model outperforms weak.
 
     Convention: x = strong model, y = weak model, always.
       - Ablation (mode="ablation"): strong model's predictions change.
@@ -809,28 +809,39 @@ def plot_perrow_scatter(
       - Transfer (mode="transfer"): weak model's predictions change.
         Intervened points move UP toward the diagonal.
 
-    Filtered to rows where optimal_k > 0.
+    Shows all rows where strong model is closer to truth (logloss-based).
+    Rows with optimal_k > 0 get colored intervened markers; others are gray only.
     """
     is_transfer = mode == "transfer"
     verb = "Intervened"
     verb_lower = "transfer" if is_transfer else "ablation"
 
-    fixable = optimal_k > 0
-    n_fixable = fixable.sum()
-    n_total = len(optimal_k)
-    logger.info("Fixable rows: %d / %d (%.1f%%)",
-                n_fixable, n_total, 100 * n_fixable / n_total)
+    # Rows where strong model outperforms weak (logloss-based)
+    eps = 1e-7
+    sp_clip = np.clip(preds_strong, eps, 1 - eps)
+    wp_clip = np.clip(preds_weak, eps, 1 - eps)
+    y_float = y_true.astype(float)
+    ll_strong = -(y_float * np.log(sp_clip) + (1 - y_float) * np.log(1 - sp_clip))
+    ll_weak = -(y_float * np.log(wp_clip) + (1 - y_float) * np.log(1 - wp_clip))
+    strong_better = ll_strong < ll_weak
 
-    if n_fixable == 0:
-        logger.warning("No fixable rows — skipping per-row scatter.")
+    n_strong_better = strong_better.sum()
+    n_intervened = (optimal_k > 0).sum()
+    n_total = len(optimal_k)
+    logger.info("Strong outperforms weak: %d / %d (%.1f%%); intervened: %d",
+                n_strong_better, n_total, 100 * n_strong_better / n_total,
+                n_intervened)
+
+    if n_strong_better == 0:
+        logger.warning("No rows where strong > weak — skipping scatter.")
         return
 
-    # Filter to fixable rows
-    ps = preds_strong[fixable]
-    pw = preds_weak[fixable]
-    pi = preds_intervened[fixable]
-    yt = y_true[fixable]
-    ok = optimal_k[fixable]
+    # Filter to rows where strong outperforms weak
+    ps = preds_strong[strong_better]
+    pw = preds_weak[strong_better]
+    pi = preds_intervened[strong_better]
+    yt = y_true[strong_better]
+    ok = optimal_k[strong_better]
 
     disp_s = DISPLAY_NAMES.get(model_strong, model_strong)
     disp_w = DISPLAY_NAMES.get(model_weak, model_weak)
@@ -862,8 +873,9 @@ def plot_perrow_scatter(
 
     mask0 = yt == 0
     mask1 = yt == 1
+    modified = ok > 0  # rows where intervention actually changed predictions
 
-    # Original positions: open markers, faint gray
+    # All rows where strong > weak: open markers, faint gray
     orig_color = "#999999"
     ax.scatter(orig_x[mask0], orig_y[mask0], facecolors="none",
                edgecolors=orig_color, s=14, alpha=0.5, linewidths=0.6,
@@ -873,16 +885,18 @@ def plot_perrow_scatter(
                marker="s",
                label=f"Original class 1 (n={mask1.sum()})", zorder=2)
 
-    # Intervened positions: filled, colored by class
+    # Intervened positions: only for rows with k > 0
     color0 = "#0072B2"  # blue
     color1 = "#D55E00"  # orange
-    ax.scatter(int_x[mask0], int_y[mask0], c=color0,
+    m0 = mask0 & modified
+    m1 = mask1 & modified
+    ax.scatter(int_x[m0], int_y[m0], c=color0,
                s=14, alpha=0.6, edgecolors="none",
-               label=f"{verb} class 0", zorder=4)
-    ax.scatter(int_x[mask1], int_y[mask1], c=color1,
+               label=f"{verb} class 0 (n={m0.sum()})", zorder=4)
+    ax.scatter(int_x[m1], int_y[m1], c=color1,
                s=14, alpha=0.6, edgecolors="none",
                marker="s",
-               label=f"{verb} class 1", zorder=4)
+               label=f"{verb} class 1 (n={m1.sum()})", zorder=4)
 
     # y=x reference
     ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.5, label="y = x")
@@ -901,10 +915,14 @@ def plot_perrow_scatter(
     ax.set_aspect("equal")
     ax.legend(fontsize=7, loc="upper left")
 
+    ok_mod = ok[modified]
+    k_summary = (f"median k={np.median(ok_mod):.0f}, mean k={ok_mod.mean():.1f}"
+                 if modified.any() else "no rows modified")
     ax.set_title(
-        f"{dataset} — per-row {verb_lower} ({n_fixable}/{n_total} fixable rows)\n"
+        f"{dataset} — per-row {verb_lower} "
+        f"({n_intervened} intervened / {n_strong_better} improvable / {n_total} total)\n"
         f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}\n"
-        f"median k={np.median(ok):.0f}, mean k={ok.mean():.1f}",
+        f"{k_summary}",
         fontsize=9,
     )
 
