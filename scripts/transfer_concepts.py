@@ -829,6 +829,11 @@ def main():
         # Per-row scatter
         auc_s = float(roc_auc_score(y_q, sp1_pr))
         auc_t = float(roc_auc_score(y_q, tp1_pr))
+        auc_transferred = float(roc_auc_score(y_q, transferred_p1))
+        gap = auc_s - auc_t
+        gap_closed_pct = (auc_transferred - auc_t) / gap * 100 if abs(gap) > 0.001 else float("nan")
+        logger.info("Per-row transfer AUC: %.4f (baseline %.4f → target %.4f, "
+                     "gap closed %.1f%%)", auc_transferred, auc_t, auc_s, gap_closed_pct)
         plot_perrow_scatter(
             sp1_pr, tp1_pr, transferred_p1,
             optimal["optimal_k"], y_q,
@@ -840,14 +845,14 @@ def main():
             action="transferring",
         )
 
-        # Diagnostic: gap-closed distribution + logloss trajectory + marginal effect
+        # Diagnostic: logloss distributions + concept budget + accept rate
         plot_perrow_diagnostic(
             optimal["optimal_k"],
             optimal["row_gap_closed"],
-            optimal["sweep_preds"],
+            optimal["accepted_preds"],
             optimal["baseline_preds"],
-            optimal["target_row_ll"],
-            optimal["baseline_row_ll"],
+            source_preds,
+            optimal["max_k_per_row"],
             y_q,
             source_model,  # concept owner
             target_model,  # model being improved

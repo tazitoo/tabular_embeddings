@@ -655,10 +655,10 @@ def plot_perrow_results(
 def plot_perrow_diagnostic(
     optimal_k: np.ndarray,
     row_gap_closed: np.ndarray,
-    sweep_preds: list,
+    accepted_preds: np.ndarray,
     baseline_preds: np.ndarray,
-    target_row_ll: np.ndarray,
-    baseline_row_ll: np.ndarray,
+    source_preds: np.ndarray,
+    max_k_per_row: np.ndarray,
     y_query: np.ndarray,
     ablate_model: str,
     other_model: str,
@@ -666,113 +666,99 @@ def plot_perrow_diagnostic(
     output_path: Path,
     action: str = "ablating",
 ):
-    """Diagnostic figure: gap-closed distribution + per-k logloss trajectory.
+    """Diagnostic figure for per-row transfer/ablation.
 
-    Shows whether transfer/ablation actually helps and where it plateaus or hurts.
+    Panel 1: Per-row logloss distributions (strong, weak-before, weak-after)
+    Panel 2: Per-row concept budget (available / accepted / rejected)
+    Panel 3: Acceptance rate vs logloss reduction
     """
     eps = 1e-7
-    verb = "transferred" if action == "transferring" else "ablated"
     verb_ing = "Transfer" if action == "transferring" else "Ablation"
     disp_abl = DISPLAY_NAMES.get(ablate_model, ablate_model)
     disp_oth = DISPLAY_NAMES.get(other_model, other_model)
+    y = y_query.astype(float)
+
+    # P(class=1) for each set
+    sp1 = np.clip(source_preds[:, 1] if source_preds.ndim == 2 else source_preds, eps, 1 - eps)
+    bp1 = np.clip(baseline_preds[:, 1] if baseline_preds.ndim == 2 else baseline_preds, eps, 1 - eps)
+    ap1 = np.clip(accepted_preds[:, 1] if accepted_preds.ndim == 2 else accepted_preds, eps, 1 - eps)
+
+    # Per-row logloss
+    ll_strong = -(y * np.log(sp1) + (1 - y) * np.log(1 - sp1))
+    ll_before = -(y * np.log(bp1) + (1 - y) * np.log(1 - bp1))
+    ll_after = -(y * np.log(ap1) + (1 - y) * np.log(1 - ap1))
 
     # Filter to fixable rows
     fixable = optimal_k > 0
     n_fixable = int(fixable.sum())
+    n_total = len(optimal_k)
     if n_fixable == 0:
         logger.warning("No fixable rows — skipping diagnostic plot.")
         return
 
-    gc_fixable = row_gap_closed[fixable]
-    y = y_query.astype(float)
+    ll_s = ll_strong[fixable]
+    ll_b = ll_before[fixable]
+    ll_a = ll_after[fixable]
+    n_available = max_k_per_row[fixable]
+    n_accepted = optimal_k[fixable]
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
 
-    # --- Panel 1: Gap-closed distribution ---
+    # --- Panel 1: Per-row logloss distributions ---
     ax = axes[0]
-    # Categorize: strong help (>50%), weak help (1-50%), negligible (<1%)
-    n_strong = int((gc_fixable > 0.5).sum())
-    n_weak = int(((gc_fixable > 0.01) & (gc_fixable <= 0.5)).sum())
-    n_negligible = int((gc_fixable <= 0.01).sum())
-
-    bins = np.linspace(0, min(gc_fixable.max() * 1.05, 1.5), 40)
-    ax.hist(gc_fixable, bins=bins, color="#0072B2", edgecolor="white", alpha=0.8)
-    ax.axvline(1.0, color="#999999", ls="--", lw=1, alpha=0.6, label="100% closed")
-    ax.axvline(gc_fixable.mean(), color="#E69F00", ls=":", lw=1.5,
-               label=f"mean = {gc_fixable.mean():.1%}")
-    ax.set_xlabel("Fraction of gap closed", fontsize=10)
-    ax.set_ylabel("Number of rows", fontsize=10)
-    ax.set_title(f"{dataset}: {verb_ing} effectiveness ({n_fixable} fixable rows)",
-                 fontsize=10)
-    summary = (f"Strong (>50%): {n_strong} ({100*n_strong/n_fixable:.0f}%)\n"
-               f"Weak (1-50%): {n_weak} ({100*n_weak/n_fixable:.0f}%)\n"
-               f"Negligible (<1%): {n_negligible} ({100*n_negligible/n_fixable:.0f}%)")
+    max_ll = max(ll_b.max(), ll_a.max(), ll_s.max())
+    bins = np.linspace(0, min(max_ll * 1.05, 5.0), 40)
+    ax.hist(ll_b, bins=bins, color="#D55E00", alpha=0.4,
+            label=f"{disp_oth} before (mean={ll_b.mean():.3f})")
+    ax.hist(ll_a, bins=bins, color="#0072B2", alpha=0.4,
+            label=f"{disp_oth} after (mean={ll_a.mean():.3f})")
+    ax.hist(ll_s, bins=bins, color="#009E73", alpha=0.4,
+            label=f"{disp_abl} target (mean={ll_s.mean():.3f})")
+    ax.axvline(ll_b.mean(), color="#D55E00", ls=":", lw=1.5)
+    ax.axvline(ll_a.mean(), color="#0072B2", ls=":", lw=1.5)
+    ax.axvline(ll_s.mean(), color="#009E73", ls=":", lw=1.5)
+    pct_improved = (ll_a < ll_b - 1e-6).mean()
+    pct_worse = (ll_a > ll_b + 1e-6).mean()
+    summary = (f"Improved: {pct_improved:.0%}\n"
+               f"Unchanged: {1 - pct_improved - pct_worse:.0%}\n"
+               f"Worsened: {pct_worse:.0%}")
     ax.text(0.97, 0.95, summary, transform=ax.transAxes, fontsize=8,
             va="top", ha="right", family="monospace",
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-    ax.legend(fontsize=7, loc="center right")
+    ax.set_xlabel("Per-row logloss", fontsize=10)
+    ax.set_ylabel("Number of rows", fontsize=10)
+    ax.set_title(f"{dataset}: logloss distributions ({n_fixable}/{n_total} fixable)",
+                 fontsize=10)
+    ax.legend(fontsize=7)
 
-    # --- Panel 2: Per-k mean logloss trajectory for fixable rows ---
+    # --- Panel 2: Concept budget per row ---
     ax = axes[1]
-    fix_idx = np.where(fixable)[0]
-    max_k_sweep = len(sweep_preds)
-    mean_ll = np.zeros(max_k_sweep)
-    bp = baseline_preds[:, 1] if baseline_preds.ndim == 2 else baseline_preds
+    max_avail = int(n_available.max())
+    bins_k = np.arange(-0.5, max_avail + 1.5, max(1, max_avail // 30))
+    ax.hist(n_available, bins=bins_k, color="#999999", alpha=0.4,
+            label=f"Available (mean={n_available.mean():.1f})")
+    ax.hist(n_accepted, bins=bins_k, color="#009E73", alpha=0.6,
+            label=f"Accepted (mean={n_accepted.mean():.1f})")
+    accept_rate = n_accepted.sum() / max(n_available.sum(), 1)
+    ax.set_xlabel("Concepts per row", fontsize=10)
+    ax.set_ylabel("Number of rows", fontsize=10)
+    ax.set_title(f"{dataset}: concept budget (accept rate {accept_rate:.0%})", fontsize=10)
+    ax.legend(fontsize=8)
 
-    for ki in range(max_k_sweep):
-        preds_k = sweep_preds[ki]
-        p1 = preds_k[fix_idx, 1] if preds_k.ndim == 2 else preds_k[fix_idx]
-        p = np.clip(p1, eps, 1 - eps)
-        ll = -(y[fix_idx] * np.log(p) + (1 - y[fix_idx]) * np.log(1 - p))
-        mean_ll[ki] = ll.mean()
-
-    # Baseline and target reference lines
-    bl_mean = baseline_row_ll[fix_idx].mean()
-    tgt_mean = target_row_ll[fix_idx].mean()
-
-    ks = np.arange(1, max_k_sweep + 1)
-    ax.plot(ks, mean_ll, color="#0072B2", lw=1.5, label=f"Mean logloss ({verb})")
-    ax.axhline(bl_mean, color="#D55E00", ls="--", lw=1,
-               label=f"Baseline ({disp_oth}): {bl_mean:.3f}")
-    ax.axhline(tgt_mean, color="#009E73", ls="--", lw=1,
-               label=f"Target ({disp_abl}): {tgt_mean:.3f}")
-    ax.set_xlabel(f"Concepts {verb} (k)", fontsize=10)
-    ax.set_ylabel("Mean logloss (fixable rows)", fontsize=10)
-    ax.set_title(f"{dataset}: logloss trajectory", fontsize=10)
-    ax.legend(fontsize=7, loc="best")
-
-    # --- Panel 3: Per-k marginal improvement ---
+    # --- Panel 3: Acceptance rate vs logloss reduction ---
     ax = axes[2]
-    # Fraction of fixable rows that improved at each k (vs k-1)
-    improved_frac = np.zeros(max_k_sweep)
-    worsened_frac = np.zeros(max_k_sweep)
-
-    for ki in range(max_k_sweep):
-        preds_k = sweep_preds[ki]
-        p1_k = preds_k[fix_idx, 1] if preds_k.ndim == 2 else preds_k[fix_idx]
-        p_k = np.clip(p1_k, eps, 1 - eps)
-        ll_k = -(y[fix_idx] * np.log(p_k) + (1 - y[fix_idx]) * np.log(1 - p_k))
-
-        if ki == 0:
-            ll_prev = baseline_row_ll[fix_idx]
-        else:
-            preds_prev = sweep_preds[ki - 1]
-            p1_prev = preds_prev[fix_idx, 1] if preds_prev.ndim == 2 else preds_prev[fix_idx]
-            p_prev = np.clip(p1_prev, eps, 1 - eps)
-            ll_prev = -(y[fix_idx] * np.log(p_prev) + (1 - y[fix_idx]) * np.log(1 - p_prev))
-
-        improved_frac[ki] = (ll_k < ll_prev - 1e-6).mean()
-        worsened_frac[ki] = (ll_k > ll_prev + 1e-6).mean()
-
-    ax.bar(ks, improved_frac * 100, width=1.0, color="#009E73", alpha=0.7,
-           label="Improved")
-    ax.bar(ks, -worsened_frac * 100, width=1.0, color="#D55E00", alpha=0.7,
-           label="Worsened")
+    ll_reduction = ll_b - ll_a  # positive = logloss decreased = improved
+    accept_frac = n_accepted / np.maximum(n_available, 1)
+    colors = np.where(ll_reduction > 0, "#009E73", "#D55E00")
+    ax.scatter(accept_frac, ll_reduction, c=colors, alpha=0.4, s=15, edgecolors="none")
     ax.axhline(0, color="black", lw=0.5)
-    ax.set_xlabel(f"Concept {verb} at step k", fontsize=10)
-    ax.set_ylabel("% fixable rows", fontsize=10)
-    ax.set_title(f"{dataset}: marginal effect per concept", fontsize=10)
-    ax.legend(fontsize=7, loc="best")
+    ax.set_xlabel("Acceptance rate (accepted / available)", fontsize=10)
+    ax.set_ylabel("Logloss reduction (positive = improved)", fontsize=10)
+    ax.set_title(f"{dataset}: accept rate vs improvement", fontsize=10)
+    n_helped = int((ll_reduction > 1e-6).sum())
+    ax.text(0.97, 0.95, f"{n_helped}/{n_fixable} rows improved",
+            transform=ax.transAxes, fontsize=8, va="top", ha="right",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
 
     fig.suptitle(f"{verb_ing} diagnostic: {disp_abl} → {disp_oth}", fontsize=11, y=1.02)
     fig.tight_layout()
