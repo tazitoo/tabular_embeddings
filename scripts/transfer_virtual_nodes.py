@@ -45,9 +45,6 @@ from scripts.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
 from scripts.plot_prediction_scatter import (
     _logloss,
     get_unmatched_features,
-    plot_perrow_diagnostic,
-    plot_perrow_results,
-    plot_perrow_scatter,
 )
 from scripts.transfer_concepts import capture_embeddings
 
@@ -1093,20 +1090,7 @@ def main():
     ap1 = ap[:, 1] if ap.ndim == 2 else ap
     transferred_p1 = np.where(optimal["optimal_k"] > 0, ap1, tp1)
 
-    # Histogram + coverage curve
-    plot_perrow_results(
-        optimal["optimal_k"],
-        optimal["row_gap_closed"],
-        optimal["max_k_per_row"],
-        optimal["perrow_rankings"],
-        source_model,
-        target_model,
-        args.dataset,
-        fig_dir / "vnode_transfer_perrow.pdf",
-        action="transferring",
-    )
-
-    # Per-row scatter
+    # Save results
     auc_s = float(roc_auc_score(y_q, sp1))
     auc_t = float(roc_auc_score(y_q, tp1))
     auc_transferred = float(roc_auc_score(y_q, transferred_p1))
@@ -1116,6 +1100,41 @@ def main():
         if abs(gap) > 0.001
         else float("nan")
     )
+
+    results_dir = PROJECT_ROOT / "output" / "vnode_transfer"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    results_path = results_dir / f"{source_model}__{target_model}__{args.dataset}.npz"
+
+    # perrow_rankings is ragged (list of variable-length lists) — pad to array
+    rankings = optimal["perrow_rankings"]
+    max_rank_len = max((len(r) for r in rankings), default=0)
+    rankings_padded = np.full((len(rankings), max_rank_len), -1, dtype=np.int32)
+    for i, r in enumerate(rankings):
+        rankings_padded[i, :len(r)] = r
+
+    np.savez(
+        results_path,
+        source_model=source_model,
+        target_model=target_model,
+        dataset=args.dataset,
+        preds_strong=sp1,
+        preds_weak=tp1,
+        preds_transferred=transferred_p1,
+        optimal_k=optimal["optimal_k"],
+        row_gap_closed=optimal["row_gap_closed"],
+        max_k_per_row=optimal["max_k_per_row"],
+        perrow_rankings=rankings_padded,
+        accepted_preds=optimal["accepted_preds"],
+        baseline_preds=optimal["baseline_preds"],
+        source_preds=source_preds,
+        y_query=y_q,
+        auc_strong=auc_s,
+        auc_weak=auc_t,
+        auc_transferred=auc_transferred,
+        concept_map_r2=bridge["concept_map_r2"],
+        n_matched_pairs=bridge["n_matched_pairs"],
+    )
+    logger.info("Saved results to %s", results_path)
 
     print(f"\n{'='*60}")
     print(f"Virtual-node concept transfer: {source_model} -> {target_model}")
@@ -1128,38 +1147,6 @@ def main():
     if abs(gap) > 0.001:
         print(f"\n  Gap closed: {gap_closed_pct:.1f}%")
     print(f"{'='*60}")
-
-    logger.info(
-        "Per-row transfer AUC: %.4f (baseline %.4f -> target %.4f, "
-        "gap closed %.1f%%)",
-        auc_transferred, auc_t, auc_s, gap_closed_pct,
-    )
-
-    plot_perrow_scatter(
-        sp1, tp1, transferred_p1,
-        optimal["optimal_k"], y_q,
-        source_model, target_model,
-        args.dataset,
-        auc_s, auc_t,
-        fig_dir / "vnode_transfer_perrow_scatter.pdf",
-        mode="transfer",
-    )
-
-    # Diagnostic: logloss distributions + concept budget + accept rate
-    plot_perrow_diagnostic(
-        optimal["optimal_k"],
-        optimal["row_gap_closed"],
-        optimal["accepted_preds"],
-        optimal["baseline_preds"],
-        source_preds,
-        optimal["max_k_per_row"],
-        y_q,
-        source_model,
-        target_model,
-        args.dataset,
-        fig_dir / "vnode_transfer_perrow_diagnostic.pdf",
-        action="transferring",
-    )
 
 
 if __name__ == "__main__":

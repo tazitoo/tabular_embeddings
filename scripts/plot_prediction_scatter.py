@@ -956,6 +956,76 @@ def plot_shift_distribution(
     logger.info("Saved distribution to %s", output_path)
 
 
+def _plot_transfer_results(npz_path: Path, output_path: Path):
+    """Load saved vnode transfer results and generate all plots."""
+    data = np.load(npz_path, allow_pickle=False)
+
+    source_model = str(data["source_model"])
+    target_model = str(data["target_model"])
+    dataset = str(data["dataset"])
+    sp1 = data["preds_strong"]
+    tp1 = data["preds_weak"]
+    transferred_p1 = data["preds_transferred"]
+    optimal_k = data["optimal_k"]
+    row_gap_closed = data["row_gap_closed"]
+    max_k_per_row = data["max_k_per_row"]
+    rankings_padded = data["perrow_rankings"]
+    y_q = data["y_query"]
+    auc_s = float(data["auc_strong"])
+    auc_t = float(data["auc_weak"])
+    auc_transferred = float(data["auc_transferred"])
+
+    # Unpad rankings (remove -1 padding)
+    rankings = []
+    for row in rankings_padded:
+        rankings.append([int(x) for x in row if x >= 0])
+
+    fig_dir = output_path.parent
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    suffix = output_path.suffix
+
+    disp_s = DISPLAY_NAMES.get(source_model, source_model)
+    disp_t = DISPLAY_NAMES.get(target_model, target_model)
+
+    logger.info(
+        "Transfer: %s (AUC=%.3f) -> %s (AUC=%.3f), transferred AUC=%.3f",
+        disp_s, auc_s, disp_t, auc_t, auc_transferred,
+    )
+
+    # Per-row histogram + coverage curve
+    plot_perrow_results(
+        optimal_k, row_gap_closed, max_k_per_row, rankings,
+        source_model, target_model, dataset,
+        fig_dir / f"vnode_transfer_perrow{suffix}",
+        action="transferring",
+    )
+
+    # Per-row scatter
+    plot_perrow_scatter(
+        sp1, tp1, transferred_p1,
+        optimal_k, y_q,
+        source_model, target_model, dataset,
+        auc_s, auc_t,
+        fig_dir / f"vnode_transfer_perrow_scatter{suffix}",
+        mode="transfer",
+    )
+
+    # Diagnostic
+    plot_perrow_diagnostic(
+        optimal_k, row_gap_closed,
+        data["accepted_preds"], data["baseline_preds"], data["source_preds"],
+        max_k_per_row, y_q,
+        source_model, target_model, dataset,
+        fig_dir / f"vnode_transfer_perrow_diagnostic{suffix}",
+        action="transferring",
+    )
+
+    gap = auc_s - auc_t
+    gap_closed_pct = (auc_transferred - auc_t) / gap * 100 if abs(gap) > 0.001 else float("nan")
+    print(f"\n{disp_s} -> {disp_t} on {dataset}")
+    print(f"  {disp_t}+vnode AUC = {auc_transferred:.4f} (gap closed {gap_closed_pct:.1f}%)")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Prediction scatter plot")
     parser.add_argument("--dataset", type=str, default="kddcup09_appetency")
@@ -965,7 +1035,7 @@ def main():
     parser.add_argument("--output", type=Path,
                         default=PROJECT_ROOT / "output" / "figures" / "prediction_scatter.pdf")
 
-    # Ablation modes (mutually exclusive)
+    # Intervention modes (mutually exclusive)
     abl_group = parser.add_mutually_exclusive_group()
     abl_group.add_argument("--ablate-unmatched", action="store_true",
                            help="Ablate unmatched features from the stronger model "
@@ -975,10 +1045,18 @@ def main():
                                 "set per row to close the logloss gap")
     abl_group.add_argument("--ablate-features", type=str, default=None,
                            help="Comma-separated feature indices to ablate from model-a")
+    abl_group.add_argument("--transfer", type=Path, default=None,
+                           help="Plot from saved vnode transfer results (.npz). "
+                                "Ignores --model-a/--model-b/--dataset/--device.")
 
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    # ── Transfer mode: load saved results and plot ────────────────────────
+    if args.transfer is not None:
+        _plot_transfer_results(args.transfer, args.output)
+        return
 
     task = "classification"
     _, _, _, y_q = _load_splits(args.dataset, task)
