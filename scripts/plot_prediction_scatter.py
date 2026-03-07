@@ -558,51 +558,95 @@ def plot_perrow_results(
     dataset: str,
     output_path: Path,
     action: str = "ablating",
+    preds_strong: np.ndarray = None,
+    preds_weak: np.ndarray = None,
+    y_query: np.ndarray = None,
 ):
-    """Plot per-row results: histogram + cumulative coverage curve.
+    """Plot per-row results: concept count histograms + cumulative coverage.
 
-    Filters to fixable rows (optimal_k > 0) so the distribution shows
-    the actual concept counts needed, not dominated by rows with no gap.
+    Left column: histograms of firing concept count (max_k_per_row).
+      Top: fixable rows (optimal_k > 0).
+      Bottom: unfixable rows (improvable but optimal_k == 0).
+    Right: cumulative coverage curve for fixable rows.
+
+    If preds_strong/preds_weak/y_query are provided, uses get_improvable_rows
+    to separate unfixable from not-improvable. Otherwise falls back to
+    treating all optimal_k==0 rows as unfixable.
     """
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
-
     verb = "transferred" if action == "transferring" else "ablated"
     verb_ing = "Transferring" if action == "transferring" else "Ablating"
     concept_label = f"Concepts {verb}"
 
-    # For transfer: ablate_model = concept owner (source), other_model = model being modified (target)
-    # For ablation: ablate_model = model being modified, other_model = reference
     disp_abl = DISPLAY_NAMES.get(ablate_model, ablate_model)
     disp_oth = DISPLAY_NAMES.get(other_model, other_model)
     n_total = len(optimal_k)
 
-    # Filter to fixable rows (optimal_k > 0)
     fixable = optimal_k > 0
     n_fixable = int(fixable.sum())
     ok_fixable = optimal_k[fixable]
 
+    # Determine improvable vs unfixable
+    if preds_strong is not None and preds_weak is not None and y_query is not None:
+        improvable = get_improvable_rows(preds_strong, preds_weak, y_query)
+    else:
+        # Fallback: treat all rows as potentially improvable
+        improvable = np.ones(n_total, dtype=bool)
+    unfixable = improvable & ~fixable
+    n_unfixable = int(unfixable.sum())
+    n_improvable = int(improvable.sum())
+
     if n_fixable == 0:
         logger.warning("No fixable rows — skipping per-row results plot.")
-        plt.close(fig)
         return
 
-    # --- Left: histogram of per-row optimal k (fixable rows only) ---
-    ax = axes[0]
-    max_k = int(ok_fixable.max())
-    bins = np.arange(0.5, max_k + 1.5, 1)  # start at 0.5 since k >= 1
-    ax.hist(ok_fixable, bins=bins, color="#0072B2", edgecolor="white", alpha=0.8)
-    ax.axvline(np.median(ok_fixable), color="#D55E00", ls="--", lw=1.5,
-               label=f"median = {np.median(ok_fixable):.0f}")
-    ax.axvline(ok_fixable.mean(), color="#E69F00", ls=":", lw=1.5,
-               label=f"mean = {ok_fixable.mean():.1f}")
-    ax.set_xlabel(f"{concept_label} (per-row optimal k)", fontsize=10)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8),
+                             gridspec_kw={"height_ratios": [1, 1]})
+
+    # --- Top left: histogram of firing concepts for FIXABLE rows ---
+    ax = axes[0, 0]
+    avail_fixable = max_k_per_row[fixable]
+    max_avail = int(max_k_per_row.max()) if len(max_k_per_row) > 0 else 1
+    bins = np.arange(-0.5, max_avail + 1.5, 1)
+    ax.hist(avail_fixable, bins=bins, color="#0072B2", edgecolor="white", alpha=0.8)
+    ax.axvline(np.median(avail_fixable), color="#D55E00", ls="--", lw=1.5,
+               label=f"median = {np.median(avail_fixable):.0f}")
+    ax.axvline(avail_fixable.mean(), color="#E69F00", ls=":", lw=1.5,
+               label=f"mean = {avail_fixable.mean():.1f}")
+    ax.set_xlabel("Firing unmatched concepts", fontsize=10)
     ax.set_ylabel("Number of rows", fontsize=10)
-    ax.set_title(f"{dataset}: per-row concept count ({n_fixable}/{n_total} fixable)",
-                 fontsize=10)
+    ax.set_title(
+        f"Fixable ({n_fixable}/{n_improvable} improvable)",
+        fontsize=10,
+    )
     ax.legend(fontsize=8)
 
-    # --- Right: cumulative coverage curve (fixable rows only) ---
-    ax = axes[1]
+    # --- Bottom left: histogram of firing concepts for UNFIXABLE rows ---
+    ax = axes[1, 0]
+    if n_unfixable > 0:
+        avail_unfixable = max_k_per_row[unfixable]
+        ax.hist(avail_unfixable, bins=bins, color="#999999", edgecolor="white", alpha=0.8)
+        ax.axvline(np.median(avail_unfixable), color="#D55E00", ls="--", lw=1.5,
+                   label=f"median = {np.median(avail_unfixable):.0f}")
+        ax.axvline(avail_unfixable.mean(), color="#E69F00", ls=":", lw=1.5,
+                   label=f"mean = {avail_unfixable.mean():.1f}")
+        ax.legend(fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "No unfixable rows", transform=ax.transAxes,
+                ha="center", va="center", fontsize=10, color="#999999")
+    ax.set_xlabel("Firing unmatched concepts", fontsize=10)
+    ax.set_ylabel("Number of rows", fontsize=10)
+    ax.set_title(
+        f"Unfixable ({n_unfixable}/{n_improvable} improvable)",
+        fontsize=10,
+    )
+
+    # Match x-axis range between top and bottom
+    xlim = axes[0, 0].get_xlim()
+    axes[1, 0].set_xlim(xlim)
+
+    # --- Top right: cumulative coverage curve (fixable rows only) ---
+    ax = axes[0, 1]
+    max_k = int(ok_fixable.max())
     ks = np.arange(1, max_k + 1)
     coverage = np.array([(ok_fixable <= k).mean() for k in ks])
     ax.plot(ks, coverage * 100, color="#0072B2", lw=2)
@@ -610,7 +654,6 @@ def plot_perrow_results(
     ax.axhline(50, color="#999999", ls=":", lw=0.8, alpha=0.6)
     ax.axhline(90, color="#999999", ls=":", lw=0.8, alpha=0.6)
 
-    # Find k for 50% and 90% coverage
     k50 = int(ks[np.searchsorted(coverage, 0.5)])
     k90 = int(ks[np.searchsorted(coverage, 0.9)]) if coverage[-1] >= 0.9 else max_k
     ax.plot(k50, 50, "o", color="#D55E00", ms=6, zorder=5)
@@ -622,7 +665,7 @@ def plot_perrow_results(
 
     ax.set_xlabel(f"Max concepts {verb} (k)", fontsize=10)
     ax.set_ylabel(f"% fixable rows covered", fontsize=10)
-    ax.set_title(f"{dataset}: cumulative coverage", fontsize=10)
+    ax.set_title(f"Cumulative coverage ({n_fixable} fixable rows)", fontsize=10)
     ax.set_ylim(0, 105)
     ax.set_xlim(0.5, max_k + 0.5)
 
@@ -641,8 +684,29 @@ def plot_perrow_results(
                 va="bottom", ha="right", family="monospace",
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
 
+    # --- Bottom right: summary stats ---
+    ax = axes[1, 1]
+    ax.axis("off")
+    lines = [
+        f"Dataset: {dataset}",
+        f"Total rows: {n_total}",
+        f"Improvable: {n_improvable} ({100*n_improvable/n_total:.0f}%)",
+        f"  Fixable: {n_fixable} ({100*n_fixable/n_improvable:.0f}% of improvable)",
+        f"  Unfixable: {n_unfixable} ({100*n_unfixable/n_improvable:.0f}% of improvable)",
+        f"Not improvable: {n_total - n_improvable}",
+        "",
+    ]
+    if n_fixable > 0 and n_unfixable > 0:
+        lines.append(f"Firing concepts (fixable):   "
+                     f"mean={avail_fixable.mean():.1f}, median={np.median(avail_fixable):.0f}")
+        lines.append(f"Firing concepts (unfixable): "
+                     f"mean={avail_unfixable.mean():.1f}, median={np.median(avail_unfixable):.0f}")
+    ax.text(0.05, 0.95, "\n".join(lines), transform=ax.transAxes, fontsize=9,
+            va="top", ha="left", family="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="#f0f0f0", alpha=0.8))
+
     fig.suptitle(f"{verb_ing} {disp_abl}-only concepts → matching {disp_oth}",
-                 fontsize=11, y=1.02)
+                 fontsize=11, y=1.01)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -1021,6 +1085,9 @@ def _plot_transfer_results(npz_path: Path, output_path: Path):
         source_model, target_model, dataset,
         fig_dir / f"vnode_transfer_perrow{suffix}",
         action="transferring",
+        preds_strong=sp1,
+        preds_weak=tp1,
+        y_query=y_q,
     )
 
     # Per-row scatter
@@ -1178,12 +1245,17 @@ def main():
 
             # Save per-row results plot
             fig_dir = args.output.parent
+            strong_preds = preds_a if ablate_axis == "x" else preds_b
+            weak_preds = preds_b if ablate_axis == "x" else preds_a
             perrow_path = fig_dir / f"perrow_ablation{args.output.suffix}"
             plot_perrow_results(
                 perrow["optimal_k"], perrow["row_gap_closed"],
                 perrow["max_k_per_row"], perrow["perrow_rankings"],
                 ablate_model, other_model, args.dataset,
                 perrow_path,
+                preds_strong=strong_preds,
+                preds_weak=weak_preds,
+                y_query=y_q,
             )
 
             # Per-row scatter: filtered to fixable rows
@@ -1191,8 +1263,6 @@ def main():
                 perrow["optimal_k"], perrow["sweep_preds"],
                 perrow["baseline_preds"],
             )
-            strong_preds = preds_a if ablate_axis == "x" else preds_b
-            weak_preds = preds_b if ablate_axis == "x" else preds_a
             auc_strong = max(auc_a, auc_b)
             auc_weak = min(auc_a, auc_b)
             perrow_scatter_path = fig_dir / f"perrow_scatter{args.output.suffix}"
