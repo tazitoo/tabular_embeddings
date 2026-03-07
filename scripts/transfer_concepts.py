@@ -536,21 +536,21 @@ def perrow_sweep_transfer(
 
     # --- Phase 3: selective sweep (max_k forward passes) ---
     # Unlike ablation's cumulative sweep, transfer is selective: at each step k,
-    # tentatively add the k-th ranked feature and keep it only if it improves
-    # that row's logloss. This avoids accumulating noisy concepts.
+    # tentatively add the k-th ranked feature and keep it only if it moves the
+    # prediction closer to the strong model. Accept criterion uses prediction
+    # distance to the strong model (no ground truth labels), avoiding overfitting.
     logger.info("Phase 3: selective sweep k=1..%d...", max_k)
     sae_hidden = h_encoded.shape[1]
     sweep_preds = []
-    eps = 1e-7
-    y = y_q.astype(float)
 
-    # Track accepted masks and current-best logloss per row
+    # Track accepted masks and best distance to strong model per row
     accepted_masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
                                  device=query_source.device)
-    # Baseline logloss per row
+    # Source (strong) model P(class=1) — the target we're trying to match
+    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
+    # Baseline (weak) model P(class=1)
     bp1 = baseline_np[:, 1] if baseline_np.ndim == 2 else baseline_np
-    bp_clipped = np.clip(bp1, eps, 1 - eps)
-    best_ll = -(y * np.log(bp_clipped) + (1 - y) * np.log(1 - bp_clipped))
+    best_dist = np.abs(bp1 - sp1)  # distance to strong model at baseline
 
     for k in range(1, max_k + 1):
         # Build tentative masks: accepted + k-th ranked feature per row
@@ -574,16 +574,16 @@ def perrow_sweep_transfer(
         )
         preds_k = result["ablated_preds"]
 
-        # Per-row accept/reject: keep feature only if logloss improved
+        # Per-row accept/reject: keep feature only if prediction moves
+        # closer to the strong model (no labels used in this decision)
         p1_k = preds_k[:, 1] if preds_k.ndim == 2 else preds_k
-        p_clipped = np.clip(p1_k, eps, 1 - eps)
-        ll_k = -(y * np.log(p_clipped) + (1 - y) * np.log(1 - p_clipped))
+        dist_k = np.abs(p1_k - sp1)
 
         for row_idx in range(n_query):
-            if ll_k[row_idx] < best_ll[row_idx] - 1e-8:
-                # Accept: update mask and best logloss
+            if dist_k[row_idx] < best_dist[row_idx] - 1e-8:
+                # Accept: prediction is closer to strong model
                 accepted_masks[row_idx] = tentative_masks[row_idx]
-                best_ll[row_idx] = ll_k[row_idx]
+                best_dist[row_idx] = dist_k[row_idx]
 
         # Record tentative preds (for diagnostic trajectory visualization)
         sweep_preds.append(preds_k)
