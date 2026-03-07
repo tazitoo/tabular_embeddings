@@ -799,7 +799,11 @@ def perrow_sweep_virtual_transfer(
         n_accepted.mean(), np.median(n_accepted), int(n_accepted.max()),
     )
 
-    # Final forward pass with accepted masks
+    # Final forward pass with accepted masks.
+    # The context delta is the union of all rows' accepted features, which
+    # differs from the per-step context each row saw during accept/reject.
+    # Validate: revert any row where the final prediction overshot (moved
+    # further from source than baseline was).
     delta_query_final = torch.tensor(
         compute_virtual_delta_perrow(acts_query, virtual_atoms, accepted_masks),
         dtype=torch.float32,
@@ -818,6 +822,45 @@ def perrow_sweep_virtual_transfer(
         device=device, task=task,
         layers_path=layers_path,
     )
+
+    # Validate: revert rows that overshot due to context coupling
+    final_preds = result_final["ablated_preds"]
+    fp1 = final_preds[:, 1] if final_preds.ndim == 2 else final_preds
+    final_dist = np.abs(fp1 - sp1)
+    baseline_dist = np.abs(bp1 - sp1)
+
+    n_reverted = 0
+    for row_idx in range(n_query):
+        if n_accepted[row_idx] > 0 and final_dist[row_idx] >= baseline_dist[row_idx]:
+            accepted_masks[row_idx] = False
+            n_accepted[row_idx] = 0
+            n_reverted += 1
+
+    if n_reverted > 0:
+        logger.info(
+            "Reverted %d rows that overshot after context coupling (%.1f%%)",
+            n_reverted, 100 * n_reverted / n_query,
+        )
+        # Re-run final forward pass with cleaned masks
+        delta_query_final = torch.tensor(
+            compute_virtual_delta_perrow(acts_query, virtual_atoms, accepted_masks),
+            dtype=torch.float32,
+        )
+        ctx_mask_final = accepted_masks.any(axis=0)
+        delta_ctx_final = _make_virtual_delta(
+            acts_ctx, virtual_atoms, feature_mask=ctx_mask_final,
+        )
+        full_delta_final = _build_full_delta_from_parts(
+            delta_ctx_final, delta_query_final, n_ctx_target,
+        )
+        result_final = intervene(
+            model_key=target_model,
+            X_context=X_ctx, y_context=y_ctx,
+            X_query=X_q, y_query=y_q,
+            external_delta=full_delta_final.to(device),
+            device=device, task=task,
+            layers_path=layers_path,
+        )
 
     return {
         "baseline_preds": baseline_np,
