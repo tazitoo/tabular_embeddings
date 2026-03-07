@@ -16,12 +16,14 @@ import pytest
 import torch
 
 from scripts.transfer_virtual_nodes import (
+    build_concept_bridge,
     build_mnn_matches,
     compute_virtual_atoms,
     compute_virtual_delta,
     compute_virtual_delta_perrow,
     extract_decoder_atoms,
     fit_concept_map,
+    load_cross_correlations,
 )
 
 
@@ -330,3 +332,192 @@ class TestComputeVirtualDeltaPerrow:
         delta = compute_virtual_delta_perrow(acts, vatoms, masks)
         # (2*0.5 + 4*0.25) * 1.0 = 2.0
         np.testing.assert_allclose(delta, np.array([[2.0]]))
+
+
+# -- load_cross_correlations -------------------------------------------------
+
+
+class TestLoadCrossCorrelations:
+    def test_forward_order(self, tmp_path):
+        """Loads file when source__target.npz exists."""
+        corr = np.random.rand(10, 15).astype(np.float32)
+        idx_a = np.arange(10)
+        idx_b = np.arange(15)
+        np.savez(
+            tmp_path / "TabPFN__TabICL.npz",
+            corr_matrix=corr,
+            indices_a=idx_a,
+            indices_b=idx_b,
+            model_a="TabPFN",
+            model_b="TabICL",
+        )
+        c, ia, ib = load_cross_correlations("tabpfn", "tabicl", tmp_path)
+        np.testing.assert_array_equal(c, corr)
+        np.testing.assert_array_equal(ia, idx_a)
+        np.testing.assert_array_equal(ib, idx_b)
+
+    def test_reversed_order(self, tmp_path):
+        """Loads and transposes when only target__source.npz exists."""
+        corr = np.random.rand(15, 10).astype(np.float32)
+        idx_a = np.arange(15)  # stored as model_a = TabICL
+        idx_b = np.arange(10)  # stored as model_b = TabPFN
+        np.savez(
+            tmp_path / "TabICL__TabPFN.npz",
+            corr_matrix=corr,
+            indices_a=idx_a,
+            indices_b=idx_b,
+            model_a="TabICL",
+            model_b="TabPFN",
+        )
+        # Request tabpfn (source) -> tabicl (target)
+        c, ia, ib = load_cross_correlations("tabpfn", "tabicl", tmp_path)
+        assert c.shape == (10, 15)  # transposed
+        np.testing.assert_array_equal(c, corr.T)
+        np.testing.assert_array_equal(ia, idx_b)  # swapped
+        np.testing.assert_array_equal(ib, idx_a)
+
+    def test_file_not_found(self, tmp_path):
+        """Raises FileNotFoundError when no file exists for the pair."""
+        with pytest.raises(FileNotFoundError, match="No cross-correlation"):
+            load_cross_correlations("tabpfn", "mitra", tmp_path)
+
+
+# -- build_concept_bridge ----------------------------------------------------
+
+
+class TestBuildConceptBridge:
+    @pytest.fixture
+    def bridge_inputs(self):
+        """Create mock SAEs and a synthetic cross-correlation setup.
+
+        Source SAE: hidden_dim=20, input_dim=8
+        Target SAE: hidden_dim=30, input_dim=16
+        Alive features: 10 source, 12 target
+        """
+        np.random.seed(42)
+
+        # Source SAE mock (standard path, no archetypal)
+        sae_source = MagicMock(spec=[])
+        d_source_hidden, d_source_input = 20, 8
+        sae_source.W_dec = torch.nn.Parameter(
+            torch.randn(d_source_input, d_source_hidden)
+        )
+
+        # Target SAE mock (standard path)
+        sae_target = MagicMock(spec=[])
+        d_target_hidden, d_target_input = 30, 16
+        sae_target.W_dec = torch.nn.Parameter(
+            torch.randn(d_target_input, d_target_hidden)
+        )
+
+        # Alive features: 10 of 20 source, 12 of 30 target
+        indices_a = np.array([0, 2, 4, 5, 7, 9, 11, 13, 15, 17])
+        indices_b = np.array([1, 3, 5, 6, 8, 10, 12, 14, 16, 18, 22, 25])
+
+        # Build a correlation matrix where we engineer clear MNN matches
+        corr = np.random.rand(10, 12).astype(np.float32) * 0.1
+        # Create 5 clear mutual matches
+        for k in range(5):
+            corr[k, k] = 0.8 + 0.02 * k
+
+        # Unmatched source features: global indices from the alive set
+        # Use indices_a[5:8] = [9, 11, 13] as unmatched
+        unmatched = [int(indices_a[i]) for i in range(5, 8)]
+
+        return {
+            "sae_source": sae_source,
+            "sae_target": sae_target,
+            "corr_matrix": corr,
+            "indices_a": indices_a,
+            "indices_b": indices_b,
+            "unmatched": unmatched,
+            "d_source_input": d_source_input,
+            "d_target_input": d_target_input,
+        }
+
+    def test_return_keys(self, bridge_inputs):
+        """Return dict contains all expected keys."""
+        result = build_concept_bridge(
+            sae_source=bridge_inputs["sae_source"],
+            sae_target=bridge_inputs["sae_target"],
+            corr_matrix=bridge_inputs["corr_matrix"],
+            indices_a=bridge_inputs["indices_a"],
+            indices_b=bridge_inputs["indices_b"],
+            unmatched_source_features=bridge_inputs["unmatched"],
+        )
+        expected_keys = {
+            "virtual_atoms",
+            "concept_map_r2",
+            "n_matched_pairs",
+            "matched_pairs",
+            "unmatched_indices",
+            "concept_map_M",
+        }
+        assert set(result.keys()) == expected_keys
+
+    def test_virtual_atoms_shape(self, bridge_inputs):
+        """Virtual atoms have shape (n_unmatched, d_target)."""
+        result = build_concept_bridge(
+            sae_source=bridge_inputs["sae_source"],
+            sae_target=bridge_inputs["sae_target"],
+            corr_matrix=bridge_inputs["corr_matrix"],
+            indices_a=bridge_inputs["indices_a"],
+            indices_b=bridge_inputs["indices_b"],
+            unmatched_source_features=bridge_inputs["unmatched"],
+        )
+        n_unmatched = len(bridge_inputs["unmatched"])
+        d_target = bridge_inputs["d_target_input"]
+        assert result["virtual_atoms"].shape == (n_unmatched, d_target)
+
+    def test_n_matched_pairs(self, bridge_inputs):
+        """Correct number of MNN-matched pairs."""
+        result = build_concept_bridge(
+            sae_source=bridge_inputs["sae_source"],
+            sae_target=bridge_inputs["sae_target"],
+            corr_matrix=bridge_inputs["corr_matrix"],
+            indices_a=bridge_inputs["indices_a"],
+            indices_b=bridge_inputs["indices_b"],
+            unmatched_source_features=bridge_inputs["unmatched"],
+        )
+        # We engineered 5 clear diagonal matches with corr >= 0.8
+        assert result["n_matched_pairs"] == 5
+
+    def test_matched_pairs_use_global_indices(self, bridge_inputs):
+        """Matched pairs contain global (not local) feature indices."""
+        result = build_concept_bridge(
+            sae_source=bridge_inputs["sae_source"],
+            sae_target=bridge_inputs["sae_target"],
+            corr_matrix=bridge_inputs["corr_matrix"],
+            indices_a=bridge_inputs["indices_a"],
+            indices_b=bridge_inputs["indices_b"],
+            unmatched_source_features=bridge_inputs["unmatched"],
+        )
+        for src_idx, tgt_idx in result["matched_pairs"]:
+            assert src_idx in bridge_inputs["indices_a"]
+            assert tgt_idx in bridge_inputs["indices_b"]
+
+    def test_unmatched_indices_preserved(self, bridge_inputs):
+        """Unmatched indices are returned verbatim."""
+        result = build_concept_bridge(
+            sae_source=bridge_inputs["sae_source"],
+            sae_target=bridge_inputs["sae_target"],
+            corr_matrix=bridge_inputs["corr_matrix"],
+            indices_a=bridge_inputs["indices_a"],
+            indices_b=bridge_inputs["indices_b"],
+            unmatched_source_features=bridge_inputs["unmatched"],
+        )
+        assert result["unmatched_indices"] == bridge_inputs["unmatched"]
+
+    def test_concept_map_shape(self, bridge_inputs):
+        """Concept map M has shape (d_target, d_source)."""
+        result = build_concept_bridge(
+            sae_source=bridge_inputs["sae_source"],
+            sae_target=bridge_inputs["sae_target"],
+            corr_matrix=bridge_inputs["corr_matrix"],
+            indices_a=bridge_inputs["indices_a"],
+            indices_b=bridge_inputs["indices_b"],
+            unmatched_source_features=bridge_inputs["unmatched"],
+        )
+        d_source = bridge_inputs["d_source_input"]
+        d_target = bridge_inputs["d_target_input"]
+        assert result["concept_map_M"].shape == (d_target, d_source)

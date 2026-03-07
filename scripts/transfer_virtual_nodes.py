@@ -21,7 +21,7 @@ Usage:
 import logging
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -30,6 +30,19 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CROSS_CORR_DIR = PROJECT_ROOT / "output" / "sae_cross_correlations"
+
+# Display name mapping for cross-correlation filenames
+CROSS_CORR_NAMES = {
+    "tabpfn": "TabPFN",
+    "tabicl": "TabICL",
+    "mitra": "Mitra",
+    "tabdpt": "TabDPT",
+    "hyperfast": "HyperFast",
+    "carte": "CARTE",
+    "tabula8b": "Tabula-8B",
+}
 
 
 # -- Decoder atom extraction ---------------------------------------------------
@@ -194,3 +207,154 @@ def compute_virtual_delta_perrow(
         (n_rows, d_target) per-row transfer deltas in target embedding space.
     """
     return (activations * masks) @ virtual_atoms
+
+
+# -- Cross-correlation loading ------------------------------------------------
+
+
+def load_cross_correlations(
+    source_model: str,
+    target_model: str,
+    cross_corr_dir: Path = DEFAULT_CROSS_CORR_DIR,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load cross-correlation matrix between two models' SAE features.
+
+    Tries both orderings of the model pair (A__B.npz and B__A.npz).
+    If the file is stored in reversed order, transposes the correlation
+    matrix and swaps indices so the result is always (source, target).
+
+    Args:
+        source_model: Model key (e.g. "tabpfn", "tabicl").
+        target_model: Model key (e.g. "mitra", "tabdpt").
+        cross_corr_dir: Directory containing cross-correlation NPZ files.
+
+    Returns:
+        corr_matrix: (n_source_alive, n_target_alive) correlation matrix.
+        indices_source: Alive feature indices for the source SAE.
+        indices_target: Alive feature indices for the target SAE.
+
+    Raises:
+        FileNotFoundError: If neither ordering of the model pair is found.
+    """
+    cross_corr_dir = Path(cross_corr_dir)
+    name_a = CROSS_CORR_NAMES.get(source_model, source_model)
+    name_b = CROSS_CORR_NAMES.get(target_model, target_model)
+
+    path_ab = cross_corr_dir / f"{name_a}__{name_b}.npz"
+    path_ba = cross_corr_dir / f"{name_b}__{name_a}.npz"
+
+    if path_ab.exists():
+        data = np.load(path_ab, allow_pickle=True)
+        corr_matrix = data["corr_matrix"]
+        indices_source = data["indices_a"]
+        indices_target = data["indices_b"]
+        logger.debug("Loaded %s (shape %s)", path_ab.name, corr_matrix.shape)
+    elif path_ba.exists():
+        data = np.load(path_ba, allow_pickle=True)
+        corr_matrix = data["corr_matrix"].T
+        indices_source = data["indices_b"]
+        indices_target = data["indices_a"]
+        logger.debug(
+            "Loaded %s (reversed, transposed to %s)",
+            path_ba.name,
+            corr_matrix.shape,
+        )
+    else:
+        raise FileNotFoundError(
+            f"No cross-correlation file found for {name_a} <-> {name_b}. "
+            f"Tried {path_ab} and {path_ba}."
+        )
+
+    return corr_matrix, indices_source, indices_target
+
+
+# -- Concept bridge builder ---------------------------------------------------
+
+
+def build_concept_bridge(
+    sae_source: torch.nn.Module,
+    sae_target: torch.nn.Module,
+    corr_matrix: np.ndarray,
+    indices_a: np.ndarray,
+    indices_b: np.ndarray,
+    unmatched_source_features: List[int],
+    min_match_r: float = 0.2,
+    ridge_alpha: float = 1.0,
+) -> Dict:
+    """Build a concept bridge from source SAE to target SAE.
+
+    Orchestrates the full pipeline: extract decoder atoms, find MNN matches,
+    fit a concept-level linear map on matched pairs, and project unmatched
+    source features into the target's embedding space as virtual decoder atoms.
+
+    Args:
+        sae_source: Source SAE model.
+        sae_target: Target SAE model.
+        corr_matrix: (n_alive_a, n_alive_b) cross-correlation matrix.
+        indices_a: Global feature indices for alive source features.
+        indices_b: Global feature indices for alive target features.
+        unmatched_source_features: Global feature indices of source features
+            to project as virtual nodes (must be a subset of indices_a).
+        min_match_r: Minimum correlation for MNN matching.
+        ridge_alpha: Ridge regularisation strength for the concept map.
+
+    Returns:
+        Dict with keys:
+            virtual_atoms: (n_unmatched, d_target) virtual decoder atoms.
+            concept_map_r2: float, cross-validated R^2 of the concept map.
+            n_matched_pairs: int, number of MNN-matched decoder atom pairs.
+            matched_pairs: list of (source_global, target_global) tuples.
+            unmatched_indices: list of ints (the input unmatched feature indices).
+            concept_map_M: (d_target, d_source) concept-level linear map.
+    """
+    # 1. Extract full decoder atom matrices
+    atoms_source = extract_decoder_atoms(sae_source).numpy()  # (H_s, d_s)
+    atoms_target = extract_decoder_atoms(sae_target).numpy()  # (H_t, d_t)
+    logger.info(
+        "Decoder atoms: source %s, target %s", atoms_source.shape, atoms_target.shape
+    )
+
+    # 2. MNN matching on the cross-correlation matrix (local indices)
+    local_matches = build_mnn_matches(corr_matrix, min_r=min_match_r)
+    logger.info(
+        "MNN matches: %d pairs (min_r=%.2f)", len(local_matches), min_match_r
+    )
+
+    # 3. Convert local MNN indices to global feature indices
+    indices_a = np.asarray(indices_a)
+    indices_b = np.asarray(indices_b)
+    matched_pairs = [
+        (int(indices_a[i]), int(indices_b[j])) for i, j in local_matches
+    ]
+
+    # 4. Gather matched decoder atoms using global indices
+    matched_source_atoms = np.stack(
+        [atoms_source[gi] for gi, _ in matched_pairs], axis=0
+    )  # (n_matched, d_source)
+    matched_target_atoms = np.stack(
+        [atoms_target[gj] for _, gj in matched_pairs], axis=0
+    )  # (n_matched, d_target)
+
+    # 5. Fit concept-level linear map on matched pairs
+    M, r2 = fit_concept_map(matched_source_atoms, matched_target_atoms, alpha=ridge_alpha)
+    logger.info("Concept map: R²=%.4f, shape=%s", r2, M.shape)
+
+    # 6. Compute virtual atoms for unmatched source features
+    unmatched_atoms = np.stack(
+        [atoms_source[gi] for gi in unmatched_source_features], axis=0
+    )  # (n_unmatched, d_source)
+    virtual = compute_virtual_atoms(unmatched_atoms, M)
+    logger.info(
+        "Virtual atoms: %d unmatched -> shape %s",
+        len(unmatched_source_features),
+        virtual.shape,
+    )
+
+    return {
+        "virtual_atoms": virtual,
+        "concept_map_r2": r2,
+        "n_matched_pairs": len(matched_pairs),
+        "matched_pairs": matched_pairs,
+        "unmatched_indices": list(unmatched_source_features),
+        "concept_map_M": M,
+    }
