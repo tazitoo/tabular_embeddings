@@ -18,6 +18,7 @@ Usage:
         --dataset credit-g --device cuda --perrow
 """
 
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -41,7 +42,16 @@ from scripts.intervene_sae import (
     load_training_mean,
 )
 from scripts.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
-from scripts.plot_prediction_scatter import _logloss
+from scripts.plot_prediction_scatter import (
+    _logloss,
+    get_active_feature_count,
+    get_unmatched_features,
+    plot_logloss_curve,
+    plot_perrow_diagnostic,
+    plot_perrow_results,
+    plot_perrow_scatter,
+    plot_prediction_scatter,
+)
 from scripts.transfer_concepts import capture_embeddings
 
 logger = logging.getLogger(__name__)
@@ -888,3 +898,292 @@ def find_per_row_optimal_virtual(
         "baseline_row_ll": baseline_row_ll,
         "unmatched_features": perrow_result["unmatched_features"],
     }
+
+
+# -- CLI -----------------------------------------------------------------------
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Virtual-node concept transfer between tabular foundation models",
+    )
+    parser.add_argument("--source", type=str, required=True,
+                        help="Model A key (auto-detects which is stronger)")
+    parser.add_argument("--target", type=str, required=True,
+                        help="Model B key (auto-detects which is weaker)")
+    parser.add_argument("--dataset", type=str, default="credit-g")
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--task", type=str, default="classification")
+    parser.add_argument("--min-match-r", type=float, default=0.2,
+                        help="Minimum |r| for MNN anchor pairs")
+    parser.add_argument("--ridge-alpha", type=float, default=1.0,
+                        help="Ridge regularization for concept-level map")
+    parser.add_argument("--perrow", action="store_true",
+                        help="Per-row selective transfer: find minimal concept "
+                             "set per row that closes the gap to the strong model")
+    parser.add_argument("--sae-dir", type=Path, default=DEFAULT_SAE_DIR)
+    parser.add_argument("--layers-config", type=Path, default=DEFAULT_LAYERS_PATH)
+    parser.add_argument("--training-dir", type=Path, default=DEFAULT_TRAINING_DIR)
+    parser.add_argument("--cross-corr-dir", type=Path, default=DEFAULT_CROSS_CORR_DIR)
+    parser.add_argument("--output-dir", type=Path,
+                        default=PROJECT_ROOT / "output" / "figures")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    fig_dir = args.output_dir / args.dataset
+
+    # Auto-detect stronger model by running both and comparing AUC.
+    # Transfer FROM the stronger model TO the weaker one.
+    from sklearn.metrics import roc_auc_score
+
+    model_a, model_b = args.source, args.target
+
+    logger.info("Getting baseline predictions to determine transfer direction...")
+    X_ctx, y_ctx, X_q, y_q = _load_splits(args.dataset, args.task)
+    layer_a = get_extraction_layer(model_a, args.layers_config)
+    layer_b = get_extraction_layer(model_b, args.layers_config)
+
+    emb_a, preds_a = capture_embeddings(
+        model_a, X_ctx, y_ctx, X_q, layer_a, args.device, args.task,
+    )
+    emb_b, preds_b = capture_embeddings(
+        model_b, X_ctx, y_ctx, X_q, layer_b, args.device, args.task,
+    )
+
+    pa1 = preds_a[:, 1] if preds_a.ndim == 2 else preds_a
+    pb1 = preds_b[:, 1] if preds_b.ndim == 2 else preds_b
+    auc_a = float(roc_auc_score(y_q, pa1))
+    auc_b = float(roc_auc_score(y_q, pb1))
+
+    if auc_a >= auc_b:
+        source_model, target_model = model_a, model_b
+        emb_source, emb_target = emb_a, emb_b
+        source_preds, target_preds = preds_a, preds_b
+    else:
+        source_model, target_model = model_b, model_a
+        emb_source, emb_target = emb_b, emb_a
+        source_preds, target_preds = preds_b, preds_a
+
+    disp_s = DISPLAY_NAMES.get(source_model, source_model)
+    disp_t = DISPLAY_NAMES.get(target_model, target_model)
+    logger.info(
+        "Transfer direction: %s (AUC=%.3f) -> %s (AUC=%.3f)",
+        disp_s, max(auc_a, auc_b), disp_t, min(auc_a, auc_b),
+    )
+
+    # Get unmatched features from the stronger model (ranked by importance)
+    try:
+        unmatched = get_unmatched_features(
+            source_model, target_model, args.dataset, positive_only=False,
+        )
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"No comparison data for {source_model} vs {target_model} on {args.dataset}. "
+            f"Run: python scripts/concept_importance.py --model {source_model} "
+            f"--compare {target_model} --dataset {args.dataset}"
+        )
+
+    if not unmatched:
+        logger.warning("No unmatched features found.")
+        return
+
+    unmatched_feat_indices = [f for f, _ in unmatched]
+    n_pos = sum(1 for _, d in unmatched if d > 0)
+    logger.info(
+        "Found %d unmatched %s-only features (%d with positive drop)",
+        len(unmatched), source_model, n_pos,
+    )
+    for feat, drop in unmatched[:10]:
+        logger.info("  feature %d: drop=%.4f", feat, drop)
+
+    # Build concept bridge
+    sae_source, _ = load_sae(source_model, sae_dir=args.sae_dir, device=args.device)
+    sae_target, _ = load_sae(target_model, sae_dir=args.sae_dir, device=args.device)
+
+    corr_matrix, indices_a, indices_b = load_cross_correlations(
+        source_model, target_model, cross_corr_dir=args.cross_corr_dir,
+    )
+
+    bridge = build_concept_bridge(
+        sae_source, sae_target, corr_matrix, indices_a, indices_b,
+        unmatched_feat_indices,
+        min_match_r=args.min_match_r,
+        ridge_alpha=args.ridge_alpha,
+    )
+
+    logger.info(
+        "Concept bridge: %d MNN pairs, map R²=%.4f, %d virtual atoms",
+        bridge["n_matched_pairs"],
+        bridge["concept_map_r2"],
+        len(bridge["unmatched_indices"]),
+    )
+
+    # ── Per-row transfer mode ─────────────────────────────────────────────
+    if args.perrow:
+        perrow_result = perrow_sweep_virtual_transfer(
+            source_model=source_model,
+            target_model=target_model,
+            dataset=args.dataset,
+            bridge=bridge,
+            device=args.device,
+            task=args.task,
+            sae_dir=args.sae_dir,
+            layers_path=args.layers_config,
+            training_dir=args.training_dir,
+            emb_source=emb_source,
+            emb_target=emb_target,
+            source_preds=source_preds,
+            target_baseline_preds=target_preds,
+        )
+
+        sp1_pr = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
+        tp1_pr = target_preds[:, 1] if target_preds.ndim == 2 else target_preds
+
+        optimal = find_per_row_optimal_virtual(
+            perrow_result, source_preds, target_preds, y_q,
+        )
+
+        # Use accepted predictions for fixable rows, baseline for non-fixable
+        ap = optimal["accepted_preds"]
+        ap1 = ap[:, 1] if ap.ndim == 2 else ap
+        transferred_p1 = np.where(optimal["optimal_k"] > 0, ap1, tp1_pr)
+
+        # Histogram + coverage curve
+        plot_perrow_results(
+            optimal["optimal_k"],
+            optimal["row_gap_closed"],
+            optimal["max_k_per_row"],
+            optimal["perrow_rankings"],
+            source_model,  # concept owner
+            target_model,  # model being improved
+            args.dataset,
+            fig_dir / "vnode_transfer_perrow.pdf",
+            action="transferring",
+        )
+
+        # Per-row scatter
+        auc_s = float(roc_auc_score(y_q, sp1_pr))
+        auc_t = float(roc_auc_score(y_q, tp1_pr))
+        auc_transferred = float(roc_auc_score(y_q, transferred_p1))
+        gap = auc_s - auc_t
+        gap_closed_pct = (
+            (auc_transferred - auc_t) / gap * 100
+            if abs(gap) > 0.001
+            else float("nan")
+        )
+        logger.info(
+            "Per-row transfer AUC: %.4f (baseline %.4f -> target %.4f, "
+            "gap closed %.1f%%)",
+            auc_transferred, auc_t, auc_s, gap_closed_pct,
+        )
+
+        plot_perrow_scatter(
+            sp1_pr, tp1_pr, transferred_p1,
+            optimal["optimal_k"], y_q,
+            source_model, target_model,
+            args.dataset,
+            auc_s, auc_t,
+            fig_dir / "vnode_transfer_perrow_scatter.pdf",
+            ablate_axis="y",
+            action="transferring",
+        )
+
+        # Diagnostic: logloss distributions + concept budget + accept rate
+        plot_perrow_diagnostic(
+            optimal["optimal_k"],
+            optimal["row_gap_closed"],
+            optimal["accepted_preds"],
+            optimal["baseline_preds"],
+            source_preds,
+            optimal["max_k_per_row"],
+            y_q,
+            source_model,  # concept owner
+            target_model,  # model being improved
+            args.dataset,
+            fig_dir / "vnode_transfer_perrow_diagnostic.pdf",
+            action="transferring",
+        )
+
+    # ── Cumulative sweep (always runs) ────────────────────────────────────
+    sweep = sweep_virtual_transfer(
+        source_model=source_model,
+        target_model=target_model,
+        dataset=args.dataset,
+        bridge=bridge,
+        device=args.device,
+        task=args.task,
+        sae_dir=args.sae_dir,
+        layers_path=args.layers_config,
+        training_dir=args.training_dir,
+        emb_source=emb_source,
+        emb_target=emb_target,
+        source_preds=source_preds,
+        target_baseline_preds=target_preds,
+    )
+
+    k = sweep["optimal_k"]
+    y = sweep["y_query"]
+    sp1 = sweep["source_preds_p1"]
+    tp1 = sweep["target_baseline_p1"]
+    xp1 = sweep["optimal_preds"]
+
+    from sklearn.metrics import roc_auc_score as _roc_auc_score
+
+    auc_source = float(_roc_auc_score(y, sp1))
+    auc_target = float(_roc_auc_score(y, tp1))
+    auc_transferred = float(_roc_auc_score(y, xp1))
+
+    gap = auc_source - auc_target
+    gap_closed = (auc_transferred - auc_target) / gap if gap > 0.001 else float("nan")
+
+    print(f"\n{'='*60}")
+    print(f"Virtual-node concept transfer: {source_model} -> {target_model}")
+    print(f"Dataset: {args.dataset}")
+    print(f"Concept bridge: {bridge['n_matched_pairs']} MNN pairs, "
+          f"map R²={bridge['concept_map_r2']:.4f}")
+    print(f"Optimal k = {k}/{len(unmatched)} concepts")
+    print(f"Optimal features: {sweep['optimal_features']}")
+    print(f"\n  {source_model} AUC = {auc_source:.4f}  "
+          f"(logloss={sweep['target_logloss']:.4f})")
+    print(f"  {target_model} AUC = {auc_target:.4f}  "
+          f"(logloss={sweep['baseline_logloss']:.4f})")
+    print(f"  {target_model}+vnode AUC = {auc_transferred:.4f}  "
+          f"(logloss={sweep['logloss_curve'][k-1]:.4f})")
+    if gap > 0.001:
+        print(f"\n  Gap closed: {gap_closed:.1%}")
+    print(f"{'='*60}")
+
+    # Logloss curve
+    plot_logloss_curve(
+        sweep["logloss_curve"],
+        sweep["baseline_logloss"],
+        sweep["target_logloss"],
+        k,
+        unmatched,
+        target_model,   # model being modified
+        source_model,   # reference model (whose concepts we're transferring)
+        args.dataset,
+        fig_dir / "vnode_transfer_logloss.pdf",
+        action="transferring",
+    )
+
+    # Scatter plot with optimal transfer overlay
+    features_s = get_active_feature_count(source_model, args.dataset)
+    features_t = get_active_feature_count(target_model, args.dataset)
+
+    transfer_label = f"vnode {k}/{len(unmatched)} {disp_s}-only"
+    ablation_levels = [(transfer_label, "#009E73", xp1)]
+
+    plot_prediction_scatter(
+        sp1, tp1, y,
+        source_model, target_model, args.dataset,
+        auc_source, auc_target, features_s, features_t,
+        fig_dir / "vnode_transfer_scatter.pdf",
+        ablation_levels=ablation_levels,
+        ablate_axis="y",
+    )
+
+
+if __name__ == "__main__":
+    main()
