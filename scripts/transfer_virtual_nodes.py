@@ -33,6 +33,8 @@ from scripts.intervene_sae import (
     DEFAULT_LAYERS_PATH,
     DEFAULT_SAE_DIR,
     DEFAULT_TRAINING_DIR,
+    _perrow_importance,
+    _perrow_rankings,
     get_extraction_layer,
     intervene,
     load_sae,
@@ -580,4 +582,309 @@ def sweep_virtual_transfer(
         "y_query": y_q,
         "concept_map_r2": bridge["concept_map_r2"],
         "n_matched_pairs": bridge["n_matched_pairs"],
+    }
+
+
+# -- Per-row selective sweep --------------------------------------------------
+
+
+def perrow_sweep_virtual_transfer(
+    source_model: str,
+    target_model: str,
+    dataset: str,
+    bridge: Dict,
+    device: str,
+    task: str = "classification",
+    sae_dir: Path = DEFAULT_SAE_DIR,
+    layers_path: Path = DEFAULT_LAYERS_PATH,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
+    emb_source: Optional[torch.Tensor] = None,
+    emb_target: Optional[torch.Tensor] = None,
+    source_preds: Optional[np.ndarray] = None,
+    target_baseline_preds: Optional[np.ndarray] = None,
+) -> Dict:
+    """Per-row selective sweep: heterogeneous virtual concept transfer.
+
+    Three-phase pipeline:
+      Phase 1: Per-feature importance (N forward passes) -- one per unmatched
+               concept, measuring how each virtual node changes predictions.
+      Phase 2: Per-row ranking -- sort features by per-row importance, filtered
+               to features that fire in the source SAE for that row.
+      Phase 3: Selective accept/reject (max_k forward passes) -- greedily add
+               the next-ranked feature per row, keeping it only if the prediction
+               moves closer to the source (strong) model.
+
+    Args:
+        source_model: Source (strong) model key.
+        target_model: Target (weak) model key.
+        dataset: TabArena dataset name.
+        bridge: Dict from build_concept_bridge().
+        device: Torch device string.
+        task: "classification" or "regression".
+        sae_dir: Path to SAE checkpoints.
+        layers_path: Path to optimal_extraction_layers.json.
+        training_dir: Path to SAE training data.
+        emb_source: Pre-captured source embeddings (optional).
+        emb_target: Pre-captured target embeddings (optional).
+        source_preds: Pre-captured source predictions (optional).
+        target_baseline_preds: Pre-captured target baseline predictions (optional).
+
+    Returns:
+        Dict with keys: baseline_preds, perrow_importance, perrow_rankings,
+        sweep_preds, accepted_preds, accepted_counts, max_k_per_row,
+        accepted_masks_np, query_activations_unmatched, unmatched_features,
+        source_preds, y_query, concept_map_r2.
+    """
+    # 1. Load data splits
+    X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
+    n_query = len(X_q)
+
+    # 2. Capture embeddings if not provided
+    if emb_source is None or source_preds is None:
+        source_layer = get_extraction_layer(source_model, layers_path)
+        logger.info("Capturing %s embeddings (layer %d)...", source_model, source_layer)
+        emb_source, source_preds = capture_embeddings(
+            source_model, X_ctx, y_ctx, X_q, source_layer, device, task,
+        )
+    if emb_target is None or target_baseline_preds is None:
+        target_layer = get_extraction_layer(target_model, layers_path)
+        logger.info("Capturing %s embeddings (layer %d)...", target_model, target_layer)
+        emb_target, target_baseline_preds = capture_embeddings(
+            target_model, X_ctx, y_ctx, X_q, target_layer, device, task,
+        )
+
+    # 3. Load source SAE and compute data mean for centering
+    sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
+    if source_model == "tabicl":
+        data_mean = emb_source.mean(dim=0)
+    else:
+        data_mean = load_training_mean(
+            source_model, training_dir=training_dir,
+            layers_path=layers_path, device=device,
+        )
+
+    # 4. Encode source embeddings → extract unmatched activations
+    unmatched_indices = bridge["unmatched_indices"]
+    n_unmatched = len(unmatched_indices)
+    acts_all = _encode_unmatched_activations(
+        sae_source, emb_source, unmatched_indices, data_mean,
+    )
+    acts_ctx = acts_all[:-n_query]
+    acts_query = acts_all[-n_query:]
+
+    virtual_atoms = bridge["virtual_atoms"]
+    baseline_np = target_baseline_preds
+
+    # --- Phase 1: per-feature importance (N forward passes) ---
+    logger.info("Phase 1: per-feature importance for %d features...", n_unmatched)
+    individual_preds = []
+
+    for feat_local in range(n_unmatched):
+        mask = np.zeros(n_unmatched, dtype=bool)
+        mask[feat_local] = True
+        delta_ctx = _make_virtual_delta(acts_ctx, virtual_atoms, feature_mask=mask)
+        delta_query = _make_virtual_delta(acts_query, virtual_atoms, feature_mask=mask)
+        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query)
+
+        result = intervene(
+            model_key=target_model,
+            X_context=X_ctx, y_context=y_ctx,
+            X_query=X_q, y_query=y_q,
+            external_delta=full_delta.to(device),
+            device=device, task=task,
+            layers_path=layers_path,
+        )
+        individual_preds.append(result["ablated_preds"])
+
+    # Compute importance and NEGATE: _perrow_importance measures logloss increase
+    # from ablation (positive = feature helpful). For transfer, we want positive =
+    # transfer helped (logloss decrease), so we negate.
+    importance = _perrow_importance(baseline_np, individual_preds, y_q)
+    importance = -importance
+
+    # --- Phase 2: per-row ranking ---
+    # Use LOCAL indices (0..n_unmatched-1) since acts_query is already sliced
+    # to unmatched features. _perrow_rankings checks query_activations[row, feat_idx],
+    # so local indices directly index into acts_query columns.
+    feature_indices = list(range(n_unmatched))
+    rankings = _perrow_rankings(importance, feature_indices, acts_query)
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: selective accept/reject (max_k forward passes) ---
+    logger.info("Phase 3: selective sweep k=1..%d...", max_k)
+    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
+    bp1 = baseline_np[:, 1] if baseline_np.ndim == 2 else baseline_np
+    best_dist = np.abs(bp1 - sp1)
+
+    accepted_masks = np.zeros((n_query, n_unmatched), dtype=bool)
+    sweep_preds = []
+
+    for k in range(1, max_k + 1):
+        # Build tentative masks: accepted + k-th ranked feature per row
+        tentative_masks = accepted_masks.copy()
+        for row_idx in range(n_query):
+            if k - 1 < len(rankings[row_idx]):
+                tentative_masks[row_idx, rankings[row_idx][k - 1]] = True
+
+        # Query delta: per-row masked
+        delta_query_t = torch.tensor(
+            compute_virtual_delta_perrow(acts_query, virtual_atoms, tentative_masks),
+            dtype=torch.float32,
+        )
+
+        # Context delta: union of all features tentatively active at level k
+        ctx_mask = tentative_masks.any(axis=0)  # (n_unmatched,) bool
+        delta_ctx = _make_virtual_delta(acts_ctx, virtual_atoms, feature_mask=ctx_mask)
+
+        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query_t)
+
+        result = intervene(
+            model_key=target_model,
+            X_context=X_ctx, y_context=y_ctx,
+            X_query=X_q, y_query=y_q,
+            external_delta=full_delta.to(device),
+            device=device, task=task,
+            layers_path=layers_path,
+        )
+        preds_k = result["ablated_preds"]
+
+        # Per-row accept/reject: keep feature only if prediction moves
+        # closer to the strong model (no labels used in this decision)
+        p1_k = preds_k[:, 1] if preds_k.ndim == 2 else preds_k
+        dist_k = np.abs(p1_k - sp1)
+
+        for row_idx in range(n_query):
+            if dist_k[row_idx] < best_dist[row_idx] - 1e-8:
+                accepted_masks[row_idx] = tentative_masks[row_idx]
+                best_dist[row_idx] = dist_k[row_idx]
+
+        sweep_preds.append(preds_k)
+
+    n_accepted = accepted_masks.sum(axis=1)
+    logger.info(
+        "Selective sweep: mean %.1f, median %.0f, max %d concepts accepted/row",
+        n_accepted.mean(), np.median(n_accepted), int(n_accepted.max()),
+    )
+
+    # Final forward pass with accepted masks
+    delta_query_final = torch.tensor(
+        compute_virtual_delta_perrow(acts_query, virtual_atoms, accepted_masks),
+        dtype=torch.float32,
+    )
+    ctx_mask_final = accepted_masks.any(axis=0)
+    delta_ctx_final = _make_virtual_delta(
+        acts_ctx, virtual_atoms, feature_mask=ctx_mask_final,
+    )
+    full_delta_final = _build_full_delta_from_parts(delta_ctx_final, delta_query_final)
+
+    result_final = intervene(
+        model_key=target_model,
+        X_context=X_ctx, y_context=y_ctx,
+        X_query=X_q, y_query=y_q,
+        external_delta=full_delta_final.to(device),
+        device=device, task=task,
+        layers_path=layers_path,
+    )
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": sweep_preds,
+        "accepted_preds": result_final["ablated_preds"],
+        "accepted_counts": n_accepted.astype(int),
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "accepted_masks_np": accepted_masks,
+        "query_activations_unmatched": acts_query,
+        "unmatched_features": list(unmatched_indices),
+        "source_preds": source_preds,
+        "y_query": y_q,
+        "concept_map_r2": bridge["concept_map_r2"],
+    }
+
+
+# -- Per-row optimal analysis -------------------------------------------------
+
+
+def find_per_row_optimal_virtual(
+    perrow_result: Dict,
+    source_preds: np.ndarray,
+    target_baseline_preds: np.ndarray,
+    y_query: np.ndarray,
+) -> Dict:
+    """Compute per-row gap closed using selective virtual transfer results.
+
+    With selective transfer, Phase 3 already determined the optimal set per row
+    (accepted_counts). This function computes the gap-closed metric — how much
+    of the logloss gap between the weak and strong models was closed by transfer.
+
+    Args:
+        perrow_result: Output dict from perrow_sweep_virtual_transfer().
+        source_preds: Source (strong) model predictions.
+        target_baseline_preds: Target (weak) model baseline predictions.
+        y_query: Ground-truth labels for query rows.
+
+    Returns:
+        Dict with keys: optimal_k, row_gap_closed, perrow_rankings,
+        perrow_importance, sweep_preds, baseline_preds, accepted_preds,
+        max_k_per_row, target_row_ll, baseline_row_ll, unmatched_features.
+    """
+    eps = 1e-7
+    y = y_query.astype(float)
+
+    # Source (strong) model's per-row logloss — the goal
+    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
+    sp = np.clip(sp1, eps, 1 - eps)
+    target_row_ll = -(y * np.log(sp) + (1 - y) * np.log(1 - sp))
+
+    # Target (weak) model's per-row logloss — starting point
+    bp1 = target_baseline_preds[:, 1] if target_baseline_preds.ndim == 2 else target_baseline_preds
+    bp = np.clip(bp1, eps, 1 - eps)
+    baseline_row_ll = -(y * np.log(bp) + (1 - y) * np.log(1 - bp))
+
+    # Accepted predictions — final state after selective accept/reject
+    ap = perrow_result["accepted_preds"]
+    ap1 = ap[:, 1] if ap.ndim == 2 else ap
+    ap_clipped = np.clip(ap1, eps, 1 - eps)
+    accepted_row_ll = -(y * np.log(ap_clipped) + (1 - y) * np.log(1 - ap_clipped))
+
+    # Optimal k = number of concepts accepted per row
+    raw_counts = perrow_result["accepted_counts"].astype(int)
+    n_query = len(y_query)
+    optimal_k = np.zeros_like(raw_counts)
+    row_gap_closed = np.zeros(n_query)
+
+    for row_idx in range(n_query):
+        orig_gap = baseline_row_ll[row_idx] - target_row_ll[row_idx]
+        if orig_gap <= 0:
+            # Weak model already equal or better — no transfer needed
+            optimal_k[row_idx] = 0
+            row_gap_closed[row_idx] = 1.0
+        else:
+            optimal_k[row_idx] = raw_counts[row_idx]
+            gap_remaining = abs(accepted_row_ll[row_idx] - target_row_ll[row_idx])
+            row_gap_closed[row_idx] = 1.0 - gap_remaining / orig_gap
+
+    logger.info(
+        "Per-row accepted concepts: mean=%.1f, median=%d, max=%d",
+        optimal_k.mean(), int(np.median(optimal_k)), optimal_k.max(),
+    )
+    logger.info(
+        "Rows with 0 concepts accepted: %d (%.1f%%)",
+        int((optimal_k == 0).sum()), 100 * (optimal_k == 0).mean(),
+    )
+
+    return {
+        "optimal_k": optimal_k,
+        "row_gap_closed": row_gap_closed,
+        "perrow_rankings": perrow_result["perrow_rankings"],
+        "perrow_importance": perrow_result["perrow_importance"],
+        "sweep_preds": perrow_result["sweep_preds"],
+        "baseline_preds": perrow_result["baseline_preds"],
+        "accepted_preds": perrow_result["accepted_preds"],
+        "max_k_per_row": perrow_result["max_k_per_row"],
+        "target_row_ll": target_row_ll,
+        "baseline_row_ll": baseline_row_ll,
+        "unmatched_features": perrow_result["unmatched_features"],
     }
