@@ -432,9 +432,27 @@ def _make_virtual_delta(
 def _build_full_delta_from_parts(
     delta_ctx: torch.Tensor,
     delta_query: torch.Tensor,
+    n_ctx_target: Optional[int] = None,
 ) -> torch.Tensor:
-    """Concatenate context and query deltas into a single full-sequence delta."""
-    return torch.cat([delta_ctx, delta_query], dim=0)
+    """Build full-sequence delta sized for the target model.
+
+    Source and target models may have different internal sequence lengths
+    (e.g. TabPFN augments context rows). Mean-pool the context delta and
+    broadcast to fill n_ctx_target positions so the delta matches the
+    target model's hidden state shape.
+
+    Args:
+        delta_ctx: (n_ctx_source, d) context deltas from source activations.
+        delta_query: (n_query, d) query deltas.
+        n_ctx_target: Number of context positions in the target model.
+            If None, uses delta_ctx.shape[0] (assumes same sequence length).
+    """
+    if n_ctx_target is None:
+        n_ctx_target = delta_ctx.shape[0]
+
+    mean_ctx = delta_ctx.mean(dim=0, keepdim=True)  # (1, d)
+    ctx_broadcast = mean_ctx.expand(n_ctx_target, -1)  # (n_ctx_target, d)
+    return torch.cat([ctx_broadcast, delta_query], dim=0)
 
 
 # -- Cumulative sweep ---------------------------------------------------------
@@ -518,6 +536,10 @@ def sweep_virtual_transfer(
     acts_ctx = acts_all[:-n_query]
     acts_query = acts_all[-n_query:]
 
+    # Target model may have different internal sequence length (e.g. TabPFN
+    # augments context rows). Use emb_target to determine context size.
+    n_ctx_target = emb_target.shape[0] - n_query
+
     # 5. Compute baselines
     sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
     tp1 = target_baseline_preds[:, 1] if target_baseline_preds.ndim == 2 else target_baseline_preds
@@ -541,7 +563,7 @@ def sweep_virtual_transfer(
 
         delta_ctx = _make_virtual_delta(acts_ctx, virtual_atoms, feature_mask=mask)
         delta_query = _make_virtual_delta(acts_query, virtual_atoms, feature_mask=mask)
-        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query)
+        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query, n_ctx_target)
 
         result = intervene(
             model_key=target_model,
@@ -682,6 +704,9 @@ def perrow_sweep_virtual_transfer(
     acts_ctx = acts_all[:-n_query]
     acts_query = acts_all[-n_query:]
 
+    # Target model may have different internal sequence length
+    n_ctx_target = emb_target.shape[0] - n_query
+
     virtual_atoms = bridge["virtual_atoms"]
     baseline_np = target_baseline_preds
 
@@ -694,7 +719,7 @@ def perrow_sweep_virtual_transfer(
         mask[feat_local] = True
         delta_ctx = _make_virtual_delta(acts_ctx, virtual_atoms, feature_mask=mask)
         delta_query = _make_virtual_delta(acts_query, virtual_atoms, feature_mask=mask)
-        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query)
+        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query, n_ctx_target)
 
         result = intervene(
             model_key=target_model,
@@ -747,7 +772,7 @@ def perrow_sweep_virtual_transfer(
         ctx_mask = tentative_masks.any(axis=0)  # (n_unmatched,) bool
         delta_ctx = _make_virtual_delta(acts_ctx, virtual_atoms, feature_mask=ctx_mask)
 
-        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query_t)
+        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query_t, n_ctx_target)
 
         result = intervene(
             model_key=target_model,
@@ -786,7 +811,7 @@ def perrow_sweep_virtual_transfer(
     delta_ctx_final = _make_virtual_delta(
         acts_ctx, virtual_atoms, feature_mask=ctx_mask_final,
     )
-    full_delta_final = _build_full_delta_from_parts(delta_ctx_final, delta_query_final)
+    full_delta_final = _build_full_delta_from_parts(delta_ctx_final, delta_query_final, n_ctx_target)
 
     result_final = intervene(
         model_key=target_model,
