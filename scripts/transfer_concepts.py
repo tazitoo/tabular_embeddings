@@ -748,6 +748,7 @@ def main():
     if args.perrow:
         from scripts.plot_prediction_scatter import (
             extract_perrow_ablated_preds,
+            plot_perrow_diagnostic,
             plot_perrow_results,
             plot_perrow_scatter,
         )
@@ -807,6 +808,22 @@ def main():
             auc_s, auc_t,
             fig_dir / "transfer_perrow_scatter.pdf",
             ablate_axis="y",  # target is y-axis, transfer shifts it toward source
+            action="transferring",
+        )
+
+        # Diagnostic: gap-closed distribution + logloss trajectory + marginal effect
+        plot_perrow_diagnostic(
+            optimal["optimal_k"],
+            optimal["row_gap_closed"],
+            optimal["sweep_preds"],
+            optimal["baseline_preds"],
+            optimal["target_row_ll"],
+            optimal["baseline_row_ll"],
+            y_q,
+            source_model,  # concept owner
+            target_model,  # model being improved
+            args.dataset,
+            fig_dir / "transfer_perrow_diagnostic.pdf",
             action="transferring",
         )
 
