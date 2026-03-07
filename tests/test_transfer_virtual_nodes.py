@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import torch
 
+from scripts.intervene_sae import compute_perrow_logloss, get_improvable_rows
 from scripts.transfer_virtual_nodes import (
     build_concept_bridge,
     build_mnn_matches,
@@ -515,3 +516,98 @@ class TestBuildConceptBridge:
             unmatched_source_features=bridge_inputs["unmatched"],
         )
         assert isinstance(result["concept_map_r2"], float)
+
+
+# -- Shared utilities: compute_perrow_logloss, get_improvable_rows ----------
+
+
+class TestComputePerrowLogloss:
+    def test_perfect_predictions(self):
+        """Logloss near zero for correct confident predictions."""
+        y = np.array([0, 1, 0, 1])
+        preds = np.array([0.01, 0.99, 0.01, 0.99])
+        ll = compute_perrow_logloss(preds, y)
+        assert ll.shape == (4,)
+        assert np.all(ll < 0.02)
+
+    def test_bad_predictions(self):
+        """Logloss high for wrong confident predictions."""
+        y = np.array([0, 1, 0, 1])
+        preds = np.array([0.99, 0.01, 0.99, 0.01])
+        ll = compute_perrow_logloss(preds, y)
+        assert np.all(ll > 2.0)
+
+    def test_2d_input(self):
+        """Handles (n, 2) probability arrays correctly."""
+        y = np.array([0, 1])
+        preds_2d = np.array([[0.9, 0.1], [0.1, 0.9]])
+        preds_1d = np.array([0.1, 0.9])
+        ll_2d = compute_perrow_logloss(preds_2d, y)
+        ll_1d = compute_perrow_logloss(preds_1d, y)
+        np.testing.assert_allclose(ll_2d, ll_1d)
+
+    def test_clipping(self):
+        """Extreme probabilities (0, 1) don't produce inf."""
+        y = np.array([0, 1])
+        preds = np.array([0.0, 1.0])
+        ll = compute_perrow_logloss(preds, y)
+        assert np.all(np.isfinite(ll))
+
+
+class TestGetImprovableRows:
+    def test_clear_winner(self):
+        """Strong model clearly better on all rows."""
+        y = np.array([1, 1, 0, 0])
+        preds_strong = np.array([0.95, 0.90, 0.05, 0.10])
+        preds_weak = np.array([0.50, 0.50, 0.50, 0.50])
+        mask = get_improvable_rows(preds_strong, preds_weak, y)
+        assert mask.shape == (4,)
+        assert np.all(mask)
+
+    def test_weak_better_excluded(self):
+        """Rows where weak model is better are excluded."""
+        y = np.array([1, 0])
+        preds_strong = np.array([0.5, 0.5])  # mediocre
+        preds_weak = np.array([0.95, 0.05])  # perfect
+        mask = get_improvable_rows(preds_strong, preds_weak, y)
+        assert not np.any(mask)
+
+    def test_mixed(self):
+        """Mix of rows where each model wins."""
+        y = np.array([1, 0])
+        preds_strong = np.array([0.9, 0.5])  # strong wins row 0
+        preds_weak = np.array([0.5, 0.1])    # weak wins row 1
+        mask = get_improvable_rows(preds_strong, preds_weak, y)
+        assert mask[0] == True
+        assert mask[1] == False
+
+    def test_2d_inputs(self):
+        """Handles (n, 2) probability arrays."""
+        y = np.array([1, 0])
+        preds_strong = np.array([[0.1, 0.9], [0.9, 0.1]])
+        preds_weak = np.array([[0.5, 0.5], [0.5, 0.5]])
+        mask = get_improvable_rows(preds_strong, preds_weak, y)
+        assert np.all(mask)
+
+    def test_consistent_with_ablation_convention(self):
+        """Ablation convention: orig_gap = target_ll - baseline_ll > 0
+        is equivalent to get_improvable_rows returning True.
+
+        target_ll = weaker model, baseline_ll = stronger model.
+        orig_gap > 0 means stronger has lower logloss.
+        """
+        np.random.seed(42)
+        y = np.random.randint(0, 2, size=100)
+        preds_strong = np.clip(np.where(y == 1, 0.8, 0.2) + np.random.randn(100) * 0.1, 0.01, 0.99)
+        preds_weak = np.clip(np.where(y == 1, 0.6, 0.4) + np.random.randn(100) * 0.2, 0.01, 0.99)
+
+        # Shared function
+        mask = get_improvable_rows(preds_strong, preds_weak, y)
+
+        # Ablation convention (inline)
+        ll_strong = compute_perrow_logloss(preds_strong, y)
+        ll_weak = compute_perrow_logloss(preds_weak, y)
+        orig_gap = ll_weak - ll_strong  # target_ll - baseline_ll
+        ablation_fixable = orig_gap > 0
+
+        np.testing.assert_array_equal(mask, ablation_fixable)

@@ -36,7 +36,9 @@ from scripts.intervene_sae import (
     DEFAULT_TRAINING_DIR,
     _perrow_importance,
     _perrow_rankings,
+    compute_perrow_logloss,
     get_extraction_layer,
+    get_improvable_rows,
     intervene,
     load_sae,
     load_training_mean,
@@ -954,24 +956,14 @@ def find_per_row_optimal_virtual(
         perrow_importance, sweep_preds, baseline_preds, accepted_preds,
         max_k_per_row, target_row_ll, baseline_row_ll, unmatched_features.
     """
-    eps = 1e-7
-    y = y_query.astype(float)
-
     # Source (strong) model's per-row logloss — the goal
-    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
-    sp = np.clip(sp1, eps, 1 - eps)
-    target_row_ll = -(y * np.log(sp) + (1 - y) * np.log(1 - sp))
+    target_row_ll = compute_perrow_logloss(source_preds, y_query)
 
     # Target (weak) model's per-row logloss — starting point
-    bp1 = target_baseline_preds[:, 1] if target_baseline_preds.ndim == 2 else target_baseline_preds
-    bp = np.clip(bp1, eps, 1 - eps)
-    baseline_row_ll = -(y * np.log(bp) + (1 - y) * np.log(1 - bp))
+    baseline_row_ll = compute_perrow_logloss(target_baseline_preds, y_query)
 
     # Accepted predictions — final state after selective accept/reject
-    ap = perrow_result["accepted_preds"]
-    ap1 = ap[:, 1] if ap.ndim == 2 else ap
-    ap_clipped = np.clip(ap1, eps, 1 - eps)
-    accepted_row_ll = -(y * np.log(ap_clipped) + (1 - y) * np.log(1 - ap_clipped))
+    accepted_row_ll = compute_perrow_logloss(perrow_result["accepted_preds"], y_query)
 
     # Optimal k = number of concepts accepted per row
     raw_counts = perrow_result["accepted_counts"].astype(int)

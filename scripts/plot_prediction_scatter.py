@@ -36,6 +36,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from scripts.concept_performance_diagnostic import (
     _load_splits, compute_metric, DISPLAY_NAMES,
 )
+from scripts.intervene_sae import (
+    compute_perrow_logloss, get_improvable_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -490,16 +493,11 @@ def find_per_row_optimal_ablation(
     )
 
     # Per-row target and baseline logloss
+    target_row_ll = compute_perrow_logloss(preds_other, y_q)
+    baseline_row_ll = compute_perrow_logloss(result["baseline_preds"], y_q)
+
     eps = 1e-7
     y = y_q.astype(float)
-    p_other = np.clip(preds_other, eps, 1 - eps)
-    target_row_ll = -(y * np.log(p_other) + (1 - y) * np.log(1 - p_other))
-
-    bp1 = result["baseline_preds"][:, 1] if result["baseline_preds"].ndim == 2 \
-        else result["baseline_preds"]
-    bp = np.clip(bp1, eps, 1 - eps)
-    baseline_row_ll = -(y * np.log(bp) + (1 - y) * np.log(1 - bp))
-
     n_query = len(y_q)
     optimal_k = np.zeros(n_query, dtype=int)
     row_gap_closed = np.zeros(n_query)  # fraction of gap closed at optimal k
@@ -817,13 +815,7 @@ def plot_perrow_scatter(
     verb_lower = "transfer" if is_transfer else "ablation"
 
     # Rows where strong model outperforms weak (logloss-based)
-    eps = 1e-7
-    sp_clip = np.clip(preds_strong, eps, 1 - eps)
-    wp_clip = np.clip(preds_weak, eps, 1 - eps)
-    y_float = y_true.astype(float)
-    ll_strong = -(y_float * np.log(sp_clip) + (1 - y_float) * np.log(1 - sp_clip))
-    ll_weak = -(y_float * np.log(wp_clip) + (1 - y_float) * np.log(1 - wp_clip))
-    strong_better = ll_strong < ll_weak
+    strong_better = get_improvable_rows(preds_strong, preds_weak, y_true)
 
     n_strong_better = strong_better.sum()
     n_intervened = (optimal_k > 0).sum()

@@ -921,6 +921,50 @@ def compute_ablation_delta_perrow(
         return ablated_recon - original_recon
 
 
+def compute_perrow_logloss(
+    preds: np.ndarray,
+    y_true: np.ndarray,
+) -> np.ndarray:
+    """Compute per-row binary logloss.
+
+    Args:
+        preds: P(class=1) predictions, shape (n,) or (n, 2).
+        y_true: Ground-truth labels, shape (n,).
+
+    Returns:
+        Per-row logloss, shape (n,).
+    """
+    eps = 1e-7
+    p1 = preds[:, 1] if preds.ndim == 2 else preds
+    p = np.clip(p1, eps, 1 - eps)
+    y = y_true.astype(float)
+    return -(y * np.log(p) + (1 - y) * np.log(1 - p))
+
+
+def get_improvable_rows(
+    preds_strong: np.ndarray,
+    preds_weak: np.ndarray,
+    y_true: np.ndarray,
+) -> np.ndarray:
+    """Identify rows where the strong model outperforms the weak model.
+
+    Uses per-row logloss comparison: strong model has lower logloss on this row.
+    Shared by both ablation and transfer pipelines to ensure consistent row
+    selection across all plots and analyses.
+
+    Args:
+        preds_strong: Strong model's P(class=1), shape (n,) or (n, 2).
+        preds_weak: Weak model's P(class=1), shape (n,) or (n, 2).
+        y_true: Ground-truth labels, shape (n,).
+
+    Returns:
+        Boolean mask, shape (n,). True where strong model has lower logloss.
+    """
+    ll_strong = compute_perrow_logloss(preds_strong, y_true)
+    ll_weak = compute_perrow_logloss(preds_weak, y_true)
+    return ll_strong < ll_weak
+
+
 def _perrow_importance(
     baseline_preds: np.ndarray,
     individual_preds: List[np.ndarray],
