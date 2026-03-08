@@ -26,6 +26,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -878,6 +879,8 @@ def plot_perrow_scatter(
     auc_weak: float,
     output_path: Path,
     mode: str = "ablation",
+    preds_intervened_rev: Optional[np.ndarray] = None,
+    optimal_k_rev: Optional[np.ndarray] = None,
 ):
     """Scatter showing per-row intervention results.
 
@@ -889,29 +892,36 @@ def plot_perrow_scatter(
       - "ablation": strong model degraded (x changes). Circle markers.
       - "transfer": weak model improved via strong concepts (y changes). Square markers.
       - "reverse_transfer": strong model improved via weak concepts (x changes). Circle markers.
+      - "bidirectional": both directions on one plot. Squares for forward, circles for reverse.
+        Requires preds_intervened_rev and optimal_k_rev.
 
-    Shows all rows where the source model outperforms the target model.
+    Shows rows where the source model outperforms the target model.
     Rows with optimal_k > 0 get colored intervened markers; others are gray only.
     """
+    from sklearn.metrics import roc_auc_score
+
+    disp_s = DISPLAY_NAMES.get(model_strong, model_strong)
+    disp_w = DISPLAY_NAMES.get(model_weak, model_weak)
+    event_rate = y_true.mean()
+
+    if mode == "bidirectional":
+        return _plot_bidirectional_scatter(
+            preds_strong, preds_weak,
+            preds_intervened, optimal_k,
+            preds_intervened_rev, optimal_k_rev,
+            y_true, disp_s, disp_w, dataset,
+            auc_strong, auc_weak, event_rate, output_path,
+        )
+
     is_reverse = mode == "reverse_transfer"
-    is_transfer = mode in ("transfer", "reverse_transfer")
     if mode == "transfer":
-        verb_lower = "transfer"
+        verb_lower, marker = "transfer", "s"
     elif mode == "reverse_transfer":
-        verb_lower = "reverse transfer"
+        verb_lower, marker = "reverse transfer", "o"
     else:
-        verb_lower = "ablation"
+        verb_lower, marker = "ablation", "o"
 
-    # Marker: circle for strong model changes, square for weak model changes
-    if mode == "transfer":
-        marker = "s"  # square: weak model modified
-    else:
-        marker = "o"  # circle: strong model modified (ablation or reverse)
-
-    # For transfer: source=strong outperforms target=weak (standard)
-    # For reverse_transfer: source=weak outperforms target=strong on specific rows
     if is_reverse:
-        # Show rows where weak outperforms strong (reverse fixable rows)
         source_better = get_improvable_rows(preds_weak, preds_strong, y_true)
     else:
         source_better = get_improvable_rows(preds_strong, preds_weak, y_true)
@@ -928,130 +938,50 @@ def plot_perrow_scatter(
         logger.warning("No improvable rows — skipping scatter.")
         return
 
-    # Filter to improvable rows
     ps = preds_strong[source_better]
     pw = preds_weak[source_better]
     pi = preds_intervened[source_better]
     yt = y_true[source_better]
     ok = optimal_k[source_better]
 
-    disp_s = DISPLAY_NAMES.get(model_strong, model_strong)
-    disp_w = DISPLAY_NAMES.get(model_weak, model_weak)
-
     fig, ax = plt.subplots(1, 1, figsize=(7, 7))
-    event_rate = y_true.mean()
-
-    # x = strong, y = weak, always.
-    # transfer: y changes (weak model improved)
-    # ablation / reverse_transfer: x changes (strong model modified)
     orig_x, orig_y = ps, pw
     if mode == "transfer":
-        int_x, int_y = ps, pi  # y changes
+        int_x, int_y = ps, pi
     else:
-        int_x, int_y = pi, pw  # x changes
-    xlabel = f"{disp_s}  P(class=1)"
-    ylabel = f"{disp_w}  P(class=1)"
+        int_x, int_y = pi, pw
 
-    # Auto-zoom
-    all_vals = np.concatenate([orig_x, orig_y, int_x, int_y])
-    lo = max(0, all_vals.min() - 0.02)
-    hi = min(1, all_vals.max() + 0.02)
-    hi = max(hi, event_rate + 0.02)
+    _draw_scatter_layers(ax, orig_x, orig_y, int_x, int_y, yt, ok, marker,
+                         event_rate)
 
-    # Grid
-    ax.grid(True, which="major", color="#cccccc", lw=0.5, alpha=0.7, zorder=0)
-    ax.grid(True, which="minor", color="#eeeeee", lw=0.3, alpha=0.5, zorder=0)
-    ax.minorticks_on()
+    _draw_scatter_chrome(ax, preds_strong, preds_weak, int_x, int_y,
+                         disp_s, disp_w, event_rate)
 
-    mask0 = yt == 0
-    mask1 = yt == 1
-    modified = ok > 0
-    unmodified = ~modified
-    n_unmodified = int(unmodified.sum())
-
-    # Layer 1: All improvable rows — open markers, faint gray
-    orig_color = "#999999"
-    ax.scatter(orig_x, orig_y, facecolors="none",
-               edgecolors=orig_color, s=14, alpha=0.5, linewidths=0.6,
-               marker=marker,
-               label=f"Original (n={len(orig_x)})", zorder=2)
-
-    # Layer 2: Unmoved — filled gray
-    unmoved_color = "#aaaaaa"
-    if n_unmodified > 0:
-        ax.scatter(orig_x[unmodified], orig_y[unmodified], c=unmoved_color,
-                   s=14, alpha=0.5, edgecolors="none",
-                   marker=marker,
-                   label=f"Unmoved (n={n_unmodified})", zorder=3)
-
-    # Layer 3: Intervened — filled color by class, k > 0
-    color0 = "#0072B2"  # blue
-    color1 = "#D55E00"  # orange
-    m0 = mask0 & modified
-    m1 = mask1 & modified
-    if m0.any():
-        ax.scatter(int_x[m0], int_y[m0], c=color0,
-                   s=14, alpha=0.6, edgecolors="none",
-                   marker=marker,
-                   label=f"Intervened class 0 (n={m0.sum()})", zorder=4)
-    if m1.any():
-        ax.scatter(int_x[m1], int_y[m1], c=color1,
-                   s=14, alpha=0.6, edgecolors="none",
-                   marker=marker,
-                   label=f"Intervened class 1 (n={m1.sum()})", zorder=4)
-
-    # y=x reference
-    ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.5, label="y = x")
-
-    # Event rate lines
-    ax.axhline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
-    ax.axvline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
-    ax.text(0.97, event_rate, f" event rate = {event_rate:.3f}",
-            fontsize=7, color="gray", va="bottom", ha="right",
-            transform=ax.get_yaxis_transform())
-
-    ax.set_xlabel(xlabel, fontsize=10)
-    ax.set_ylabel(ylabel, fontsize=10)
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
-    ax.set_aspect("equal")
-    ax.legend(fontsize=7, loc="upper left")
-
-    ok_mod = ok[modified]
+    ok_mod = ok[ok > 0]
     k_summary = (f"median k={np.median(ok_mod):.0f}, mean k={ok_mod.mean():.1f}"
-                 if modified.any() else "no rows modified")
+                 if ok_mod.size > 0 else "no rows modified")
 
-    # Compute post-intervention AUC
-    from sklearn.metrics import roc_auc_score
+    # Post-intervention AUC
     if mode == "transfer":
-        # Weak model was modified; non-intervened rows keep original weak
         full_p1 = np.where(optimal_k > 0, preds_intervened, preds_weak)
         auc_post = roc_auc_score(y_true, full_p1)
         gap = auc_strong - auc_weak
-        gap_closed = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
-        target_label = disp_w
+        pct = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
+        auc_line = (f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
+                    f"   |   {disp_w}+: AUC={auc_post:.3f} ({pct:+.0f}%)")
     elif mode == "reverse_transfer":
-        # Strong model was modified; non-intervened rows keep original strong
         full_p1 = np.where(optimal_k > 0, preds_intervened, preds_strong)
         auc_post = roc_auc_score(y_true, full_p1)
-        delta = auc_post - auc_strong
-        gap_closed = delta * 100  # report as absolute AUC delta * 100
-        target_label = disp_s
+        auc_line = (f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
+                    f"   |   {disp_s}+: AUC={auc_post:.3f} "
+                    f"(\u0394={auc_post - auc_strong:+.4f})")
     else:
-        # Ablation: strong model degraded
         full_p1 = np.where(optimal_k > 0, preds_intervened, preds_strong)
         auc_post = roc_auc_score(y_true, full_p1)
         gap = auc_strong - auc_weak
-        gap_closed = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
-        target_label = disp_s
-
-    if mode == "reverse_transfer":
+        pct = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
         auc_line = (f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
-                    f"   |   {target_label}+vnode: AUC={auc_post:.3f} "
-                    f"(\u0394={auc_post - auc_strong:+.4f})")
-    else:
-        auc_line = (f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
-                    f"   |   {target_label}+vnode: AUC={auc_post:.3f} ({gap_closed:+.0f}%)")
+                    f"   |   {disp_s}+: AUC={auc_post:.3f} ({pct:+.0f}%)")
 
     ax.set_title(
         f"{dataset} — per-row {verb_lower} "
@@ -1065,6 +995,155 @@ def plot_perrow_scatter(
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved per-row scatter to %s", output_path)
+
+
+def _draw_scatter_layers(ax, orig_x, orig_y, int_x, int_y, yt, ok,
+                         marker, event_rate, label_prefix=""):
+    """Draw the three scatter layers: original, unmoved, intervened."""
+    modified = ok > 0
+    unmodified = ~modified
+    mask0 = yt == 0
+    mask1 = yt == 1
+
+    pfx = f"{label_prefix} " if label_prefix else ""
+
+    # Layer 1: open gray originals
+    ax.scatter(orig_x, orig_y, facecolors="none",
+               edgecolors="#999999", s=14, alpha=0.5, linewidths=0.6,
+               marker=marker,
+               label=f"{pfx}Original (n={len(orig_x)})", zorder=2)
+
+    # Layer 2: filled gray unmoved
+    n_un = int(unmodified.sum())
+    if n_un > 0:
+        ax.scatter(orig_x[unmodified], orig_y[unmodified], c="#aaaaaa",
+                   s=14, alpha=0.5, edgecolors="none", marker=marker,
+                   label=f"{pfx}Unmoved (n={n_un})", zorder=3)
+
+    # Layer 3: filled color by class
+    m0 = mask0 & modified
+    m1 = mask1 & modified
+    if m0.any():
+        ax.scatter(int_x[m0], int_y[m0], c="#0072B2",
+                   s=14, alpha=0.6, edgecolors="none", marker=marker,
+                   label=f"{pfx}Intervened cls 0 (n={m0.sum()})", zorder=4)
+    if m1.any():
+        ax.scatter(int_x[m1], int_y[m1], c="#D55E00",
+                   s=14, alpha=0.6, edgecolors="none", marker=marker,
+                   label=f"{pfx}Intervened cls 1 (n={m1.sum()})", zorder=4)
+
+
+def _draw_scatter_chrome(ax, preds_strong, preds_weak, int_x, int_y,
+                         disp_s, disp_w, event_rate):
+    """Add axes, grid, event-rate lines, y=x."""
+    all_vals = np.concatenate([preds_strong, preds_weak,
+                               np.asarray(int_x), np.asarray(int_y)])
+    lo = max(0, all_vals.min() - 0.02)
+    hi = min(1, all_vals.max() + 0.02)
+    hi = max(hi, event_rate + 0.02)
+
+    ax.grid(True, which="major", color="#cccccc", lw=0.5, alpha=0.7, zorder=0)
+    ax.grid(True, which="minor", color="#eeeeee", lw=0.3, alpha=0.5, zorder=0)
+    ax.minorticks_on()
+
+    ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.5, label="y = x")
+    ax.axhline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
+    ax.axvline(event_rate, color="gray", lw=0.7, ls=":", alpha=0.7)
+    ax.text(0.97, event_rate, f" event rate = {event_rate:.3f}",
+            fontsize=7, color="gray", va="bottom", ha="right",
+            transform=ax.get_yaxis_transform())
+
+    ax.set_xlabel(f"{disp_s}  P(class=1)", fontsize=10)
+    ax.set_ylabel(f"{disp_w}  P(class=1)", fontsize=10)
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_aspect("equal")
+
+
+def _plot_bidirectional_scatter(
+    preds_strong, preds_weak,
+    preds_intervened_fwd, optimal_k_fwd,
+    preds_intervened_rev, optimal_k_rev,
+    y_true, disp_s, disp_w, dataset,
+    auc_strong, auc_weak, event_rate, output_path,
+):
+    """Bidirectional transfer: forward (squares) + reverse (circles) on one plot."""
+    from sklearn.metrics import roc_auc_score
+
+    # Forward: strong outperforms weak → weak model improved (squares, y changes)
+    fwd_fixable = get_improvable_rows(preds_strong, preds_weak, y_true)
+    # Reverse: weak outperforms strong → strong model improved (circles, x changes)
+    rev_fixable = get_improvable_rows(preds_weak, preds_strong, y_true)
+
+    n_fwd = fwd_fixable.sum()
+    n_rev = rev_fixable.sum()
+    n_fwd_int = int((optimal_k_fwd[fwd_fixable] > 0).sum()) if n_fwd > 0 else 0
+    n_rev_int = int((optimal_k_rev[rev_fixable] > 0).sum()) if n_rev > 0 else 0
+    n_total = len(y_true)
+
+    logger.info("Bidirectional: fwd fixable=%d (intervened=%d), "
+                "rev fixable=%d (intervened=%d), total=%d",
+                n_fwd, n_fwd_int, n_rev, n_rev_int, n_total)
+
+    fig, ax = plt.subplots(1, 1, figsize=(7, 7))
+
+    # Forward direction: squares (weak model modified, y changes)
+    if n_fwd > 0:
+        ps_f = preds_strong[fwd_fixable]
+        pw_f = preds_weak[fwd_fixable]
+        pi_f = preds_intervened_fwd[fwd_fixable]
+        yt_f = y_true[fwd_fixable]
+        ok_f = optimal_k_fwd[fwd_fixable]
+        _draw_scatter_layers(ax, ps_f, pw_f, ps_f, pi_f, yt_f, ok_f,
+                             "s", event_rate, label_prefix="\u25a1")  # □
+
+    # Reverse direction: circles (strong model modified, x changes)
+    if n_rev > 0:
+        ps_r = preds_strong[rev_fixable]
+        pw_r = preds_weak[rev_fixable]
+        pi_r = preds_intervened_rev[rev_fixable]
+        yt_r = y_true[rev_fixable]
+        ok_r = optimal_k_rev[rev_fixable]
+        _draw_scatter_layers(ax, ps_r, pw_r, pi_r, pw_r, yt_r, ok_r,
+                             "o", event_rate, label_prefix="\u25cb")  # ○
+
+    # Collect all intervened coords for auto-zoom
+    all_int_x = np.concatenate([
+        preds_strong[fwd_fixable] if n_fwd else np.array([]),
+        preds_intervened_rev[rev_fixable] if n_rev else np.array([]),
+    ])
+    all_int_y = np.concatenate([
+        preds_intervened_fwd[fwd_fixable] if n_fwd else np.array([]),
+        preds_weak[rev_fixable] if n_rev else np.array([]),
+    ])
+    _draw_scatter_chrome(ax, preds_strong, preds_weak, all_int_x, all_int_y,
+                         disp_s, disp_w, event_rate)
+
+    ax.legend(fontsize=6.5, loc="upper left")
+
+    # AUC summaries for both directions
+    fwd_p1 = np.where(optimal_k_fwd > 0, preds_intervened_fwd, preds_weak)
+    auc_fwd = roc_auc_score(y_true, fwd_p1)
+    rev_p1 = np.where(optimal_k_rev > 0, preds_intervened_rev, preds_strong)
+    auc_rev = roc_auc_score(y_true, rev_p1)
+
+    gap = auc_strong - auc_weak
+    fwd_pct = (auc_fwd - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
+
+    ax.set_title(
+        f"{dataset} — bidirectional transfer "
+        f"({n_fwd_int}+{n_rev_int} intervened / {n_fwd}+{n_rev} fixable / {n_total} total)\n"
+        f"{disp_s}: {auc_strong:.3f}   {disp_w}: {auc_weak:.3f}   "
+        f"\u25a1 {disp_w}+: {auc_fwd:.3f} ({fwd_pct:+.0f}%)   "
+        f"\u25cb {disp_s}+: {auc_rev:.3f} (\u0394={auc_rev - auc_strong:+.4f})",
+        fontsize=8.5,
+    )
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved bidirectional scatter to %s", output_path)
 
 
 def plot_shift_distribution(

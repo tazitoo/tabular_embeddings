@@ -886,6 +886,9 @@ def main():
     parser.add_argument("--reverse", action="store_true",
                         help="Transfer FROM weaker model TO stronger model "
                              "(reverse: weak model's concepts improve strong model)")
+    parser.add_argument("--bidirectional", action="store_true",
+                        help="Run both forward and reverse transfer, "
+                             "plot both directions on one scatter")
     parser.add_argument("--alpha", type=float, default=1.0,
                         help="Ridge regularization for linear map")
     parser.add_argument("--sae-dir", type=Path, default=DEFAULT_SAE_DIR)
@@ -947,150 +950,169 @@ def main():
         strong_preds, weak_preds = preds_b, preds_a
         auc_strong, auc_weak = auc_b, auc_a
 
-    # Source = concept provider, Target = concept receiver
-    if args.reverse:
-        source_model, target_model = weak_model, strong_model
-        emb_source, emb_target = emb_weak, emb_strong
-        source_preds, target_preds = weak_preds, strong_preds
-        plot_mode = "reverse_transfer"
-    else:
-        source_model, target_model = strong_model, weak_model
-        emb_source, emb_target = emb_strong, emb_weak
-        source_preds, target_preds = strong_preds, weak_preds
-        plot_mode = "transfer"
-
-    disp_src = DISPLAY_NAMES.get(source_model, source_model)
-    disp_tgt = DISPLAY_NAMES.get(target_model, target_model)
-    reverse_tag = " [REVERSE]" if args.reverse else ""
-    logger.info("Transfer direction: %s (AUC=%.3f) → %s (AUC=%.3f)%s",
-                disp_src, float(roc_auc_score(y_q, source_preds[:, 1] if source_preds.ndim == 2 else source_preds)),
-                disp_tgt, float(roc_auc_score(y_q, target_preds[:, 1] if target_preds.ndim == 2 else target_preds)),
-                reverse_tag)
-
-    # Get unmatched features from the stronger model (ranked by importance)
-    try:
-        unmatched = get_unmatched_features(
-            source_model, target_model, args.dataset, positive_only=False,
-        )
-    except FileNotFoundError:
-        raise FileNotFoundError(
-            f"No comparison data for {source_model} vs {target_model} on {args.dataset}. "
-            f"Run: python scripts/concept_importance.py --model {source_model} "
-            f"--compare {target_model} --dataset {args.dataset}"
-        )
-
-    if not unmatched:
-        logger.warning("No unmatched features found.")
-        return
-
-    n_pos = sum(1 for _, d in unmatched if d > 0)
-    logger.info("Found %d unmatched %s-only features (%d with positive drop)",
-                len(unmatched), source_model, n_pos)
-    for feat, drop in unmatched[:10]:
-        logger.info("  feature %d: drop=%.4f", feat, drop)
-
-    # ── Per-row transfer with line search ─────────────────────────────────
+    # ── Import plot functions ──────────────────────────────────────────────
     from scripts.plot_prediction_scatter import (
         plot_perrow_diagnostic,
         plot_perrow_results,
         plot_perrow_scatter,
     )
 
-    perrow_result = perrow_sweep_transfer(
-        source_model=source_model,
-        target_model=target_model,
-        dataset=args.dataset,
-        ranked_features=unmatched,
-        device=args.device,
-        task=args.task,
-        alpha=args.alpha,
-        sae_dir=args.sae_dir,
-        layers_path=args.layers_config,
-        training_dir=args.training_dir,
-        emb_source=emb_source,
-        emb_target=emb_target,
-        source_preds=source_preds,
-        target_baseline_preds=target_preds,
-        translator=translator_model,
-    )
-
-    # Compute strong/weak P(1) — always in absolute terms regardless of direction
     strong_p1 = strong_preds[:, 1] if strong_preds.ndim == 2 else strong_preds
     weak_p1 = weak_preds[:, 1] if weak_preds.ndim == 2 else weak_preds
-    tp1 = target_preds[:, 1] if target_preds.ndim == 2 else target_preds
-
-    optimal = find_per_row_optimal_transfer(
-        perrow_result, source_preds, target_preds, y_q,
-    )
-
-    # Use accepted predictions for fixable rows, baseline for non-fixable
-    ap = optimal["accepted_preds"]
-    ap1 = ap[:, 1] if ap.ndim == 2 else ap
-    transferred_p1 = np.where(optimal["optimal_k"] > 0, ap1, tp1)
-
-    auc_transferred = float(roc_auc_score(y_q, transferred_p1))
-
     disp_strong = DISPLAY_NAMES.get(strong_model, strong_model)
     disp_weak = DISPLAY_NAMES.get(weak_model, weak_model)
 
+    def _run_one_direction(src_model, tgt_model, emb_src, emb_tgt,
+                           src_preds, tgt_preds, label):
+        """Run transfer in one direction, return (transferred_p1, optimal)."""
+        disp_src = DISPLAY_NAMES.get(src_model, src_model)
+        disp_tgt = DISPLAY_NAMES.get(tgt_model, tgt_model)
+
+        sp1 = src_preds[:, 1] if src_preds.ndim == 2 else src_preds
+        logger.info("%s: %s (AUC=%.3f) → %s (AUC=%.3f)",
+                    label, disp_src,
+                    float(roc_auc_score(y_q, sp1)),
+                    disp_tgt,
+                    float(roc_auc_score(y_q, tgt_preds[:, 1] if tgt_preds.ndim == 2 else tgt_preds)))
+
+        try:
+            feat = get_unmatched_features(
+                src_model, tgt_model, args.dataset, positive_only=False,
+            )
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"No comparison data for {src_model} vs {tgt_model} on {args.dataset}. "
+                f"Run: python scripts/concept_importance.py --model {src_model} "
+                f"--compare {tgt_model} --dataset {args.dataset}"
+            )
+        if not feat:
+            logger.warning("No unmatched features found for %s → %s.", disp_src, disp_tgt)
+            return None, None
+
+        n_pos = sum(1 for _, d in feat if d > 0)
+        logger.info("  %d unmatched %s-only features (%d positive drop)",
+                    len(feat), src_model, n_pos)
+
+        result = perrow_sweep_transfer(
+            source_model=src_model, target_model=tgt_model,
+            dataset=args.dataset, ranked_features=feat,
+            device=args.device, task=args.task, alpha=args.alpha,
+            sae_dir=args.sae_dir, layers_path=args.layers_config,
+            training_dir=args.training_dir,
+            emb_source=emb_src, emb_target=emb_tgt,
+            source_preds=src_preds, target_baseline_preds=tgt_preds,
+            translator=translator_model,
+        )
+        opt = find_per_row_optimal_transfer(result, src_preds, tgt_preds, y_q)
+
+        tp1_dir = tgt_preds[:, 1] if tgt_preds.ndim == 2 else tgt_preds
+        ap = opt["accepted_preds"]
+        ap1 = ap[:, 1] if ap.ndim == 2 else ap
+        trans_p1 = np.where(opt["optimal_k"] > 0, ap1, tp1_dir)
+
+        return trans_p1, opt
+
+    # ── Run transfer(s) ──────────────────────────────────────────────────
+    directions = []
+    if args.bidirectional or not args.reverse:
+        directions.append("forward")
+    if args.bidirectional or args.reverse:
+        directions.append("reverse")
+
+    fwd_transferred = fwd_optimal = None
+    rev_transferred = rev_optimal = None
+
+    for direction in directions:
+        if direction == "forward":
+            trans_p1, opt = _run_one_direction(
+                strong_model, weak_model, emb_strong, emb_weak,
+                strong_preds, weak_preds, "Forward",
+            )
+            fwd_transferred, fwd_optimal = trans_p1, opt
+        else:
+            trans_p1, opt = _run_one_direction(
+                weak_model, strong_model, emb_weak, emb_strong,
+                weak_preds, strong_preds, "Reverse",
+            )
+            rev_transferred, rev_optimal = trans_p1, opt
+
+    # ── Print results ────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print(f"Concept transfer: {disp_src} → {disp_tgt}{reverse_tag}")
     print(f"Dataset: {args.dataset}")
     print(f"  {disp_strong} AUC = {auc_strong:.4f}")
     print(f"  {disp_weak} AUC = {auc_weak:.4f}")
-    print(f"  {disp_tgt}+transfer AUC = {auc_transferred:.4f}")
-    if args.reverse:
-        delta = auc_transferred - auc_strong
-        print(f"  Strong model delta: {delta:+.4f}")
-    else:
+
+    if fwd_transferred is not None:
+        auc_fwd = float(roc_auc_score(y_q, fwd_transferred))
         gap = auc_strong - auc_weak
-        if abs(gap) > 0.001:
-            gap_closed_pct = (auc_transferred - auc_weak) / gap * 100
-            print(f"  Gap closed: {gap_closed_pct:.1f}%")
+        pct = (auc_fwd - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
+        print(f"  Forward ({disp_strong}→{disp_weak}): "
+              f"{disp_weak}+ AUC = {auc_fwd:.4f} ({pct:+.1f}%)")
+
+    if rev_transferred is not None:
+        auc_rev = float(roc_auc_score(y_q, rev_transferred))
+        delta = auc_rev - auc_strong
+        print(f"  Reverse ({disp_weak}→{disp_strong}): "
+              f"{disp_strong}+ AUC = {auc_rev:.4f} (\u0394={delta:+.4f})")
+
     print(f"{'='*60}")
 
-    # Histogram + coverage curve
-    plot_perrow_results(
-        optimal["optimal_k"],
-        optimal["row_gap_closed"],
-        optimal["max_k_per_row"],
-        optimal["perrow_rankings"],
-        source_model,
-        target_model,
-        args.dataset,
-        fig_dir / "transfer_perrow.pdf",
-        action="transferring",
-    )
-
-    # Per-row scatter — always pass in (strong, weak) order
-    # preds_intervened replaces whichever model was the target
-    # Per-row scatter — always pass (strong_p1, weak_p1, intervened_p1)
-    # The mode tells the plot which model was modified
-    plot_perrow_scatter(
-        strong_p1, weak_p1, transferred_p1,
-        optimal["optimal_k"], y_q,
-        strong_model, weak_model,
-        args.dataset,
-        auc_strong, auc_weak,
-        fig_dir / "transfer_perrow_scatter.pdf",
-        mode=plot_mode,
-    )
-
-    # Diagnostic: logloss distributions + concept budget + accept rate
-    plot_perrow_diagnostic(
-        optimal["optimal_k"],
-        optimal["row_gap_closed"],
-        optimal["accepted_preds"],
-        optimal["baseline_preds"],
-        source_preds,
-        optimal["max_k_per_row"],
-        y_q,
-        source_model,
-        target_model,
-        args.dataset,
-        fig_dir / "transfer_perrow_diagnostic.pdf",
-        action="transferring",
-    )
+    # ── Plots ────────────────────────────────────────────────────────────
+    if args.bidirectional:
+        # Combined scatter
+        plot_perrow_scatter(
+            strong_p1, weak_p1, fwd_transferred, fwd_optimal["optimal_k"],
+            y_q, strong_model, weak_model, args.dataset,
+            auc_strong, auc_weak,
+            fig_dir / "transfer_bidirectional_scatter.pdf",
+            mode="bidirectional",
+            preds_intervened_rev=rev_transferred,
+            optimal_k_rev=rev_optimal["optimal_k"],
+        )
+    elif args.reverse:
+        plot_perrow_scatter(
+            strong_p1, weak_p1, rev_transferred,
+            rev_optimal["optimal_k"], y_q,
+            strong_model, weak_model, args.dataset,
+            auc_strong, auc_weak,
+            fig_dir / "transfer_perrow_scatter.pdf",
+            mode="reverse_transfer",
+        )
+        plot_perrow_results(
+            rev_optimal["optimal_k"], rev_optimal["row_gap_closed"],
+            rev_optimal["max_k_per_row"], rev_optimal["perrow_rankings"],
+            weak_model, strong_model, args.dataset,
+            fig_dir / "transfer_perrow.pdf", action="transferring",
+        )
+        plot_perrow_diagnostic(
+            rev_optimal["optimal_k"], rev_optimal["row_gap_closed"],
+            rev_optimal["accepted_preds"], rev_optimal["baseline_preds"],
+            weak_preds, rev_optimal["max_k_per_row"], y_q,
+            weak_model, strong_model, args.dataset,
+            fig_dir / "transfer_perrow_diagnostic.pdf", action="transferring",
+        )
+    else:
+        plot_perrow_scatter(
+            strong_p1, weak_p1, fwd_transferred,
+            fwd_optimal["optimal_k"], y_q,
+            strong_model, weak_model, args.dataset,
+            auc_strong, auc_weak,
+            fig_dir / "transfer_perrow_scatter.pdf",
+            mode="transfer",
+        )
+        plot_perrow_results(
+            fwd_optimal["optimal_k"], fwd_optimal["row_gap_closed"],
+            fwd_optimal["max_k_per_row"], fwd_optimal["perrow_rankings"],
+            strong_model, weak_model, args.dataset,
+            fig_dir / "transfer_perrow.pdf", action="transferring",
+        )
+        plot_perrow_diagnostic(
+            fwd_optimal["optimal_k"], fwd_optimal["row_gap_closed"],
+            fwd_optimal["accepted_preds"], fwd_optimal["baseline_preds"],
+            strong_preds, fwd_optimal["max_k_per_row"], y_q,
+            strong_model, weak_model, args.dataset,
+            fig_dir / "transfer_perrow_diagnostic.pdf", action="transferring",
+        )
 
 
 if __name__ == "__main__":
