@@ -701,6 +701,22 @@ def plot_perrow_results(
                      f"mean={avail_fixable.mean():.1f}, median={np.median(avail_fixable):.0f}")
         lines.append(f"Firing concepts (unfixable): "
                      f"mean={avail_unfixable.mean():.1f}, median={np.median(avail_unfixable):.0f}")
+
+    # Add AUC summary if predictions are available
+    if preds_strong is not None and preds_weak is not None and y_query is not None:
+        from sklearn.metrics import roc_auc_score
+        auc_s = roc_auc_score(y_query, preds_strong)
+        auc_w = roc_auc_score(y_query, preds_weak)
+        gap = auc_s - auc_w
+        lines.append("")
+        lines.append(f"{disp_abl} AUC: {auc_s:.4f}")
+        lines.append(f"{disp_oth} AUC: {auc_w:.4f}")
+        # Compute post-intervention AUC from optimal_k
+        # For transfer: weak model changes; for ablation: strong model changes
+        is_transfer = action == "transferring"
+        # We don't have the full intervened preds here, but we can note the gap
+        if abs(gap) > 0.001:
+            lines.append(f"AUC gap: {gap:+.4f}")
     ax.text(0.05, 0.95, "\n".join(lines), transform=ax.transAxes, fontsize=9,
             va="top", ha="left", family="monospace",
             bbox=dict(boxstyle="round,pad=0.4", facecolor="#f0f0f0", alpha=0.8))
@@ -987,10 +1003,26 @@ def plot_perrow_scatter(
     ok_mod = ok[modified]
     k_summary = (f"median k={np.median(ok_mod):.0f}, mean k={ok_mod.mean():.1f}"
                  if modified.any() else "no rows modified")
+
+    # Compute post-intervention AUC
+    from sklearn.metrics import roc_auc_score
+    full_preds = preds_intervened if is_transfer else preds_intervened
+    # For rows not in strong_better, use original weak (transfer) or strong (ablation)
+    full_p1 = np.where(
+        optimal_k > 0,
+        preds_intervened,
+        preds_weak if is_transfer else preds_strong,
+    )
+    auc_post = roc_auc_score(y_true, full_p1)
+    gap = auc_strong - auc_weak
+    gap_closed = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
+
+    target_label = disp_w if is_transfer else disp_s
     ax.set_title(
         f"{dataset} — per-row {verb_lower} "
         f"({n_intervened} intervened / {n_strong_better} improvable / {n_total} total)\n"
-        f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}\n"
+        f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
+        f"   |   {target_label}+vnode: AUC={auc_post:.3f} ({gap_closed:+.0f}%)\n"
         f"{k_summary}",
         fontsize=9,
     )
