@@ -82,26 +82,66 @@ def fit_linear_map(
 # ── Transfer Delta ────────────────────────────────────────────────────────────
 
 
+def _get_d_target(W: Optional[np.ndarray], translator: Optional[torch.nn.Module]) -> int:
+    """Get target embedding dimension from linear map or translator."""
+    if translator is not None:
+        # Walk the translator's layers to find output dim
+        net = translator.net
+        if isinstance(net, torch.nn.Sequential):
+            return net[-1].out_features
+        return net.out_features
+    return W.shape[0]
+
+
+def _map_to_target_space(
+    contribution_source: torch.Tensor,
+    emb_source_raw: torch.Tensor,
+    W: Optional[np.ndarray],
+    translator: Optional[torch.nn.Module],
+    scale: float,
+) -> torch.Tensor:
+    """Map source-space contribution to target space via linear map or MLP translator.
+
+    For linear map: delta = contribution @ W.T (exact, bias cancels).
+    For MLP translator: delta = translator(emb + contribution) - translator(emb)
+        (finite difference captures nonlinear structure).
+    """
+    if translator is not None:
+        # MLP: finite difference preserves nonlinear structure
+        target_base = translator(emb_source_raw)
+        target_perturbed = translator(emb_source_raw + contribution_source)
+        return (target_perturbed - target_base) * scale
+    else:
+        W_t = torch.tensor(W, dtype=contribution_source.dtype,
+                           device=contribution_source.device)
+        return contribution_source @ W_t.T * scale
+
+
 def compute_transfer_delta(
     sae_source: torch.nn.Module,
     emb_source: torch.Tensor,
-    W: np.ndarray,
-    b: np.ndarray,
+    W: Optional[np.ndarray],
+    b: Optional[np.ndarray],
     transfer_features: List[int],
     data_mean: Optional[torch.Tensor] = None,
     scale: float = 1.0,
+    translator: Optional[torch.nn.Module] = None,
 ) -> torch.Tensor:
     """Compute delta in target space for given source concepts.
 
     1. SAE encode source embeddings → h_source (sparse activations)
     2. Concept contribution: decode(h_selected) - decode(0)  (bias cancels)
-    3. Map to target space: contribution @ W.T
+    3. Map to target space: contribution @ W.T  (or MLP translator)
+
+    Args:
+        translator: Optional EmbeddingTranslator. If provided, uses MLP-based
+            delta mapping instead of linear W @ contribution.
 
     Returns:
         delta_target: (n_samples, d_target) delta to inject into target model
     """
     if not transfer_features or scale == 0.0:
-        d_target = W.shape[0]
+        d_target = _get_d_target(W, translator)
         return torch.zeros(emb_source.shape[0], d_target, device=emb_source.device)
 
     with torch.no_grad():
@@ -119,12 +159,9 @@ def compute_transfer_delta(
             torch.zeros_like(h)
         )  # (n_samples, d_source)
 
-        # Map to target space via linear map (bias cancels in delta)
-        W_t = torch.tensor(W, dtype=contribution_source.dtype,
-                           device=contribution_source.device)
-        delta_target = contribution_source @ W_t.T  # (n_samples, d_target)
-
-        delta_target = delta_target * scale
+        delta_target = _map_to_target_space(
+            contribution_source, emb_source, W, translator, scale,
+        )
 
     return delta_target
 
@@ -132,30 +169,33 @@ def compute_transfer_delta(
 def compute_transfer_delta_perrow(
     sae_source: torch.nn.Module,
     emb_source: torch.Tensor,
-    W: np.ndarray,
-    b: np.ndarray,
+    W: Optional[np.ndarray],
+    b: Optional[np.ndarray],
     feature_masks: torch.Tensor,
     data_mean: Optional[torch.Tensor] = None,
     scale: float = 1.0,
+    translator: Optional[torch.nn.Module] = None,
 ) -> torch.Tensor:
     """Per-row transfer delta with different features per row.
 
     Analogous to compute_ablation_delta_perrow but maps through linear map
-    to target space.
+    (or MLP translator) to target space.
 
     Args:
         sae_source: Source SAE in eval mode
         emb_source: (n_rows, d_source_emb) raw source embeddings
-        W: (d_target, d_source_emb) linear map weight matrix
+        W: (d_target, d_source_emb) linear map weight matrix (or None if using translator)
         b: (d_target,) bias (unused — cancels in delta)
         feature_masks: (n_rows, sae_hidden) boolean, True = TRANSFER this feature
         data_mean: (d_source_emb,) centering mean for SAE
         scale: Multiplicative scaling factor
+        translator: Optional EmbeddingTranslator for MLP-based delta mapping
 
     Returns:
         delta_target: (n_rows, d_target) per-row deltas in target space
     """
-    d_target = W.shape[0]
+    d_target = (translator.net[-1].out_features if translator is not None
+                else W.shape[0])
     if scale == 0.0:
         return torch.zeros(emb_source.shape[0], d_target, device=emb_source.device)
 
@@ -175,10 +215,9 @@ def compute_transfer_delta_perrow(
             torch.zeros_like(h)
         )
 
-        # Map to target space
-        W_t = torch.tensor(W, dtype=contribution_source.dtype,
-                           device=contribution_source.device)
-        delta_target = contribution_source @ W_t.T * scale
+        delta_target = _map_to_target_space(
+            contribution_source, emb_source, W, translator, scale,
+        )
 
     return delta_target
 
@@ -306,6 +345,7 @@ def sweep_transfer(
     emb_target: Optional[torch.Tensor] = None,
     source_preds: Optional[np.ndarray] = None,
     target_baseline_preds: Optional[np.ndarray] = None,
+    translator: Optional[torch.nn.Module] = None,
 ) -> Dict:
     """Cumulative sweep: transfer top-1, top-2, ..., top-N concepts.
 
@@ -345,12 +385,17 @@ def sweep_transfer(
     query_target = emb_target[-n_query:]
     n_total_target = emb_target.shape[0]
 
-    logger.info("Fitting linear map on query embeddings (n=%d, alpha=%.1f)...",
-                n_query, alpha)
-    W, b, r2 = fit_linear_map(
-        query_source.cpu().numpy(), query_target.cpu().numpy(), alpha=alpha,
-    )
-    logger.info("Linear map R² = %.4f (shape: %s)", r2, W.shape)
+    W, b, r2 = None, None, None
+    if translator is not None:
+        logger.info("Using universal translator (skipping per-dataset linear map)")
+        r2 = 0.0  # placeholder — translator has its own val R²
+    else:
+        logger.info("Fitting linear map on query embeddings (n=%d, alpha=%.1f)...",
+                    n_query, alpha)
+        W, b, r2 = fit_linear_map(
+            query_source.cpu().numpy(), query_target.cpu().numpy(), alpha=alpha,
+        )
+        logger.info("Linear map R² = %.4f (shape: %s)", r2, W.shape)
 
     # Load source SAE once
     sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
@@ -383,6 +428,7 @@ def sweep_transfer(
         delta_query = compute_transfer_delta(
             sae_source, query_source, W, b,
             features_k, data_mean=data_mean, scale=1.0,
+            translator=translator,
         )
         full_delta = _build_full_delta(delta_query, n_total_target, n_query)
 
@@ -448,6 +494,7 @@ def perrow_sweep_transfer(
     emb_target: Optional[torch.Tensor] = None,
     source_preds: Optional[np.ndarray] = None,
     target_baseline_preds: Optional[np.ndarray] = None,
+    translator: Optional[torch.nn.Module] = None,
 ) -> Dict:
     """Per-row heterogeneous transfer sweep (3-phase pipeline).
 
@@ -479,12 +526,17 @@ def perrow_sweep_transfer(
     query_target = emb_target[-n_query:]
     n_total_target = emb_target.shape[0]
 
-    logger.info("Fitting linear map on query embeddings (n=%d, alpha=%.1f)...",
-                n_query, alpha)
-    W, b, r2 = fit_linear_map(
-        query_source.cpu().numpy(), query_target.cpu().numpy(), alpha=alpha,
-    )
-    logger.info("Linear map R² = %.4f", r2)
+    W, b, r2 = None, None, None
+    if translator is not None:
+        logger.info("Using universal translator (skipping per-dataset linear map)")
+        r2 = 0.0
+    else:
+        logger.info("Fitting linear map on query embeddings (n=%d, alpha=%.1f)...",
+                    n_query, alpha)
+        W, b, r2 = fit_linear_map(
+            query_source.cpu().numpy(), query_target.cpu().numpy(), alpha=alpha,
+        )
+        logger.info("Linear map R² = %.4f", r2)
 
     # Load source SAE
     sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
@@ -507,6 +559,7 @@ def perrow_sweep_transfer(
         delta_query = compute_transfer_delta(
             sae_source, query_source, W, b,
             [feat_idx], data_mean=data_mean, scale=1.0,
+            translator=translator,
         )
         full_delta = _build_full_delta(delta_query, n_total_target, n_query)
 
@@ -561,6 +614,7 @@ def perrow_sweep_transfer(
 
         query_delta = compute_transfer_delta_perrow(
             sae_source, query_source, W, b, tentative_masks, data_mean=data_mean,
+            translator=translator,
         )
         full_delta = _build_full_delta(query_delta, n_total_target, n_query)
 
@@ -596,6 +650,7 @@ def perrow_sweep_transfer(
     # Final accepted predictions: one forward pass with the accepted masks
     query_delta_final = compute_transfer_delta_perrow(
         sae_source, query_source, W, b, accepted_masks, data_mean=data_mean,
+        translator=translator,
     )
     full_delta_final = _build_full_delta(query_delta_final, n_total_target, n_query)
     result_final = intervene(
@@ -718,6 +773,9 @@ def main():
     parser.add_argument("--perrow", action="store_true",
                         help="Per-row heterogeneous transfer: find minimal concept "
                              "set per row that closes the gap to the strong model")
+    parser.add_argument("--translator", type=Path, default=None,
+                        help="Path to universal embedding translator checkpoint. "
+                             "If provided, uses MLP translator instead of per-dataset ridge.")
     parser.add_argument("--output-dir", type=Path,
                         default=PROJECT_ROOT / "output" / "figures")
     args = parser.parse_args()
@@ -725,6 +783,20 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     fig_dir = args.output_dir / args.dataset
+
+    # Load universal translator if provided
+    translator_model = None
+    if args.translator:
+        from scripts.embedding_translator import load_translator
+        translator_model, translator_meta = load_translator(
+            args.translator, device=args.device,
+        )
+        logger.info("Loaded universal translator from %s "
+                     "(arch=%s, val_R²=%.4f, val_cos=%.4f)",
+                     args.translator,
+                     translator_meta.get("arch", "?"),
+                     translator_meta.get("history", {}).get("best_val_r2", 0),
+                     translator_meta.get("history", {}).get("best_val_cosine", 0))
 
     # Auto-detect stronger model by running both and comparing AUC.
     # Transfer FROM the stronger model TO the weaker one.
@@ -805,6 +877,7 @@ def main():
             emb_target=emb_target,
             source_preds=source_preds,
             target_baseline_preds=target_preds,
+            translator=translator_model,
         )
 
         sp1_pr = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
@@ -883,6 +956,7 @@ def main():
         emb_target=emb_target,
         source_preds=source_preds,
         target_baseline_preds=target_preds,
+        translator=translator_model,
     )
 
     k = sweep["optimal_k"]
