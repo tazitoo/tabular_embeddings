@@ -656,10 +656,12 @@ def perrow_sweep_transfer(
         # Analytical optimal scale per row: s* = (target - current) / (probe - current)
         # probe was at s=1, so gradient = probe_p1 - current_p1
         grad = probe_p1 - current_p1  # per-row gradient
+        max_scale = 16.0  # clamp to prevent extrapolation beyond linear regime
         optimal_scale = np.zeros(n_query)
         for row_idx in range(n_query):
             if has_feature[row_idx] and abs(grad[row_idx]) > 1e-10:
-                optimal_scale[row_idx] = (sp1[row_idx] - current_p1[row_idx]) / grad[row_idx]
+                s = (sp1[row_idx] - current_p1[row_idx]) / grad[row_idx]
+                optimal_scale[row_idx] = np.clip(s, -max_scale, max_scale)
 
         # Backtracking: try full step, then halve until improvement
         active = has_feature & (np.abs(optimal_scale) > 1e-10)  # rows still searching
