@@ -121,6 +121,137 @@ def build_mnn_matches(
     return matches
 
 
+# -- Landmark quality filtering ------------------------------------------------
+
+
+def filter_landmarks(
+    matched_source_atoms: np.ndarray,
+    matched_target_atoms: np.ndarray,
+    matched_pairs: List[Tuple[int, int]],
+    min_cosine: float = 0.0,
+    alpha: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, int]], Dict]:
+    """Filter and sign-correct MNN landmark pairs using LOO cross-validation.
+
+    For each landmark pair, fits ridge regression on the remaining N-1 pairs
+    and predicts the held-out target atom from its source atom. Landmarks with
+    negative LOO cosine may be sign-flipped concepts (a legitimate invariance
+    in CKA/CCA — the cross-correlation matrix uses |r|, discarding sign).
+    For these, the target atom is negated and LOO is re-checked. If flipping
+    fixes it (cosine becomes positive), the pair is kept with the flipped
+    target. If it's still below min_cosine after flipping, it's removed.
+
+    Args:
+        matched_source_atoms: (N, d_source) matched source decoder atoms.
+        matched_target_atoms: (N, d_target) matched target decoder atoms.
+        matched_pairs: List of (source_global, target_global) index tuples.
+        min_cosine: Remove landmarks with LOO cosine below this threshold.
+        alpha: Ridge regularisation strength for LOO fits.
+
+    Returns:
+        filtered_source: (N_kept, d_source) filtered source atoms.
+        filtered_target: (N_kept, d_target) filtered target atoms (sign-corrected).
+        filtered_pairs: List of kept (source_global, target_global) tuples.
+        quality: Dict with per-landmark cosine scores and sign-flip details.
+    """
+    from sklearn.linear_model import Ridge
+
+    n = len(matched_pairs)
+    if n < 4:
+        logger.warning("Too few landmarks (%d) for LOO filtering, skipping", n)
+        return (
+            matched_source_atoms,
+            matched_target_atoms,
+            matched_pairs,
+            {
+                "loo_cosines": np.array([]),
+                "removed": [],
+                "flipped": [],
+                "n_input": n,
+                "n_kept": n,
+            },
+        )
+
+    # Make a mutable copy — we may flip some target atoms
+    target_atoms = matched_target_atoms.copy()
+
+    loo_cosines = np.zeros(n)
+    flipped = []  # indices that were sign-corrected
+
+    for i in range(n):
+        mask = np.ones(n, dtype=bool)
+        mask[i] = False
+        X_train = matched_source_atoms[mask]
+        Y_train = target_atoms[mask]
+
+        reg = Ridge(alpha=alpha, fit_intercept=False)
+        reg.fit(X_train, Y_train)
+
+        pred = reg.predict(matched_source_atoms[i : i + 1])[0]
+        actual = target_atoms[i]
+
+        norm_pred = np.linalg.norm(pred)
+        norm_actual = np.linalg.norm(actual)
+        if norm_pred > 0 and norm_actual > 0:
+            cos = np.dot(pred, actual) / (norm_pred * norm_actual)
+        else:
+            cos = 0.0
+
+        # Sign-flip correction: if cosine is negative, the concept may be
+        # encoded in the opposite direction (|r| matching lost the sign).
+        # Flip the target atom and check if it helps.
+        if cos < 0:
+            cos_flipped = -cos  # cos(pred, -actual) = -cos(pred, actual)
+            if cos_flipped >= min_cosine:
+                target_atoms[i] = -target_atoms[i]
+                cos = cos_flipped
+                flipped.append(i)
+                logger.info(
+                    "  sign-flipped %s → %s (cosine %.3f → %.3f)",
+                    matched_pairs[i][0], matched_pairs[i][1], -cos_flipped, cos,
+                )
+
+        loo_cosines[i] = cos
+
+    # Remove landmarks that are still below threshold after sign correction
+    keep = loo_cosines >= min_cosine
+    removed = [
+        (matched_pairs[i], float(loo_cosines[i]))
+        for i in range(n)
+        if not keep[i]
+    ]
+
+    if removed or flipped:
+        logger.info(
+            "Landmark filtering: %d/%d kept, %d flipped, %d removed (min_cosine=%.2f)",
+            int(keep.sum()), n, len(flipped), len(removed), min_cosine,
+        )
+        for pair, cos in removed:
+            logger.info("  removed %s → %s (LOO cosine=%.3f)", pair[0], pair[1], cos)
+    else:
+        logger.info(
+            "Landmark filtering: all %d pairs pass (min_cosine=%.2f, min=%.3f)",
+            n, min_cosine, float(loo_cosines.min()),
+        )
+
+    filtered_source = matched_source_atoms[keep]
+    filtered_target = target_atoms[keep]
+    filtered_pairs = [p for p, k in zip(matched_pairs, keep) if k]
+
+    flipped_pairs = [(matched_pairs[i], float(loo_cosines[i])) for i in flipped]
+
+    quality = {
+        "loo_cosines": loo_cosines,
+        "removed": removed,
+        "flipped": flipped_pairs,
+        "n_input": n,
+        "n_kept": int(keep.sum()),
+        "mean_cosine": float(loo_cosines[keep].mean()) if keep.any() else 0.0,
+    }
+
+    return filtered_source, filtered_target, filtered_pairs, quality
+
+
 # -- Concept-level map ---------------------------------------------------------
 
 
@@ -344,11 +475,12 @@ def build_concept_bridge(
     unmatched_source_features: List[int],
     min_match_r: float = 0.2,
     ridge_alpha: float = 1.0,
+    landmark_min_cosine: float = 0.0,
 ) -> Dict:
     """Build a concept bridge from source SAE to target SAE.
 
-    Pipeline: extract decoder atoms → MNN matching → fit ridge map on matched
-    pairs → project unmatched atoms → calibrate norms from landmarks.
+    Pipeline: extract decoder atoms → MNN matching → LOO landmark filtering →
+    fit ridge map on filtered pairs → project unmatched atoms → calibrate norms.
 
     The ridge map determines direction; landmark norm calibration determines
     magnitude. Matched pairs' decoder atom norms correlate strongly across
@@ -364,14 +496,17 @@ def build_concept_bridge(
             to project as virtual nodes (must be a subset of indices_a).
         min_match_r: Minimum correlation for MNN matching.
         ridge_alpha: Ridge regularisation strength for the concept map.
+        landmark_min_cosine: Minimum LOO cosine to keep a landmark pair.
+            Set to 0.0 (default) to remove only anti-predictors.
 
     Returns:
         Dict with keys:
             virtual_atoms: (n_unmatched, d_target) norm-calibrated virtual atoms.
             concept_map_r2: float, cross-validated R² of the ridge map.
-            n_matched_pairs: int, number of MNN-matched landmark pairs.
+            n_matched_pairs: int, number of MNN-matched landmark pairs (after filter).
             matched_pairs: list of (source_global, target_global) tuples.
             unmatched_indices: list of ints (the input unmatched feature indices).
+            landmark_quality: dict with LOO cosine scores and removal details.
     """
     # 1. Extract full decoder atom matrices
     atoms_source = extract_decoder_atoms(sae_source).numpy()  # (H_s, d_s)
@@ -401,17 +536,28 @@ def build_concept_bridge(
         [atoms_target[gj] for _, gj in matched_pairs], axis=0
     )
 
-    # 5. Fit concept-level linear map on matched pairs (direction)
-    M, r2 = fit_concept_map(matched_source_atoms, matched_target_atoms, alpha=ridge_alpha)
-    logger.info("Concept map: R²=%.4f, shape=%s", r2, M.shape)
+    # 5. LOO landmark quality filtering
+    matched_source_atoms, matched_target_atoms, matched_pairs, lm_quality = (
+        filter_landmarks(
+            matched_source_atoms,
+            matched_target_atoms,
+            matched_pairs,
+            min_cosine=landmark_min_cosine,
+            alpha=ridge_alpha,
+        )
+    )
 
-    # 6. Project unmatched source atoms into target space
+    # 6. Fit concept-level linear map on filtered pairs (direction)
+    M, r2 = fit_concept_map(matched_source_atoms, matched_target_atoms, alpha=ridge_alpha)
+    logger.info("Concept map: R²=%.4f, shape=%s (%d landmarks)", r2, M.shape, len(matched_pairs))
+
+    # 7. Project unmatched source atoms into target space
     unmatched_atoms = np.stack(
         [atoms_source[gi] for gi in unmatched_source_features], axis=0
     )
     virtual = compute_virtual_atoms(unmatched_atoms, M)
 
-    # 7. Calibrate magnitude: rescale each virtual atom norm using
+    # 8. Calibrate magnitude: rescale each virtual atom norm using
     #    the landmark norm relationship (source_norm → target_norm)
     matched_src_norms = np.linalg.norm(matched_source_atoms, axis=1)
     matched_tgt_norms = np.linalg.norm(matched_target_atoms, axis=1)
@@ -430,6 +576,7 @@ def build_concept_bridge(
         "n_matched_pairs": len(matched_pairs),
         "matched_pairs": matched_pairs,
         "unmatched_indices": list(unmatched_source_features),
+        "landmark_quality": lm_quality,
     }
 
 
@@ -1099,12 +1246,17 @@ def main():
     bridge = build_concept_bridge(
         sae_source, sae_target, corr_matrix, indices_a, indices_b,
         unmatched_feat_indices,
+        landmark_min_cosine=0.0,
     )
 
+    lm_q = bridge["landmark_quality"]
     logger.info(
-        "Concept bridge: %d MNN pairs, map R²=%.4f, %d virtual atoms",
+        "Concept bridge: %d→%d landmarks (LOO filter), map R²=%.4f, "
+        "mean LOO cosine=%.3f, %d virtual atoms",
+        lm_q["n_input"],
         bridge["n_matched_pairs"],
         bridge["concept_map_r2"],
+        lm_q["mean_cosine"],
         len(bridge["unmatched_indices"]),
     )
 

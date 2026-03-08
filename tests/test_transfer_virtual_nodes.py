@@ -24,6 +24,7 @@ from scripts.transfer_virtual_nodes import (
     compute_virtual_delta,
     compute_virtual_delta_perrow,
     extract_decoder_atoms,
+    filter_landmarks,
     fit_concept_map,
     load_cross_correlations,
 )
@@ -137,6 +138,124 @@ class TestBuildMnnMatches:
         # With positive threshold, nothing matches.
         matches_strict = build_mnn_matches(corr, min_r=0.01)
         assert matches_strict == []
+
+
+# -- filter_landmarks ----------------------------------------------------------
+
+
+class TestFilterLandmarks:
+    def test_removes_truly_bad_landmark(self):
+        """A landmark orthogonal to the expected direction is removed."""
+        np.random.seed(42)
+        n, d_s, d_t = 20, 8, 6
+        M_true = np.random.randn(d_t, d_s)
+        src = np.random.randn(n, d_s)
+        tgt = src @ M_true.T + 0.01 * np.random.randn(n, d_t)
+        pairs = [(i, i + 100) for i in range(n)]
+
+        # Poison: make target orthogonal to expected direction via SVD null space
+        expected = src[0] @ M_true.T
+        U, _, _ = np.linalg.svd(expected.reshape(1, -1))
+        # Null space of a (1, d_t) matrix: last d_t-1 columns of V
+        _, _, Vt = np.linalg.svd(expected.reshape(1, -1), full_matrices=True)
+        tgt[0] = Vt[-1] * 10  # direction orthogonal to expected
+
+        f_src, f_tgt, f_pairs, quality = filter_landmarks(
+            src, tgt, pairs, min_cosine=0.5
+        )
+        assert (0, 100) not in f_pairs
+        assert quality["n_input"] == n
+        assert quality["n_kept"] == len(f_pairs)
+
+    def test_sign_flip_recovery(self):
+        """A sign-flipped concept is kept with corrected target atom."""
+        np.random.seed(42)
+        n, d_s, d_t = 20, 8, 6
+        M_true = np.random.randn(d_t, d_s)
+        src = np.random.randn(n, d_s)
+        tgt = src @ M_true.T + 0.01 * np.random.randn(n, d_t)
+        pairs = [(i, i + 100) for i in range(n)]
+
+        # Negate one target atom — simulates |r| sign loss
+        tgt[0] = -tgt[0]
+
+        f_src, f_tgt, f_pairs, quality = filter_landmarks(
+            src, tgt, pairs, min_cosine=0.0
+        )
+        # The sign-flipped pair should be kept (recovered by flipping)
+        assert (0, 100) in f_pairs
+        assert len(quality["flipped"]) >= 1
+        # The flipped target atom should now point in the correct direction
+        flipped_idx = f_pairs.index((0, 100))
+        # After flip, f_tgt[flipped_idx] should be close to M_true @ src[0]
+        expected = src[0] @ M_true.T
+        cos = np.dot(f_tgt[flipped_idx], expected) / (
+            np.linalg.norm(f_tgt[flipped_idx]) * np.linalg.norm(expected)
+        )
+        assert cos > 0.9
+
+    def test_keeps_all_good_landmarks(self):
+        """Well-correlated landmarks all pass with min_cosine=0."""
+        np.random.seed(7)
+        n, d_s, d_t = 15, 6, 4
+        M_true = np.random.randn(d_t, d_s)
+        src = np.random.randn(n, d_s)
+        tgt = src @ M_true.T + 0.01 * np.random.randn(n, d_t)
+        pairs = [(i, i) for i in range(n)]
+
+        f_src, f_tgt, f_pairs, quality = filter_landmarks(
+            src, tgt, pairs, min_cosine=0.0
+        )
+        assert len(f_pairs) == n
+        assert quality["removed"] == []
+        assert quality["flipped"] == []
+        assert quality["mean_cosine"] > 0.9
+
+    def test_too_few_landmarks_skips(self):
+        """With < 4 landmarks, filtering is skipped."""
+        src = np.random.randn(3, 5)
+        tgt = np.random.randn(3, 4)
+        pairs = [(0, 0), (1, 1), (2, 2)]
+
+        f_src, f_tgt, f_pairs, quality = filter_landmarks(
+            src, tgt, pairs, min_cosine=0.5
+        )
+        assert len(f_pairs) == 3
+        assert quality["n_kept"] == 3
+
+    def test_stricter_threshold_removes_more(self):
+        """Higher min_cosine removes marginal landmarks too."""
+        np.random.seed(99)
+        n, d_s, d_t = 20, 8, 6
+        M_true = np.random.randn(d_t, d_s)
+        src = np.random.randn(n, d_s)
+        # Add noise so some landmarks are marginal
+        tgt = src @ M_true.T + 0.5 * np.random.randn(n, d_t)
+        pairs = [(i, i) for i in range(n)]
+
+        _, _, pairs_loose, q_loose = filter_landmarks(
+            src, tgt, pairs, min_cosine=0.0
+        )
+        _, _, pairs_strict, q_strict = filter_landmarks(
+            src, tgt, pairs, min_cosine=0.5
+        )
+        assert len(pairs_strict) <= len(pairs_loose)
+
+    def test_quality_dict_structure(self):
+        """Quality dict has expected keys."""
+        np.random.seed(0)
+        src = np.random.randn(6, 4)
+        tgt = np.random.randn(6, 3)
+        pairs = [(i, i) for i in range(6)]
+
+        _, _, _, quality = filter_landmarks(src, tgt, pairs)
+        assert "loo_cosines" in quality
+        assert "removed" in quality
+        assert "flipped" in quality
+        assert "n_input" in quality
+        assert "n_kept" in quality
+        assert "mean_cosine" in quality
+        assert len(quality["loo_cosines"]) == 6
 
 
 # -- fit_concept_map -----------------------------------------------------------
@@ -442,6 +561,7 @@ class TestBuildConceptBridge:
             indices_a=bridge_inputs["indices_a"],
             indices_b=bridge_inputs["indices_b"],
             unmatched_source_features=bridge_inputs["unmatched"],
+            landmark_min_cosine=-2.0,  # disable LOO filter for random data
         )
         expected_keys = {
             "virtual_atoms",
@@ -449,6 +569,7 @@ class TestBuildConceptBridge:
             "n_matched_pairs",
             "matched_pairs",
             "unmatched_indices",
+            "landmark_quality",
         }
         assert set(result.keys()) == expected_keys
 
@@ -461,6 +582,7 @@ class TestBuildConceptBridge:
             indices_a=bridge_inputs["indices_a"],
             indices_b=bridge_inputs["indices_b"],
             unmatched_source_features=bridge_inputs["unmatched"],
+            landmark_min_cosine=-2.0,
         )
         n_unmatched = len(bridge_inputs["unmatched"])
         d_target = bridge_inputs["d_target_input"]
@@ -475,6 +597,7 @@ class TestBuildConceptBridge:
             indices_a=bridge_inputs["indices_a"],
             indices_b=bridge_inputs["indices_b"],
             unmatched_source_features=bridge_inputs["unmatched"],
+            landmark_min_cosine=-2.0,
         )
         # We engineered 5 clear diagonal matches with corr >= 0.8
         assert result["n_matched_pairs"] == 5
@@ -488,6 +611,7 @@ class TestBuildConceptBridge:
             indices_a=bridge_inputs["indices_a"],
             indices_b=bridge_inputs["indices_b"],
             unmatched_source_features=bridge_inputs["unmatched"],
+            landmark_min_cosine=-2.0,
         )
         for src_idx, tgt_idx in result["matched_pairs"]:
             assert src_idx in bridge_inputs["indices_a"]
@@ -502,6 +626,7 @@ class TestBuildConceptBridge:
             indices_a=bridge_inputs["indices_a"],
             indices_b=bridge_inputs["indices_b"],
             unmatched_source_features=bridge_inputs["unmatched"],
+            landmark_min_cosine=-2.0,
         )
         assert result["unmatched_indices"] == bridge_inputs["unmatched"]
 
@@ -514,6 +639,7 @@ class TestBuildConceptBridge:
             indices_a=bridge_inputs["indices_a"],
             indices_b=bridge_inputs["indices_b"],
             unmatched_source_features=bridge_inputs["unmatched"],
+            landmark_min_cosine=-2.0,
         )
         assert isinstance(result["concept_map_r2"], float)
 
