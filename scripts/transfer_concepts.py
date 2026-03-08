@@ -21,6 +21,7 @@ Usage:
 import argparse
 import logging
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -642,8 +643,11 @@ def perrow_sweep_transfer(
                                     device=query_source.device)
     accepted_counts = np.zeros(n_query, dtype=int)
     final_p1 = bp1.copy()
-    all_scales = []
     converge_threshold = 1e-3  # stop adding concepts once this close to target
+
+    # Per-concept tracking: acceptance history and scales
+    concept_stats = defaultdict(lambda: {"tried": 0, "accepted": 0, "scales": []})
+    min_tries_before_skip = 10  # need this many trials before skipping dead concepts
 
     logger.info("Per-row line search: %d fixable rows, max %d concepts/row...",
                 n_fixable, max_k)
@@ -661,6 +665,13 @@ def perrow_sweep_transfer(
             continue
 
         for feat_idx in rankings[row_idx]:
+            cs = concept_stats[feat_idx]
+
+            # Skip concepts that have been tried enough and never accepted
+            if (cs["tried"] >= min_tries_before_skip
+                    and cs["accepted"] == 0):
+                continue
+
             concept_delta_row = concept_deltas[feat_idx][row_idx]  # (d_target,)
 
             # Probe at scale=1 to estimate gradient direction
@@ -672,13 +683,23 @@ def perrow_sweep_transfer(
             # Gradient: change in P(class=1) per unit scale
             grad = probe_p1 - current_p1
             if abs(grad) < 1e-10:
+                cs["tried"] += 1
                 continue  # concept has no effect on this row
 
             # Analytical optimal scale (allows negative = sign flip)
             s_star = (target_p1 - current_p1) / grad
 
+            # Warm-start: if historical data suggests a typical scale,
+            # cap s_star to within 2x of the historical median to avoid
+            # wasting backtracking steps on extreme analytical scales
+            if cs["scales"]:
+                hist_median = float(np.median(cs["scales"]))
+                if abs(s_star) > 2 * abs(hist_median) and abs(hist_median) > 1e-6:
+                    s_star = np.sign(s_star) * 2 * abs(hist_median)
+
             # Backtracking: try s*, then s*/2, ... until improvement
             # Reuse probe prediction when s* ≈ 1 to avoid redundant forward pass
+            cs["tried"] += 1
             trial_scale = s_star
             for bt in range(max_backtrack + 1):
                 if abs(trial_scale) < 1e-10:
@@ -701,7 +722,8 @@ def perrow_sweep_transfer(
                     accepted_counts[row_idx] += 1
                     best_dist = trial_dist
                     current_p1 = trial_p1
-                    all_scales.append(trial_scale)
+                    cs["accepted"] += 1
+                    cs["scales"].append(float(trial_scale))
                     break
 
                 trial_scale *= 0.5
@@ -722,12 +744,36 @@ def perrow_sweep_transfer(
     logger.info("Line search complete: mean %.1f, median %.0f, max %d concepts/row",
                 accepted_counts.mean(), np.median(accepted_counts),
                 int(accepted_counts.max()))
+
+    # Per-concept summary
+    all_scales = []
+    for cs in concept_stats.values():
+        all_scales.extend(cs["scales"])
     if all_scales:
         scales_arr = np.array(all_scales)
         n_neg = (scales_arr < 0).sum()
         logger.info("Scales: median=%.2f, range=[%.2f, %.2f], %d negative (%.0f%%)",
                     np.median(scales_arr), scales_arr.min(), scales_arr.max(),
                     n_neg, 100 * n_neg / len(scales_arr))
+
+    n_tried = sum(1 for cs in concept_stats.values() if cs["tried"] > 0)
+    n_ever_accepted = sum(1 for cs in concept_stats.values() if cs["accepted"] > 0)
+    n_skipped = sum(1 for cs in concept_stats.values()
+                    if cs["tried"] >= min_tries_before_skip and cs["accepted"] == 0)
+    logger.info("Concepts: %d tried, %d ever accepted (%.0f%%), %d skipped as dead",
+                n_tried, n_ever_accepted,
+                100 * n_ever_accepted / max(n_tried, 1), n_skipped)
+
+    # Log top concepts by acceptance rate
+    concept_summary = []
+    for feat_idx, cs in sorted(concept_stats.items(),
+                                key=lambda x: x[1]["accepted"], reverse=True):
+        if cs["accepted"] > 0:
+            med_scale = float(np.median(cs["scales"]))
+            concept_summary.append((feat_idx, cs["accepted"], cs["tried"], med_scale))
+    for feat_idx, n_acc, n_try, med_s in concept_summary[:10]:
+        logger.info("  feature %d: accepted %d/%d (%.0f%%), median scale=%.2f",
+                    feat_idx, n_acc, n_try, 100 * n_acc / max(n_try, 1), med_s)
 
     # Build accepted_masks
     accepted_masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
@@ -754,6 +800,7 @@ def perrow_sweep_transfer(
         "source_preds": source_preds,
         "y_query": y_q,
         "linear_map_r2": r2,
+        "concept_stats": dict(concept_stats),
     }
 
 
