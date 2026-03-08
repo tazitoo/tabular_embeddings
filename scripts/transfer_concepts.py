@@ -555,7 +555,13 @@ def perrow_sweep_transfer(
 
     feat_indices = [f for f, _ in ranked_features]
 
-    # --- Phase 1: per-feature importance (N forward passes through target) ---
+    # Build tail model once (used for Phase 1 importance probing and Phase 3 line search)
+    logger.info("Building %s tail model (layer %d)...", target_model, target_layer)
+    tail = build_tail(target_model, X_ctx, y_ctx, X_q, target_layer, task, device)
+    seq_len = (tail.hidden_state.shape[1] if target_model == "tabpfn"
+               else tail.hidden_state.shape[1])
+
+    # --- Phase 1: per-feature importance via tail model ---
     logger.info("Phase 1: per-feature importance for %d features...", len(feat_indices))
     baseline_np = target_baseline_preds
     individual_preds = []
@@ -566,17 +572,9 @@ def perrow_sweep_transfer(
             [feat_idx], data_mean=data_mean, scale=1.0,
             translator=translator,
         )
-        full_delta = _build_full_delta(delta_query, n_total_target, n_query)
-
-        result = intervene(
-            model_key=target_model,
-            X_context=X_ctx, y_context=y_ctx,
-            X_query=X_q, y_query=y_q,
-            external_delta=full_delta.to(device),
-            device=device, task=task,
-            layers_path=layers_path,
-        )
-        individual_preds.append(result["ablated_preds"])
+        full_delta = _build_full_delta(delta_query, seq_len, n_query)
+        preds = tail.predict(full_delta.to(device))
+        individual_preds.append(preds)
 
     # Compute importance and NEGATE (transfer helping = logloss decrease = negative)
     importance = _perrow_importance(baseline_np, individual_preds, y_q)
@@ -618,11 +616,6 @@ def perrow_sweep_transfer(
     n_fixable = fixable.sum()
     logger.info("Fixable rows: %d / %d (%.0f%% already equal or better)",
                 n_fixable, n_query, 100 * (1 - n_fixable / n_query))
-
-    # Build tail model (caches hidden state, skips prefix layers on predict)
-    logger.info("Phase 3: building %s tail model (layer %d)...",
-                target_model, target_layer)
-    tail = build_tail(target_model, X_ctx, y_ctx, X_q, target_layer, task, device)
 
     # Precompute per-concept deltas for all query rows
     # (fast: SAE decode + linear map, no model forward passes)
