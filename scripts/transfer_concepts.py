@@ -51,6 +51,31 @@ from scripts.plot_prediction_scatter import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TRANSLATOR_DIR = PROJECT_ROOT / "output" / "embedding_translator"
+
+
+def _load_translator_for_pair(
+    source_model: str, target_model: str,
+    translator_dir: Path = DEFAULT_TRANSLATOR_DIR,
+    device: str = "cpu",
+) -> Optional[torch.nn.Module]:
+    """Auto-load MLP translator for a source→target pair if checkpoint exists.
+
+    Looks for: translator_dir/{source}_to_{target}.pt
+    Returns None if no checkpoint found (falls back to ridge regression).
+    """
+    path = translator_dir / f"{source_model}_to_{target_model}.pt"
+    if not path.exists():
+        return None
+
+    from scripts.embedding_translator import load_translator
+    model, meta = load_translator(path, device=device)
+    logger.info("Loaded translator %s → %s (arch=%s, val_R²=%.4f)",
+                source_model, target_model,
+                meta.get("arch", "?"),
+                meta.get("history", {}).get("best_val_r2", 0))
+    return model
+
 
 # ── Linear Map ────────────────────────────────────────────────────────────────
 
@@ -1042,9 +1067,10 @@ def main():
     parser.add_argument("--sae-dir", type=Path, default=DEFAULT_SAE_DIR)
     parser.add_argument("--layers-config", type=Path, default=DEFAULT_LAYERS_PATH)
     parser.add_argument("--training-dir", type=Path, default=DEFAULT_TRAINING_DIR)
-    parser.add_argument("--translator", type=Path, default=None,
-                        help="Path to universal embedding translator checkpoint. "
-                             "If provided, uses MLP translator instead of per-dataset ridge.")
+    parser.add_argument("--translator-dir", type=Path,
+                        default=DEFAULT_TRANSLATOR_DIR,
+                        help="Directory with MLP translator checkpoints "
+                             "({source}_to_{target}.pt). Auto-detected per direction.")
     parser.add_argument("--output-dir", type=Path,
                         default=PROJECT_ROOT / "output" / "figures")
     args = parser.parse_args()
@@ -1053,19 +1079,7 @@ def main():
 
     fig_dir = args.output_dir / args.dataset
 
-    # Load universal translator if provided
-    translator_model = None
-    if args.translator:
-        from scripts.embedding_translator import load_translator
-        translator_model, translator_meta = load_translator(
-            args.translator, device=args.device,
-        )
-        logger.info("Loaded universal translator from %s "
-                     "(arch=%s, val_R²=%.4f, val_cos=%.4f)",
-                     args.translator,
-                     translator_meta.get("arch", "?"),
-                     translator_meta.get("history", {}).get("best_val_r2", 0),
-                     translator_meta.get("history", {}).get("best_val_cosine", 0))
+    translator_dir = args.translator_dir
 
     # Auto-detect stronger model by running both and comparing AUC.
     # Transfer FROM the stronger model TO the weaker one.
@@ -1141,6 +1155,11 @@ def main():
         logger.info("  %d unmatched %s-only features (%d positive drop)",
                     len(feat), src_model, n_pos)
 
+        # Auto-load MLP translator for this direction (falls back to ridge)
+        translator = _load_translator_for_pair(
+            src_model, tgt_model, translator_dir, args.device,
+        )
+
         result = perrow_sweep_transfer(
             source_model=src_model, target_model=tgt_model,
             dataset=args.dataset, ranked_features=feat,
@@ -1149,7 +1168,7 @@ def main():
             training_dir=args.training_dir,
             emb_source=emb_src, emb_target=emb_tgt,
             source_preds=src_preds, target_baseline_preds=tgt_preds,
-            translator=translator_model,
+            translator=translator,
         )
         opt = find_per_row_optimal_transfer(result, src_preds, tgt_preds, y_q)
 
