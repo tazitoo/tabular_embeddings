@@ -866,7 +866,155 @@ def find_per_row_optimal_transfer(
         "target_row_ll": target_row_ll,
         "baseline_row_ll": baseline_row_ll,
         "unmatched_features": perrow_result["unmatched_features"],
+        "concept_stats": perrow_result.get("concept_stats", {}),
     }
+
+
+# ── Transfer Summary ──────────────────────────────────────────────────────────
+
+
+def transfer_summary(
+    optimal: Dict,
+    source_model: str,
+    target_model: str,
+    dataset: str,
+    direction: str,
+    output_dir: Path,
+) -> Dict:
+    """Produce a structured summary of transfer results.
+
+    Reports three things:
+    1. Unmoved rows: why they weren't improved (no firing features vs rejected)
+    2. Successful concepts: which features drove improvements, acceptance rates, scales
+    3. Overall concept utilization: breadth, sign flips, scale distribution
+
+    Saves JSON and prints human-readable summary.
+    """
+    import json as _json
+
+    ok = optimal["optimal_k"]
+    max_k = optimal["max_k_per_row"]
+    cs = optimal.get("concept_stats", {})
+
+    n_total = len(ok)
+    fixable = ok >= 0  # all rows are in scope (optimal_k=0 for non-fixable)
+    intervened = ok > 0
+    unmoved = ~intervened
+
+    # ── 1. Unmoved rows ──────────────────────────────────────────────────
+    unmoved_max_k = max_k[unmoved]
+    n_unmoved = int(unmoved.sum())
+    n_no_features = int((unmoved_max_k == 0).sum())  # no SAE features fire
+    n_all_rejected = n_unmoved - n_no_features        # features fire but all rejected
+
+    unmoved_summary = {
+        "n_unmoved": n_unmoved,
+        "n_no_firing_features": n_no_features,
+        "n_all_concepts_rejected": n_all_rejected,
+        "max_k_distribution": {
+            "mean": float(unmoved_max_k.mean()) if n_unmoved > 0 else 0,
+            "median": float(np.median(unmoved_max_k)) if n_unmoved > 0 else 0,
+            "max": int(unmoved_max_k.max()) if n_unmoved > 0 else 0,
+        },
+    }
+
+    # ── 2. Successful concepts ───────────────────────────────────────────
+    concept_list = []
+    for feat_idx, stats in sorted(cs.items(), key=lambda x: -x[1]["accepted"]):
+        if stats["accepted"] == 0:
+            continue
+        scales = stats["scales"]
+        n_neg = sum(1 for s in scales if s < 0)
+        concept_list.append({
+            "feature": feat_idx,
+            "tried": stats["tried"],
+            "accepted": stats["accepted"],
+            "acceptance_rate": stats["accepted"] / max(stats["tried"], 1),
+            "median_scale": float(np.median(scales)),
+            "mean_scale": float(np.mean(scales)),
+            "sign_flip_frac": n_neg / len(scales) if scales else 0,
+            "scale_range": [float(min(scales)), float(max(scales))] if scales else [0, 0],
+        })
+
+    # Dead concepts (tried >= 10, never accepted)
+    dead_concepts = [
+        {"feature": f, "tried": s["tried"]}
+        for f, s in cs.items()
+        if s["tried"] >= 10 and s["accepted"] == 0
+    ]
+
+    # ── 3. Overall utilization ───────────────────────────────────────────
+    all_scales = [s for st in cs.values() for s in st["scales"]]
+    n_tried = sum(1 for s in cs.values() if s["tried"] > 0)
+    n_accepted_any = sum(1 for s in cs.values() if s["accepted"] > 0)
+    n_neg_scales = sum(1 for s in all_scales if s < 0)
+
+    utilization = {
+        "n_concepts_tried": n_tried,
+        "n_concepts_accepted": n_accepted_any,
+        "n_concepts_dead": len(dead_concepts),
+        "total_acceptances": sum(s["accepted"] for s in cs.values()),
+        "sign_flip_fraction": n_neg_scales / len(all_scales) if all_scales else 0,
+        "median_scale": float(np.median(all_scales)) if all_scales else 0,
+        "scale_iqr": [float(np.percentile(all_scales, 25)),
+                      float(np.percentile(all_scales, 75))] if all_scales else [0, 0],
+    }
+
+    summary = {
+        "direction": direction,
+        "source_model": source_model,
+        "target_model": target_model,
+        "dataset": dataset,
+        "n_total": n_total,
+        "n_intervened": int(intervened.sum()),
+        "unmoved": unmoved_summary,
+        "top_concepts": concept_list[:15],
+        "dead_concepts": dead_concepts,
+        "utilization": utilization,
+    }
+
+    # Save JSON
+    output_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "reverse" if "reverse" in direction.lower() else "forward"
+    json_path = output_dir / f"transfer_summary_{suffix}.json"
+    with open(json_path, "w") as f:
+        _json.dump(summary, f, indent=2)
+    logger.info("Saved transfer summary to %s", json_path)
+
+    # Print human-readable
+    disp_src = DISPLAY_NAMES.get(source_model, source_model)
+    disp_tgt = DISPLAY_NAMES.get(target_model, target_model)
+
+    print(f"\n── {direction}: {disp_src} → {disp_tgt} ──")
+
+    print(f"\n  Unmoved rows: {n_unmoved}")
+    if n_unmoved > 0:
+        print(f"    No firing features: {n_no_features}")
+        print(f"    Features fired, all rejected: {n_all_rejected}")
+        if n_all_rejected > 0:
+            print(f"    Firing features (unmoved): "
+                  f"mean={unmoved_summary['max_k_distribution']['mean']:.1f}, "
+                  f"max={unmoved_summary['max_k_distribution']['max']}")
+
+    print(f"\n  Utilized concepts: {n_accepted_any}/{n_tried} tried "
+          f"({utilization['total_acceptances']} total acceptances)")
+    if all_scales:
+        print(f"    Scale: median={utilization['median_scale']:.2f}, "
+              f"IQR=[{utilization['scale_iqr'][0]:.2f}, {utilization['scale_iqr'][1]:.2f}]")
+        print(f"    Sign flips: {utilization['sign_flip_fraction']:.0%}")
+    if dead_concepts:
+        print(f"    Dead concepts: {len(dead_concepts)} "
+              f"(tried ≥10, never accepted)")
+
+    print(f"\n  Top concepts (by acceptance count):")
+    for c in concept_list[:10]:
+        sign = f" [{c['sign_flip_frac']:.0%} neg]" if c['sign_flip_frac'] > 0.1 else ""
+        print(f"    feat {c['feature']:>4d}: "
+              f"{c['accepted']:>3d}/{c['tried']:>3d} "
+              f"({c['acceptance_rate']:.0%}), "
+              f"scale={c['median_scale']:+.2f}{sign}")
+
+    return summary
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -1056,6 +1204,18 @@ def main():
               f"{disp_strong}+ AUC = {auc_rev:.4f} (\u0394={delta:+.4f})")
 
     print(f"{'='*60}")
+
+    # ── Transfer summaries ───────────────────────────────────────────────
+    if fwd_transferred is not None:
+        transfer_summary(
+            fwd_optimal, strong_model, weak_model, args.dataset,
+            "Forward", fig_dir,
+        )
+    if rev_transferred is not None:
+        transfer_summary(
+            rev_optimal, weak_model, strong_model, args.dataset,
+            "Reverse", fig_dir,
+        )
 
     # ── Plots ────────────────────────────────────────────────────────────
     if args.bidirectional:
