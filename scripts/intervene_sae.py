@@ -224,26 +224,30 @@ def compute_boost_delta(
 
 
 class TabPFNTail:
-    """Cached TabPFN tail: runs layers[L+1:] + decoder on modified hidden states.
+    """Cached TabPFN tail: injects delta at layer L via hook, runs predict.
+
+    Caches the hidden state at layer L from the first forward pass.
+    On predict(), installs a hook that replaces the layer L output with the
+    cached state + delta, so layers 0..L run but their output is discarded.
+    The full predict_proba pipeline (BarDistribution etc.) handles logit→prob.
 
     Usage:
-        tail = TabPFNTail.from_data(X_ctx, y_ctx, X_query, layer=17, task="classification", device="cuda")
-        preds = tail.predict(delta)  # delta shape: (seq_len, hidden_dim)
-        preds_row = tail.predict_row(row_idx, delta_row)  # single-row intervention
+        tail = TabPFNTail.from_data(X_ctx, y_ctx, X_query, layer=17, ...)
+        preds = tail.predict(delta)  # delta: (seq_len, hidden_dim)
+        preds = tail.predict_row(row_idx, delta_row)  # delta_row: (hidden_dim,)
     """
 
-    def __init__(self, model, layers, decoder, hidden_state, single_eval_pos,
-                 extraction_layer, n_query, task, device):
-        self.model = model
+    def __init__(self, clf, layers, hidden_state, single_eval_pos,
+                 extraction_layer, n_query, X_query, task, device):
+        self.clf = clf
         self.layers = layers
-        self.decoder = decoder
         self.hidden_state = hidden_state  # (1, seq_len, n_structure, hidden_dim)
         self.single_eval_pos = single_eval_pos
         self.extraction_layer = extraction_layer
         self.n_query = n_query
+        self.X_query = X_query
         self.task = task
         self.device = device
-        self.n_structure = hidden_state.shape[2]
 
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
@@ -255,7 +259,6 @@ class TabPFNTail:
         clf.fit(X_context, y_context)
         model = clf.model_
         layers = model.transformer_encoder.layers
-        decoder = model.decoder_dict["standard"]
 
         captured = {}
 
@@ -277,83 +280,68 @@ class TabPFNTail:
         single_eval_pos = captured["hidden"].shape[1] - n_query
 
         tail = cls(
-            model=model, layers=layers, decoder=decoder,
+            clf=clf, layers=layers,
             hidden_state=captured["hidden"],
             single_eval_pos=single_eval_pos,
             extraction_layer=extraction_layer,
-            n_query=n_query, task=task, device=device,
+            n_query=n_query, X_query=X_query,
+            task=task, device=device,
         )
         tail.baseline_preds = np.asarray(baseline_preds)
         return tail
 
-    def _run_tail(self, state):
-        """Run layers[L+1:] and decoder on modified state."""
-        for layer in self.layers[self.extraction_layer + 1:]:
-            state = layer(
-                state,
-                single_eval_pos=self.single_eval_pos,
-                save_peak_mem_factor=None,
-            )
-        # Extract query positions, last feature group (y-encoder column), decode
-        test_out = state[:, self.single_eval_pos:, -1].transpose(0, 1)
-        logits = self.decoder(test_out)
-        return logits
+    def _predict_with_modified_state(self, modified_state):
+        """Install hook that replaces layer L output, run predict."""
+        def replace_hook(module, input, output):
+            return modified_state
+
+        handle = self.layers[self.extraction_layer].register_forward_hook(replace_hook)
+        try:
+            with torch.no_grad():
+                if self.task == "regression":
+                    preds = self.clf.predict(self.X_query)
+                else:
+                    preds = self.clf.predict_proba(self.X_query)
+        finally:
+            handle.remove()
+        return np.asarray(preds)
 
     def predict(self, delta):
-        """Full-batch intervention: delta shape (seq_len, hidden_dim).
-
-        Returns numpy array of predictions (n_query, n_classes) or (n_query,).
-        """
+        """Full-batch intervention: delta shape (seq_len, hidden_dim)."""
         state = self.hidden_state.clone()
-        # Broadcast delta over structure dimension
         delta_broadcast = delta.unsqueeze(1)  # (seq_len, 1, hidden_dim)
         state[0] += delta_broadcast
-        with torch.no_grad():
-            logits = self._run_tail(state)
-        return self._logits_to_preds(logits)
+        return self._predict_with_modified_state(state)
 
     def predict_row(self, row_idx, delta_row):
         """Single-row intervention: delta_row shape (hidden_dim,).
 
         Modifies only query row `row_idx` (0-indexed within query set).
-        Returns predictions for ALL query rows (n_query, n_classes).
         """
         state = self.hidden_state.clone()
         seq_idx = self.single_eval_pos + row_idx
-        state[0, seq_idx, :, :] += delta_row.unsqueeze(0)  # broadcast over structure
-        with torch.no_grad():
-            logits = self._run_tail(state)
-        return self._logits_to_preds(logits)
-
-    def _logits_to_preds(self, logits):
-        """Convert logits to probabilities or regression values."""
-        # logits shape: (n_query, n_out)
-        if self.task == "regression":
-            return logits.squeeze(-1).cpu().numpy()
-        probs = torch.softmax(logits, dim=-1)
-        return probs.cpu().numpy()
+        state[0, seq_idx, :, :] += delta_row.unsqueeze(0)
+        return self._predict_with_modified_state(state)
 
 
 class TabICLTail:
-    """Cached TabICL tail: runs blocks[L+1:] + ln + decoder on modified hidden states.
+    """Cached TabICL tail: injects delta at block L via hook, runs predict.
 
     Usage:
         tail = TabICLTail.from_data(X_ctx, y_ctx, X_query, layer=8, device="cuda")
         preds = tail.predict(delta)
-        preds_row = tail.predict_row(row_idx, delta_row)
+        preds = tail.predict_row(row_idx, delta_row)
     """
 
-    def __init__(self, model, blocks, decoder, ln, hidden_state,
-                 train_size, rope, extraction_layer, n_query, device):
-        self.model = model
+    def __init__(self, clf, blocks, hidden_state, train_size,
+                 extraction_layer, n_query, X_query, device):
+        self.clf = clf
         self.blocks = blocks
-        self.decoder = decoder
-        self.ln = ln
         self.hidden_state = hidden_state  # (n_ensemble, seq_len, 512)
         self.train_size = train_size
-        self.rope = rope
         self.extraction_layer = extraction_layer
         self.n_query = n_query
+        self.X_query = X_query
         self.device = device
 
     @classmethod
@@ -366,12 +354,7 @@ class TabICLTail:
         clf.fit(X_context, y_context)
 
         model = clf.model_
-        icl = model.icl_predictor
-        tf_icl = icl.tf_icl
-        blocks = tf_icl.blocks
-        decoder = icl.decoder
-        ln = icl.ln if icl.norm_first else None
-        rope = tf_icl.rope
+        blocks = model.icl_predictor.tf_icl.blocks
 
         captured = {}
 
@@ -390,56 +373,44 @@ class TabICLTail:
         train_size = captured["hidden"].shape[1] - n_query
 
         tail = cls(
-            model=model, blocks=blocks, decoder=decoder, ln=ln,
+            clf=clf, blocks=blocks,
             hidden_state=captured["hidden"],
-            train_size=train_size, rope=rope,
+            train_size=train_size,
             extraction_layer=extraction_layer,
-            n_query=n_query, device=device,
+            n_query=n_query, X_query=X_query, device=device,
         )
         tail.baseline_preds = np.asarray(baseline_preds)
         return tail
 
-    def _run_tail(self, state):
-        """Run blocks[L+1:] + ln + decoder on modified state."""
-        for block in self.blocks[self.extraction_layer + 1:]:
-            state = block(
-                q=state, attn_mask=self.train_size, rope=self.rope,
-            )
-        if self.ln is not None:
-            state = self.ln(state)
-        logits = self.decoder(state)  # (n_ensemble, seq_len, n_classes)
-        return logits
+    def _predict_with_modified_state(self, modified_state):
+        """Install hook that replaces block L output, run predict."""
+        def replace_hook(module, input, output):
+            return modified_state
+
+        handle = self.blocks[self.extraction_layer].register_forward_hook(replace_hook)
+        try:
+            with torch.no_grad():
+                preds = self.clf.predict_proba(self.X_query)
+        finally:
+            handle.remove()
+        return np.asarray(preds)
 
     def predict(self, delta):
-        """Full-batch intervention: delta shape (seq_len, hidden_dim).
-
-        Returns numpy array of predictions (n_query, n_classes).
-        """
+        """Full-batch intervention: delta shape (seq_len, hidden_dim)."""
         state = self.hidden_state.clone()
-        # Broadcast delta over ensemble dimension
         delta_broadcast = delta.unsqueeze(0)  # (1, seq_len, hidden_dim)
         state += delta_broadcast
-        with torch.no_grad():
-            logits = self._run_tail(state)
-        # Mean over ensembles, take query positions, softmax
-        logits = logits[:, self.train_size:, :].mean(dim=0)  # (n_query, n_classes)
-        probs = torch.softmax(logits, dim=-1)
-        return probs.cpu().numpy()
+        return self._predict_with_modified_state(state)
 
     def predict_row(self, row_idx, delta_row):
         """Single-row intervention: delta_row shape (hidden_dim,).
 
         Modifies only query row `row_idx`.
-        Returns predictions for ALL query rows (n_query, n_classes).
         """
         state = self.hidden_state.clone()
         seq_idx = self.train_size + row_idx
-        state[:, seq_idx, :] += delta_row.unsqueeze(0)  # broadcast over ensemble
-        with torch.no_grad():
-            logits = self._run_tail(state)
-        logits = logits[:, self.train_size:, :].mean(dim=0)
-        probs = torch.softmax(logits, dim=-1)
-        return probs.cpu().numpy()
+        state[:, seq_idx, :] += delta_row.unsqueeze(0)
+        return self._predict_with_modified_state(state)
 
 
 def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
