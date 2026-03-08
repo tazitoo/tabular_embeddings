@@ -883,6 +883,9 @@ def main():
     parser.add_argument("--dataset", type=str, default="kddcup09_appetency")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--task", type=str, default="classification")
+    parser.add_argument("--reverse", action="store_true",
+                        help="Transfer FROM weaker model TO stronger model "
+                             "(reverse: weak model's concepts improve strong model)")
     parser.add_argument("--alpha", type=float, default=1.0,
                         help="Ridge regularization for linear map")
     parser.add_argument("--sae-dir", type=Path, default=DEFAULT_SAE_DIR)
@@ -932,19 +935,37 @@ def main():
     auc_a = float(roc_auc_score(y_q, pa1))
     auc_b = float(roc_auc_score(y_q, pb1))
 
+    # Always identify strong/weak by AUC
     if auc_a >= auc_b:
-        source_model, target_model = model_a, model_b
-        emb_source, emb_target = emb_a, emb_b
-        source_preds, target_preds = preds_a, preds_b
+        strong_model, weak_model = model_a, model_b
+        emb_strong, emb_weak = emb_a, emb_b
+        strong_preds, weak_preds = preds_a, preds_b
+        auc_strong, auc_weak = auc_a, auc_b
     else:
-        source_model, target_model = model_b, model_a
-        emb_source, emb_target = emb_b, emb_a
-        source_preds, target_preds = preds_b, preds_a
+        strong_model, weak_model = model_b, model_a
+        emb_strong, emb_weak = emb_b, emb_a
+        strong_preds, weak_preds = preds_b, preds_a
+        auc_strong, auc_weak = auc_b, auc_a
 
-    disp_s = DISPLAY_NAMES.get(source_model, source_model)
-    disp_t = DISPLAY_NAMES.get(target_model, target_model)
-    logger.info("Transfer direction: %s (AUC=%.3f) → %s (AUC=%.3f)",
-                disp_s, max(auc_a, auc_b), disp_t, min(auc_a, auc_b))
+    # Source = concept provider, Target = concept receiver
+    if args.reverse:
+        source_model, target_model = weak_model, strong_model
+        emb_source, emb_target = emb_weak, emb_strong
+        source_preds, target_preds = weak_preds, strong_preds
+        plot_mode = "reverse_transfer"
+    else:
+        source_model, target_model = strong_model, weak_model
+        emb_source, emb_target = emb_strong, emb_weak
+        source_preds, target_preds = strong_preds, weak_preds
+        plot_mode = "transfer"
+
+    disp_src = DISPLAY_NAMES.get(source_model, source_model)
+    disp_tgt = DISPLAY_NAMES.get(target_model, target_model)
+    reverse_tag = " [REVERSE]" if args.reverse else ""
+    logger.info("Transfer direction: %s (AUC=%.3f) → %s (AUC=%.3f)%s",
+                disp_src, float(roc_auc_score(y_q, source_preds[:, 1] if source_preds.ndim == 2 else source_preds)),
+                disp_tgt, float(roc_auc_score(y_q, target_preds[:, 1] if target_preds.ndim == 2 else target_preds)),
+                reverse_tag)
 
     # Get unmatched features from the stronger model (ranked by importance)
     try:
@@ -993,7 +1014,9 @@ def main():
         translator=translator_model,
     )
 
-    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
+    # Compute strong/weak P(1) — always in absolute terms regardless of direction
+    strong_p1 = strong_preds[:, 1] if strong_preds.ndim == 2 else strong_preds
+    weak_p1 = weak_preds[:, 1] if weak_preds.ndim == 2 else weak_preds
     tp1 = target_preds[:, 1] if target_preds.ndim == 2 else target_preds
 
     optimal = find_per_row_optimal_transfer(
@@ -1005,20 +1028,25 @@ def main():
     ap1 = ap[:, 1] if ap.ndim == 2 else ap
     transferred_p1 = np.where(optimal["optimal_k"] > 0, ap1, tp1)
 
-    auc_s = float(roc_auc_score(y_q, sp1))
-    auc_t = float(roc_auc_score(y_q, tp1))
     auc_transferred = float(roc_auc_score(y_q, transferred_p1))
-    gap = auc_s - auc_t
-    gap_closed_pct = (auc_transferred - auc_t) / gap * 100 if abs(gap) > 0.001 else float("nan")
+
+    disp_strong = DISPLAY_NAMES.get(strong_model, strong_model)
+    disp_weak = DISPLAY_NAMES.get(weak_model, weak_model)
 
     print(f"\n{'='*60}")
-    print(f"Concept transfer: {disp_s} → {disp_t}")
+    print(f"Concept transfer: {disp_src} → {disp_tgt}{reverse_tag}")
     print(f"Dataset: {args.dataset}")
-    print(f"  {disp_s} AUC = {auc_s:.4f}")
-    print(f"  {disp_t} AUC = {auc_t:.4f}")
-    print(f"  {disp_t}+transfer AUC = {auc_transferred:.4f}")
-    if abs(gap) > 0.001:
-        print(f"  Gap closed: {gap_closed_pct:.1f}%")
+    print(f"  {disp_strong} AUC = {auc_strong:.4f}")
+    print(f"  {disp_weak} AUC = {auc_weak:.4f}")
+    print(f"  {disp_tgt}+transfer AUC = {auc_transferred:.4f}")
+    if args.reverse:
+        delta = auc_transferred - auc_strong
+        print(f"  Strong model delta: {delta:+.4f}")
+    else:
+        gap = auc_strong - auc_weak
+        if abs(gap) > 0.001:
+            gap_closed_pct = (auc_transferred - auc_weak) / gap * 100
+            print(f"  Gap closed: {gap_closed_pct:.1f}%")
     print(f"{'='*60}")
 
     # Histogram + coverage curve
@@ -1034,15 +1062,18 @@ def main():
         action="transferring",
     )
 
-    # Per-row scatter
+    # Per-row scatter — always pass in (strong, weak) order
+    # preds_intervened replaces whichever model was the target
+    # Per-row scatter — always pass (strong_p1, weak_p1, intervened_p1)
+    # The mode tells the plot which model was modified
     plot_perrow_scatter(
-        sp1, tp1, transferred_p1,
+        strong_p1, weak_p1, transferred_p1,
         optimal["optimal_k"], y_q,
-        source_model, target_model,
+        strong_model, weak_model,
         args.dataset,
-        auc_s, auc_t,
+        auc_strong, auc_weak,
         fig_dir / "transfer_perrow_scatter.pdf",
-        mode="transfer",
+        mode=plot_mode,
     )
 
     # Diagnostic: logloss distributions + concept budget + accept rate

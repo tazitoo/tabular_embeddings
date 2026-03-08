@@ -879,41 +879,61 @@ def plot_perrow_scatter(
     output_path: Path,
     mode: str = "ablation",
 ):
-    """Scatter showing rows where strong model outperforms weak.
+    """Scatter showing per-row intervention results.
 
     Convention: x = strong model, y = weak model, always.
-      - Ablation (mode="ablation"): strong model's predictions change.
-        Intervened points move LEFT toward the diagonal.
-      - Transfer (mode="transfer"): weak model's predictions change.
-        Intervened points move UP toward the diagonal.
+    Marker convention: circle = strong model, square = weak model.
+    Open markers = original, filled markers = intervened.
 
-    Shows all rows where strong model is closer to truth (logloss-based).
+    Modes:
+      - "ablation": strong model degraded (x changes). Circle markers.
+      - "transfer": weak model improved via strong concepts (y changes). Square markers.
+      - "reverse_transfer": strong model improved via weak concepts (x changes). Circle markers.
+
+    Shows all rows where the source model outperforms the target model.
     Rows with optimal_k > 0 get colored intervened markers; others are gray only.
     """
-    is_transfer = mode == "transfer"
-    verb = "Intervened"
-    verb_lower = "transfer" if is_transfer else "ablation"
+    is_reverse = mode == "reverse_transfer"
+    is_transfer = mode in ("transfer", "reverse_transfer")
+    if mode == "transfer":
+        verb_lower = "transfer"
+    elif mode == "reverse_transfer":
+        verb_lower = "reverse transfer"
+    else:
+        verb_lower = "ablation"
 
-    # Rows where strong model outperforms weak (logloss-based)
-    strong_better = get_improvable_rows(preds_strong, preds_weak, y_true)
+    # Marker: circle for strong model changes, square for weak model changes
+    if mode == "transfer":
+        marker = "s"  # square: weak model modified
+    else:
+        marker = "o"  # circle: strong model modified (ablation or reverse)
 
-    n_strong_better = strong_better.sum()
+    # For transfer: source=strong outperforms target=weak (standard)
+    # For reverse_transfer: source=weak outperforms target=strong on specific rows
+    if is_reverse:
+        # Show rows where weak outperforms strong (reverse fixable rows)
+        source_better = get_improvable_rows(preds_weak, preds_strong, y_true)
+    else:
+        source_better = get_improvable_rows(preds_strong, preds_weak, y_true)
+
+    n_source_better = source_better.sum()
     n_intervened = (optimal_k > 0).sum()
     n_total = len(optimal_k)
-    logger.info("Strong outperforms weak: %d / %d (%.1f%%); intervened: %d",
-                n_strong_better, n_total, 100 * n_strong_better / n_total,
-                n_intervened)
+    src_label = "Weak outperforms strong" if is_reverse else "Strong outperforms weak"
+    logger.info("%s: %d / %d (%.1f%%); intervened: %d",
+                src_label, n_source_better, n_total,
+                100 * n_source_better / n_total, n_intervened)
 
-    if n_strong_better == 0:
-        logger.warning("No rows where strong > weak — skipping scatter.")
+    if n_source_better == 0:
+        logger.warning("No improvable rows — skipping scatter.")
         return
 
-    # Filter to rows where strong outperforms weak
-    ps = preds_strong[strong_better]
-    pw = preds_weak[strong_better]
-    pi = preds_intervened[strong_better]
-    yt = y_true[strong_better]
-    ok = optimal_k[strong_better]
+    # Filter to improvable rows
+    ps = preds_strong[source_better]
+    pw = preds_weak[source_better]
+    pi = preds_intervened[source_better]
+    yt = y_true[source_better]
+    ok = optimal_k[source_better]
 
     disp_s = DISPLAY_NAMES.get(model_strong, model_strong)
     disp_w = DISPLAY_NAMES.get(model_weak, model_weak)
@@ -922,10 +942,10 @@ def plot_perrow_scatter(
     event_rate = y_true.mean()
 
     # x = strong, y = weak, always.
-    # Ablation changes x (strong model weakened).
-    # Transfer changes y (weak model strengthened).
+    # transfer: y changes (weak model improved)
+    # ablation / reverse_transfer: x changes (strong model modified)
     orig_x, orig_y = ps, pw
-    if is_transfer:
+    if mode == "transfer":
         int_x, int_y = ps, pi  # y changes
     else:
         int_x, int_y = pi, pw  # x changes
@@ -945,43 +965,40 @@ def plot_perrow_scatter(
 
     mask0 = yt == 0
     mask1 = yt == 1
-    modified = ok > 0  # rows where intervention actually changed predictions
+    modified = ok > 0
     unmodified = ~modified
     n_unmodified = int(unmodified.sum())
 
     # Layer 1: All improvable rows — open markers, faint gray
     orig_color = "#999999"
-    ax.scatter(orig_x[mask0], orig_y[mask0], facecolors="none",
+    ax.scatter(orig_x, orig_y, facecolors="none",
                edgecolors=orig_color, s=14, alpha=0.5, linewidths=0.6,
-               label=f"Original class 0 (n={mask0.sum()})", zorder=2)
-    ax.scatter(orig_x[mask1], orig_y[mask1], facecolors="none",
-               edgecolors=orig_color, s=14, alpha=0.5, linewidths=0.6,
-               marker="s",
-               label=f"Original class 1 (n={mask1.sum()})", zorder=2)
+               marker=marker,
+               label=f"Original (n={len(orig_x)})", zorder=2)
 
-    # Layer 2: Improvable but not modified — filled gray
-    um0 = mask0 & unmodified
-    um1 = mask1 & unmodified
+    # Layer 2: Unmoved — filled gray
     unmoved_color = "#aaaaaa"
-    ax.scatter(orig_x[um0], orig_y[um0], c=unmoved_color,
-               s=14, alpha=0.5, edgecolors="none",
-               label=f"Unmoved (n={n_unmodified})", zorder=3)
-    ax.scatter(orig_x[um1], orig_y[um1], c=unmoved_color,
-               s=14, alpha=0.5, edgecolors="none",
-               marker="s", zorder=3)
+    if n_unmodified > 0:
+        ax.scatter(orig_x[unmodified], orig_y[unmodified], c=unmoved_color,
+                   s=14, alpha=0.5, edgecolors="none",
+                   marker=marker,
+                   label=f"Unmoved (n={n_unmodified})", zorder=3)
 
-    # Layer 3: Intervened positions — filled color, k > 0
+    # Layer 3: Intervened — filled color by class, k > 0
     color0 = "#0072B2"  # blue
     color1 = "#D55E00"  # orange
     m0 = mask0 & modified
     m1 = mask1 & modified
-    ax.scatter(int_x[m0], int_y[m0], c=color0,
-               s=14, alpha=0.6, edgecolors="none",
-               label=f"{verb} class 0 (n={m0.sum()})", zorder=4)
-    ax.scatter(int_x[m1], int_y[m1], c=color1,
-               s=14, alpha=0.6, edgecolors="none",
-               marker="s",
-               label=f"{verb} class 1 (n={m1.sum()})", zorder=4)
+    if m0.any():
+        ax.scatter(int_x[m0], int_y[m0], c=color0,
+                   s=14, alpha=0.6, edgecolors="none",
+                   marker=marker,
+                   label=f"Intervened class 0 (n={m0.sum()})", zorder=4)
+    if m1.any():
+        ax.scatter(int_x[m1], int_y[m1], c=color1,
+                   s=14, alpha=0.6, edgecolors="none",
+                   marker=marker,
+                   label=f"Intervened class 1 (n={m1.sum()})", zorder=4)
 
     # y=x reference
     ax.plot([lo, hi], [lo, hi], "k--", lw=0.8, alpha=0.5, label="y = x")
@@ -1006,24 +1023,40 @@ def plot_perrow_scatter(
 
     # Compute post-intervention AUC
     from sklearn.metrics import roc_auc_score
-    full_preds = preds_intervened if is_transfer else preds_intervened
-    # For rows not in strong_better, use original weak (transfer) or strong (ablation)
-    full_p1 = np.where(
-        optimal_k > 0,
-        preds_intervened,
-        preds_weak if is_transfer else preds_strong,
-    )
-    auc_post = roc_auc_score(y_true, full_p1)
-    gap = auc_strong - auc_weak
-    gap_closed = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
+    if mode == "transfer":
+        # Weak model was modified; non-intervened rows keep original weak
+        full_p1 = np.where(optimal_k > 0, preds_intervened, preds_weak)
+        auc_post = roc_auc_score(y_true, full_p1)
+        gap = auc_strong - auc_weak
+        gap_closed = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
+        target_label = disp_w
+    elif mode == "reverse_transfer":
+        # Strong model was modified; non-intervened rows keep original strong
+        full_p1 = np.where(optimal_k > 0, preds_intervened, preds_strong)
+        auc_post = roc_auc_score(y_true, full_p1)
+        delta = auc_post - auc_strong
+        gap_closed = delta * 100  # report as absolute AUC delta * 100
+        target_label = disp_s
+    else:
+        # Ablation: strong model degraded
+        full_p1 = np.where(optimal_k > 0, preds_intervened, preds_strong)
+        auc_post = roc_auc_score(y_true, full_p1)
+        gap = auc_strong - auc_weak
+        gap_closed = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
+        target_label = disp_s
 
-    target_label = disp_w if is_transfer else disp_s
+    if mode == "reverse_transfer":
+        auc_line = (f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
+                    f"   |   {target_label}+vnode: AUC={auc_post:.3f} "
+                    f"(\u0394={auc_post - auc_strong:+.4f})")
+    else:
+        auc_line = (f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
+                    f"   |   {target_label}+vnode: AUC={auc_post:.3f} ({gap_closed:+.0f}%)")
+
     ax.set_title(
         f"{dataset} — per-row {verb_lower} "
-        f"({n_intervened} intervened / {n_strong_better} improvable / {n_total} total)\n"
-        f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
-        f"   |   {target_label}+vnode: AUC={auc_post:.3f} ({gap_closed:+.0f}%)\n"
-        f"{k_summary}",
+        f"({n_intervened} intervened / {n_source_better} improvable / {n_total} total)\n"
+        f"{auc_line}\n{k_summary}",
         fontsize=9,
     )
 
