@@ -653,7 +653,12 @@ def perrow_sweep_transfer(
             [feat_idx], data_mean=data_mean, scale=1.0,
             translator=translator,
         )
-        concept_deltas[feat_idx] = delta  # (n_query, d_target) tensor
+        # Normalize each row's delta to unit norm so the line search
+        # scale directly represents target-space displacement magnitude.
+        # Prevents tiny translator deltas from causing extreme s_star values.
+        norms = delta.norm(dim=1, keepdim=True).clamp(min=1e-10)
+        delta = delta / norms
+        concept_deltas[feat_idx] = delta  # (n_query, d_target) unit-norm tensor
 
     # Per-row line search state
     cumulative_deltas = torch.zeros(n_query, d_target,
