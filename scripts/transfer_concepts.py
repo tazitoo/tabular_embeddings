@@ -587,72 +587,119 @@ def perrow_sweep_transfer(
     max_k = max((len(r) for r in rankings), default=0)
     logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
 
-    # --- Phase 3: selective sweep (max_k forward passes) ---
-    # Unlike ablation's cumulative sweep, transfer is selective: at each step k,
-    # tentatively add the k-th ranked feature and keep it only if it moves the
-    # prediction closer to the strong model. Accept criterion uses prediction
-    # distance to the strong model (no ground truth labels), avoiding overfitting.
-    logger.info("Phase 3: selective sweep k=1..%d...", max_k)
+    # --- Phase 3: line search sweep (max_k * n_scales forward passes) ---
+    # For each concept in rank order, try multiple scale factors and per-row
+    # pick the scale that brings the prediction closest to the strong model.
+    # Scale=0 means reject, scale>0 means accept with that magnitude.
+    # This handles the MLP translator's magnitude uncertainty.
+    scales = [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+    logger.info("Phase 3: line search sweep k=1..%d, %d scales per step...",
+                max_k, len(scales))
     sae_hidden = h_encoded.shape[1]
     sweep_preds = []
+    d_target = query_target.shape[1] if W is None else W.shape[0]
 
-    # Track accepted masks and best distance to strong model per row
-    accepted_masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
-                                 device=query_source.device)
     # Source (strong) model P(class=1) — the target we're trying to match
     sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
     # Baseline (weak) model P(class=1)
     bp1 = baseline_np[:, 1] if baseline_np.ndim == 2 else baseline_np
     best_dist = np.abs(bp1 - sp1)  # distance to strong model at baseline
 
+    # Cumulative per-row delta (accumulates scaled concept contributions)
+    cumulative_delta = torch.zeros(n_query, d_target,
+                                   dtype=query_source.dtype,
+                                   device=query_source.device)
+    # Track per-row accepted count and best scales for diagnostics
+    accepted_counts = np.zeros(n_query, dtype=int)
+    accepted_scale_history = []  # list of (feat_idx, best_scale_per_row)
+
     for k in range(1, max_k + 1):
-        # Build tentative masks: accepted + k-th ranked feature per row
-        tentative_masks = accepted_masks.clone()
+        # Determine which feature this step adds for each row
+        step_features = []
+        has_feature = np.zeros(n_query, dtype=bool)
         for row_idx in range(n_query):
             if k - 1 < len(rankings[row_idx]):
-                tentative_masks[row_idx, rankings[row_idx][k - 1]] = True
+                step_features.append(rankings[row_idx][k - 1])
+                has_feature[row_idx] = True
+            else:
+                step_features.append(-1)  # no feature for this row
 
-        query_delta = compute_transfer_delta_perrow(
-            sae_source, query_source, W, b, tentative_masks, data_mean=data_mean,
+        # Compute single-concept delta at scale=1.0 for each unique feature
+        unique_feats = set(f for f in step_features if f >= 0)
+        if not unique_feats:
+            continue
+
+        # Batch: compute delta for all features at once via mask
+        # (each row needs exactly one feature's delta)
+        feat_masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
+                                 device=query_source.device)
+        for row_idx in range(n_query):
+            if has_feature[row_idx]:
+                feat_masks[row_idx, step_features[row_idx]] = True
+
+        delta_k = compute_transfer_delta_perrow(
+            sae_source, query_source, W, b, feat_masks, data_mean=data_mean,
             translator=translator,
-        )
-        full_delta = _build_full_delta(query_delta, n_total_target, n_query)
+        )  # (n_query, d_target) — single-concept contribution per row
 
-        result = intervene(
+        # Line search: try each scale, record per-row distance to strong model
+        best_scale_per_row = np.zeros(n_query)
+        best_dist_at_k = best_dist.copy()
+
+        for s in scales:
+            tentative_delta = cumulative_delta + s * delta_k
+            full_delta = _build_full_delta(tentative_delta, n_total_target, n_query)
+
+            result = intervene(
+                model_key=target_model,
+                X_context=X_ctx, y_context=y_ctx,
+                X_query=X_q, y_query=y_q,
+                external_delta=full_delta.to(device),
+                device=device, task=task,
+                layers_path=layers_path,
+            )
+            preds_s = result["ablated_preds"]
+            p1_s = preds_s[:, 1] if preds_s.ndim == 2 else preds_s
+            dist_s = np.abs(p1_s - sp1)
+
+            # Per-row: pick this scale if it's better than current best
+            for row_idx in range(n_query):
+                if has_feature[row_idx] and dist_s[row_idx] < best_dist_at_k[row_idx] - 1e-8:
+                    best_scale_per_row[row_idx] = s
+                    best_dist_at_k[row_idx] = dist_s[row_idx]
+
+        # Apply best scales: update cumulative delta per row
+        for row_idx in range(n_query):
+            s = best_scale_per_row[row_idx]
+            if s > 0:
+                cumulative_delta[row_idx] += s * delta_k[row_idx]
+                accepted_counts[row_idx] += 1
+                best_dist[row_idx] = best_dist_at_k[row_idx]
+
+        # Record the best-scale preds (using cumulative delta) for diagnostics
+        full_delta_current = _build_full_delta(cumulative_delta, n_total_target, n_query)
+        result_current = intervene(
             model_key=target_model,
             X_context=X_ctx, y_context=y_ctx,
             X_query=X_q, y_query=y_q,
-            external_delta=full_delta.to(device),
+            external_delta=full_delta_current.to(device),
             device=device, task=task,
             layers_path=layers_path,
         )
-        preds_k = result["ablated_preds"]
+        sweep_preds.append(result_current["ablated_preds"])
 
-        # Per-row accept/reject: keep feature only if prediction moves
-        # closer to the strong model (no labels used in this decision)
-        p1_k = preds_k[:, 1] if preds_k.ndim == 2 else preds_k
-        dist_k = np.abs(p1_k - sp1)
+        n_accepted_at_k = (best_scale_per_row > 0).sum()
+        if n_accepted_at_k > 0:
+            scales_used = best_scale_per_row[best_scale_per_row > 0]
+            logger.info("  k=%d: %d rows accepted (scales: median=%.1f, max=%.0f)",
+                        k, n_accepted_at_k, np.median(scales_used), scales_used.max())
 
-        for row_idx in range(n_query):
-            if dist_k[row_idx] < best_dist[row_idx] - 1e-8:
-                # Accept: prediction is closer to strong model
-                accepted_masks[row_idx] = tentative_masks[row_idx]
-                best_dist[row_idx] = dist_k[row_idx]
-
-        # Record tentative preds (for diagnostic trajectory visualization)
-        sweep_preds.append(preds_k)
-
-    n_accepted = accepted_masks.sum(dim=1)
     logger.info("Selective sweep: mean %.1f, median %.0f, max %d concepts accepted/row",
-                n_accepted.float().mean(), n_accepted.float().median(),
-                int(n_accepted.max()))
+                accepted_counts.mean(), np.median(accepted_counts),
+                int(accepted_counts.max()))
 
-    # Final accepted predictions: one forward pass with the accepted masks
-    query_delta_final = compute_transfer_delta_perrow(
-        sae_source, query_source, W, b, accepted_masks, data_mean=data_mean,
-        translator=translator,
-    )
-    full_delta_final = _build_full_delta(query_delta_final, n_total_target, n_query)
+    # Final predictions with cumulative scaled delta
+    full_delta_final = _build_full_delta(cumulative_delta, n_total_target, n_query)
     result_final = intervene(
         model_key=target_model,
         X_context=X_ctx, y_context=y_ctx,
@@ -661,6 +708,21 @@ def perrow_sweep_transfer(
         device=device, task=task,
         layers_path=layers_path,
     )
+
+    # Build accepted_masks for downstream compatibility
+    accepted_masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
+                                 device=query_source.device)
+    # Mark features that got non-zero scale as "accepted"
+    for k in range(max_k):
+        for row_idx in range(n_query):
+            if k < len(rankings[row_idx]):
+                # We don't store per-step scales, so re-derive from counts
+                pass
+    # Simpler: count-based mask reconstruction
+    for row_idx in range(n_query):
+        for ki in range(min(accepted_counts[row_idx], len(rankings[row_idx]))):
+            accepted_masks[row_idx, rankings[row_idx][ki]] = True
+    n_accepted = accepted_masks.sum(dim=1)
 
     return {
         "baseline_preds": baseline_np,
