@@ -402,7 +402,7 @@ class TabICLTail:
         encoder = self.clf.model_.icl_predictor.tf_icl
         original_forward = encoder.forward
 
-        def tail_forward(src, key_padding_mask=None, attn_mask=None):
+        def tail_forward(src, key_padding_mask=None, attn_mask=None, **kwargs):
             out = cached_state
             for block in tail_blocks:
                 out = block(
