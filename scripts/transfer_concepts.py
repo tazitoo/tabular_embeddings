@@ -494,11 +494,14 @@ def perrow_sweep_transfer(
     target_baseline_preds: Optional[np.ndarray] = None,
     translator: Optional[torch.nn.Module] = None,
 ) -> Dict:
-    """Per-row heterogeneous transfer sweep (3-phase pipeline).
+    """Per-row transfer with backtracking line search (3-phase pipeline).
 
     Phase 1: Per-feature importance (N forward passes through target model)
     Phase 2: Per-row ranking (filtered to firing features in source SAE)
-    Phase 3: Heterogeneous sweep (max_k forward passes, per-row masks)
+    Phase 3: Per-row backtracking line search (analytical scale + halving)
+        - Probe at scale=1 to estimate gradient direction
+        - Compute analytical optimal scale per row (negative = sign flip)
+        - Backtrack by halving until improvement confirmed
 
     Returns dict with same shape as perrow_sweep_intervene plus linear map info.
     """
@@ -585,31 +588,30 @@ def perrow_sweep_transfer(
     max_k = max((len(r) for r in rankings), default=0)
     logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
 
-    # --- Phase 3: line search sweep (max_k * n_scales forward passes) ---
-    # For each concept in rank order, try multiple scale factors and per-row
-    # pick the scale that brings the prediction closest to the strong model.
-    # Scale=0 means reject, scale>0 means accept with that magnitude.
-    # This handles the MLP translator's magnitude uncertainty.
-    scales = [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
-    logger.info("Phase 3: line search sweep k=1..%d, %d scales per step...",
-                max_k, len(scales))
+    # --- Phase 3: per-row backtracking line search ---
+    # For each concept in rank order:
+    #   1. Probe at scale=1 to get gradient direction
+    #   2. Compute analytical optimal scale per row (allows negative = sign flip)
+    #   3. Backtrack by halving until improvement confirmed
     sae_hidden = h_encoded.shape[1]
     sweep_preds = []
     d_target = query_target.shape[1] if W is None else W.shape[0]
+    max_backtrack = 6  # halve up to 6 times (minimum step = s*/64)
 
     # Source (strong) model P(class=1) — the target we're trying to match
     sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
-    # Baseline (weak) model P(class=1)
+    # Current predictions (starts as baseline, updated after each accepted concept)
     bp1 = baseline_np[:, 1] if baseline_np.ndim == 2 else baseline_np
-    best_dist = np.abs(bp1 - sp1)  # distance to strong model at baseline
+    current_p1 = bp1.copy()
+    best_dist = np.abs(current_p1 - sp1)
 
-    # Cumulative per-row delta (accumulates scaled concept contributions)
+    # Cumulative per-row delta
     cumulative_delta = torch.zeros(n_query, d_target,
                                    dtype=query_source.dtype,
                                    device=query_source.device)
-    # Track per-row accepted count and best scales for diagnostics
     accepted_counts = np.zeros(n_query, dtype=int)
-    accepted_scale_history = []  # list of (feat_idx, best_scale_per_row)
+
+    logger.info("Phase 3: backtracking line search k=1..%d...", max_k)
 
     for k in range(1, max_k + 1):
         # Determine which feature this step adds for each row
@@ -620,15 +622,12 @@ def perrow_sweep_transfer(
                 step_features.append(rankings[row_idx][k - 1])
                 has_feature[row_idx] = True
             else:
-                step_features.append(-1)  # no feature for this row
+                step_features.append(-1)
 
-        # Compute single-concept delta at scale=1.0 for each unique feature
-        unique_feats = set(f for f in step_features if f >= 0)
-        if not unique_feats:
+        if not any(has_feature):
             continue
 
-        # Batch: compute delta for all features at once via mask
-        # (each row needs exactly one feature's delta)
+        # Compute single-concept delta at scale=1.0 per row
         feat_masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
                                  device=query_source.device)
         for row_idx in range(n_query):
@@ -638,14 +637,45 @@ def perrow_sweep_transfer(
         delta_k = compute_transfer_delta_perrow(
             sae_source, query_source, W, b, feat_masks, data_mean=data_mean,
             translator=translator,
-        )  # (n_query, d_target) — single-concept contribution per row
+        )  # (n_query, d_target)
 
-        # Line search: try each scale, record per-row distance to strong model
+        # Probe: forward pass at scale=1.0 to get direction
+        probe_delta = cumulative_delta + delta_k
+        full_probe = _build_full_delta(probe_delta, n_total_target, n_query)
+        result_probe = intervene(
+            model_key=target_model,
+            X_context=X_ctx, y_context=y_ctx,
+            X_query=X_q, y_query=y_q,
+            external_delta=full_probe.to(device),
+            device=device, task=task,
+            layers_path=layers_path,
+        )
+        probe_p1 = result_probe["ablated_preds"]
+        probe_p1 = probe_p1[:, 1] if probe_p1.ndim == 2 else probe_p1
+
+        # Analytical optimal scale per row: s* = (target - current) / (probe - current)
+        # probe was at s=1, so gradient = probe_p1 - current_p1
+        grad = probe_p1 - current_p1  # per-row gradient
+        optimal_scale = np.zeros(n_query)
+        for row_idx in range(n_query):
+            if has_feature[row_idx] and abs(grad[row_idx]) > 1e-10:
+                optimal_scale[row_idx] = (sp1[row_idx] - current_p1[row_idx]) / grad[row_idx]
+
+        # Backtracking: try full step, then halve until improvement
+        active = has_feature & (np.abs(optimal_scale) > 1e-10)  # rows still searching
         best_scale_per_row = np.zeros(n_query)
         best_dist_at_k = best_dist.copy()
 
-        for s in scales:
-            tentative_delta = cumulative_delta + s * delta_k
+        trial_scale = optimal_scale.copy()
+        for bt in range(max_backtrack + 1):
+            if not active.any():
+                break
+
+            # Build per-row scaled delta
+            scale_tensor = torch.tensor(
+                trial_scale, dtype=query_source.dtype, device=query_source.device,
+            ).unsqueeze(1)  # (n_query, 1)
+            tentative_delta = cumulative_delta + scale_tensor * delta_k
             full_delta = _build_full_delta(tentative_delta, n_total_target, n_query)
 
             result = intervene(
@@ -656,25 +686,29 @@ def perrow_sweep_transfer(
                 device=device, task=task,
                 layers_path=layers_path,
             )
-            preds_s = result["ablated_preds"]
-            p1_s = preds_s[:, 1] if preds_s.ndim == 2 else preds_s
-            dist_s = np.abs(p1_s - sp1)
+            preds_bt = result["ablated_preds"]
+            p1_bt = preds_bt[:, 1] if preds_bt.ndim == 2 else preds_bt
+            dist_bt = np.abs(p1_bt - sp1)
 
-            # Per-row: pick this scale if it's better than current best
+            # Accept rows that improved
             for row_idx in range(n_query):
-                if has_feature[row_idx] and dist_s[row_idx] < best_dist_at_k[row_idx] - 1e-8:
-                    best_scale_per_row[row_idx] = s
-                    best_dist_at_k[row_idx] = dist_s[row_idx]
+                if active[row_idx] and dist_bt[row_idx] < best_dist[row_idx] - 1e-8:
+                    best_scale_per_row[row_idx] = trial_scale[row_idx]
+                    best_dist_at_k[row_idx] = dist_bt[row_idx]
+                    active[row_idx] = False  # this row is done
 
-        # Apply best scales: update cumulative delta per row
+            # Halve scale for remaining active rows
+            trial_scale[active] *= 0.5
+
+        # Apply accepted scales
         for row_idx in range(n_query):
             s = best_scale_per_row[row_idx]
-            if s > 0:
+            if abs(s) > 1e-10:
                 cumulative_delta[row_idx] += s * delta_k[row_idx]
                 accepted_counts[row_idx] += 1
                 best_dist[row_idx] = best_dist_at_k[row_idx]
 
-        # Record the best-scale preds (using cumulative delta) for diagnostics
+        # Update current predictions for accepted rows
         full_delta_current = _build_full_delta(cumulative_delta, n_total_target, n_query)
         result_current = intervene(
             model_key=target_model,
@@ -684,15 +718,19 @@ def perrow_sweep_transfer(
             device=device, task=task,
             layers_path=layers_path,
         )
-        sweep_preds.append(result_current["ablated_preds"])
+        current_preds = result_current["ablated_preds"]
+        current_p1 = current_preds[:, 1] if current_preds.ndim == 2 else current_preds
+        sweep_preds.append(current_preds)
 
-        n_accepted_at_k = (best_scale_per_row > 0).sum()
+        n_accepted_at_k = (np.abs(best_scale_per_row) > 1e-10).sum()
+        n_negative = (best_scale_per_row < -1e-10).sum()
         if n_accepted_at_k > 0:
-            scales_used = best_scale_per_row[best_scale_per_row > 0]
-            logger.info("  k=%d: %d rows accepted (scales: median=%.1f, max=%.0f)",
-                        k, n_accepted_at_k, np.median(scales_used), scales_used.max())
+            scales_used = best_scale_per_row[np.abs(best_scale_per_row) > 1e-10]
+            logger.info("  k=%d: %d rows accepted (%d neg), scales: median=%.2f, range=[%.2f, %.2f]",
+                        k, n_accepted_at_k, n_negative,
+                        np.median(scales_used), scales_used.min(), scales_used.max())
 
-    logger.info("Selective sweep: mean %.1f, median %.0f, max %d concepts accepted/row",
+    logger.info("Line search: mean %.1f, median %.0f, max %d concepts accepted/row",
                 accepted_counts.mean(), np.median(accepted_counts),
                 int(accepted_counts.max()))
 
@@ -707,18 +745,11 @@ def perrow_sweep_transfer(
         layers_path=layers_path,
     )
 
-    # Build accepted_masks for downstream compatibility
+    # Build accepted_masks: mark top-accepted_counts[row] features as accepted
     accepted_masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
                                  device=query_source.device)
-    # Mark features that got non-zero scale as "accepted"
-    for k in range(max_k):
-        for row_idx in range(n_query):
-            if k < len(rankings[row_idx]):
-                # We don't store per-step scales, so re-derive from counts
-                pass
-    # Simpler: count-based mask reconstruction
     for row_idx in range(n_query):
-        for ki in range(min(accepted_counts[row_idx], len(rankings[row_idx]))):
+        for ki in range(min(int(accepted_counts[row_idx]), len(rankings[row_idx]))):
             accepted_masks[row_idx, rankings[row_idx][ki]] = True
     n_accepted = accepted_masks.sum(dim=1)
 
