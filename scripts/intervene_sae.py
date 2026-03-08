@@ -291,11 +291,22 @@ class TabPFNTail:
         return tail
 
     def _predict_with_modified_state(self, modified_state):
-        """Install hook that replaces layer L output, run predict."""
-        def replace_hook(module, input, output):
-            return modified_state
+        """Monkey-patch LayerStack.forward to skip layers 0..L, run predict."""
+        tail_layers = self.layers[self.extraction_layer + 1:]
+        cached_state = modified_state
 
-        handle = self.layers[self.extraction_layer].register_forward_hook(replace_hook)
+        # Save original forward
+        layer_stack = self.clf.model_.transformer_encoder
+        original_forward = layer_stack.forward
+
+        def tail_forward(x, recompute_layer=False, **kwargs):
+            # Ignore input x (it's from layers 0..L), start from cached state
+            out = cached_state
+            for layer in tail_layers:
+                out = layer(out, **kwargs)
+            return out
+
+        layer_stack.forward = tail_forward
         try:
             with torch.no_grad():
                 if self.task == "regression":
@@ -303,7 +314,7 @@ class TabPFNTail:
                 else:
                     preds = self.clf.predict_proba(self.X_query)
         finally:
-            handle.remove()
+            layer_stack.forward = original_forward
         return np.asarray(preds)
 
     def predict(self, delta):
@@ -383,16 +394,29 @@ class TabICLTail:
         return tail
 
     def _predict_with_modified_state(self, modified_state):
-        """Install hook that replaces block L output, run predict."""
-        def replace_hook(module, input, output):
-            return modified_state
+        """Monkey-patch Encoder.forward to skip blocks 0..L, run predict."""
+        tail_blocks = self.blocks[self.extraction_layer + 1:]
+        cached_state = modified_state
 
-        handle = self.blocks[self.extraction_layer].register_forward_hook(replace_hook)
+        # The ICL encoder is at model.icl_predictor.tf_icl
+        encoder = self.clf.model_.icl_predictor.tf_icl
+        original_forward = encoder.forward
+
+        def tail_forward(src, key_padding_mask=None, attn_mask=None):
+            out = cached_state
+            for block in tail_blocks:
+                out = block(
+                    q=out, key_padding_mask=key_padding_mask,
+                    attn_mask=attn_mask, rope=encoder.rope,
+                )
+            return out
+
+        encoder.forward = tail_forward
         try:
             with torch.no_grad():
                 preds = self.clf.predict_proba(self.X_query)
         finally:
-            handle.remove()
+            encoder.forward = original_forward
         return np.asarray(preds)
 
     def predict(self, delta):
