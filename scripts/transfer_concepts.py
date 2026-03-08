@@ -606,6 +606,18 @@ def perrow_sweep_transfer(
     sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
     bp1 = baseline_np[:, 1] if baseline_np.ndim == 2 else baseline_np
 
+    # Pre-filter: skip rows where weak model already outperforms strong
+    eps = 1e-7
+    y = y_q.astype(float)
+    sp_clip = np.clip(sp1, eps, 1 - eps)
+    bp_clip = np.clip(bp1, eps, 1 - eps)
+    source_row_ll = -(y * np.log(sp_clip) + (1 - y) * np.log(1 - sp_clip))
+    baseline_row_ll = -(y * np.log(bp_clip) + (1 - y) * np.log(1 - bp_clip))
+    fixable = baseline_row_ll > source_row_ll  # weak is worse → transfer can help
+    n_fixable = fixable.sum()
+    logger.info("Fixable rows: %d / %d (%.0f%% already equal or better)",
+                n_fixable, n_query, 100 * (1 - n_fixable / n_query))
+
     # Build tail model (caches hidden state, skips prefix layers on predict)
     logger.info("Phase 3: building %s tail model (layer %d)...",
                 target_model, target_layer)
@@ -631,17 +643,20 @@ def perrow_sweep_transfer(
     accepted_counts = np.zeros(n_query, dtype=int)
     final_p1 = bp1.copy()
     all_scales = []
+    converge_threshold = 1e-3  # stop adding concepts once this close to target
 
-    logger.info("Per-row line search: %d rows, max %d concepts/row...",
-                n_query, max_k)
+    logger.info("Per-row line search: %d fixable rows, max %d concepts/row...",
+                n_fixable, max_k)
 
     for row_idx in range(n_query):
+        if not fixable[row_idx]:
+            continue  # weak model already equal or better
+
         current_p1 = float(bp1[row_idx])
         target_p1 = float(sp1[row_idx])
         best_dist = abs(current_p1 - target_p1)
 
         if best_dist < 1e-8:
-            # Already at target — skip this row
             final_p1[row_idx] = current_p1
             continue
 
@@ -663,15 +678,21 @@ def perrow_sweep_transfer(
             s_star = (target_p1 - current_p1) / grad
 
             # Backtracking: try s*, then s*/2, ... until improvement
+            # Reuse probe prediction when s* ≈ 1 to avoid redundant forward pass
             trial_scale = s_star
             for bt in range(max_backtrack + 1):
                 if abs(trial_scale) < 1e-10:
                     break
 
-                trial_delta = cumulative_deltas[row_idx] + trial_scale * concept_delta_row
-                trial_preds = tail.predict_row(row_idx, trial_delta)
-                trial_p1 = float(trial_preds[row_idx, 1] if trial_preds.ndim == 2
-                                 else trial_preds[row_idx])
+                if bt == 0 and abs(trial_scale - 1.0) < 0.01:
+                    # s* ≈ 1: reuse the probe we already computed
+                    trial_p1 = probe_p1
+                    trial_delta = probe_delta
+                else:
+                    trial_delta = cumulative_deltas[row_idx] + trial_scale * concept_delta_row
+                    trial_preds = tail.predict_row(row_idx, trial_delta)
+                    trial_p1 = float(trial_preds[row_idx, 1] if trial_preds.ndim == 2
+                                     else trial_preds[row_idx])
                 trial_dist = abs(trial_p1 - target_p1)
 
                 if trial_dist < best_dist - 1e-8:
@@ -684,6 +705,10 @@ def perrow_sweep_transfer(
                     break
 
                 trial_scale *= 0.5
+
+            # Early exit: close enough to target
+            if best_dist < converge_threshold:
+                break
 
         final_p1[row_idx] = current_p1
 
