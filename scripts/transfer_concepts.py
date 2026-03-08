@@ -45,8 +45,6 @@ from scripts.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
 from scripts.plot_prediction_scatter import (
     _logloss,
     get_unmatched_features,
-    plot_prediction_scatter,
-    plot_logloss_curve,
 )
 
 logger = logging.getLogger(__name__)
@@ -832,9 +830,6 @@ def main():
     parser.add_argument("--sae-dir", type=Path, default=DEFAULT_SAE_DIR)
     parser.add_argument("--layers-config", type=Path, default=DEFAULT_LAYERS_PATH)
     parser.add_argument("--training-dir", type=Path, default=DEFAULT_TRAINING_DIR)
-    parser.add_argument("--perrow", action="store_true",
-                        help="Per-row heterogeneous transfer: find minimal concept "
-                             "set per row that closes the gap to the strong model")
     parser.add_argument("--translator", type=Path, default=None,
                         help="Path to universal embedding translator checkpoint. "
                              "If provided, uses MLP translator instead of per-dataset ridge.")
@@ -863,7 +858,6 @@ def main():
     # Auto-detect stronger model by running both and comparing AUC.
     # Transfer FROM the stronger model TO the weaker one.
     from sklearn.metrics import roc_auc_score
-    from scripts.plot_prediction_scatter import get_active_feature_count
 
     model_a, model_b = args.source, args.target
 
@@ -916,94 +910,14 @@ def main():
     for feat, drop in unmatched[:10]:
         logger.info("  feature %d: drop=%.4f", feat, drop)
 
-    # ── Per-row transfer mode ───────────────────────────────────────────────
-    if args.perrow:
-        from scripts.plot_prediction_scatter import (
-            plot_perrow_diagnostic,
-            plot_perrow_results,
-            plot_perrow_scatter,
-        )
+    # ── Per-row transfer with line search ─────────────────────────────────
+    from scripts.plot_prediction_scatter import (
+        plot_perrow_diagnostic,
+        plot_perrow_results,
+        plot_perrow_scatter,
+    )
 
-        perrow_result = perrow_sweep_transfer(
-            source_model=source_model,
-            target_model=target_model,
-            dataset=args.dataset,
-            ranked_features=unmatched,
-            device=args.device,
-            task=args.task,
-            alpha=args.alpha,
-            sae_dir=args.sae_dir,
-            layers_path=args.layers_config,
-            training_dir=args.training_dir,
-            emb_source=emb_source,
-            emb_target=emb_target,
-            source_preds=source_preds,
-            target_baseline_preds=target_preds,
-            translator=translator_model,
-        )
-
-        sp1_pr = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
-        tp1_pr = target_preds[:, 1] if target_preds.ndim == 2 else target_preds
-
-        optimal = find_per_row_optimal_transfer(
-            perrow_result, source_preds, target_preds, y_q,
-        )
-
-        # Use accepted predictions for fixable rows, baseline for non-fixable
-        ap = optimal["accepted_preds"]
-        ap1 = ap[:, 1] if ap.ndim == 2 else ap
-        transferred_p1 = np.where(optimal["optimal_k"] > 0, ap1, tp1_pr)
-
-        # Histogram + coverage curve
-        plot_perrow_results(
-            optimal["optimal_k"],
-            optimal["row_gap_closed"],
-            optimal["max_k_per_row"],
-            optimal["perrow_rankings"],
-            source_model,  # concept owner
-            target_model,  # model being improved
-            args.dataset,
-            fig_dir / "transfer_perrow.pdf",
-            action="transferring",
-        )
-
-        # Per-row scatter
-        auc_s = float(roc_auc_score(y_q, sp1_pr))
-        auc_t = float(roc_auc_score(y_q, tp1_pr))
-        auc_transferred = float(roc_auc_score(y_q, transferred_p1))
-        gap = auc_s - auc_t
-        gap_closed_pct = (auc_transferred - auc_t) / gap * 100 if abs(gap) > 0.001 else float("nan")
-        logger.info("Per-row transfer AUC: %.4f (baseline %.4f → target %.4f, "
-                     "gap closed %.1f%%)", auc_transferred, auc_t, auc_s, gap_closed_pct)
-        plot_perrow_scatter(
-            sp1_pr, tp1_pr, transferred_p1,
-            optimal["optimal_k"], y_q,
-            source_model, target_model,
-            args.dataset,
-            auc_s, auc_t,
-            fig_dir / "transfer_perrow_scatter.pdf",
-            mode="transfer",
-        )
-
-        # Diagnostic: logloss distributions + concept budget + accept rate
-        plot_perrow_diagnostic(
-            optimal["optimal_k"],
-            optimal["row_gap_closed"],
-            optimal["accepted_preds"],
-            optimal["baseline_preds"],
-            source_preds,
-            optimal["max_k_per_row"],
-            y_q,
-            source_model,  # concept owner
-            target_model,  # model being improved
-            args.dataset,
-            fig_dir / "transfer_perrow_diagnostic.pdf",
-            action="transferring",
-        )
-
-    # ── Cumulative sweep (always runs) ────────────────────────────────────
-    # Pass pre-captured embeddings to avoid redundant forward passes
-    sweep = sweep_transfer(
+    perrow_result = perrow_sweep_transfer(
         source_model=source_model,
         target_model=target_model,
         dataset=args.dataset,
@@ -1021,63 +935,72 @@ def main():
         translator=translator_model,
     )
 
-    k = sweep["optimal_k"]
-    y = sweep["y_query"]
-    sp1 = sweep["source_preds_p1"]
-    tp1 = sweep["target_baseline_p1"]
-    xp1 = sweep["optimal_preds"]
+    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
+    tp1 = target_preds[:, 1] if target_preds.ndim == 2 else target_preds
 
-    auc_source = float(roc_auc_score(y, sp1))
-    auc_target = float(roc_auc_score(y, tp1))
-    auc_transferred = float(roc_auc_score(y, xp1))
+    optimal = find_per_row_optimal_transfer(
+        perrow_result, source_preds, target_preds, y_q,
+    )
 
-    gap = auc_source - auc_target
-    gap_closed = (auc_transferred - auc_target) / gap if gap > 0.001 else float("nan")
+    # Use accepted predictions for fixable rows, baseline for non-fixable
+    ap = optimal["accepted_preds"]
+    ap1 = ap[:, 1] if ap.ndim == 2 else ap
+    transferred_p1 = np.where(optimal["optimal_k"] > 0, ap1, tp1)
+
+    auc_s = float(roc_auc_score(y_q, sp1))
+    auc_t = float(roc_auc_score(y_q, tp1))
+    auc_transferred = float(roc_auc_score(y_q, transferred_p1))
+    gap = auc_s - auc_t
+    gap_closed_pct = (auc_transferred - auc_t) / gap * 100 if abs(gap) > 0.001 else float("nan")
 
     print(f"\n{'='*60}")
-    print(f"Concept transfer: {source_model} → {target_model}")
+    print(f"Concept transfer: {disp_s} → {disp_t}")
     print(f"Dataset: {args.dataset}")
-    print(f"Linear map R² = {sweep['linear_map_r2']:.4f}")
-    print(f"Optimal k = {k}/{len(unmatched)} concepts")
-    print(f"Optimal features: {sweep['optimal_features']}")
-    print(f"\n  {source_model} AUC = {auc_source:.4f}  (logloss={sweep['target_logloss']:.4f})")
-    print(f"  {target_model} AUC = {auc_target:.4f}  (logloss={sweep['baseline_logloss']:.4f})")
-    print(f"  {target_model}+transfer AUC = {auc_transferred:.4f}  "
-          f"(logloss={sweep['logloss_curve'][k-1]:.4f})")
-    if gap > 0.001:
-        print(f"\n  Gap closed: {gap_closed:.1%}")
+    print(f"  {disp_s} AUC = {auc_s:.4f}")
+    print(f"  {disp_t} AUC = {auc_t:.4f}")
+    print(f"  {disp_t}+transfer AUC = {auc_transferred:.4f}")
+    if abs(gap) > 0.001:
+        print(f"  Gap closed: {gap_closed_pct:.1f}%")
     print(f"{'='*60}")
 
-    # Logloss curve (same format as ablation)
-    # Flip labels: ablation degrades the strong model toward the weak model's logloss,
-    # transfer improves the weak model toward the strong model's logloss.
-    plot_logloss_curve(
-        sweep["logloss_curve"],
-        sweep["baseline_logloss"],
-        sweep["target_logloss"],  # source's logloss = what we're aiming for
-        k,
-        unmatched,
-        target_model,  # model being modified
-        source_model,  # reference model (whose concepts we're transferring)
+    # Histogram + coverage curve
+    plot_perrow_results(
+        optimal["optimal_k"],
+        optimal["row_gap_closed"],
+        optimal["max_k_per_row"],
+        optimal["perrow_rankings"],
+        source_model,
+        target_model,
         args.dataset,
-        fig_dir / "transfer_logloss.pdf",
+        fig_dir / "transfer_perrow.pdf",
         action="transferring",
     )
 
-    # Scatter plot with optimal transfer overlay
-    features_s = get_active_feature_count(source_model, args.dataset)
-    features_t = get_active_feature_count(target_model, args.dataset)
+    # Per-row scatter
+    plot_perrow_scatter(
+        sp1, tp1, transferred_p1,
+        optimal["optimal_k"], y_q,
+        source_model, target_model,
+        args.dataset,
+        auc_s, auc_t,
+        fig_dir / "transfer_perrow_scatter.pdf",
+        mode="transfer",
+    )
 
-    transfer_label = f"transfer {k}/{len(unmatched)} {disp_s}-only"
-    ablation_levels = [(transfer_label, "#009E73", xp1)]
-
-    plot_prediction_scatter(
-        sp1, tp1, y,
-        source_model, target_model, args.dataset,
-        auc_source, auc_target, features_s, features_t,
-        fig_dir / "transfer_scatter.pdf",
-        ablation_levels=ablation_levels,
-        ablate_axis="y",  # target is y-axis, transfer shifts it toward source
+    # Diagnostic: logloss distributions + concept budget + accept rate
+    plot_perrow_diagnostic(
+        optimal["optimal_k"],
+        optimal["row_gap_closed"],
+        optimal["accepted_preds"],
+        optimal["baseline_preds"],
+        source_preds,
+        optimal["max_k_per_row"],
+        y_q,
+        source_model,
+        target_model,
+        args.dataset,
+        fig_dir / "transfer_perrow_diagnostic.pdf",
+        action="transferring",
     )
 
 
