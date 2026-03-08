@@ -9,16 +9,22 @@ Row-level 70/30 split: every dataset contributes rows to both train and test,
 eliminating domain bias from dataset-level holdouts.
 
 Output structure:
-    output/sae_training_round5/{model}_layer{N}_sae_training.npz  (70% of rows)
-    output/sae_training_round5/{model}_layer{N}_sae_test.npz      (30% of rows)
+    output/sae_training_round6/{model}_layer{N}_sae_training.npz  (70% of rows)
+    output/sae_training_round6/{model}_layer{N}_sae_test.npz      (30% of rows)
+    output/sae_training_round6/{model}_layer{N}_norm_stats.npz    (per-dataset stats)
 
-Each file contains:
-    embeddings: (n_total, hidden_dim) pooled across datasets
+Each train/test file contains:
+    embeddings: (n_total, hidden_dim) pooled across datasets, per-dataset normalized
     optimal_layer: int
     layer_name: string (e.g. "layer_17")
     source_datasets: list of dataset names included
     samples_per_dataset: array of (dataset_name, count) pairs
     split: "train" or "test"
+
+The norm_stats file contains:
+    datasets: array of dataset names (sorted)
+    means: (n_datasets, hidden_dim) per-dataset means (from train split)
+    stds: (n_datasets, hidden_dim) per-dataset stds (from train split)
 
 Usage:
     # Build train+test data for TabPFN at optimal layer
@@ -47,10 +53,11 @@ from scripts.extract_layer_embeddings import sort_layer_names
 
 
 LAYERWISE_DIR = PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise_round5"
-OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training_round5"
+OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training_round6"
 
 SPLIT_SEED = 42
 TRAIN_FRACTION = 0.7
+MIN_STD = 1e-8  # Floor for per-dataset std to avoid division by zero
 
 
 def get_available_datasets(model: str) -> List[str]:
@@ -134,6 +141,15 @@ def build_training_data(
     Every dataset contributes rows to both train and test files.
     Row-level 70/30 split eliminates domain bias.
 
+    Per-dataset StandardScaler normalization:
+    - Compute (mean, std) from each dataset's TRAIN split only
+    - Normalize both train and test with train stats
+    - Pool normalized embeddings across datasets
+    - Save per-dataset stats for inference-time normalization
+
+    This removes dataset-level distributional differences before pooling,
+    so the SAE learns structural patterns rather than "which dataset is this."
+
     Args:
         model: Model name (e.g. 'tabpfn')
         max_per_dataset: Cap samples per dataset (before splitting)
@@ -158,6 +174,7 @@ def build_training_data(
     test_embeddings = []
     train_samples = {}
     test_samples = {}
+    norm_stats = {}  # Per-dataset normalization statistics
 
     for ds in datasets:
         try:
@@ -167,6 +184,17 @@ def build_training_data(
             continue
 
         train_emb, test_emb = split_rows(emb, max_per_dataset)
+
+        # Per-dataset StandardScaler: compute stats from TRAIN only (no test leakage)
+        ds_mean = train_emb.mean(axis=0)
+        ds_std = train_emb.std(axis=0)
+        ds_std[ds_std < MIN_STD] = 1.0  # Floor to avoid div-by-zero
+
+        # Normalize both splits with train stats
+        train_emb = (train_emb - ds_mean) / ds_std
+        test_emb = (test_emb - ds_mean) / ds_std
+
+        norm_stats[ds] = {"mean": ds_mean, "std": ds_std}
 
         train_embeddings.append(train_emb)
         test_embeddings.append(test_emb)
@@ -183,6 +211,7 @@ def build_training_data(
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     train_path = OUTPUT_DIR / f"{model}_layer{optimal_layer}_sae_training.npz"
     test_path = OUTPUT_DIR / f"{model}_layer{optimal_layer}_sae_test.npz"
+    stats_path = OUTPUT_DIR / f"{model}_layer{optimal_layer}_norm_stats.npz"
 
     def _save(path, embeddings, samples_dict, split_name):
         np.savez_compressed(
@@ -202,8 +231,18 @@ def build_training_data(
     _save(train_path, train_pooled, train_samples, "train")
     _save(test_path, test_pooled, test_samples, "test")
 
+    # Save per-dataset normalization stats (needed at inference time)
+    ds_names = sorted(norm_stats.keys())
+    np.savez_compressed(
+        str(stats_path),
+        datasets=np.array(ds_names),
+        means=np.stack([norm_stats[d]["mean"] for d in ds_names]),
+        stds=np.stack([norm_stats[d]["std"] for d in ds_names]),
+    )
+
     print(f"  Train: {train_pooled.shape} from {len(train_samples)} datasets → {train_path.name}")
     print(f"  Test:  {test_pooled.shape} from {len(test_samples)} datasets → {test_path.name}")
+    print(f"  Norm stats: {len(norm_stats)} datasets → {stats_path.name}")
 
     return {
         "model": model,
@@ -214,6 +253,7 @@ def build_training_data(
         "n_datasets": len(train_samples),
         "train_path": str(train_path),
         "test_path": str(test_path),
+        "stats_path": str(stats_path),
     }
 
 

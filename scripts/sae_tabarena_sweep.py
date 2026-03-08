@@ -122,13 +122,16 @@ def pool_embeddings(
     normalize: bool = True,
 ) -> Tuple[np.ndarray, Dict[str, int]]:
     """
-    Pool embeddings from multiple datasets.
+    Pool embeddings from multiple datasets with per-dataset normalization.
+
+    Per-dataset StandardScaler removes dataset-level distributional differences
+    before pooling. Stats are computed per-dataset (not globally).
 
     Args:
         model_name: Model to load embeddings for
         datasets: List of dataset names
         max_per_dataset: Max samples per dataset (for balance)
-        normalize: Whether to normalize embeddings
+        normalize: Whether to apply per-dataset StandardScaler
 
     Returns:
         (pooled_embeddings, dataset_counts)
@@ -148,6 +151,13 @@ def pool_embeddings(
             idx = np.random.choice(len(emb), max_per_dataset, replace=False)
             emb = emb[idx]
 
+        if normalize:
+            # Per-dataset StandardScaler (consistent with build_sae_training_data.py)
+            ds_mean = emb.mean(axis=0)
+            ds_std = emb.std(axis=0)
+            ds_std[ds_std < 1e-8] = 1.0
+            emb = (emb - ds_mean) / ds_std
+
         all_embeddings.append(emb)
         dataset_counts[ds] = len(emb)
 
@@ -155,13 +165,6 @@ def pool_embeddings(
         raise ValueError(f"No embeddings found for {model_name}")
 
     pooled = np.concatenate(all_embeddings, axis=0)
-
-    if normalize:
-        # Per-dimension normalization
-        std = pooled.std(axis=0, keepdims=True)
-        std[std < 1e-8] = 1.0
-        pooled = pooled / std
-
     return pooled, dataset_counts
 
 
@@ -713,7 +716,7 @@ def _load_prebuilt_embeddings(model_name: str) -> Optional[Tuple[np.ndarray, np.
     Returns:
         (train_embeddings, test_embeddings, source_datasets, optimal_layer) or None
     """
-    prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round5"
+    prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round6"
 
     # Find train file
     base = model_name.split("_layer")[0] if "_layer" in model_name else model_name
@@ -782,7 +785,7 @@ def run_sweep(
     # Load prebuilt training data (required)
     prebuilt = _load_prebuilt_embeddings(model_name)
     if prebuilt is None:
-        prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round5"
+        prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round6"
         raise FileNotFoundError(
             f"No prebuilt SAE training data found for '{model_name}'. "
             f"Expected: {prebuilt_dir}/{model_name}_layer*_sae_training.npz\n"

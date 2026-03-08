@@ -152,6 +152,54 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
     return centroids.to(device=data.device, dtype=data.dtype)
 
 
+# Sparsity types that use the archetypal decoder (convex combos of centroids)
+ARCHETYPAL_TYPES = frozenset({
+    "archetypal", "matryoshka_archetypal",
+    "batchtopk_archetypal", "matryoshka_batchtopk_archetypal",
+})
+
+
+class ConstrainedAdam(torch.optim.Adam):
+    """Adam with unit-norm constraints and gradient projection on decoder columns.
+
+    For each constrained parameter (typically W_dec):
+    1. Before step: remove gradient component parallel to current column direction
+    2. After step: normalize columns to unit norm
+
+    This prevents interaction between Adam moment estimates and periodic
+    normalization that causes oscillating updates.
+
+    Reference: Gao et al. (2024) "Scaling and Evaluating Sparse Autoencoders";
+               saprmarks/dictionary_learning ConstrainedAdam implementation.
+    """
+
+    def __init__(self, params, constrained_params=(), **kwargs):
+        super().__init__(params, **kwargs)
+        # Note: id() is a memory address — breaks on checkpoint resume (new param objects).
+        # Acceptable since we retrain from scratch; add param-name lookup if resume is needed.
+        self.constrained_param_ids = {id(p) for p in constrained_params}
+
+    def step(self, closure=None):
+        # Project gradients: remove component parallel to current column direction
+        with torch.no_grad():
+            for group in self.param_groups:
+                for p in group["params"]:
+                    if id(p) in self.constrained_param_ids and p.grad is not None:
+                        normed = F.normalize(p.data, dim=0)
+                        p.grad -= (p.grad * normed).sum(dim=0, keepdim=True) * normed
+
+        loss = super().step(closure)
+
+        # Normalize constrained params to unit-norm columns
+        with torch.no_grad():
+            for group in self.param_groups:
+                for p in group["params"]:
+                    if id(p) in self.constrained_param_ids:
+                        p.data = F.normalize(p.data, dim=0)
+
+        return loss
+
+
 @dataclass
 class SAEConfig:
     """Configuration for Sparse Autoencoder training."""
@@ -210,7 +258,7 @@ class SAEConfig:
     # Normalization
     normalize_encoder: bool = True  # Unit norm encoder columns
     tied_weights: bool = False  # Decoder = Encoder.T
-    use_batchnorm: bool = True  # Use BatchNorm for input normalization (recommended)
+    use_batchnorm: bool = False  # DEPRECATED (round 6): use per-dataset StandardScaler + b_dec subtraction
 
     def __post_init__(self):
         """Resolve legacy aux_loss fields to new aux_loss_type system."""
@@ -299,22 +347,22 @@ class SparseAutoencoder(nn.Module):
         super().__init__()
         self.config = config
 
-        # BatchNorm for input normalization (learns mean/std during training)
-        # Ensures consistent normalization in train/eval without manual stats tracking
-        if config.use_batchnorm:
-            self.bn = nn.BatchNorm1d(config.input_dim)
-        else:
-            self.bn = None
-
         # Encoder
         self.W_enc = nn.Parameter(torch.randn(config.hidden_dim, config.input_dim) * 0.01)
         self.b_enc = nn.Parameter(torch.zeros(config.hidden_dim))
 
         # Decoder
+        # - Archetypal types derive decoder from archetype_logits + reference_data
+        # - Tied weights share W_enc.T as decoder
+        # - Otherwise: learned W_dec, initialized aligned with encoder (Gao et al. 2024)
         if config.tied_weights:
-            self.W_dec = None  # Will use W_enc.T
+            self.W_dec = None
+        elif config.sparsity_type in ARCHETYPAL_TYPES:
+            self.W_dec = None  # Decoder = convex combo of centroids via get_archetypal_dictionary()
         else:
             self.W_dec = nn.Parameter(torch.randn(config.input_dim, config.hidden_dim) * 0.01)
+            # Align encoder with decoder at init (Gao et al. 2024)
+            self.W_enc.data = self.W_dec.data.T.clone()
         self.b_dec = nn.Parameter(torch.zeros(config.input_dim))
 
         # For gated SAE
@@ -324,7 +372,7 @@ class SparseAutoencoder(nn.Module):
 
         # For archetypal SAE - dictionary atoms are convex combos of reference data
         # This anchors the dictionary to data geometry for training stability
-        if config.sparsity_type in ("archetypal", "matryoshka_archetypal"):
+        if config.sparsity_type in ARCHETYPAL_TYPES:
             # Reference data (or centroids) will be set via set_reference_data()
             self.register_buffer('reference_data', None)
             # Archetypal coefficients: softmax gives convex combination
@@ -351,119 +399,81 @@ class SparseAutoencoder(nn.Module):
         """
         Encode input to sparse hidden representation.
 
+        Standard SAE formulation (Bricken et al. 2023, Gao et al. 2024):
+            pre_act = W_enc @ (x - b_dec) + b_enc
+            h = activation(pre_act)
+
+        Input x should be pre-normalized (per-dataset StandardScaler).
+
         Args:
-            x: Input tensor (batch_size, input_dim)
+            x: Input tensor (batch_size, input_dim), pre-normalized
             return_pre_act: If True, also return pre-activation for aux loss
 
         Returns:
             h: Sparse activations (batch_size, hidden_dim)
             pre_act: (optional) Pre-activation values
         """
-        # Apply BatchNorm for consistent normalization in train/eval (if enabled)
-        # During training: learns mean/std from data
-        # During eval: uses running mean/std (no manual stats needed)
-        if self.bn is not None:
-            x = self.bn(x)
-
-        # For Archetypal SAE, the constraint is on the DECODER only
-        # Encoder uses standard learned weights W_enc
-        # (Decoder uses dictionary = convex combo of reference data)
-        pre_act = F.linear(x, self.W_enc, self.b_enc)
+        # Standard b_dec subtraction: encoder sees deviations from learned default output
+        # (Bricken et al. 2023, Gao et al. 2024, Rajamanoharan et al. 2024)
+        pre_act = F.linear(x - self.b_dec, self.W_enc, self.b_enc)
 
         if self.config.sparsity_type == "topk":
-            # TopK sparsity: keep only top k activations per sample
-            h = F.relu(pre_act)
-            topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
-            mask = torch.zeros_like(h)
+            # TopK on pre_act, then ReLU (Gao et al. 2024)
+            topk_vals, topk_idx = torch.topk(pre_act, self.config.topk, dim=-1)
+            mask = torch.zeros_like(pre_act)
             mask.scatter_(-1, topk_idx, 1.0)
-            h = h * mask
+            h = F.relu(pre_act) * mask
 
         elif self.config.sparsity_type == "batchtopk":
-            # BatchTopK sparsity: keep top (batch_size × k) activations across entire batch
-            # Allows variable sparsity per sample (adaptive to sample complexity)
-            # Paper: Bussmann (2024), arXiv:2412.06410
-            h = F.relu(pre_act)
-
+            # BatchTopK: top (batch_size × k) across batch (Bussmann 2024, arXiv:2412.06410)
+            # Threshold on pre_act, then ReLU
             if self.training:
-                # Training: batch-level selection
-                h_flat = h.flatten()  # (batch_size × hidden_dim)
-                n_keep = h.shape[0] * self.config.topk  # batch_size × k
-                # Find threshold: kth largest value where k = total_activations - n_keep
-                threshold_val = torch.kthvalue(h_flat, len(h_flat) - n_keep + 1).values
-                h = h * (h >= threshold_val).float()
+                pa_flat = pre_act.flatten()
+                n_keep = pre_act.shape[0] * self.config.topk
+                threshold_val = torch.kthvalue(pa_flat, len(pa_flat) - n_keep + 1).values
+                h = F.relu(pre_act) * (pre_act >= threshold_val).float()
 
-                # Update inference threshold: EMA of minimum positive activation
+                # EMA of batch threshold for inference
                 with torch.no_grad():
-                    if (h > 0).any():
-                        min_positive = h[h > 0].min()
-                        # EMA update with decay=0.99 (slow-moving average)
-                        if self.batchtopk_n_updates == 0:
-                            self.inference_threshold = min_positive
-                        else:
-                            self.inference_threshold = 0.99 * self.inference_threshold + 0.01 * min_positive
-                        self.batchtopk_n_updates += 1
+                    if self.batchtopk_n_updates == 0:
+                        self.inference_threshold = threshold_val
+                    else:
+                        self.inference_threshold = 0.99 * self.inference_threshold + 0.01 * threshold_val
+                    self.batchtopk_n_updates += 1
             else:
-                # Inference: use learned threshold (removes batch dependency)
-                h = h * (h >= self.inference_threshold).float()
+                h = F.relu(pre_act) * (pre_act >= self.inference_threshold).float()
 
         elif self.config.sparsity_type == "gated":
-            # Gated SAE: separate gate for sparsity
-            gate_pre = F.linear(x, self.gate, self.gate_bias)
+            # Gated SAE: separate gate for sparsity (b_dec subtracted from gate input too)
+            gate_pre = F.linear(x - self.b_dec, self.gate, self.gate_bias)
             gate = torch.sigmoid(gate_pre)
             h = F.relu(pre_act) * gate
 
-        elif self.config.sparsity_type == "matryoshka":
-            # Matryoshka: ReLU + TopK, loss handles nesting
-            h = F.relu(pre_act)
-            topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
-            mask = torch.zeros_like(h)
+        elif self.config.sparsity_type in ("matryoshka", "archetypal", "matryoshka_archetypal"):
+            # TopK on pre_act, then ReLU (Gao et al. 2024)
+            # Matryoshka multi-scale loss is handled in train_sae()
+            # Archetypal decoder constraint is handled in decode()
+            topk_vals, topk_idx = torch.topk(pre_act, self.config.topk, dim=-1)
+            mask = torch.zeros_like(pre_act)
             mask.scatter_(-1, topk_idx, 1.0)
-            h = h * mask
-
-        elif self.config.sparsity_type == "archetypal":
-            # Archetypal SAE: dictionary atoms are constrained to convex hull of data
-            # ReLU + TopK sparsity
-            h = F.relu(pre_act)
-            topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
-            mask = torch.zeros_like(h)
-            mask.scatter_(-1, topk_idx, 1.0)
-            h = h * mask
-
-        elif self.config.sparsity_type == "matryoshka_archetypal":
-            # Matryoshka-Archetypal: combines nested loss + archetypal decoder
-            # - Encoder: standard learned weights (like archetypal)
-            # - Decoder: convex combo of K-means centroids (archetypal constraint)
-            # - Activations: ReLU + TopK sparsity
-            # - Loss: multi-scale reconstruction at Matryoshka dims (handled in train_sae)
-            h = F.relu(pre_act)
-            topk_vals, topk_idx = torch.topk(h, self.config.topk, dim=-1)
-            mask = torch.zeros_like(h)
-            mask.scatter_(-1, topk_idx, 1.0)
-            h = h * mask
+            h = F.relu(pre_act) * mask
 
         elif self.config.sparsity_type in ("batchtopk_archetypal", "matryoshka_batchtopk_archetypal"):
-            # Archetypal/Matryoshka-Archetypal + BatchTopK sparsity
-            h = F.relu(pre_act)
-
+            # BatchTopK + archetypal decoder
             if self.training:
-                # Training: batch-level selection (adaptive sparsity)
-                h_flat = h.flatten()
-                n_keep = h.shape[0] * self.config.topk
-                threshold_val = torch.kthvalue(h_flat, len(h_flat) - n_keep + 1).values
-                h = h * (h >= threshold_val).float()
+                pa_flat = pre_act.flatten()
+                n_keep = pre_act.shape[0] * self.config.topk
+                threshold_val = torch.kthvalue(pa_flat, len(pa_flat) - n_keep + 1).values
+                h = F.relu(pre_act) * (pre_act >= threshold_val).float()
 
-                # Update inference threshold
                 with torch.no_grad():
-                    if (h > 0).any():
-                        min_positive = h[h > 0].min()
-                        if self.batchtopk_n_updates == 0:
-                            self.inference_threshold = min_positive
-                        else:
-                            self.inference_threshold = 0.99 * self.inference_threshold + 0.01 * min_positive
-                        self.batchtopk_n_updates += 1
+                    if self.batchtopk_n_updates == 0:
+                        self.inference_threshold = threshold_val
+                    else:
+                        self.inference_threshold = 0.99 * self.inference_threshold + 0.01 * threshold_val
+                    self.batchtopk_n_updates += 1
             else:
-                # Inference: learned threshold
-                h = h * (h >= self.inference_threshold).float()
+                h = F.relu(pre_act) * (pre_act >= self.inference_threshold).float()
 
         else:
             # Standard L1: just ReLU
@@ -487,8 +497,8 @@ class SparseAutoencoder(nn.Module):
         if max_dim is not None:
             h = h[:, :max_dim]
 
-        # For Archetypal/Matryoshka-Archetypal SAE, use dictionary derived from reference data
-        if self.config.sparsity_type in ("archetypal", "matryoshka_archetypal") and self.archetype_logits is not None:
+        # For Archetypal SAE variants, use dictionary derived from reference data
+        if self.config.sparsity_type in ARCHETYPAL_TYPES and self.archetype_logits is not None:
             # Dictionary is convex combo of reference points: (hidden_dim, input_dim)
             W_dec = self.get_archetypal_dictionary()  # (hidden_dim, input_dim)
             if max_dim is not None:
@@ -588,7 +598,7 @@ class SparseAutoencoder(nn.Module):
         ghost_act = ghost_act * ghost_scale
 
         # Decode using only dead features to reconstruct the residual
-        if self.config.sparsity_type in ("archetypal", "matryoshka_archetypal") and self.archetype_logits is not None:
+        if self.config.sparsity_type in ARCHETYPAL_TYPES and self.archetype_logits is not None:
             W_dec = self.get_archetypal_dictionary()  # (hidden_dim, input_dim)
             W_dec_dead = W_dec[dead_mask]  # (n_dead, input_dim)
         elif self.config.tied_weights:
@@ -608,18 +618,15 @@ class SparseAutoencoder(nn.Module):
 
     def compute_auxk_loss(
         self, x: torch.Tensor, h: torch.Tensor, x_hat: torch.Tensor,
+        pre_act: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         AuxK auxiliary loss for TopK SAEs (Gao et al., 2024).
 
-        Computes reconstruction using ONLY dead latents to ensure they
-        remain useful for feature extraction. The loss encourages dead
-        features to contribute to reducing the reconstruction error.
+        Selects top-k_aux dead latents by pre-activation magnitude, decodes them,
+        and trains them to reconstruct the residual error from alive features.
 
-        ℒ_aux = ‖e − ê‖²₂
-        where:
-            e = x - x̂  (main reconstruction error)
-            ê = x - x̂_aux  (reconstruction using only dead latents)
+        ℒ_aux = ‖residual − dead_recon‖²₂
 
         Reference: "Scaling and Evaluating Sparse Autoencoders",
                    Gao et al. (2024), arXiv:2406.04093
@@ -628,12 +635,17 @@ class SparseAutoencoder(nn.Module):
             x: Original input (batch_size, input_dim)
             h: Current activations (batch_size, hidden_dim)
             x_hat: Main reconstruction (batch_size, input_dim)
+            pre_act: Pre-activation values (batch_size, hidden_dim), required for
+                     secondary TopK among dead latents
 
         Returns:
             AuxK loss term (scalar)
         """
         if self.config.aux_loss_type != "auxk":
             return torch.tensor(0.0, device=x.device)
+
+        if pre_act is None:
+            raise ValueError("compute_auxk_loss requires pre_act (call encode with return_pre_act=True)")
 
         # Update dead neuron tracking with EMA
         with torch.no_grad():
@@ -648,21 +660,26 @@ class SparseAutoencoder(nn.Module):
         if n_dead == 0:
             return torch.tensor(0.0, device=x.device)
 
-        # Main reconstruction error
-        e = x - x_hat  # (batch_size, input_dim)
+        # Residual from main reconstruction
+        residual = x - x_hat  # (batch_size, input_dim)
 
-        # Create auxiliary activations using ONLY dead features
-        h_aux = h.clone()
-        h_aux[:, ~dead_mask] = 0.0  # Zero out alive features
+        # Secondary TopK among dead latent pre-activations (Gao et al. 2024)
+        dead_pre_act = pre_act[:, dead_mask]  # (batch, n_dead)
+        k_aux = min(self.config.topk, n_dead)
+        topk_vals, topk_idx = torch.topk(dead_pre_act, k_aux, dim=-1)
+        dead_h = torch.zeros_like(dead_pre_act)
+        dead_h.scatter_(-1, topk_idx, F.relu(topk_vals))
 
-        # Reconstruct using only dead features
-        x_hat_aux = self.decode(h_aux)
+        # Decode using only dead features
+        if self.config.sparsity_type in ARCHETYPAL_TYPES and self.archetype_logits is not None:
+            W_dec_dead = self.get_archetypal_dictionary()[dead_mask]  # (n_dead, input_dim)
+        elif self.config.tied_weights:
+            W_dec_dead = self.W_enc[dead_mask]  # (n_dead, input_dim)
+        else:
+            W_dec_dead = self.W_dec[:, dead_mask].T  # (n_dead, input_dim)
 
-        # Auxiliary reconstruction error
-        e_aux = x - x_hat_aux  # (batch_size, input_dim)
-
-        # AuxK loss: MSE between main and auxiliary reconstruction errors
-        auxk_loss = F.mse_loss(e, e_aux)
+        dead_recon = dead_h @ W_dec_dead  # (batch, n_dead) @ (n_dead, input)
+        auxk_loss = F.mse_loss(dead_recon, residual)
 
         return self.config.aux_loss_alpha * auxk_loss
 
@@ -860,7 +877,7 @@ class SparseAutoencoder(nn.Module):
     def get_dictionary(self) -> np.ndarray:
         """Get learned dictionary (decoder weights for reconstruction)."""
         # For Archetypal/Matryoshka-Archetypal SAE, dictionary is convex combo of reference data
-        if self.config.sparsity_type in ("archetypal", "matryoshka_archetypal") and self.archetype_logits is not None:
+        if self.config.sparsity_type in ARCHETYPAL_TYPES and self.archetype_logits is not None:
             W = self.get_archetypal_dictionary().detach().cpu().numpy()
         else:
             W = self.W_enc.detach().cpu().numpy()
@@ -975,6 +992,9 @@ def train_sae(
     """
     Train a Sparse Autoencoder on embeddings.
 
+    Expects pre-normalized embeddings (per-dataset StandardScaler applied upstream).
+    Uses standard b_dec subtraction in encode() for residual centering.
+
     Supports multiple SAE variants:
     - Standard L1/TopK/Gated sparsity
     - Matryoshka: nested loss at multiple scales
@@ -982,7 +1002,7 @@ def train_sae(
     - Auxiliary loss: dead neuron revival
 
     Args:
-        embeddings: (n_samples, embedding_dim) input embeddings
+        embeddings: (n_samples, embedding_dim) pre-normalized input embeddings
         config: SAE configuration
         device: torch device
         verbose: print training progress
@@ -990,26 +1010,28 @@ def train_sae(
     Returns:
         (trained_model, results)
     """
-    # Prepare data
+    # Prepare data — expects pre-normalized embeddings (per-dataset StandardScaler)
+    # No global centering: b_dec subtraction in encode() handles centering
     X = torch.tensor(embeddings, dtype=torch.float32)
 
-    # Center the data (important for SAE)
-    X_mean = X.mean(dim=0, keepdim=True)
-    X_centered = X - X_mean
-
-    dataset = TensorDataset(X_centered)
+    dataset = TensorDataset(X)
     loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
     # Initialize model
     model = SparseAutoencoder(config).to(device)
 
-    # For Archetypal/Matryoshka-Archetypal SAE, set reference data (dictionary atoms = convex combos of refs)
-    if config.sparsity_type in ("archetypal", "matryoshka_archetypal", "batchtopk_archetypal", "matryoshka_batchtopk_archetypal"):
-        # Use centered training data as reference points
-        n_ref = config.archetypal_n_archetypes or min(1000, len(X_centered))
-        model.set_reference_data(X_centered.to(device), n_ref=n_ref)
+    # For Archetypal SAE variants, set reference data (dictionary atoms = convex combos of refs)
+    if config.sparsity_type in ARCHETYPAL_TYPES:
+        n_ref = config.archetypal_n_archetypes or min(1000, len(X))
+        model.set_reference_data(X.to(device), n_ref=n_ref)
+        # Align encoder with initial archetypal dictionary (Gao et al. 2024)
+        with torch.no_grad():
+            model.W_enc.data = model.get_archetypal_dictionary().clone()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    # ConstrainedAdam: gradient projection + unit-norm decoder columns (Gao et al. 2024)
+    # For archetypal types, decoder is derived from archetype_logits, so no W_dec to constrain
+    constrained = [model.W_dec] if model.W_dec is not None else []
+    optimizer = ConstrainedAdam(model.parameters(), constrained_params=constrained, lr=config.learning_rate)
 
     # Three-phase LR schedule (SAE best practice):
     # - Warmup (first 5%): linear 0 → peak_lr
@@ -1066,90 +1088,29 @@ def train_sae(
         for (batch,) in loader:
             batch = batch.to(device)
 
-            # Forward pass depends on SAE type
-            pre_act = None  # Initialize for aux loss check
+            # Always get pre_act (needed for aux loss)
+            h, pre_act = model.encode(batch, return_pre_act=True)
 
-            if config.sparsity_type == "matryoshka":
-                # Matryoshka: compute loss at multiple scales
-                aux_type = config.aux_loss_type
-                if aux_type == "none" and config.use_ghost_grads:
-                    aux_type = "ghost_grads"
-
-                if aux_type == "ghost_grads":
-                    h, pre_act = model.encode(batch, return_pre_act=True)
-                else:
-                    h = model.encode(batch)
-
-                reconstructions = []
-                for dim in mat_dims:
-                    x_hat_scale = model.decode(h, max_dim=dim)
-                    reconstructions.append(x_hat_scale)
-
-                recon_loss = torch.tensor(0.0, device=device)
-                for x_hat_scale, weight in zip(reconstructions, mat_weights):
-                    recon_loss = recon_loss + weight * F.mse_loss(x_hat_scale, batch)
-
-                # Save final scale reconstruction for aux loss
-                x_hat = reconstructions[-1]
-
-                # Sparsity on full activations
-                sparsity_loss = config.sparsity_penalty * h.abs().mean()
-
-            elif config.sparsity_type in ("archetypal", "batchtopk_archetypal"):
-                # Archetypal SAE: dictionary atoms are constrained to convex hull of data
-                # (via archetype_logits -> softmax -> weighted sum of reference points)
-                # TopK/BatchTopK sparsity is handled in encode()
-                h, pre_act = model.encode(batch, return_pre_act=True)
-                x_hat = model.decode(h)
-                recon_loss = F.mse_loss(x_hat, batch)
-                # Small L1 for regularization
-                sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
-
-            elif config.sparsity_type in ("matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
-                # Matryoshka-Archetypal: combines three key ideas
-                # 1. Archetypal decoder: dictionary atoms = convex combos of K-means centroids (stability)
-                # 2. Matryoshka loss: multi-scale reconstruction at nested truncation points (hierarchy)
-                # 3. TopK sparsity: handled in encode() for interpretable sparse activations
-                aux_type = config.aux_loss_type
-                if aux_type == "none" and config.use_ghost_grads:
-                    aux_type = "ghost_grads"
-
-                if aux_type == "ghost_grads":
-                    h, pre_act = model.encode(batch, return_pre_act=True)
-                else:
-                    h = model.encode(batch)
-
-                # Multi-scale reconstruction loss (Matryoshka)
-                # Loss at each scale ensures features are ordered by importance
+            if config.sparsity_type in ("matryoshka", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
+                # Matryoshka: multi-scale reconstruction loss
                 recon_loss = torch.tensor(0.0, device=device)
                 for dim, weight in zip(mat_dims, mat_weights):
                     x_hat = model.decode(h, max_dim=dim)
                     recon_loss = recon_loss + weight * F.mse_loss(x_hat, batch)
-                # x_hat now holds the final scale reconstruction
-
-                # Small L1 regularization (TopK sparsity is main constraint from encode())
-                sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
+                # x_hat holds final scale reconstruction
 
             else:
-                # Standard forward
-                if config.use_ghost_grads:
-                    h, pre_act = model.encode(batch, return_pre_act=True)
-                    x_hat = model.decode(h)
-                else:
-                    x_hat, h = model(batch)
-                    pre_act = None
+                # Single-scale reconstruction
+                x_hat = model.decode(h)
                 recon_loss = F.mse_loss(x_hat, batch)
 
-                # Sparsity loss
-                if config.sparsity_type == "l1":
-                    sparsity_loss = config.sparsity_penalty * h.abs().mean()
-                elif config.sparsity_type in ("topk", "batchtopk"):
-                    # TopK/BatchTopK has implicit sparsity, small L1 for dead feature prevention
-                    sparsity_loss = config.sparsity_penalty * 0.1 * h.abs().mean()
-                elif config.sparsity_type == "gated":
-                    sparsity_loss = config.sparsity_penalty * h.abs().mean()
-                else:
-                    sparsity_loss = config.sparsity_penalty * h.abs().mean()
+            # Sparsity loss: L1 only for l1/gated types
+            # TopK/BatchTopK/Archetypal enforce sparsity structurally — no L1 needed
+            # (Gao et al. 2024: adding L1 to TopK causes activation shrinkage)
+            if config.sparsity_type in ("l1", "gated"):
+                sparsity_loss = config.sparsity_penalty * h.abs().mean()
+            else:
+                sparsity_loss = torch.tensor(0.0, device=device)
 
             # Auxiliary loss for dead neuron revival
             # Handle legacy use_ghost_grads config
@@ -1164,7 +1125,7 @@ def train_sae(
             elif aux_type == "ghost_grads" and pre_act is not None:
                 aux_loss = model.compute_ghost_grad_loss(batch, h, pre_act)
             elif aux_type == "auxk":
-                aux_loss = model.compute_auxk_loss(batch, h, x_hat)
+                aux_loss = model.compute_auxk_loss(batch, h, x_hat, pre_act=pre_act)
             elif aux_type == "residual_targeting":
                 aux_loss = model.compute_residual_targeting_loss(batch, h)
             else:
@@ -1172,14 +1133,10 @@ def train_sae(
 
             loss = recon_loss + sparsity_loss + aux_loss
 
-            # Backward
+            # Backward — ConstrainedAdam handles gradient projection + decoder normalization
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-            # Normalize decoder periodically
-            if n_batches % 10 == 0:
-                model.normalize_decoder()
 
             epoch_recon += recon_loss.item()
             epoch_sparse += sparsity_loss.item()
@@ -1230,7 +1187,7 @@ def train_sae(
                     n_dead = dead_mask.sum().item()
                     if n_dead > 0:
                         n_resampled = model.resample_dead_neurons(
-                            X_centered.to(device), dead_mask, n_samples=resample_samples
+                            X.to(device), dead_mask, n_samples=resample_samples
                         )
 
         # Log to wandb
@@ -1262,8 +1219,8 @@ def train_sae(
     # Compute final statistics
     model.eval()
     with torch.no_grad():
-        X_centered = X_centered.to(device)
-        _, all_activations = model(X_centered)
+        X_dev = X.to(device)
+        _, all_activations = model(X_dev)
         all_activations = all_activations.cpu().numpy()
 
     # Feature statistics
