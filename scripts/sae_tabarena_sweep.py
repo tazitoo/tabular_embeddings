@@ -173,10 +173,11 @@ def compute_stability(
     config: SAEConfig,
     n_runs: int = 2,
     return_per_scale: bool = False,
+    return_models: bool = False,
     device: str = "cpu",
 ) -> float:
     """
-    Train SAE twice and measure dictionary stability.
+    Train SAE multiple times and measure dictionary stability.
 
     For Matryoshka SAEs, also measures stability at each nested scale.
 
@@ -185,17 +186,21 @@ def compute_stability(
         config: SAE configuration
         n_runs: Number of training runs
         return_per_scale: If True, return dict with per-scale stability (Matryoshka only)
+        return_models: If True, include trained models in return dict
 
     Returns:
-        Overall stability score (or dict with per-scale if return_per_scale=True)
+        Dict with stability metrics (and optionally trained models)
     """
     dicts = []
+    models = []
     seeds = [123, 456, 789, 101112, 131415][:n_runs]
     for seed in seeds:
         torch.manual_seed(seed)
         np.random.seed(seed)
         model, result = train_sae(embeddings, config, device=device, verbose=False)
         dicts.append(result.dictionary)
+        if return_models:
+            models.append(model)
 
     # 1. Feature alignment stability (our metric)
     comp = compare_dictionaries(dicts[0], dicts[1])
@@ -238,16 +243,24 @@ def compute_stability(
             scale_comp = compare_dictionaries(scale_dict1, scale_dict2)
             per_scale[f"scale_{prev_dim}_{config.hidden_dim}"] = scale_comp['mean_best_match_a']
 
-        return {
+        result = {
             "alignment": overall_stability,
             "s_n_dec": s_n_dec,
             "per_scale": per_scale,
         }
+        if return_models:
+            result["models"] = models
+            result["seeds"] = seeds
+        return result
 
-    return {
+    result = {
         "alignment": overall_stability,
         "s_n_dec": s_n_dec,
     }
+    if return_models:
+        result["models"] = models
+        result["seeds"] = seeds
+    return result
 
 
 def build_sae_config(
@@ -355,12 +368,16 @@ def run_sae_trial(
     }
 
     if measure_stability:
-        stability_metrics = compute_stability(embeddings, config, n_runs=3, device=device)
+        stability_metrics = compute_stability(
+            embeddings, config, n_runs=3, return_models=return_model, device=device,
+        )
         metrics["stability"] = stability_metrics["alignment"]
         metrics["s_n_dec"] = stability_metrics["s_n_dec"]
 
     if return_model:
-        return metrics, model, config
+        seed_models = stability_metrics.get("models", []) if measure_stability else []
+        seed_ids = stability_metrics.get("seeds", []) if measure_stability else []
+        return metrics, model, config, seed_models, seed_ids
     return metrics
 
 
@@ -450,7 +467,7 @@ def validate_and_save(
 
         # Train with a different seed to test robustness
         validation_seed = 12345 + attempt
-        metrics, model, config = run_sae_trial(
+        metrics, model, config, seed_models, seed_ids = run_sae_trial(
             embeddings,
             sae_type=sae_type,
             expansion=expansion,
@@ -497,6 +514,11 @@ def validate_and_save(
                 baseline, baseline.config, {"random_baseline": True},
                 best_params, baseline_path,
             )
+
+            # Save stability seed models (already trained, free repeatability)
+            for seed_model, seed_id in zip(seed_models, seed_ids):
+                seed_path = output_dir / f"sae_{sae_type}_seed{seed_id}.pt"
+                save_sae_model(seed_model, config, metrics, best_params, seed_path)
 
             return {
                 "params": best_params,
