@@ -821,11 +821,16 @@ def run_sweep(
         study_name = f"{model_name}_{sae_type}"
         storage = f"sqlite:///{output_dir}/{study_name}.db"
 
+        # Always start fresh — delete stale study if it exists
+        try:
+            optuna.delete_study(study_name=study_name, storage=storage)
+        except KeyError:
+            pass
+
         study = optuna.create_study(
             study_name=study_name,
             storage=storage,
             direction="minimize",
-            load_if_exists=True,
             sampler=optuna.samplers.TPESampler(seed=42),
         )
 

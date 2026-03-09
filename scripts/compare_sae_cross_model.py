@@ -47,7 +47,9 @@ from data.extended_loader import load_tabarena_dataset
 # SAE sweep round tracking — increment when retraining with architecture changes.
 # Round 4: DAE bug (TopK not enforced), fixed bands [32,64,128,256]
 # Round 5: TopK enforced, proportional bands [h/16,h/8,h/4,h/2,h], ghost grads enabled
-DEFAULT_SAE_ROUND = 5
+# Round 6: Per-dataset StandardScaler, b_dec subtraction, ConstrainedAdam, W_enc=W_dec.T,
+#           TopK on pre_act then ReLU, no L1 on TopK types, fixed AuxK
+DEFAULT_SAE_ROUND = 6
 
 
 def sae_sweep_dir(round: int = None) -> Path:
