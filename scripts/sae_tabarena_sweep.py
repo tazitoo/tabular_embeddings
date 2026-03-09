@@ -489,6 +489,15 @@ def validate_and_save(
             model_path = output_dir / f"sae_{sae_type}_validated.pt"
             save_sae_model(model, config, metrics, best_params, model_path)
 
+            # Save random baseline with matching dimensions for comparison
+            from analysis.sparse_autoencoder import create_random_baseline
+            baseline = create_random_baseline(config)
+            baseline_path = output_dir / f"sae_{sae_type}_random_baseline.pt"
+            save_sae_model(
+                baseline, baseline.config, {"random_baseline": True},
+                best_params, baseline_path,
+            )
+
             return {
                 "params": best_params,
                 "loss": val_loss,

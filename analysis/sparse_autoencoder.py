@@ -1246,6 +1246,42 @@ def train_sae(
     return model, result
 
 
+def create_random_baseline(config: SAEConfig, seed: int = 0) -> "SparseAutoencoder":
+    """Create a randomly initialized SAE as a performance baseline.
+
+    Uses a standard (non-archetypal) SAE with random encoder/decoder,
+    unit-norm decoder columns, and zero biases. Same dimensions as the
+    trained SAE so metrics are directly comparable.
+
+    Args:
+        config: SAEConfig from the trained SAE (expansion, topk, dims reused).
+        seed: Random seed for reproducibility.
+
+    Returns:
+        Untrained SparseAutoencoder ready for encode/decode.
+    """
+    # Build a vanilla TopK config with matching dimensions
+    baseline_config = SAEConfig(
+        input_dim=config.input_dim,
+        hidden_dim=config.hidden_dim,
+        sparsity_type="topk",
+        topk=config.topk,
+        sparsity_penalty=0.0,
+        learning_rate=0.0,
+        n_epochs=0,
+    )
+    torch.manual_seed(seed)
+    model = SparseAutoencoder(baseline_config)
+
+    # Normalize decoder columns to unit norm (matching ConstrainedAdam constraint)
+    with torch.no_grad():
+        model.W_dec.data = F.normalize(model.W_dec.data, dim=0)
+        model.W_enc.data = model.W_dec.data.T.clone()
+
+    model.eval()
+    return model
+
+
 def compute_c_dec(decoder: np.ndarray) -> float:
     """
     Compute decoder pairwise cosine similarity (c_dec).
