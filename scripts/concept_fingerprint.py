@@ -45,7 +45,7 @@ from scripts.concept_importance import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / "sae_training_round5"
+DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / "sae_training_round6"
 
 
 def load_per_dataset_embeddings(
