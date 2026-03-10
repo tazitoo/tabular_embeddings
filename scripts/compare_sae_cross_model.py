@@ -49,7 +49,9 @@ from data.extended_loader import load_tabarena_dataset
 # Round 5: TopK enforced, proportional bands [h/16,h/8,h/4,h/2,h], ghost grads enabled
 # Round 6: Per-dataset StandardScaler, b_dec subtraction, ConstrainedAdam, W_enc=W_dec.T,
 #           TopK on pre_act then ReLU, no L1 on TopK types, fixed AuxK
-DEFAULT_SAE_ROUND = 6
+# Round 7: Gao et al. recipe (AuxK, step counter dead detection, weight EMA, geometric median b_dec)
+# Round 8: Detach AuxK residual, normalize by residual variance, grad clipping, dead_steps=200
+DEFAULT_SAE_ROUND = 8
 
 
 def sae_sweep_dir(round: int = None) -> Path:
