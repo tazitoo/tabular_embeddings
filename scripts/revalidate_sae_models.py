@@ -119,12 +119,7 @@ def revalidate_model(model_name: str, device: str = "cuda"):
         archetypal_temp=params.get("archetypal_temp", 0.1),
         archetypal_relaxation=params.get("archetypal_relaxation", 0.0),
         n_epochs=100,
-        # These now default to correct values after the fix:
-        # aux_loss_type="residual_targeting", resample_neurons=True
-        aux_loss_alpha=params.get("aux_loss_alpha", 0.03125),
-        aux_loss_warmup_epochs=params.get("aux_warmup", 3),
-        resample_interval=params.get("resample_interval", 25000),
-        resample_samples=params.get("resample_samples", 1024),
+        # aux/resample use hardcoded defaults from build_sae_config
     )
     print(f"  Config: aux_loss_type={config.aux_loss_type}, "
           f"resample={config.resample_dead_neurons}, "

@@ -458,16 +458,8 @@ def validate_and_save(
         archetypal_n = best_params.get("archetypal_n", 500)
         archetypal_temp = best_params.get("archetypal_temp", 0.1)
         archetypal_relax = best_params.get("archetypal_relaxation", 0.0)
-        # These must match the objective function's hardcoded values.
-        # aux_loss_type and resample_neurons are NOT Optuna params (hardcoded
-        # in objective), so best_params.get() would silently fall back to wrong
-        # defaults, producing a validated model with no dead neuron revival.
-        aux_loss_type = "residual_targeting"
-        aux_loss_alpha = best_params.get("aux_loss_alpha", 0.03125)
-        aux_loss_warmup = best_params.get("aux_warmup", 3)
-        resample_neurons = True
-        resample_interval = best_params.get("resample_interval", 25000)
-        resample_samples = best_params.get("resample_samples", 1024)
+        # Dead neuron mitigation — hardcoded to match objective function.
+        # These are not Optuna params; they use literature defaults.
 
         # Train with a different seed to test robustness
         validation_seed = 12345 + attempt
@@ -482,20 +474,15 @@ def validate_and_save(
             archetypal_temp=archetypal_temp,
             archetypal_relaxation=archetypal_relax,
             n_epochs=100,
-            aux_loss_type=aux_loss_type,
-            aux_loss_alpha=aux_loss_alpha,
-            aux_loss_warmup=aux_loss_warmup,
-            resample_neurons=resample_neurons,
-            resample_interval=resample_interval,
-            resample_samples=resample_samples,
+            # aux/resample use hardcoded defaults from run_sae_trial
             measure_stability=True,
             return_model=True,
             seed=validation_seed,
             device=device,
         )
 
-        # Compute validation loss
-        val_loss = metrics["total_loss"]
+        # Compare on recon_loss only (matches objective function)
+        val_loss = metrics["reconstruction_loss"]
 
         print(f"    Actual:   loss={val_loss:.6f}")
 
@@ -633,35 +620,17 @@ def create_optuna_objective(
             archetypal_n = 500
             archetypal_relax = 0.0
 
-        # Dead neuron mitigation: residual_targeting + resampling
-        # Apply to ALL architectures for fair comparison.
-        # - L1 penalty can be too strict → dead neurons
-        # - Matryoshka helps with splitting/absorption, not dead neurons directly
-        # - Aux loss + resampling provides universal dead neuron revival
-        # - No downside: if no dead neurons, aux_loss ≈ 0 and resampling doesn't trigger
-
-        # Always use residual_targeting (modern approach from SAE research)
+        # Dead neuron mitigation — hardcoded, not searched.
+        # Letting Optuna search aux params is counterproductive: since aux_loss
+        # is part of total_loss, the surrogate learns to minimize aux_loss by
+        # weakening the mitigation (long warmup, small α) rather than by
+        # actually reviving neurons. Fix the values from literature instead.
         aux_loss_type = "residual_targeting"
-
-        # Search aux loss hyperparameters
-        # α controls strength of dead neuron revival loss
-        aux_loss_alpha = trial.suggest_float("aux_loss_alpha", 1e-3, 10.0, log=True)
-        # Warmup epochs: allow initial training to stabilize before aux loss kicks in
-        aux_loss_warmup = trial.suggest_categorical("aux_warmup", [3, 5, 10, 20])
-
-        # Neuron resampling (always enabled, complementary to residual_targeting)
+        aux_loss_alpha = 1 / 32  # Anthropic default (Bricken et al. 2023)
+        aux_loss_warmup = 3      # Short warmup — neurons die fast without pressure
         resample_neurons = True
-
-        # Resample interval in steps (Anthropic uses 25000)
-        # For 100 epochs × ~120 batches = 12k steps
-        # Expanded range: old max was 10k, now 25k for breathing room
-        resample_interval = trial.suggest_categorical("resample_interval", [2500, 5000, 10000, 25000])
-
-        # Number of samples to use for resampling dead neurons
-        # More samples = better error distribution coverage, but higher overhead
-        # For TabICL: ~16k training samples, so [512, 1024, 2048, 4096] = [3%, 6%, 12%, 25%]
-        # Expanded range: old max was 2048, now 4096 for breathing room
-        resample_samples = trial.suggest_categorical("resample_samples", [512, 1024, 2048, 4096])
+        resample_interval = 2500  # Every ~19 epochs for 130 steps/epoch
+        resample_samples = 2048
 
         # Initialize wandb for this trial
         wandb_active = False
@@ -679,9 +648,6 @@ def create_optuna_objective(
                         "topk": topk,
                         "archetypal_n": archetypal_n if sae_type in ("archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal") else None,
                         "archetypal_temp": archetypal_temp if sae_type in ("archetypal", "batchtopk_archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal") else None,
-                        "aux_loss_type": aux_loss_type,
-                        "aux_loss_alpha": aux_loss_alpha if aux_loss_type != "none" else None,
-                        "aux_loss_warmup": aux_loss_warmup if aux_loss_type != "none" else None,
                     },
                     reinit=True,
                 )
@@ -701,12 +667,7 @@ def create_optuna_objective(
                 archetypal_temp=archetypal_temp,
                 archetypal_relaxation=archetypal_relax,
                 n_epochs=100,
-                aux_loss_type=aux_loss_type,
-                aux_loss_alpha=aux_loss_alpha,
-                aux_loss_warmup=aux_loss_warmup,
-                resample_neurons=resample_neurons,
-                resample_interval=resample_interval,
-                resample_samples=resample_samples,
+                # aux/resample use hardcoded defaults from run_sae_trial
                 measure_stability=True,
                 device=device,
                 use_wandb=use_wandb,
@@ -718,8 +679,11 @@ def create_optuna_objective(
                     trial.set_user_attr(key, val)
             trial.set_user_attr("context_size", context_size)
 
-            # Objective: minimize the training loss (recon_loss + sparsity_loss)
-            total_loss = metrics["total_loss"]
+            # Objective: minimize reconstruction loss only.
+            # aux_loss must NOT be in the objective — it creates a perverse
+            # incentive where the surrogate minimizes aux_loss by weakening
+            # dead neuron mitigation rather than by improving reconstruction.
+            obj = metrics["reconstruction_loss"]
 
             # Finish wandb run
             if wandb_active:
@@ -729,7 +693,7 @@ def create_optuna_objective(
                 except:
                     pass
 
-            return total_loss
+            return obj
 
         except Exception as e:
             print(f"Trial failed: {e}")
@@ -971,10 +935,7 @@ def evaluate_on_test(
             archetypal_temp=params.get("archetypal_temp", 0.1),
             archetypal_relaxation=params.get("archetypal_relaxation", 0.0),
             n_epochs=100,
-            aux_loss_alpha=params.get("aux_loss_alpha", 0.03125),
-            aux_loss_warmup=params.get("aux_warmup", 3),
-            resample_interval=params.get("resample_interval", 25000),
-            resample_samples=params.get("resample_samples", 1024),
+            # aux/resample use hardcoded defaults from run_sae_trial
             measure_stability=True,
         )
 
