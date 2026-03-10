@@ -66,6 +66,7 @@ DEFAULT_MODELS = [
     ("TabPFN", "tabpfn", "tabpfn"),
     ("CARTE", "carte", "carte"),
     ("TabICL", "tabicl", "tabicl"),
+    ("TabICL-v2", "tabicl_v2", "tabicl_v2"),
     ("TabDPT", "tabdpt", "tabdpt"),
     ("Mitra", "mitra", "mitra"),
     ("HyperFast", "hyperfast", "hyperfast"),
@@ -76,6 +77,7 @@ DEFAULT_MODELS = [
 REGRESSION_MODELS = [
     ("TabPFN", "tabpfn", "tabpfn"),
     ("CARTE", "carte", "carte"),
+    ("TabICL-v2", "tabicl_v2", "tabicl_v2"),
     ("TabDPT", "tabdpt", "tabdpt"),
     ("Mitra", "mitra", "mitra"),
     ("Tabula-8B", "tabula8b", "tabula8b"),

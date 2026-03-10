@@ -340,6 +340,19 @@ def extract_tabicl_all_layers(
     return layer_embeddings
 
 
+def extract_tabicl_v2_all_layers(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    device: str = "cuda",
+    task: str = "classification",
+) -> Dict[str, np.ndarray]:
+    """Extract from TabICL v2 (separate model registration, same architecture)."""
+    return extract_tabicl_all_layers(
+        X_context, y_context, X_query, device=device, task=task,
+    )
+
+
 def extract_tabdpt_all_layers(
     X_context: np.ndarray,
     y_context: np.ndarray,

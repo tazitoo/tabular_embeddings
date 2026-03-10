@@ -80,6 +80,7 @@ LABEL_KEY_TO_MODEL_KEY = {
     "TabPFN": "tabpfn",
     "Mitra": "mitra",
     "TabICL": "tabicl",
+    "TabICL-v2": "tabicl_v2",
     "TabDPT": "tabdpt",
     "HyperFast": "hyperfast",
     "CARTE": "carte",

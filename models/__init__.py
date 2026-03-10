@@ -8,6 +8,7 @@ __all__ = ["EmbeddingExtractor", "get_extractor", "MODEL_REGISTRY"]
 MODEL_REGISTRY = {
     "tabpfn": ("models.tabpfn_embeddings", "TabPFNEmbeddingExtractor", "cpu"),
     "hyperfast": ("models.hyperfast_embeddings", "HyperFastEmbeddingExtractor", "cuda"),
+    "tabicl_v2": ("models.tabicl_v2_embeddings", "TabICLV2EmbeddingExtractor", "cpu"),
     "tabicl": ("models.tabicl_embeddings", "TabICLEmbeddingExtractor", "cpu"),
     "tabdpt": ("models.tabdpt_embeddings", "TabDPTEmbeddingExtractor", "cpu"),
     "mitra": ("models.mitra_embeddings", "MitraEmbeddingExtractor", "cpu"),
