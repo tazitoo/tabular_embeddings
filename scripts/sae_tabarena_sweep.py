@@ -274,10 +274,10 @@ def build_sae_config(
     archetypal_temp: float = 0.1,
     archetypal_relaxation: float = 0.0,
     n_epochs: int = 100,
-    aux_loss_type: str = "none",
+    aux_loss_type: str = "residual_targeting",
     aux_loss_alpha: float = 0.03125,
     aux_loss_warmup_epochs: int = 3,
-    resample_neurons: bool = False,
+    resample_neurons: bool = True,
     resample_interval: int = 25000,
     resample_samples: int = 1024,
 ) -> SAEConfig:
@@ -328,10 +328,10 @@ def run_sae_trial(
     archetypal_temp: float = 0.1,
     archetypal_relaxation: float = 0.0,
     n_epochs: int = 100,
-    aux_loss_type: str = "none",
+    aux_loss_type: str = "residual_targeting",
     aux_loss_alpha: float = 0.03125,
     aux_loss_warmup: int = 3,
-    resample_neurons: bool = False,
+    resample_neurons: bool = True,
     resample_interval: int = 25000,
     resample_samples: int = 1024,
     measure_stability: bool = True,
@@ -458,10 +458,14 @@ def validate_and_save(
         archetypal_n = best_params.get("archetypal_n", 500)
         archetypal_temp = best_params.get("archetypal_temp", 0.1)
         archetypal_relax = best_params.get("archetypal_relaxation", 0.0)
-        aux_loss_type = best_params.get("aux_loss_type", "none")
+        # These must match the objective function's hardcoded values.
+        # aux_loss_type and resample_neurons are NOT Optuna params (hardcoded
+        # in objective), so best_params.get() would silently fall back to wrong
+        # defaults, producing a validated model with no dead neuron revival.
+        aux_loss_type = "residual_targeting"
         aux_loss_alpha = best_params.get("aux_loss_alpha", 0.03125)
         aux_loss_warmup = best_params.get("aux_warmup", 3)
-        resample_neurons = best_params.get("resample_neurons", False)
+        resample_neurons = True
         resample_interval = best_params.get("resample_interval", 25000)
         resample_samples = best_params.get("resample_samples", 1024)
 
@@ -967,6 +971,10 @@ def evaluate_on_test(
             archetypal_temp=params.get("archetypal_temp", 0.1),
             archetypal_relaxation=params.get("archetypal_relaxation", 0.0),
             n_epochs=100,
+            aux_loss_alpha=params.get("aux_loss_alpha", 0.03125),
+            aux_loss_warmup=params.get("aux_warmup", 3),
+            resample_interval=params.get("resample_interval", 25000),
+            resample_samples=params.get("resample_samples", 1024),
             measure_stability=True,
         )
 
