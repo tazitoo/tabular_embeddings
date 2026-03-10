@@ -259,7 +259,7 @@ class SAEConfig:
     aux_loss_type: str = "none"  # "none", "ghost_grads", "auxk", or "residual_targeting"
     aux_loss_alpha: float = 0.03125  # Coefficient α for auxiliary loss (1/32 default for AuxK)
     aux_loss_warmup_epochs: int = 3  # Epochs to wait before enabling aux loss (allows initial stabilization)
-    dead_steps_threshold: int = 76  # Steps without activation to consider dead (Gao et al.: 10M/131k ≈ 76)
+    dead_steps_threshold: int = 200  # Steps without activation before declared dead (~3% of typical training)
     dead_threshold: int = 500  # DEPRECATED: use dead_steps_threshold
     dead_freq_threshold: float = 1e-3  # DEPRECATED: use dead_steps_threshold
     ema_decay: float = 0.999  # DEPRECATED: kept for checkpoint compat
@@ -691,8 +691,10 @@ class SparseAutoencoder(nn.Module):
         if n_dead == 0:
             return torch.tensor(0.0, device=x.device)
 
-        # Residual from main reconstruction
-        residual = x - x_hat  # (batch_size, input_dim)
+        # Residual from main reconstruction — detach so AuxK gradients only flow
+        # through dead decoder columns, not back through the main encoder/decoder.
+        # Standard practice: OpenAI, EleutherAI, SAELens, saprmarks all detach.
+        residual = (x - x_hat).detach()  # (batch_size, input_dim)
 
         # Secondary TopK among dead latent pre-activations (Gao et al. 2024)
         # k_aux = d_model/2 per Gao et al., NOT topk (which is the sparsity parameter)
@@ -711,7 +713,11 @@ class SparseAutoencoder(nn.Module):
             W_dec_dead = self.W_dec[:, dead_mask].T  # (n_dead, input_dim)
 
         dead_recon = dead_h @ W_dec_dead  # (batch, n_dead) @ (n_dead, input)
-        auxk_loss = F.mse_loss(dead_recon, residual)
+
+        # Normalize by residual variance (saprmarks/dictionary_learning) — makes AuxK
+        # magnitude scale-invariant across datasets with different reconstruction quality.
+        residual_var = residual.var()
+        auxk_loss = F.mse_loss(dead_recon, residual) / (residual_var + 1e-8)
 
         # Zero out NaN (Gao et al. 2024) — can happen early when dead_recon is degenerate
         if torch.isnan(auxk_loss):
@@ -762,8 +768,8 @@ class SparseAutoencoder(nn.Module):
         h_alive[:, dead_mask] = 0.0  # Zero out dead features
         x_hat_alive = self.decode(h_alive)
 
-        # Residual from alive features
-        residual = x - x_hat_alive  # (batch_size, input_dim)
+        # Residual from alive features — detach to isolate dead neuron training
+        residual = (x - x_hat_alive).detach()  # (batch_size, input_dim)
 
         # Reconstruct using ONLY dead features
         h_dead = h.clone()
@@ -1191,6 +1197,7 @@ def train_sae(
             # Backward — ConstrainedAdam handles gradient projection + decoder normalization
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # saprmarks recipe
             optimizer.step()
 
             # Update weight EMA (Gao et al. 2024)

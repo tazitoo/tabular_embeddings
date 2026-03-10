@@ -1,0 +1,213 @@
+% Pipeline overview figure: concept extraction, matching, and transfer
+% Compile standalone: pdflatex pipeline_figure.tex
+% Or \input{} into the main paper (remove documentclass/begin{document})
+\documentclass[tikz,border=5pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc}
+
+\begin{document}
+
+\definecolor{modelcol}{HTML}{4472C4}   % blue for TFMs
+\definecolor{embcol}{HTML}{5B9BD5}     % lighter blue for embeddings
+\definecolor{saecol}{HTML}{ED7D31}     % orange for SAEs
+\definecolor{conceptcol}{HTML}{FFC000} % gold for concepts/labels
+\definecolor{matchcol}{HTML}{70AD47}   % green for matched
+\definecolor{unmatchcol}{HTML}{C00000} % red for unmatched
+\definecolor{transfercol}{HTML}{7030A0}% purple for transfer/intervention
+\definecolor{datacol}{HTML}{A5A5A5}    % grey for data
+\definecolor{panelbg}{HTML}{F2F2F2}    % panel background
+
+\begin{tikzpicture}[
+    >=Stealth,
+    node distance=0.6cm and 0.9cm,
+    box/.style={draw, rounded corners=2pt, minimum height=0.7cm,
+                minimum width=1.3cm, font=\small\sffamily, thick,
+                fill=#1!15, draw=#1!80},
+    box/.default=black,
+    data/.style={box=datacol, minimum width=1.5cm},
+    model/.style={box=modelcol, minimum width=2.0cm},
+    emb/.style={box=embcol},
+    sae/.style={box=saecol},
+    concept/.style={box=conceptcol},
+    matched/.style={box=matchcol},
+    unmatched/.style={box=unmatchcol},
+    transfer/.style={box=transfercol},
+    arr/.style={->, thick, draw=black!70},
+    phase/.style={font=\normalsize\sffamily\bfseries, text=black!60},
+    sublabel/.style={font=\scriptsize\sffamily, text=black!50},
+]
+
+% ============================================================
+% PHASE 1: TRAINING — Concept Extraction & Matching
+% ============================================================
+
+% --- TabArena source (stacked), centered between train and test ---
+\node[data] at (-2.6cm+5pt, -1.6cm-4pt) {\phantom{TabArena}};
+\node[data] at (-2.6cm+2.5pt, -1.6cm-2pt) {\phantom{TabArena}};
+\node[data] (tabdata) at (-2.6cm, -1.6cm) {TabArena};
+\node[sublabel, below=0pt of tabdata] {51 datasets};
+
+% --- Train split (Phase 1 input) ---
+\node[data] (traindata) {Train};
+\node[sublabel, below=0pt of traindata] {70\%};
+
+% --- Path A (top) ---
+\node[model, right=1.1cm of traindata, yshift=0.8cm] (tfmA) {TFM $A$ $[:\!\ell_A]$};
+\node[emb, right=of tfmA] (embA) {Emb $A$};
+\node[sae, right=of embA] (saeA) {SAE $A$};
+
+% --- Path B (bottom) ---
+\node[model, right=1.1cm of traindata, yshift=-0.8cm] (tfmB) {TFM $B$ $[:\!\ell_B]$};
+\node[emb, right=of tfmB] (embB) {Emb $B$};
+\node[sae, right=of embB] (saeB) {SAE $B$};
+
+% --- Concept co-occurrence matrix (tall, with mini heatmap) ---
+\node[draw, rounded corners=2pt, thick, fill=white, draw=black!80,
+      right=1.1cm of $(saeA)!0.5!(saeB)$,
+      minimum width=1.9cm, minimum height=2.3cm] (cooccur) {};
+\node[font=\scriptsize\sffamily, text=black!60, align=center]
+    at ($(cooccur.north)+(0,-0.3)$) {Concept\\[-1pt]co-occurrence};
+% Mini matrix heatmap
+\begin{scope}
+    \def\cs{0.18cm}
+    \coordinate (mo) at ($(cooccur.center)+(-3*\cs, 2*\cs)$);
+    % Matched cells (green — shared concepts, near-diagonal)
+    \foreach \r/\c in {0/0, 1/2, 2/1, 3/3, 4/4} {
+        \fill[matchcol!55] ($(mo)+(\c*\cs,-\r*\cs)$) rectangle +(\cs,-\cs);
+    }
+    % Weak co-occurrence (light green)
+    \foreach \r/\c in {0/1, 2/3, 3/2} {
+        \fill[matchcol!20] ($(mo)+(\c*\cs,-\r*\cs)$) rectangle +(\cs,-\cs);
+    }
+    % Unique row (red — concept in A with no match in B)
+    \foreach \c in {0,...,5} {
+        \fill[unmatchcol!30] ($(mo)+(\c*\cs,-5*\cs)$) rectangle +(\cs,-\cs);
+    }
+    % Unique column (red — concept in B with no match in A)
+    \foreach \r in {0,...,4} {
+        \fill[unmatchcol!30] ($(mo)+(5*\cs,-\r*\cs)$) rectangle +(\cs,-\cs);
+    }
+    % Grid lines
+    \draw[black!20, very thin] (mo) grid[step=\cs] ++(6*\cs,-6*\cs);
+\end{scope}
+
+% --- Matched / Unmatched ---
+\node[matched, right=1.2cm of cooccur, yshift=0.5cm, minimum width=1.8cm] (match) {Shared $\{c_1, \ldots\}$};
+\node[unmatched, right=1.2cm of cooccur, yshift=-0.5cm, minimum width=2.1cm] (unmatch) {Unique to $A$ $\{c_i\}$};
+
+% --- Phase 1 title ---
+\node[phase, above=0.4cm of $(tfmA.north west)!0.5!(match.north east)$]
+    (phase1) {\textsc{Phase 1: Concept Extraction \& Matching}};
+
+% --- 70% train arrow ---
+\draw[arr] (tabdata.north) |- (traindata.west);
+
+% --- Arrows Phase 1 ---
+\draw[arr] (traindata.east) ++(0,0) -- ++(0.25,0) |- (tfmA.west);
+\draw[arr] (traindata.east) ++(0,0) -- ++(0.25,0) |- (tfmB.west);
+\draw[arr] (tfmA) -- (embA);
+\draw[arr] (embA) -- (saeA);
+\draw[arr] (tfmB) -- (embB);
+\draw[arr] (embB) -- (saeB);
+\draw[arr] (saeA.east) -- (cooccur.west |- saeA);
+\draw[arr] (saeB.east) -- (cooccur.west |- saeB);
+\draw[arr] (cooccur.east |- match) -- (match.west);
+\draw[arr] (cooccur.east |- unmatch) -- (unmatch.west);
+
+% --- Phase 1 background ---
+\begin{scope}[on background layer]
+    \node[fit=(traindata)(phase1)(match)(unmatch)(tfmB)(saeB),
+          fill=panelbg, rounded corners=6pt, inner xsep=10pt, inner ysep=8pt] (bg1) {};
+\end{scope}
+
+% ============================================================
+% PHASE 2: TRANSFER — Concept Intervention
+% ============================================================
+
+% --- Test split (Phase 2 input) ---
+\node[data, below=3.2cm of traindata] (testdata) {Test};
+\node[sublabel, below=0pt of testdata] {30\%};
+
+% --- Row 1 (baseline A): TFM A → Pred A ---
+\node[model, right=1.1cm of testdata, yshift=1.2cm] (tfmA_base) {TFM $A$};
+\node[box=modelcol, right=2.5cm of tfmA_base, minimum width=1.3cm] (predA) {Pred $A$};
+
+% --- Row 2 (baseline B): TFM B → Pred B ---
+\node[model, right=1.1cm of testdata, yshift=0.4cm] (tfmB_base) {TFM $B$};
+\node[box=modelcol, right=2.5cm of tfmB_base, minimum width=1.3cm] (predB) {Pred $B$};
+
+% --- Row 3 (concept extraction): TFM A[:ℓ_A] → SAE A → Unique to A ---
+\node[model, right=1.1cm of testdata, yshift=-0.4cm] (tfmA2) {TFM $A$ $[:\!\ell_A]$};
+\node[sae, right=of tfmA2] (saeA2) {SAE $A$};
+\node[unmatched, right=of saeA2, minimum width=1.8cm] (conA) {Unique to $A$};
+
+% --- Row 4 (intervention): TFM B [:ℓ_B] → Intervene → Pred B' ---
+\node[model, right=1.1cm of testdata, yshift=-1.2cm] (tfmB2) {TFM $B$ $[:\!\ell_B]$};
+\node[transfer, minimum width=1.6cm] at (conA |- tfmB2) (intervene) {Intervene};
+\node[box=matchcol, right=3.2cm of intervene, minimum width=1.3cm] (predBprime) {Pred $B'$};
+
+% --- Scatter plot: x aligned with Pred B', y aligned with midpoint of Pred A/B ---
+\coordinate (scatterY) at ($(predA)!0.5!(predB)$);
+\node[draw, thick, rounded corners=2pt,
+      minimum width=2.0cm, minimum height=1.8cm, fill=white]
+    at (predBprime |- scatterY) (scatter) {};
+% Axes
+\draw[black!40, thin] ($(scatter.south west)+(0.15,0.15)$) -- ($(scatter.north west)+(0.15,-0.1)$);
+\draw[black!40, thin] ($(scatter.south west)+(0.15,0.15)$) -- ($(scatter.south east)+(-0.1,0.15)$);
+% Diagonal
+\draw[black!15, thin, dashed] ($(scatter.south west)+(0.15,0.15)$) -- ($(scatter.north east)+(-0.1,-0.1)$);
+% Baseline points (grey, scattered) — Pred A vs Pred B
+\foreach \x/\y in {0.15/0.65, 0.35/0.55, 0.2/0.75, 0.55/0.35, 0.65/0.8, 0.25/0.4, 0.7/0.25, 0.45/0.6} {
+    \fill[black!25] ($(scatter.south west)+(0.15+\x*1.5, 0.15+\y*1.4)$) circle (1.0pt);
+}
+% Intervened points (purple, tight to diagonal) — Pred A vs Pred B'
+\foreach \x/\y in {0.25/0.5, 0.45/0.7, 0.35/0.45, 0.65/0.85, 0.55/0.75, 0.3/0.55, 0.5/0.6, 0.75/0.82} {
+    \fill[transfercol!80] ($(scatter.south west)+(0.15+\x*1.5, 0.15+\y*1.4)$) circle (1.2pt);
+}
+
+% --- Phase 2 title ---
+\node[phase, above=0.4cm of $(testdata.north west)!0.5!(scatter.north east)$]
+    (phase2) {\textsc{Phase 2: Concept Transfer}};
+
+% --- Arrows Phase 2 ---
+% 30% test arrow from source
+\draw[arr] (tabdata.south) |- (testdata.west);
+
+% Test data → all 4 TFMs
+\draw[arr] (testdata.east) ++(0,0) -- ++(0.25,0) |- (tfmA_base.west);
+\draw[arr] (testdata.east) ++(0,0) -- ++(0.25,0) |- (tfmB_base.west);
+\draw[arr] (testdata.east) ++(0,0) -- ++(0.25,0) |- (tfmA2.west);
+\draw[arr] (testdata.east) ++(0,0) -- ++(0.25,0) |- (tfmB2.west);
+
+% Row 1: Baseline TFM A → Pred A
+\draw[arr, draw=black!40] (tfmA_base) -- (predA);
+
+% Row 2: Baseline TFM B → Pred B
+\draw[arr, draw=black!40] (tfmB_base) -- (predB);
+
+% Row 3: Concept extraction TFM A[:ℓ_A] → SAE A → Unique to A
+\draw[arr] (tfmA2) -- (saeA2);
+\draw[arr] (saeA2) -- (conA);
+
+% Row 3-4: Unique to A → down into Intervene
+\draw[arr, draw=unmatchcol!80] (conA.south) -- (intervene.north);
+
+% Row 4: TFM B embedding → Intervene
+\draw[arr, draw=embcol!80] (tfmB2.east) -- (intervene.west);
+
+% Row 4: Intervene → Pred B'
+\draw[arr] (intervene) -- (predBprime);
+
+% To scatter plot
+\draw[arr] (predBprime.north) -- (scatter.south);
+\draw[arr, draw=black!40] (predA.east) -- (scatter.west |- predA);
+\draw[arr, draw=black!40] (predB.east) -- (scatter.west |- predB);
+
+% --- Phase 2 background ---
+\begin{scope}[on background layer]
+    \node[fit=(testdata)(phase2)(scatter)(predA)(predB)(predBprime)(tfmB2)(intervene)(tfmA_base)(tfmB_base),
+          fill=panelbg, rounded corners=6pt, inner xsep=10pt, inner ysep=12pt] (bg2) {};
+\end{scope}
+
+\end{tikzpicture}
+\end{document}
