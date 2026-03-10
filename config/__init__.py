@@ -44,15 +44,22 @@ def get_optimal_layer(model_name: str) -> int:
         KeyError: If model not found in config
     """
     config = load_optimal_layers()
-    model_key = model_name.lower().replace('-', '').replace('_', '')
 
-    # Try exact match first
-    if model_key in config:
-        return config[model_key]['optimal_layer']
+    # Try exact match first (original key)
+    if model_name in config:
+        return config[model_name]['optimal_layer']
+
+    # Try normalized exact match
+    model_key = model_name.lower().replace('-', '').replace('_', '')
+    for key in config:
+        if key.lower().replace('-', '').replace('_', '') == model_key:
+            return config[key]['optimal_layer']
 
     # Try prefix match (for tabula8b, tabula-8b, etc.)
-    for key in config:
-        if model_key.startswith(key) or key.startswith(model_key):
+    # Sort keys longest-first so tabicl_v2 matches before tabicl
+    for key in sorted(config.keys(), key=len, reverse=True):
+        norm_key = key.lower().replace('-', '').replace('_', '')
+        if model_key.startswith(norm_key) or norm_key.startswith(model_key):
             return config[key]['optimal_layer']
 
     raise KeyError(f"Model '{model_name}' not found in optimal layers config. "
