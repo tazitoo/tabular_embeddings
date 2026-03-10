@@ -21,6 +21,17 @@
     "extraction_point": "layer_8",
     "rationale": "Layer 8 is optimal (critical - 1), where representation maintains 0.66 CKA with input before divergence cliff at layer 9"
   },
+  "tabicl_v2": {
+    "optimal_layer": 9,
+    "n_layers": 13,
+    "critical_layer_mean": 10,
+    "critical_layer_std": 0.0,
+    "optimal_depth_fraction": 0.692,
+    "architecture": "Column-then-Row TFM v2",
+    "task": "both",
+    "extraction_point": "layer_8",
+    "rationale": "Layer 9 (ICL block 8) is optimal — CKA plateau at 0.736 before drop to 0.655 at L10. Gradual decline (no sharp cliff); first big late drop at L9->L10 (-0.081). 51 datasets, cls+reg."
+  },
   "mitra": {
     "optimal_layer": 10,
     "n_layers": 13,
