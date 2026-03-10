@@ -274,7 +274,7 @@ def build_sae_config(
     archetypal_temp: float = 0.1,
     archetypal_relaxation: float = 0.0,
     n_epochs: int = 100,
-    aux_loss_type: str = "residual_targeting",
+    aux_loss_type: str = "auxk",
     aux_loss_alpha: float = 0.03125,
     aux_loss_warmup_epochs: int = 3,
     resample_neurons: bool = True,
@@ -328,7 +328,7 @@ def run_sae_trial(
     archetypal_temp: float = 0.1,
     archetypal_relaxation: float = 0.0,
     n_epochs: int = 100,
-    aux_loss_type: str = "residual_targeting",
+    aux_loss_type: str = "auxk",
     aux_loss_alpha: float = 0.03125,
     aux_loss_warmup: int = 3,
     resample_neurons: bool = True,
@@ -481,8 +481,8 @@ def validate_and_save(
             device=device,
         )
 
-        # Compare on recon_loss only (matches objective function)
-        val_loss = metrics["reconstruction_loss"]
+        # Compare on total loss (matches objective function)
+        val_loss = metrics["reconstruction_loss"] + metrics["aux_loss"]
 
         print(f"    Actual:   loss={val_loss:.6f}")
 
@@ -625,8 +625,8 @@ def create_optuna_objective(
         # is part of total_loss, the surrogate learns to minimize aux_loss by
         # weakening the mitigation (long warmup, small α) rather than by
         # actually reviving neurons. Fix the values from literature instead.
-        aux_loss_type = "residual_targeting"
-        aux_loss_alpha = 1 / 32  # Anthropic default (Bricken et al. 2023)
+        aux_loss_type = "auxk"
+        aux_loss_alpha = 1 / 32  # Gao et al. (2024)
         aux_loss_warmup = 3      # Short warmup — neurons die fast without pressure
         resample_neurons = True
         resample_interval = 2500  # Every ~19 epochs for 130 steps/epoch
@@ -679,11 +679,11 @@ def create_optuna_objective(
                     trial.set_user_attr(key, val)
             trial.set_user_attr("context_size", context_size)
 
-            # Objective: minimize reconstruction loss only.
-            # aux_loss must NOT be in the objective — it creates a perverse
-            # incentive where the surrogate minimizes aux_loss by weakening
-            # dead neuron mitigation rather than by improving reconstruction.
-            obj = metrics["reconstruction_loss"]
+            # Objective: minimize total loss (recon + aux).
+            # Now that aux params are hardcoded (not searched), the perverse
+            # incentive is gone. Including aux_loss rewards HP configs that
+            # naturally produce fewer dead neurons.
+            obj = metrics["reconstruction_loss"] + metrics["aux_loss"]
 
             # Finish wandb run
             if wandb_active:

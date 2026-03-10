@@ -152,6 +152,36 @@ def get_cached_kmeans(data: torch.Tensor, n_clusters: int, seed: int = 42) -> to
     return centroids.to(device=data.device, dtype=data.dtype)
 
 
+def _geometric_median(data: torch.Tensor, max_iter: int = 100, tol: float = 1e-6) -> torch.Tensor:
+    """Compute geometric median via Weiszfeld's algorithm (Gao et al. 2024, Section A.1).
+
+    The geometric median minimizes the sum of Euclidean distances to all points.
+    More robust than the mean for initialization of b_dec.
+
+    Args:
+        data: (n_samples, n_features) on any device
+        max_iter: Maximum Weiszfeld iterations
+        tol: Convergence tolerance (relative change in median)
+
+    Returns:
+        Geometric median vector (n_features,) on same device as data
+    """
+    # Start from the component-wise median (good initial guess)
+    median = data.median(dim=0).values.clone()
+
+    for _ in range(max_iter):
+        dists = torch.norm(data - median.unsqueeze(0), dim=1, keepdim=True)  # (n, 1)
+        # Avoid division by zero for points exactly at the median
+        weights = 1.0 / dists.clamp(min=1e-8)  # (n, 1)
+        new_median = (weights * data).sum(dim=0) / weights.sum()
+        shift = torch.norm(new_median - median) / (torch.norm(median) + 1e-8)
+        median = new_median
+        if shift < tol:
+            break
+
+    return median
+
+
 # Sparsity types that use the archetypal decoder (convex combos of centroids)
 ARCHETYPAL_TYPES = frozenset({
     "archetypal", "matryoshka_archetypal",
@@ -229,9 +259,10 @@ class SAEConfig:
     aux_loss_type: str = "none"  # "none", "ghost_grads", "auxk", or "residual_targeting"
     aux_loss_alpha: float = 0.03125  # Coefficient α for auxiliary loss (1/32 default for AuxK)
     aux_loss_warmup_epochs: int = 3  # Epochs to wait before enabling aux loss (allows initial stabilization)
-    dead_threshold: int = 500  # Steps without activation to consider dead (legacy)
-    dead_freq_threshold: float = 1e-3  # EMA activation frequency below which a feature is "dead"
-    ema_decay: float = 0.999  # Decay rate for activation frequency EMA
+    dead_steps_threshold: int = 76  # Steps without activation to consider dead (Gao et al.: 10M/131k ≈ 76)
+    dead_threshold: int = 500  # DEPRECATED: use dead_steps_threshold
+    dead_freq_threshold: float = 1e-3  # DEPRECATED: use dead_steps_threshold
+    ema_decay: float = 0.999  # DEPRECATED: kept for checkpoint compat
 
     # Dead neuron revival - resampling
     resample_dead_neurons: bool = False  # Enable Anthropic-style neuron resampling
@@ -249,10 +280,12 @@ class SAEConfig:
 
     # Training
     learning_rate: float = 1e-3
+    adam_eps: float = 6.25e-10  # Adam epsilon (Gao et al. 2024); PyTorch default is 1e-8
     batch_size: int = 256
     n_epochs: int = 100
-    use_lr_schedule: bool = True  # Three-phase LR schedule: warmup(5%) + stable(75%) + decay(20%)
+    use_lr_schedule: bool = False  # Constant LR (Gao et al. 2024); set True for 3-phase warmup/stable/decay
     warmup_epochs: int = 3  # DEPRECATED: use_lr_schedule now auto-computes warmup as 5% of n_epochs
+    weight_ema_decay: float = 0.999  # Weight EMA coefficient (Gao et al. 2024); 0.0 to disable
     strip_fraction: float = 0.0  # Fraction of most-negative encoder weights to zero per dead neuron (0=disabled)
 
     # Normalization
@@ -558,22 +591,16 @@ class SparseAutoencoder(nn.Module):
         if self.config.aux_loss_type != "ghost_grads":
             return torch.tensor(0.0, device=x.device)
 
-        # Update dead neuron tracking with EMA of per-sample activation frequency.
-        # Using per-sample mean (not batch-level any()) to properly detect TopK-marginal
-        # features that fire rarely enough to be effectively dead but often enough to
-        # reset a binary step counter.
+        # Update dead neuron tracking: step counter (Gao et al. 2024)
         with torch.no_grad():
-            batch_freq = (h > 0).float().mean(dim=0)  # Per-sample frequency in this batch
-            decay = self.config.ema_decay
-            self.activation_freq = decay * self.activation_freq + (1 - decay) * batch_freq
-            # Also update legacy step counter for checkpoint compat
             active_mask = (h > 0).any(dim=0)
             self.steps_since_active[active_mask] = 0
             self.steps_since_active[~active_mask] += 1
             self.total_steps += 1
 
-        # Use EMA frequency for dead detection (not step counter)
-        dead_mask = self.activation_freq < self.config.dead_freq_threshold
+        # Dead = hasn't fired for dead_steps_threshold steps
+        dead_steps = getattr(self.config, 'dead_steps_threshold', 76)
+        dead_mask = self.steps_since_active > dead_steps
         n_dead = dead_mask.sum().item()
 
         if n_dead == 0:
@@ -647,14 +674,18 @@ class SparseAutoencoder(nn.Module):
         if pre_act is None:
             raise ValueError("compute_auxk_loss requires pre_act (call encode with return_pre_act=True)")
 
-        # Update dead neuron tracking with EMA
+        # Update dead neuron tracking: step counter (Gao et al. 2024)
+        # A feature is dead if it hasn't fired in any sample for dead_steps_threshold steps.
+        # Gao: "not activated on any example in the last 10M tokens" ≈ 76 batches.
         with torch.no_grad():
-            batch_freq = (h > 0).float().mean(dim=0)
-            decay = self.config.ema_decay
-            self.activation_freq = decay * self.activation_freq + (1 - decay) * batch_freq
+            active_mask = (h > 0).any(dim=0)  # Fired in ANY sample this batch
+            self.steps_since_active[active_mask] = 0
+            self.steps_since_active[~active_mask] += 1
+            self.total_steps += 1
 
-        # Identify dead features
-        dead_mask = self.activation_freq < self.config.dead_freq_threshold
+        # Identify dead features via step counter
+        dead_steps = getattr(self.config, 'dead_steps_threshold', 76)
+        dead_mask = self.steps_since_active > dead_steps
         n_dead = dead_mask.sum().item()
 
         if n_dead == 0:
@@ -664,8 +695,9 @@ class SparseAutoencoder(nn.Module):
         residual = x - x_hat  # (batch_size, input_dim)
 
         # Secondary TopK among dead latent pre-activations (Gao et al. 2024)
+        # k_aux = d_model/2 per Gao et al., NOT topk (which is the sparsity parameter)
         dead_pre_act = pre_act[:, dead_mask]  # (batch, n_dead)
-        k_aux = min(self.config.topk, n_dead)
+        k_aux = min(self.config.input_dim // 2, n_dead)
         topk_vals, topk_idx = torch.topk(dead_pre_act, k_aux, dim=-1)
         dead_h = torch.zeros_like(dead_pre_act)
         dead_h.scatter_(-1, topk_idx, F.relu(topk_vals))
@@ -680,6 +712,10 @@ class SparseAutoencoder(nn.Module):
 
         dead_recon = dead_h @ W_dec_dead  # (batch, n_dead) @ (n_dead, input)
         auxk_loss = F.mse_loss(dead_recon, residual)
+
+        # Zero out NaN (Gao et al. 2024) — can happen early when dead_recon is degenerate
+        if torch.isnan(auxk_loss):
+            return torch.tensor(0.0, device=x.device)
 
         return self.config.aux_loss_alpha * auxk_loss
 
@@ -706,14 +742,16 @@ class SparseAutoencoder(nn.Module):
         if self.config.aux_loss_type != "residual_targeting":
             return torch.tensor(0.0, device=x.device)
 
-        # Update dead neuron tracking with EMA
+        # Update dead neuron tracking: step counter (Gao et al. 2024)
         with torch.no_grad():
-            batch_freq = (h > 0).float().mean(dim=0)
-            decay = self.config.ema_decay
-            self.activation_freq = decay * self.activation_freq + (1 - decay) * batch_freq
+            active_mask = (h > 0).any(dim=0)
+            self.steps_since_active[active_mask] = 0
+            self.steps_since_active[~active_mask] += 1
+            self.total_steps += 1
 
-        # Identify dead features
-        dead_mask = self.activation_freq < self.config.dead_freq_threshold
+        # Dead = hasn't fired for dead_steps_threshold steps
+        dead_steps = getattr(self.config, 'dead_steps_threshold', 76)
+        dead_mask = self.steps_since_active > dead_steps
         n_dead = dead_mask.sum().item()
 
         if n_dead == 0:
@@ -1028,10 +1066,19 @@ def train_sae(
         with torch.no_grad():
             model.W_enc.data = model.get_archetypal_dictionary().clone()
 
+    # Initialize b_dec to geometric median of training data (Gao et al. 2024, Section A.1)
+    # Centers the encoder on the data distribution so features don't start dead
+    with torch.no_grad():
+        model.b_dec.data = _geometric_median(X.to(device))
+
     # ConstrainedAdam: gradient projection + unit-norm decoder columns (Gao et al. 2024)
     # For archetypal types, decoder is derived from archetype_logits, so no W_dec to constrain
     constrained = [model.W_dec] if model.W_dec is not None else []
-    optimizer = ConstrainedAdam(model.parameters(), constrained_params=constrained, lr=config.learning_rate)
+    adam_eps = getattr(config, 'adam_eps', 6.25e-10)
+    optimizer = ConstrainedAdam(
+        model.parameters(), constrained_params=constrained,
+        lr=config.learning_rate, eps=adam_eps,
+    )
 
     # Three-phase LR schedule (SAE best practice):
     # - Warmup (first 5%): linear 0 → peak_lr
@@ -1058,6 +1105,14 @@ def train_sae(
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     else:
         scheduler = None
+
+    # Weight EMA (Gao et al. 2024, Section A.5)
+    # Maintain exponential moving average of all parameters for smoother final weights
+    weight_ema_decay = getattr(config, 'weight_ema_decay', 0.999)
+    if weight_ema_decay > 0:
+        ema_state = {name: p.data.clone() for name, p in model.named_parameters()}
+    else:
+        ema_state = None
 
     # For Matryoshka and Matryoshka-Archetypal, setup dimension weights
     if config.sparsity_type in ("matryoshka", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"):
@@ -1138,6 +1193,13 @@ def train_sae(
             loss.backward()
             optimizer.step()
 
+            # Update weight EMA (Gao et al. 2024)
+            if ema_state is not None:
+                with torch.no_grad():
+                    for name, p in model.named_parameters():
+                        if name in ema_state:
+                            ema_state[name].mul_(weight_ema_decay).add_(p.data, alpha=1 - weight_ema_decay)
+
             epoch_recon += recon_loss.item()
             epoch_sparse += sparsity_loss.item()
             epoch_aux += aux_loss.item() if torch.is_tensor(aux_loss) else aux_loss
@@ -1156,14 +1218,15 @@ def train_sae(
         if scheduler is not None:
             scheduler.step()
 
-        # Dead neuron detection and optional synaptic stripping (after each epoch)
+        # Dead neuron detection via step counter (Gao et al. 2024)
         strip_fraction = getattr(config, 'strip_fraction', 0.0)
         n_dead = 0
         n_stripped = 0
         n_resampled = 0
         n_alive = config.hidden_dim
-        if hasattr(model, 'activation_freq'):
-            dead_mask = model.activation_freq < config.dead_freq_threshold
+        dead_steps = getattr(config, 'dead_steps_threshold', 76)
+        if hasattr(model, 'steps_since_active'):
+            dead_mask = model.steps_since_active > dead_steps
             n_dead = dead_mask.sum().item()
             n_alive = config.hidden_dim - n_dead
             if n_dead > 0 and strip_fraction > 0:
@@ -1174,7 +1237,7 @@ def train_sae(
         resample_interval = getattr(config, 'resample_interval', 25000)
         resample_samples = getattr(config, 'resample_samples', 1024)
 
-        if resample_enabled and hasattr(model, 'total_steps'):
+        if resample_enabled and hasattr(model, 'steps_since_active'):
             # Check if we should resample this epoch (based on total training steps)
             steps_per_epoch = len(loader)
             total_steps = (epoch + 1) * steps_per_epoch
@@ -1182,13 +1245,12 @@ def train_sae(
             # Resample if we've crossed a resample_interval boundary
             prev_steps = epoch * steps_per_epoch
             if (total_steps // resample_interval) > (prev_steps // resample_interval):
-                if hasattr(model, 'activation_freq'):
-                    dead_mask = model.activation_freq < config.dead_freq_threshold
-                    n_dead = dead_mask.sum().item()
-                    if n_dead > 0:
-                        n_resampled = model.resample_dead_neurons(
-                            X.to(device), dead_mask, n_samples=resample_samples
-                        )
+                dead_mask = model.steps_since_active > dead_steps
+                n_dead = dead_mask.sum().item()
+                if n_dead > 0:
+                    n_resampled = model.resample_dead_neurons(
+                        X.to(device), dead_mask, n_samples=resample_samples
+                    )
 
         # Log to wandb
         if use_wandb and HAS_WANDB:
@@ -1215,6 +1277,13 @@ def train_sae(
             if n_resampled > 0:
                 msg += f", resampled={n_resampled}"
             print(msg)
+
+    # Load EMA weights into model (Gao et al. 2024: use averaged weights for inference)
+    if ema_state is not None:
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if name in ema_state:
+                    p.data.copy_(ema_state[name])
 
     # Compute final statistics
     model.eval()

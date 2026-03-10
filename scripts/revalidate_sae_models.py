@@ -107,7 +107,7 @@ def revalidate_model(model_name: str, device: str = "cuda"):
     embeddings = load_training_data(model_name)
     print(f"  Training data: {embeddings.shape}")
 
-    # Build config with correct defaults (residual_targeting + resampling)
+    # Build config with Gao et al. (2024) defaults (auxk + resampling)
     config = build_sae_config(
         embeddings,
         sae_type=SAE_TYPE,
