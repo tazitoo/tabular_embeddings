@@ -188,10 +188,19 @@ def main():
     group_ids = []
 
     for gid, group in data.get("groups", {}).items():
-        for feat_key, feat in group.get("features", {}).items():
-            feature_ids.append(feat_key)
-            descriptions.append(feat.get("description", feat.get("brief_label", "")))
-            group_ids.append(int(gid))
+        features = group.get("features", {})
+        if features:
+            for feat_key, feat in features.items():
+                feature_ids.append(feat_key)
+                descriptions.append(feat.get("description", feat.get("brief_label", "")))
+                group_ids.append(int(gid))
+        else:
+            # Fallback: use group-level summary/brief_label
+            desc = group.get("summary", group.get("brief_label", ""))
+            if desc:
+                feature_ids.append(f"group:{gid}")
+                descriptions.append(desc)
+                group_ids.append(int(gid))
 
     for feat_key, feat in data.get("unmatched", {}).items():
         feature_ids.append(feat_key)
@@ -240,6 +249,19 @@ def main():
     )
     print(f"  Matched-pair agreement: {metrics['matched_pair_cosine']['mean']:.3f}"
           f" (random: {metrics['matched_pair_cosine']['random_baseline']:.3f})")
+
+    # Interpolation coherence: unmatched features vs their landmarks
+    unmatched_landmarks = {}
+    for feat_key, feat in data.get("unmatched", {}).items():
+        landmarks = feat.get("landmarks", [])
+        if landmarks:
+            unmatched_landmarks[feat_key] = landmarks
+
+    if unmatched_landmarks:
+        metrics["interpolation_cosine"] = compute_interpolation_coherence(
+            embeddings, feature_ids, unmatched_landmarks,
+        )
+        print(f"  Interpolation coherence: {metrics['interpolation_cosine']['mean']:.3f}")
 
     metrics_path = INPUT_DIR / "concept_embedding_metrics.json"
     with open(metrics_path, "w") as f:

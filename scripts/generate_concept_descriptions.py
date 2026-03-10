@@ -303,6 +303,8 @@ def run_pass1(
     labels: dict,
     probes_data: dict,
     output: dict,
+    checkpoint_path: Optional[Path] = None,
+    checkpoint_every: int = 50,
 ) -> int:
     """Generate Haiku brief labels for all concept groups.
 
@@ -311,6 +313,8 @@ def run_pass1(
         labels: Loaded cross_model_concept_labels_v2.json.
         probes_data: Loaded concept_regression_with_pymfe.json.
         output: Output dict (mutated in place).
+        checkpoint_path: Path to save incremental progress.
+        checkpoint_every: Save checkpoint every N groups.
 
     Returns:
         Number of new labels generated.
@@ -346,11 +350,23 @@ def run_pass1(
         output["groups"][gid]["brief_label"] = label
         output["groups"][gid]["n_models"] = n_models
         output["groups"][gid]["n_members"] = n_members
+
+        # Populate per-feature entries (design schema expects features dict)
+        if "features" not in output["groups"][gid]:
+            output["groups"][gid]["features"] = {}
+        for model_name, feat_idx_raw in members:
+            feat_key = f"{model_name}:{feat_idx_raw}"
+            if feat_key not in output["groups"][gid]["features"]:
+                output["groups"][gid]["features"][feat_key] = {}
+            output["groups"][gid]["features"][feat_key]["brief_label"] = label
+
         output["metadata"]["n_haiku_calls"] += 1
         n_generated += 1
 
-        if n_generated % 50 == 0:
+        if n_generated % checkpoint_every == 0:
             logger.info("Pass 1: %d/%d groups labeled", n_generated, len(concept_groups))
+            if checkpoint_path:
+                save_checkpoint(output, checkpoint_path)
 
     return n_generated
 
@@ -389,6 +405,8 @@ def run_pass2(
     probes_data: dict,
     output: dict,
     args: argparse.Namespace,
+    checkpoint_path: Optional[Path] = None,
+    checkpoint_every: int = 50,
 ) -> int:
     """Generate Sonnet descriptions for concept groups.
 
@@ -402,7 +420,7 @@ def run_pass2(
     n_generated = 0
     max_samples = getattr(args, "max_samples", 5)
     device = getattr(args, "device", "cpu")
-    training_dir = Path(getattr(args, "training_dir", PROJECT_ROOT / "output" / "sae_training_round5"))
+    training_dir = Path(getattr(args, "training_dir", PROJECT_ROOT / "output" / "sae_training_round6"))
 
     for gid, group in concept_groups.items():
         # Skip already-completed groups
@@ -457,9 +475,22 @@ def run_pass2(
         output["groups"][gid]["summary"] = desc
         output["groups"][gid]["sample_model"] = model_name
         output["groups"][gid]["sample_feature"] = feat_idx
+
+        # Populate per-feature descriptions (same as group summary for now;
+        # could be refined with per-member Sonnet calls if needed)
+        if "features" not in output["groups"][gid]:
+            output["groups"][gid]["features"] = {}
+        for m_name, m_idx in members:
+            feat_key = f"{m_name}:{m_idx}"
+            if feat_key not in output["groups"][gid]["features"]:
+                output["groups"][gid]["features"][feat_key] = {}
+            output["groups"][gid]["features"][feat_key]["description"] = desc
+
         output["metadata"]["n_sonnet_calls"] += 1
         n_generated += 1
 
+        if checkpoint_path and n_generated % checkpoint_every == 0 and n_generated > 0:
+            save_checkpoint(output, checkpoint_path)
         if n_generated % 20 == 0:
             logger.info("Pass 2: %d groups described", n_generated)
 
@@ -512,6 +543,8 @@ def run_pass3(
     labels: dict,
     output: dict,
     args: argparse.Namespace,
+    checkpoint_path: Optional[Path] = None,
+    checkpoint_every: int = 50,
 ) -> int:
     """Generate Sonnet descriptions for unexplained unmatched features.
 
@@ -527,7 +560,7 @@ def run_pass3(
 
     max_samples = getattr(args, "max_samples", 5)
     device = getattr(args, "device", "cpu")
-    training_dir = Path(getattr(args, "training_dir", PROJECT_ROOT / "output" / "sae_training_round5"))
+    training_dir = Path(getattr(args, "training_dir", PROJECT_ROOT / "output" / "sae_training_round6"))
     n_generated = 0
 
     for model_name, features in unmatched.items():
@@ -545,7 +578,7 @@ def run_pass3(
             feat_key = f"{model_name}:{feat_idx_str}"
 
             # Skip already-completed
-            if feat_key in output["unmatched"] and output["unmatched"][feat_key].get("summary"):
+            if feat_key in output["unmatched"] and output["unmatched"][feat_key].get("description"):
                 continue
 
             feat_idx = int(feat_idx_str)
@@ -575,12 +608,14 @@ def run_pass3(
                 "model": model_name,
                 "feature_idx": feat_idx,
                 "r2": feat_info.get("r2", 0.0),
-                "summary": desc,
+                "description": desc,
                 "n_landmarks": len(landmarks) if landmarks else 0,
             }
             output["metadata"]["n_sonnet_calls"] += 1
             n_generated += 1
 
+            if checkpoint_path and n_generated % checkpoint_every == 0 and n_generated > 0:
+                save_checkpoint(output, checkpoint_path)
             if n_generated % 50 == 0:
                 logger.info("Pass 3: %d unexplained features described", n_generated)
 
@@ -615,7 +650,8 @@ def _find_landmarks(
             continue
         gid = str(info.get("group_id", ""))
         if gid in output.get("groups", {}):
-            group_desc = output["groups"][gid].get("summary") or output["groups"][gid].get("brief_label")
+            group_data = output["groups"][gid]
+            group_desc = group_data.get("summary") or group_data.get("brief_label")
             if group_desc:
                 described.append((other_feat, gid, group_desc))
 
@@ -690,13 +726,8 @@ def main():
     )
     parser.add_argument(
         "--training-dir",
-        default=str(PROJECT_ROOT / "output" / "sae_training_round5"),
+        default=str(PROJECT_ROOT / "output" / "sae_training_round6"),
         help="Directory with SAE training data (.npz files).",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print prompts instead of calling API.",
     )
     args = parser.parse_args()
 
@@ -731,24 +762,26 @@ def main():
 
     t0 = time.time()
 
+    ckpt_every = args.checkpoint_every
+
     # Pass 1: Haiku brief labels
     if 1 in args.passes:
         logger.info("=== Pass 1: Haiku brief labels ===")
-        n = run_pass1(client, labels, probes_data, output)
+        n = run_pass1(client, labels, probes_data, output, checkpoint_path, ckpt_every)
         logger.info("Pass 1 complete: %d new labels", n)
         save_checkpoint(output, checkpoint_path)
 
     # Pass 2: Sonnet grouped descriptions
     if 2 in args.passes:
         logger.info("=== Pass 2: Sonnet group descriptions ===")
-        n = run_pass2(client, labels, probes_data, output, args)
+        n = run_pass2(client, labels, probes_data, output, args, checkpoint_path, ckpt_every)
         logger.info("Pass 2 complete: %d new descriptions", n)
         save_checkpoint(output, checkpoint_path)
 
     # Pass 3: Sonnet unexplained features
     if 3 in args.passes:
         logger.info("=== Pass 3: Sonnet unexplained features ===")
-        n = run_pass3(client, labels, output, args)
+        n = run_pass3(client, labels, output, args, checkpoint_path, ckpt_every)
         logger.info("Pass 3 complete: %d new descriptions", n)
         save_checkpoint(output, checkpoint_path)
 

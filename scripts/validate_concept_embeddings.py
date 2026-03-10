@@ -139,8 +139,15 @@ def main():
     # Collect all descriptions
     descriptions = []
     for group in data.get("groups", {}).values():
-        for feat in group.get("features", {}).values():
-            desc = feat.get("description", feat.get("brief_label", ""))
+        features = group.get("features", {})
+        if features:
+            for feat in features.values():
+                desc = feat.get("description", feat.get("brief_label", ""))
+                if desc:
+                    descriptions.append(desc)
+        else:
+            # Fallback: use group-level summary/brief_label
+            desc = group.get("summary", group.get("brief_label", ""))
             if desc:
                 descriptions.append(desc)
     for feat in data.get("unmatched", {}).values():
