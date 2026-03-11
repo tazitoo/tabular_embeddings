@@ -481,8 +481,11 @@ def validate_and_save(
             device=device,
         )
 
-        # Compare on total loss (matches objective function)
-        val_loss = metrics["reconstruction_loss"] + metrics["aux_loss"]
+        # Compare on composite objective (matches objective function)
+        hidden_dim = expansion * embeddings.shape[1]
+        alive_frac = metrics["alive_features"] / hidden_dim
+        dead_penalty = 0.5 * (1.0 - alive_frac)
+        val_loss = metrics["reconstruction_loss"] + metrics["aux_loss"] + dead_penalty
 
         print(f"    Actual:   loss={val_loss:.6f}")
 
@@ -679,11 +682,15 @@ def create_optuna_objective(
                     trial.set_user_attr(key, val)
             trial.set_user_attr("context_size", context_size)
 
-            # Objective: minimize total loss (recon + aux).
-            # Now that aux params are hardcoded (not searched), the perverse
-            # incentive is gone. Including aux_loss rewards HP configs that
-            # naturally produce fewer dead neurons.
-            obj = metrics["reconstruction_loss"] + metrics["aux_loss"]
+            # Objective: minimize total loss + dead neuron penalty.
+            # Calibrated so that at 85% alive (target), the dead penalty
+            # roughly equals recon_loss (~0.08), creating balanced pressure.
+            # Below target alive%, the penalty dominates and rejects the config;
+            # above target, recon quality drives the search.
+            hidden_dim = expansion * embeddings.shape[1]
+            alive_frac = metrics["alive_features"] / hidden_dim
+            dead_penalty = 0.5 * (1.0 - alive_frac)
+            obj = metrics["reconstruction_loss"] + metrics["aux_loss"] + dead_penalty
 
             # Finish wandb run
             if wandb_active:
