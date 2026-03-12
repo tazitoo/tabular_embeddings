@@ -193,12 +193,19 @@ def compute_stability(
     """
     dicts = []
     models = []
+    per_seed_metrics = []
     seeds = [123, 456, 789, 101112, 131415][:n_runs]
     for seed in seeds:
         torch.manual_seed(seed)
         np.random.seed(seed)
         model, result = train_sae(embeddings, config, device=device, verbose=False)
         dicts.append(result.dictionary)
+        per_seed_metrics.append({
+            "seed": seed,
+            "alive_features": result.alive_features,
+            "reconstruction_loss": result.reconstruction_loss,
+            "aux_loss": result.aux_loss,
+        })
         if return_models:
             models.append(model)
 
@@ -247,6 +254,7 @@ def compute_stability(
             "alignment": overall_stability,
             "s_n_dec": s_n_dec,
             "per_scale": per_scale,
+            "per_seed_metrics": per_seed_metrics,
         }
         if return_models:
             result["models"] = models
@@ -256,6 +264,7 @@ def compute_stability(
     result = {
         "alignment": overall_stability,
         "s_n_dec": s_n_dec,
+        "per_seed_metrics": per_seed_metrics,
     }
     if return_models:
         result["models"] = models
@@ -373,6 +382,7 @@ def run_sae_trial(
         )
         metrics["stability"] = stability_metrics["alignment"]
         metrics["s_n_dec"] = stability_metrics["s_n_dec"]
+        metrics["per_seed_metrics"] = stability_metrics.get("per_seed_metrics", [])
 
     if return_model:
         seed_models = stability_metrics.get("models", []) if measure_stability else []

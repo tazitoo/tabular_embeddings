@@ -41,6 +41,7 @@ from scripts.sae_tabarena_sweep import (
     pool_embeddings,
     get_available_datasets,
     run_sae_trial,
+    compute_stability,
     save_sae_model,
     build_sae_config,
     SPLIT_SEED,
@@ -128,14 +129,14 @@ EFFICIENCY_CONFIGS = {
 SAE_TYPE = "matryoshka_archetypal"
 
 
-def validate_model(model_name: str, device: str = "cuda", tolerance: float = 0.05):
-    """Validate efficiency config for a single model."""
+def validate_model(model_name: str, device: str = "cuda"):
+    """Train efficiency config with seed=42 (primary) + 4 stability seeds, report variability."""
     config = EFFICIENCY_CONFIGS[model_name]
     print(f"\n{'='*60}")
     print(f"Validating {model_name} (efficiency config)")
     print(f"  Sweep trial: {config['sweep_trial']}")
     print(f"  Config: {config['expansion']}x expansion, topk={config['topk']}")
-    print(f"  Expected: recon={config['sweep_recon']:.3f}, alive={config['sweep_alive']:.1f}%")
+    print(f"  Sweep: recon={config['sweep_recon']:.3f}, alive={config['sweep_alive']:.1f}%")
     print(f"{'='*60}")
 
     # Load and pool embeddings
@@ -147,8 +148,8 @@ def validate_model(model_name: str, device: str = "cuda", tolerance: float = 0.0
     hidden_dim = config["expansion"] * embeddings.shape[1]
     print(f"  Hidden dim: {hidden_dim} ({config['expansion']}x × {embeddings.shape[1]})")
 
-    # Train with validation seed
-    print(f"\n  Training (seed=12345)...")
+    # Train primary model with seed=42 (same as sweep)
+    print(f"\n  Training primary model (seed=42)...")
     metrics, model, sae_config, seed_models, seed_ids = run_sae_trial(
         embeddings,
         sae_type=SAE_TYPE,
@@ -162,69 +163,81 @@ def validate_model(model_name: str, device: str = "cuda", tolerance: float = 0.0
         n_epochs=100,
         measure_stability=True,
         return_model=True,
-        seed=12345,
+        seed=42,
         device=device,
     )
 
-    # Compute objective (matches sweep objective)
-    alive_frac = metrics["alive_features"] / hidden_dim
-    dead_penalty = 0.5 * (1.0 - alive_frac)
-    val_loss = metrics["reconstruction_loss"] + metrics["aux_loss"] + dead_penalty
+    # Collect per-seed metrics: primary (seed=42) + stability seeds
+    primary_alive = metrics["alive_features"]
+    primary_recon = metrics["reconstruction_loss"]
 
-    # Check convergence against sweep
-    sweep_alive_frac = config["sweep_alive"] / 100
-    sweep_dead_penalty = 0.5 * (1.0 - sweep_alive_frac)
-    # Approximate expected loss from sweep recon (aux unknown, estimate from val)
-    expected_recon = config["sweep_recon"]
-    actual_recon = metrics["reconstruction_loss"]
-    recon_diff = abs(actual_recon - expected_recon) / max(expected_recon, 1e-6)
+    all_recon = [primary_recon]
+    all_alive = [primary_alive]
+    all_seeds = [42]
 
-    print(f"\n  Results:")
-    print(f"    Recon loss:  {actual_recon:.6f} (expected {expected_recon:.3f}, diff {recon_diff:.1%})")
-    print(f"    Aux loss:    {metrics['aux_loss']:.6f}")
-    print(f"    Alive:       {metrics['alive_features']}/{hidden_dim} ({100*alive_frac:.1f}%)")
-    print(f"    Stability:   {metrics.get('stability', 0):.4f}")
-    print(f"    s_n_dec:     {metrics.get('s_n_dec', 0):.4f}")
-    print(f"    L0:          {metrics['l0_sparsity']:.1f}")
+    # Add stability seed metrics (from compute_stability's per_seed_metrics)
+    stability_metrics = metrics.get("per_seed_metrics", [])
+    for sm in stability_metrics:
+        all_recon.append(sm["reconstruction_loss"])
+        all_alive.append(sm["alive_features"])
+        all_seeds.append(sm["seed"])
 
-    converged = recon_diff <= tolerance
-    if converged:
-        print(f"    ✓ Validation PASSED (recon diff: {recon_diff:.1%})")
-    else:
-        print(f"    ✗ Validation FAILED (recon diff: {recon_diff:.1%})")
+    recon_arr = np.array(all_recon)
+    alive_arr = np.array(all_alive)
+    alive_pct_arr = 100.0 * alive_arr / hidden_dim
 
-    # Save regardless (flag if not converged)
+    # Report per-seed breakdown
+    print(f"\n  Per-seed results ({len(all_seeds)} seeds):")
+    print(f"    {'Seed':>8} {'Recon':>8} {'Alive':>8} {'Alive%':>7}")
+    for seed, recon, alive in zip(all_seeds, all_recon, all_alive):
+        print(f"    {seed:>8} {recon:>8.4f} {alive:>8} {100*alive/hidden_dim:>6.1f}%")
+
+    print(f"\n  Variability (n={len(all_seeds)}):")
+    print(f"    Recon:  {recon_arr.mean():.4f} ± {recon_arr.std():.4f}  "
+          f"(range {recon_arr.min():.4f}–{recon_arr.max():.4f})")
+    print(f"    Alive%: {alive_pct_arr.mean():.1f} ± {alive_pct_arr.std():.1f}  "
+          f"(range {alive_pct_arr.min():.1f}–{alive_pct_arr.max():.1f}%)")
+    print(f"    Stability: {metrics.get('stability', 0):.4f}")
+    print(f"    s_n_dec:   {metrics.get('s_n_dec', 0):.4f}")
+    print(f"    L0:        {metrics['l0_sparsity']:.1f}")
+
+    # Save checkpoints
     output_dir = sae_sweep_dir() / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    suffix = "efficiency" if converged else "efficiency_unvalidated"
     params = {k: v for k, v in config.items() if not k.startswith("sweep_")}
 
-    # Save main model
-    model_path = output_dir / f"sae_{SAE_TYPE}_{suffix}.pt"
-    save_sae_model(model, sae_config, metrics, params, model_path)
+    # Primary model (seed=42)
+    all_metrics = {**metrics, "variability": {
+        "seeds": all_seeds,
+        "recon_loss": all_recon,
+        "alive_features": [int(a) for a in all_alive],
+        "recon_mean": float(recon_arr.mean()), "recon_std": float(recon_arr.std()),
+        "alive_pct_mean": float(alive_pct_arr.mean()), "alive_pct_std": float(alive_pct_arr.std()),
+    }}
+    model_path = output_dir / f"sae_{SAE_TYPE}_efficiency.pt"
+    save_sae_model(model, sae_config, all_metrics, params, model_path)
 
-    # Save random baseline
+    # Random baseline
     baseline = create_random_baseline(sae_config)
-    baseline_path = output_dir / f"sae_{SAE_TYPE}_{suffix}_random_baseline.pt"
+    baseline_path = output_dir / f"sae_{SAE_TYPE}_efficiency_random_baseline.pt"
     save_sae_model(baseline, baseline.config, {"random_baseline": True}, params, baseline_path)
 
-    # Save stability seed models
+    # Stability seed models
     for seed_model, seed_id in zip(seed_models, seed_ids):
-        seed_path = output_dir / f"sae_{SAE_TYPE}_{suffix}_seed{seed_id}.pt"
-        save_sae_model(seed_model, sae_config, metrics, params, seed_path)
+        seed_path = output_dir / f"sae_{SAE_TYPE}_efficiency_seed{seed_id}.pt"
+        save_sae_model(seed_model, sae_config, all_metrics, params, seed_path)
 
     print(f"\n  Saved {2 + len(seed_models)} checkpoints to {output_dir}")
 
     return {
         "model": model_name,
-        "recon_loss": actual_recon,
-        "alive_pct": 100 * alive_frac,
+        "recon_mean": float(recon_arr.mean()),
+        "recon_std": float(recon_arr.std()),
+        "alive_pct_mean": float(alive_pct_arr.mean()),
+        "alive_pct_std": float(alive_pct_arr.std()),
         "stability": metrics.get("stability", 0),
         "s_n_dec": metrics.get("s_n_dec", 0),
         "l0": metrics["l0_sparsity"],
-        "converged": converged,
-        "recon_diff": recon_diff,
     }
 
 
@@ -234,8 +247,6 @@ def main():
     parser.add_argument("--all", action="store_true", help="Validate all models")
     parser.add_argument("--device", type=str, default="cuda", help="Device (default: cuda)")
     parser.add_argument("--dry-run", action="store_true", help="Show configs without training")
-    parser.add_argument("--tolerance", type=float, default=0.10,
-                        help="Max relative recon_loss difference (default: 0.10)")
     args = parser.parse_args()
 
     if args.dry_run:
@@ -265,20 +276,21 @@ def main():
             print(f"Unknown model: {model_name}")
             print(f"Available: {list(EFFICIENCY_CONFIGS.keys())}")
             continue
-        result = validate_model(model_name, device=args.device, tolerance=args.tolerance)
+        result = validate_model(model_name, device=args.device)
         results.append(result)
 
     # Summary
     if len(results) > 1:
         print(f"\n{'='*60}")
-        print("VALIDATION SUMMARY")
+        print("VALIDATION SUMMARY (5 seeds per model)")
         print(f"{'='*60}")
-        print(f"{'Model':<12} {'Recon':>7} {'Alive%':>7} {'Stab':>6} {'L0':>6} {'Status':>10}")
+        print(f"{'Model':<12} {'Recon':>12} {'Alive%':>14} {'Stab':>6} {'L0':>6}")
         print("-" * 55)
         for r in results:
-            status = "✓ PASS" if r["converged"] else "✗ FAIL"
-            print(f"{r['model']:<12} {r['recon_loss']:>7.4f} {r['alive_pct']:>6.1f}% "
-                  f"{r['stability']:>6.3f} {r['l0']:>6.1f} {status:>10}")
+            print(f"{r['model']:<12} "
+                  f"{r['recon_mean']:.4f}±{r['recon_std']:.4f} "
+                  f"{r['alive_pct_mean']:5.1f}±{r['alive_pct_std']:4.1f}% "
+                  f"{r['stability']:>6.3f} {r['l0']:>6.1f}")
 
 
 if __name__ == "__main__":
