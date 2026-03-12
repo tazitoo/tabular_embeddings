@@ -194,7 +194,7 @@ def validate_model(model_name: str, device: str = "cuda", tolerance: float = 0.0
         print(f"    ✗ Validation FAILED (recon diff: {recon_diff:.1%})")
 
     # Save regardless (flag if not converged)
-    output_dir = PROJECT_ROOT / sae_sweep_dir(model_name)
+    output_dir = sae_sweep_dir() / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     suffix = "efficiency" if converged else "efficiency_unvalidated"
