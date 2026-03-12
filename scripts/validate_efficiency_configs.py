@@ -38,13 +38,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND, sae_sweep_dir
 from scripts.sae_tabarena_sweep import (
-    pool_embeddings,
-    get_available_datasets,
+    _load_prebuilt_embeddings,
     run_sae_trial,
-    compute_stability,
     save_sae_model,
     build_sae_config,
-    SPLIT_SEED,
 )
 from analysis.sparse_autoencoder import SAEConfig, create_random_baseline
 
@@ -139,11 +136,14 @@ def validate_model(model_name: str, device: str = "cuda"):
     print(f"  Sweep: recon={config['sweep_recon']:.3f}, alive={config['sweep_alive']:.1f}%")
     print(f"{'='*60}")
 
-    # Load and pool embeddings
-    datasets = get_available_datasets(model_name)
-    print(f"  Loading embeddings from {len(datasets)} datasets...")
-    embeddings, ds_counts = pool_embeddings(model_name, datasets)
-    print(f"  Pooled: {embeddings.shape} ({sum(ds_counts.values())} samples)")
+    # Load same prebuilt data the sweep used
+    prebuilt = _load_prebuilt_embeddings(model_name)
+    if prebuilt is None:
+        raise FileNotFoundError(
+            f"No prebuilt SAE training data for '{model_name}'. "
+            f"Run: python scripts/build_sae_training_data.py --model {model_name}"
+        )
+    embeddings, _, source_datasets, optimal_layer = prebuilt
 
     hidden_dim = config["expansion"] * embeddings.shape[1]
     print(f"  Hidden dim: {hidden_dim} ({config['expansion']}x × {embeddings.shape[1]})")
