@@ -28,6 +28,7 @@ import torch
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND, SAE_FILENAME
 from scripts.intervene_sae import (
     load_sae,
     load_training_mean,
@@ -93,7 +94,7 @@ def compute_per_row_loss(y_true: np.ndarray, preds: np.ndarray, task: str) -> np
 
 
 DEFAULT_CONCEPT_LABELS = PROJECT_ROOT / "output" / "cross_model_concept_labels_mnn_only.json"
-DEFAULT_CONCEPT_REGRESSION = PROJECT_ROOT / "output" / "concept_regression_with_pymfe.json"
+DEFAULT_CONCEPT_REGRESSION = PROJECT_ROOT / "output" / f"sae_concept_analysis_round{DEFAULT_SAE_ROUND}.json"
 DEFAULT_PYMFE_CACHE = PROJECT_ROOT / "output" / "pymfe_tabarena_cache.json"
 
 # Map our model keys to the concept labels file keys
@@ -830,7 +831,7 @@ def get_matryoshka_bands(model_key: str, sae_dir: Path = None) -> Dict[str, int]
     if sae_dir is None:
         sae_dir = PROJECT_ROOT / "output" / "sae_tabarena_sweep_round5"
 
-    ckpt_path = sae_dir / model_key / "sae_matryoshka_archetypal_validated.pt"
+    ckpt_path = sae_dir / model_key / SAE_FILENAME
     ckpt = _torch.load(ckpt_path, map_location="cpu", weights_only=False)
     config = ckpt["config"]
     h = config.hidden_dim if hasattr(config, "hidden_dim") else config["hidden_dim"]

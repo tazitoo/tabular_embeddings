@@ -12,7 +12,7 @@ For each reference model feature, classifies it by cross-model matching status:
 Usage:
     python scripts/figure_feature_matching.py \
         --annotated output/annotated_feature_matches.json \
-        --concepts output/concept_regression_with_pymfe.json \
+        --concepts output/sae_concept_analysis_round8.json \
         --ref-model TabPFN
 """
 
@@ -27,6 +27,8 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND
 
 
 def _build_splitting_lookup(splitting: dict) -> dict:
@@ -262,7 +264,7 @@ def main():
     parser.add_argument(
         "--concepts",
         type=str,
-        default="output/concept_regression_with_pymfe.json",
+        default=f"output/sae_concept_analysis_round{DEFAULT_SAE_ROUND}.json",
     )
     parser.add_argument(
         "--ref-model",

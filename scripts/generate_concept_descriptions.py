@@ -72,7 +72,7 @@ Do not speculate about domain meaning."""
 
 OUTPUT_DIR = PROJECT_ROOT / "output" / "concept_descriptions"
 LABELS_PATH = PROJECT_ROOT / "output" / "cross_model_concept_labels_v2.json"
-PROBES_PATH = PROJECT_ROOT / "output" / "concept_regression_with_pymfe.json"
+PROBES_PATH = PROJECT_ROOT / "output" / "sae_concept_analysis_round8.json"
 CROSS_CORR_DIR = PROJECT_ROOT / "output" / "sae_cross_correlations"
 
 # Display name -> checkpoint directory key
@@ -312,7 +312,7 @@ def run_pass1(
     Args:
         client: Anthropic API client.
         labels: Loaded cross_model_concept_labels_v2.json.
-        probes_data: Loaded concept_regression_with_pymfe.json.
+        probes_data: Loaded sae_concept_analysis JSON.
         output: Output dict (mutated in place).
         checkpoint_path: Path to save incremental progress.
         checkpoint_every: Save checkpoint every N groups.

@@ -10,7 +10,7 @@ a summary table.
 Usage:
     python scripts/annotate_feature_matches.py \
         --matching output/sae_feature_matching_mnn_t0.001_n500.json \
-        --concepts output/concept_regression_with_pymfe.json \
+        --concepts output/sae_concept_analysis_round8.json \
         --output output/annotated_feature_matches.json \
         --top-k 5
 """
@@ -28,6 +28,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.analyze_sae_concepts_deep import NumpyEncoder, convert_keys_to_native
+from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND
 
 
 def load_concept_probes(
@@ -37,7 +38,7 @@ def load_concept_probes(
     Build lookup: model_name → {feature_idx: {r2, probes: [name, ...]}}.
 
     Args:
-        concepts: Loaded concept_regression_with_pymfe.json
+        concepts: Loaded sae_concept_analysis JSON
         top_k: Number of top probes to keep per feature
 
     Returns:
@@ -234,8 +235,8 @@ def main():
     parser.add_argument(
         "--concepts",
         type=str,
-        default="output/concept_regression_with_pymfe.json",
-        help="Concept regression JSON",
+        default=f"output/sae_concept_analysis_round{DEFAULT_SAE_ROUND}.json",
+        help="SAE concept analysis JSON",
     )
     parser.add_argument(
         "--output",
