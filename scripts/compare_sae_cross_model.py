@@ -52,6 +52,7 @@ from data.extended_loader import load_tabarena_dataset
 # Round 7: Gao et al. recipe (AuxK, step counter dead detection, weight EMA, geometric median b_dec)
 # Round 8: Detach AuxK residual, normalize by residual variance, grad clipping, dead_steps=200
 DEFAULT_SAE_ROUND = 8
+SAE_FILENAME = "sae_matryoshka_archetypal_efficiency.pt"
 
 
 def sae_sweep_dir(round: int = None) -> Path:
@@ -470,7 +471,7 @@ def main():
     # Resolve model paths
     model_configs = []
     for display_name, sweep_dir, emb_dir_name in DEFAULT_MODELS:
-        sae_path = base_sae / sweep_dir / "sae_matryoshka_archetypal_validated.pt"
+        sae_path = base_sae / sweep_dir / SAE_FILENAME
         emb_dir = base_emb / emb_dir_name
         if not sae_path.exists():
             print(f"Warning: SAE not found for {display_name}: {sae_path}")
