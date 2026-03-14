@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 INPUT_DIR = PROJECT_ROOT / "output" / "concept_descriptions"
-EMBEDDING_MODEL = "nomic-embed-text-v1.5"
+EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 
 _model_cache = None
 

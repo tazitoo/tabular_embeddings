@@ -47,7 +47,7 @@ def test_format_haiku_prompt_includes_probes():
 
 
 def test_format_sonnet_group_prompt_includes_samples():
-    """Sonnet group prompt includes probe data AND row samples."""
+    """Sonnet group prompt includes contrastive examples before probes."""
     from scripts.concept_description_utils import format_sonnet_group_prompt
 
     probes = [("frac_zeros", 5, -1.2)]
@@ -60,8 +60,13 @@ def test_format_sonnet_group_prompt_includes_samples():
     )
 
     assert "frac_zeros" in prompt
-    assert "HIGH-ACTIVATING" in prompt
+    assert "TOP-ACTIVATING" in prompt
     assert "1-2 sentences" in prompt
+    assert "MONOSEMANTIC" in prompt
+    # Contrastive examples should appear BEFORE probe statistics
+    activating_pos = prompt.index("TOP-ACTIVATING")
+    probe_pos = prompt.index("STATISTICAL GUIDANCE")
+    assert activating_pos < probe_pos, "Contrastive examples must come before probes"
 
 
 def test_format_sonnet_unexplained_prompt_includes_landmarks():

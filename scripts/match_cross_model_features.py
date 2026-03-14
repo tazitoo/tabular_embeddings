@@ -32,6 +32,7 @@ from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 from scripts.compare_sae_cross_model import (
     DEFAULT_MODELS,
     DEFAULT_SAE_ROUND,
+    SAE_FILENAME,
     find_common_datasets,
     sae_sweep_dir,
 )
@@ -493,7 +494,7 @@ def main():
 
     for display, sae_dir, emb_dir in models:
         print(f"\n--- {display} ---")
-        ckpt_path = sweep_base / sae_dir / "sae_matryoshka_archetypal_validated.pt"
+        ckpt_path = sweep_base / sae_dir / SAE_FILENAME
         if not ckpt_path.exists():
             print(f"  Checkpoint not found: {ckpt_path}")
             continue

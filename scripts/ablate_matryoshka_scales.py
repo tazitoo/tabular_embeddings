@@ -20,7 +20,7 @@ import torch
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.compare_sae_cross_model import SAE_FILENAME, sae_sweep_dir
 from scripts.sae_tabarena_sweep import get_tabarena_splits, pool_embeddings
 from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
 
@@ -157,7 +157,7 @@ def main():
     print("=" * 70)
 
     # Load SAE
-    sae_path = sae_sweep_dir() / args.model / "sae_matryoshka_archetypal_validated.pt"
+    sae_path = sae_sweep_dir() / args.model / SAE_FILENAME
     if not sae_path.exists():
         print(f"Error: SAE not found: {sae_path}")
         return 1

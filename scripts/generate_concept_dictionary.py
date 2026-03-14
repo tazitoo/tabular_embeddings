@@ -27,7 +27,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.compare_sae_cross_model import SAE_FILENAME, sae_sweep_dir
 
 
 # Concise label rules: maps (meta_feature, direction) to short descriptors
@@ -422,7 +422,7 @@ def main():
                         default=Path("/private/tmp/claude-501/-Volumes-Samsung2TB-src-tabular-embeddings/tasks"),
                         help="Directory containing agent output files")
     parser.add_argument("--sae-checkpoint", type=Path,
-                        default=sae_sweep_dir() / "tabpfn" / "sae_matryoshka_archetypal_validated.pt",
+                        default=sae_sweep_dir() / "tabpfn" / SAE_FILENAME,
                         help="SAE checkpoint for Matryoshka level metadata")
     args = parser.parse_args()
 

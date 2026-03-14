@@ -43,6 +43,7 @@ from scripts.compare_sae_architectures import (
 )
 from scripts.compare_sae_cross_model import (
     DEFAULT_MODELS,
+    SAE_FILENAME,
     collect_meta_for_datasets,
     find_common_datasets,
     pool_embeddings_for_datasets,
@@ -89,7 +90,7 @@ def compute_from_models(models, max_per_dataset=500, alpha=1.0):
 
     results = {}
     for display_name, sae_dir, emb_model in models:
-        sae_path = sweep / sae_dir / "sae_matryoshka_archetypal_validated.pt"
+        sae_path = sweep / sae_dir / SAE_FILENAME
         emb_dir = emb_base / emb_model
         if not sae_path.exists():
             continue

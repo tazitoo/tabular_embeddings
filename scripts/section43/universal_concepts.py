@@ -38,6 +38,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.compare_sae_cross_model import (
     DEFAULT_MODELS,
+    SAE_FILENAME,
     sae_sweep_dir,
 )
 from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
@@ -545,7 +546,7 @@ def main():
 
     model_configs = []
     for display_name, sweep_dir, _ in DEFAULT_MODELS:
-        sae_path = base_sae / sweep_dir / "sae_matryoshka_archetypal_validated.pt"
+        sae_path = base_sae / sweep_dir / SAE_FILENAME
         if not sae_path.exists():
             print(f"  Warning: SAE not found for {display_name}: {sae_path}")
             continue

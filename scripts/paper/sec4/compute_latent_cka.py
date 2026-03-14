@@ -29,6 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from analysis.similarity import linear_cka
 from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
 from scripts.compare_sae_cross_model import (
+    SAE_FILENAME,
     find_common_datasets,
     get_dataset_tasks,
     get_models_for_task,
@@ -77,7 +78,7 @@ def main():
     sae_models = {}
     for display_name, sweep_dir, emb_dir_name in models:
         emb_dir = base_emb / emb_dir_name
-        sae_path = base_sae / sweep_dir / 'sae_matryoshka_archetypal_validated.pt'
+        sae_path = base_sae / sweep_dir / SAE_FILENAME
         if not emb_dir.exists():
             print(f"  Warning: embedding dir missing for {display_name}: {emb_dir}")
             continue

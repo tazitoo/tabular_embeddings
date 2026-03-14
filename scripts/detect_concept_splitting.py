@@ -36,12 +36,12 @@ from scripts.analyze_sae_concepts_deep import (
 from scripts.compare_sae_cross_model import (
     DEFAULT_MODELS,
     DEFAULT_SAE_ROUND,
+    SAE_FILENAME,
     find_common_datasets,
     sae_sweep_dir,
 )
 from scripts.match_sae_features import (
     EMB_DIR,
-    SAE_FILENAME,
     compute_sae_activations,
     get_alive_mask,
     load_embeddings,

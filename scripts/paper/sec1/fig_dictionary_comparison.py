@@ -34,6 +34,7 @@ from scripts.compare_sae_architectures import (
 from scripts.compare_sae_cross_model import (
     DEFAULT_MODELS,
     MODEL_TASK_FILTERS,
+    SAE_FILENAME,
     collect_meta_for_datasets,
     find_common_datasets,
     get_dataset_tasks,
@@ -289,7 +290,7 @@ def main():
     model_list, task_filters = get_models_for_task(task)
     model_configs = []
     for display_name, sweep_dir, emb_dir_name in model_list:
-        sae_path = base_sae / sweep_dir / "sae_matryoshka_archetypal_validated.pt"
+        sae_path = base_sae / sweep_dir / SAE_FILENAME
         emb_dir = base_emb / emb_dir_name
         if sae_path.exists() and emb_dir.exists():
             model_configs.append((display_name, sae_path, emb_dir))

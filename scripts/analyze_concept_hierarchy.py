@@ -31,6 +31,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.compare_sae_cross_model import (
     DEFAULT_MODELS,
+    SAE_FILENAME,
     find_common_datasets,
     sae_sweep_dir,
 )
@@ -716,7 +717,7 @@ def main():
     for display_name, sweep_dir, emb_dir_name in DEFAULT_MODELS:
         if args.models and display_name not in args.models:
             continue
-        sae_path = base_sae / sweep_dir / "sae_matryoshka_archetypal_validated.pt"
+        sae_path = base_sae / sweep_dir / SAE_FILENAME
         emb_dir = base_emb / emb_dir_name
         if not sae_path.exists():
             print(f"  Warning: SAE not found for {display_name}: {sae_path}")

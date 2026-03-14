@@ -30,21 +30,96 @@ from scripts.analyze_sae_concepts_deep import (
 from scripts.compare_sae_cross_model import (
     DEFAULT_MODELS,
     DEFAULT_SAE_ROUND,
-    find_common_datasets,
+    SAE_FILENAME,
     sae_sweep_dir,
 )
 
 EMB_DIR = PROJECT_ROOT / "output" / "embeddings" / "tabarena"
-SAE_FILENAME = "sae_matryoshka_archetypal_validated.pt"
+SAE_DATA_DIR = PROJECT_ROOT / "output" / "sae_training_round6"
+RANDOM_BASELINE_FILENAME = SAE_FILENAME.replace(".pt", "_random_baseline.pt")
 
 
 # ── Embedding & activation helpers ─────────────────────────────────────────
 
 
+def load_norm_stats(model_key: str) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Load per-dataset normalization stats for a model.
+
+    Returns:
+        Dict mapping dataset name → (mean, std), each shape (emb_dim,).
+    """
+    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_layer*_norm_stats.npz"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No norm stats for '{model_key}' in {SAE_DATA_DIR}"
+        )
+    data = np.load(candidates[0], allow_pickle=True)
+    datasets = list(data["datasets"])
+    means = data["means"]  # (n_datasets, emb_dim)
+    stds = data["stds"]
+    return {ds: (means[i], stds[i]) for i, ds in enumerate(datasets)}
+
+
+def _unpool_split(path: Path) -> Dict[str, np.ndarray]:
+    """Unpool a concatenated split NPZ into per-dataset arrays."""
+    data = np.load(path, allow_pickle=True)
+    embeddings = data["embeddings"]
+    samples_per_dataset = data["samples_per_dataset"]
+
+    result = {}
+    offset = 0
+    for ds_name, count in samples_per_dataset:
+        ds_name = str(ds_name)
+        count = int(count)
+        result[ds_name] = embeddings[offset:offset + count]
+        offset += count
+    return result
+
+
+def load_test_embeddings(model_key: str) -> Dict[str, np.ndarray]:
+    """Load per-dataset test-split embeddings (already normalized).
+
+    The SAE training pipeline saves a 70/30 row-level split with per-dataset
+    StandardScaler normalization applied using train-split stats. This loads
+    the 30% held-out test split and unpools it into per-dataset arrays.
+
+    Returns:
+        Dict mapping dataset name → embeddings array (n_test_rows, emb_dim).
+    """
+    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_layer*_sae_test.npz"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No test data for '{model_key}' in {SAE_DATA_DIR}"
+        )
+    return _unpool_split(candidates[0])
+
+
+def load_train_embeddings(model_key: str) -> Dict[str, np.ndarray]:
+    """Load per-dataset train-split embeddings (already normalized).
+
+    Used to determine alive masks — the SAE was trained on this data,
+    so it's the authoritative source for which features are alive.
+
+    Returns:
+        Dict mapping dataset name → embeddings array (n_train_rows, emb_dim).
+    """
+    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_layer*_sae_training.npz"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No training data for '{model_key}' in {SAE_DATA_DIR}"
+        )
+    return _unpool_split(candidates[0])
+
+
 def load_embeddings(
-    emb_dir: Path, dataset: str, max_per_dataset: int = 500
+    emb_dir: Path, dataset: str, max_per_dataset: int = 500,
+    norm_stats: Dict[str, Tuple[np.ndarray, np.ndarray]] = None,
 ) -> np.ndarray:
-    """Load embeddings for a dataset, subsampled to max_per_dataset rows."""
+    """Load embeddings for a dataset, subsampled and optionally normalized.
+
+    Note: Prefer load_test_embeddings() for matching — it uses the held-out
+    30% test split that the SAE never saw during training.
+    """
     path = emb_dir / f"tabarena_{dataset}.npz"
     data = np.load(path, allow_pickle=True)
     emb = data["embeddings"].astype(np.float32)
@@ -52,13 +127,18 @@ def load_embeddings(
         rng = np.random.RandomState(42)
         idx = rng.choice(len(emb), max_per_dataset, replace=False)
         emb = emb[idx]
+    if norm_stats is not None and dataset in norm_stats:
+        mean, std = norm_stats[dataset]
+        std = std.copy()
+        std[std < 1e-8] = 1.0
+        emb = (emb - mean) / std
     return emb
 
 
 def compute_sae_activations(
     model: SparseAutoencoder, embeddings: np.ndarray
 ) -> np.ndarray:
-    """Encode raw embeddings through SAE, return activations (n_samples, hidden_dim)."""
+    """Encode normalized embeddings through SAE, return activations (n_samples, hidden_dim)."""
     model.eval()
     with torch.no_grad():
         x = torch.tensor(embeddings, dtype=torch.float32)
@@ -306,41 +386,65 @@ def match_tiered_m2o(
 # ── Orchestration ──────────────────────────────────────────────────────────
 
 
+def compute_alive_mask(
+    sae: SparseAutoencoder,
+    train_embs: Dict[str, np.ndarray],
+    threshold: float = 0.001,
+) -> np.ndarray:
+    """Compute alive mask from training data (authoritative source).
+
+    A feature is alive if it activates above threshold on any training row.
+    Using training data (which the SAE was trained on) ensures we capture
+    all features the SAE learned, independent of test-set sampling.
+
+    Returns:
+        Boolean mask of shape (hidden_dim,).
+    """
+    all_acts = []
+    for ds in sorted(train_embs.keys()):
+        acts = compute_sae_activations(sae, train_embs[ds])
+        all_acts.append(acts)
+    pooled = np.concatenate(all_acts, axis=0)
+    return get_alive_mask(pooled, threshold)
+
+
 def match_model_pair(
     model_A: SparseAutoencoder,
     model_B: SparseAutoencoder,
-    emb_dir_A: Path,
-    emb_dir_B: Path,
     datasets: List[str],
+    test_embs_A: Dict[str, np.ndarray],
+    test_embs_B: Dict[str, np.ndarray],
+    alive_mask_A: np.ndarray = None,
+    alive_mask_B: np.ndarray = None,
     method: str = "mnn",
     alive_threshold: float = 0.001,
-    max_per_dataset: int = 500,
     return_corr_matrix: bool = False,
 ) -> dict:
     """
     Match SAE features between two models across shared datasets.
 
-    1. For each dataset: load embeddings, encode through both SAEs
-    2. Pool activations across all datasets
-    3. Determine alive features from pooled activations
-    4. Compute cross-correlation on pooled alive activations (~19k rows)
-    5. Match using selected method
+    Alive masks are determined from training data (what the SAE learned).
+    Cross-correlations are computed on test data (generalization check).
+
+    Args:
+        alive_mask_A/B: Pre-computed boolean masks from training data.
+            If None, falls back to computing from test data.
 
     Returns:
         Dict with matches, unmatched features, and statistics.
     """
-    # Step 1-2: Collect activations across all datasets
+    # Step 1-2: Collect test activations across shared datasets
     all_acts_A = []
     all_acts_B = []
 
     for ds in datasets:
-        emb_A = load_embeddings(emb_dir_A, ds, max_per_dataset)
-        emb_B = load_embeddings(emb_dir_B, ds, max_per_dataset)
+        emb_A = test_embs_A[ds]
+        emb_B = test_embs_B[ds]
 
         acts_A = compute_sae_activations(model_A, emb_A)
         acts_B = compute_sae_activations(model_B, emb_B)
 
-        # Align sample count (embeddings may differ per model)
+        # Align sample count (test splits may differ per model)
         n = min(len(acts_A), len(acts_B))
         all_acts_A.append(acts_A[:n])
         all_acts_B.append(acts_B[:n])
@@ -348,9 +452,9 @@ def match_model_pair(
     pooled_A = np.concatenate(all_acts_A, axis=0)
     pooled_B = np.concatenate(all_acts_B, axis=0)
 
-    # Step 3: Alive mask from pooled activations
-    alive_A = get_alive_mask(pooled_A, alive_threshold)
-    alive_B = get_alive_mask(pooled_B, alive_threshold)
+    # Step 3: Alive mask (from training data if provided, else test data fallback)
+    alive_A = alive_mask_A if alive_mask_A is not None else get_alive_mask(pooled_A, alive_threshold)
+    alive_B = alive_mask_B if alive_mask_B is not None else get_alive_mask(pooled_B, alive_threshold)
 
     indices_A = np.where(alive_A)[0]
     indices_B = np.where(alive_B)[0]
@@ -460,12 +564,6 @@ def main():
         help="Min max-activation to consider a feature alive (default: 0.001)",
     )
     parser.add_argument(
-        "--max-per-dataset",
-        type=int,
-        default=500,
-        help="Max samples per dataset (default: 500)",
-    )
-    parser.add_argument(
         "--models",
         nargs="+",
         default=None,
@@ -482,6 +580,16 @@ def main():
         action="store_true",
         help="Save full cross-correlation matrices to output/sae_cross_correlations/",
     )
+    parser.add_argument(
+        "--random-baseline",
+        action="store_true",
+        help="Match each model's trained SAE vs its random baseline (control).",
+    )
+    parser.add_argument(
+        "--cross-model-baseline",
+        action="store_true",
+        help="Compute cross-model null: trained-A vs random-B for all pairs.",
+    )
     args = parser.parse_args()
 
     if args.output is None:
@@ -489,13 +597,12 @@ def main():
             f"output/sae_feature_matching"
             f"_{args.method}"
             f"_t{args.alive_threshold}"
-            f"_n{args.max_per_dataset}"
             f".json"
         )
 
     sweep_dir = sae_sweep_dir(args.round)
 
-    # Discover models with matryoshka_archetypal checkpoints
+    # Discover models with checkpoints and load train+test embeddings
     models = {}
     for display_name, model_key, emb_key in DEFAULT_MODELS:
         if args.models and model_key not in args.models:
@@ -504,38 +611,229 @@ def main():
         if not ckpt.exists():
             print(f"  Skipping {display_name}: no checkpoint at {ckpt}")
             continue
-        emb_dir = EMB_DIR / emb_key
-        if not emb_dir.exists():
-            print(f"  Skipping {display_name}: no embeddings at {emb_dir}")
+        try:
+            test_embs = load_test_embeddings(model_key)
+            train_embs = load_train_embeddings(model_key)
+        except FileNotFoundError as e:
+            print(f"  Skipping {display_name}: {e}")
             continue
         models[display_name] = {
             "model_key": model_key,
             "emb_key": emb_key,
             "ckpt": ckpt,
-            "emb_dir": emb_dir,
+            "test_embs": test_embs,
+            "train_embs": train_embs,
         }
+        n_train = sum(len(v) for v in train_embs.values())
+        n_test = sum(len(v) for v in test_embs.values())
+        print(f"  {display_name}: {len(test_embs)} datasets, "
+              f"{n_train} train / {n_test} test rows")
 
     model_names = sorted(models.keys())
     print(f"Models with checkpoints: {model_names}")
 
-    # Find common datasets across all models
-    emb_dirs = {name: info["emb_dir"] for name, info in models.items()}
-    datasets = find_common_datasets(emb_dirs)
+    # Find common datasets from test splits
+    all_ds_sets = [set(info["test_embs"].keys()) for info in models.values()]
+    datasets = sorted(set.intersection(*all_ds_sets)) if all_ds_sets else []
     print(f"Common datasets: {len(datasets)}")
 
-    # Load SAE checkpoints
+    # Load SAE checkpoints and compute alive masks from training data
     saes = {}
+    alive_masks = {}
     for name, info in models.items():
         print(f"Loading SAE: {name} from {info['ckpt']}")
         model, config, _ = load_sae_checkpoint(info["ckpt"])
         saes[name] = model
-        print(f"  hidden_dim={config.hidden_dim}, topk={config.topk}")
+        mask = compute_alive_mask(model, info["train_embs"], args.alive_threshold)
+        alive_masks[name] = mask
+        print(f"  hidden_dim={config.hidden_dim}, topk={config.topk}, "
+              f"alive={mask.sum()}/{len(mask)} ({mask.sum()/len(mask)*100:.1f}%)")
 
     # Optionally prepare correlation output dir
     corr_dir = None
     if args.save_correlations:
         corr_dir = PROJECT_ROOT / "output" / "sae_cross_correlations"
         corr_dir.mkdir(parents=True, exist_ok=True)
+
+    # Random baseline: trained vs random for each model
+    if args.random_baseline:
+        pairs = {}
+        summary = {}
+        for name in model_names:
+            info = models[name]
+            rand_ckpt = info["ckpt"].parent / RANDOM_BASELINE_FILENAME
+            if not rand_ckpt.exists():
+                print(f"  Skipping {name}: no random baseline at {rand_ckpt}")
+                continue
+            print(f"\nBaseline: {name} trained vs random")
+            rand_model, rand_config, _ = load_sae_checkpoint(rand_ckpt)
+            print(f"  random hidden_dim={rand_config.hidden_dim}, topk={rand_config.topk}")
+
+            # Use all datasets in this model's test split
+            model_datasets = sorted(info["test_embs"].keys())
+            rand_alive = compute_alive_mask(
+                rand_model, info["train_embs"], args.alive_threshold
+            )
+            result = match_model_pair(
+                model_A=saes[name],
+                model_B=rand_model,
+                datasets=model_datasets,
+                test_embs_A=info["test_embs"],
+                test_embs_B=info["test_embs"],
+                alive_mask_A=alive_masks[name],
+                alive_mask_B=rand_alive,
+                method=args.method,
+                alive_threshold=args.alive_threshold,
+            )
+            pair_key = f"{name}__random"
+            pairs[pair_key] = result
+            frac_a = result["n_matched"] / max(result["n_alive_a"], 1)
+            summary[pair_key] = {
+                "n_matched": result["n_matched"],
+                "mean_r": round(result["mean_match_r"], 4),
+                "frac_trained": round(frac_a, 4),
+                "alive_trained": result["n_alive_a"],
+                "alive_random": result["n_alive_b"],
+            }
+            print(
+                f"  matched={result['n_matched']}, "
+                f"mean_r={result['mean_match_r']:.3f}, "
+                f"alive_trained={result['n_alive_a']}, "
+                f"alive_random={result['n_alive_b']}"
+            )
+
+        output = {
+            "metadata": {
+                "mode": "random_baseline",
+                "n_models": len(pairs),
+                "method": args.method,
+                "alive_threshold": args.alive_threshold,
+                "split": "test",
+            },
+            "pairs": pairs,
+            "summary": {"per_pair": summary},
+        }
+        if args.output == (
+            f"output/sae_feature_matching"
+            f"_{args.method}"
+            f"_t{args.alive_threshold}"
+            f".json"
+        ):
+            args.output = args.output.replace(".json", "_random_baseline.json")
+
+        out_path = PROJECT_ROOT / args.output
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(convert_keys_to_native(output), f, indent=2, cls=NumpyEncoder)
+        print(f"\nSaved to {out_path}")
+
+        print("\n" + "=" * 70)
+        print(f"{'Model':<20} {'Matched':>8} {'Mean r':>8} {'Alive(T)':>9} {'Alive(R)':>9}")
+        print("-" * 70)
+        for pk in sorted(summary.keys()):
+            s = summary[pk]
+            print(
+                f"{pk:<20} {s['n_matched']:>8} {s['mean_r']:>8.3f} "
+                f"{s['alive_trained']:>9} {s['alive_random']:>9}"
+            )
+        return
+
+    # Cross-model random baseline: trained-A vs random-B for all directed pairs
+    if args.cross_model_baseline:
+        # Load random SAEs and compute their alive masks from training data
+        random_saes = {}
+        random_alive = {}
+        for name in model_names:
+            info = models[name]
+            rand_ckpt = info["ckpt"].parent / RANDOM_BASELINE_FILENAME
+            if not rand_ckpt.exists():
+                print(f"  Skipping {name}: no random baseline at {rand_ckpt}")
+                continue
+            rand_model, _, _ = load_sae_checkpoint(rand_ckpt)
+            random_saes[name] = rand_model
+            random_alive[name] = compute_alive_mask(
+                rand_model, info["train_embs"], args.alive_threshold
+            )
+        print(f"Random SAEs loaded: {sorted(random_saes.keys())}")
+
+        pairs = {}
+        for name_a in model_names:
+            for name_b in model_names:
+                if name_a == name_b:
+                    continue
+                if name_b not in random_saes:
+                    continue
+                pair_key = f"{name_a}__trained_vs_{name_b}__random"
+                print(f"\n  {pair_key}")
+
+                # Trained-A features vs Random-B features on shared datasets
+                shared_ds = sorted(
+                    set(models[name_a]["test_embs"].keys())
+                    & set(models[name_b]["test_embs"].keys())
+                )
+                if not shared_ds:
+                    print(f"    No shared datasets, skipping")
+                    continue
+
+                # Pool test activations
+                all_acts_A = []
+                all_acts_B = []
+                for ds in shared_ds:
+                    emb_A = models[name_a]["test_embs"][ds]
+                    emb_B = models[name_b]["test_embs"][ds]
+                    acts_A = compute_sae_activations(saes[name_a], emb_A)
+                    acts_B = compute_sae_activations(random_saes[name_b], emb_B)
+                    n = min(len(acts_A), len(acts_B))
+                    all_acts_A.append(acts_A[:n])
+                    all_acts_B.append(acts_B[:n])
+
+                pooled_A = np.concatenate(all_acts_A, axis=0)
+                pooled_B = np.concatenate(all_acts_B, axis=0)
+
+                # Use training-derived alive masks
+                alive_A = alive_masks[name_a]
+                alive_B = random_alive[name_b]
+
+                if alive_A.sum() == 0 or alive_B.sum() == 0:
+                    print(f"    No alive features, skipping")
+                    continue
+
+                corr = compute_cross_correlation(
+                    pooled_A[:, alive_A], pooled_B[:, alive_B]
+                )
+
+                # For each trained feature, its max |r| across random features
+                max_r = corr.max(axis=1)
+                pairs[pair_key] = {
+                    "n": int(len(max_r)),
+                    "mean": float(np.mean(max_r)),
+                    "median": float(np.median(max_r)),
+                    "p90": float(np.percentile(max_r, 90)),
+                    "p95": float(np.percentile(max_r, 95)),
+                }
+                print(f"    n={len(max_r)}, mean={np.mean(max_r):.3f}, "
+                      f"p90={np.percentile(max_r, 90):.3f}, "
+                      f"p95={np.percentile(max_r, 95):.3f}")
+
+        output = {
+            "n_datasets": len(datasets),
+            "split": "test",
+            "pairs": pairs,
+        }
+        if args.output == (
+            f"output/sae_feature_matching"
+            f"_{args.method}"
+            f"_t{args.alive_threshold}"
+            f".json"
+        ):
+            args.output = "output/sae_cross_model_random_baseline.json"
+
+        out_path = PROJECT_ROOT / args.output
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(convert_keys_to_native(output), f, indent=2, cls=NumpyEncoder)
+        print(f"\nSaved to {out_path}")
+        return
 
     # Match all pairs
     pairs = {}
@@ -546,12 +844,13 @@ def main():
         result = match_model_pair(
             model_A=saes[name_a],
             model_B=saes[name_b],
-            emb_dir_A=models[name_a]["emb_dir"],
-            emb_dir_B=models[name_b]["emb_dir"],
             datasets=datasets,
+            test_embs_A=models[name_a]["test_embs"],
+            test_embs_B=models[name_b]["test_embs"],
+            alive_mask_A=alive_masks[name_a],
+            alive_mask_B=alive_masks[name_b],
             method=args.method,
             alive_threshold=args.alive_threshold,
-            max_per_dataset=args.max_per_dataset,
             return_corr_matrix=args.save_correlations,
         )
 
@@ -609,7 +908,7 @@ def main():
             "n_datasets": len(datasets),
             "method": args.method,
             "alive_threshold": args.alive_threshold,
-            "max_per_dataset": args.max_per_dataset,
+            "split": "test",
             "models": model_names,
         },
         "pairs": pairs,

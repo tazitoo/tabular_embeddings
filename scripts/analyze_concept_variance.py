@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from analysis.sparse_autoencoder import SAEConfig, SparseAutoencoder
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.compare_sae_cross_model import SAE_FILENAME, sae_sweep_dir
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -282,7 +282,7 @@ def main():
     checkpoint_path = (
         sae_sweep_dir()
         / "tabpfn"
-        / "sae_matryoshka_archetypal_validated.pt"
+        / SAE_FILENAME
     )
     output_path = PROJECT_ROOT / "output" / "concept_variance_decomposition.json"
     emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / "tabpfn"

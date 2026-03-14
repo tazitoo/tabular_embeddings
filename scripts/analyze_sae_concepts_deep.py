@@ -269,8 +269,8 @@ def compute_row_meta_features(
     These features describe the "shape" of a row without depending on
     specific column semantics, enabling cross-dataset concept analysis.
     """
+    import torch
     from scipy.stats import skew, kurtosis
-    from sklearn.neighbors import NearestNeighbors
 
     n_rows = len(df)
     n_cols = len(df.columns)
@@ -294,13 +294,17 @@ def compute_row_meta_features(
     centroid = numeric_matrix.mean(axis=0)
     centroid_distances = np.linalg.norm(numeric_matrix - centroid, axis=1)
 
-    # Nearest neighbor distances (for isolation/density and graph topology)
+    # Nearest neighbor distances via torch (for isolation/density and graph topology)
     has_nn = n_rows > 5 and len(numeric_cols) > 0
     if has_nn:
         k = min(5, n_rows - 1)
-        nn = NearestNeighbors(n_neighbors=k + 1, algorithm='auto')
-        nn.fit(numeric_matrix)
-        distances, nn_indices = nn.kneighbors(numeric_matrix)
+        X_t = torch.tensor(numeric_matrix, dtype=torch.float32)
+        # Pairwise Euclidean distance via torch.cdist
+        dists = torch.cdist(X_t, X_t)  # (n_rows, n_rows)
+        # k+1 nearest (including self at distance 0)
+        distances_t, nn_indices_t = dists.topk(k + 1, largest=False)
+        distances = distances_t.numpy()
+        nn_indices = nn_indices_t.numpy()
         nn_distances = distances[:, 1]  # Exclude self
         local_densities = 1.0 / (distances[:, 1:].mean(axis=1) + 1e-8)
     else:

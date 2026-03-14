@@ -44,6 +44,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "4_results"))
 
+from scripts.compare_sae_cross_model import SAE_FILENAME
+
 logger = logging.getLogger(__name__)
 
 # Default paths
@@ -72,7 +74,7 @@ def load_sae(model_key: str, sae_dir: Path = DEFAULT_SAE_DIR, device: str = "cud
     """
     from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 
-    ckpt_path = sae_dir / model_key / "sae_matryoshka_archetypal_validated.pt"
+    ckpt_path = sae_dir / model_key / SAE_FILENAME
     if not ckpt_path.exists():
         raise FileNotFoundError(f"SAE checkpoint not found: {ckpt_path}")
 
