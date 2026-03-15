@@ -92,7 +92,7 @@ def compute_per_row_loss(y_true: np.ndarray, preds: np.ndarray, task: str) -> np
     return -np.log(p_correct)
 
 
-DEFAULT_CONCEPT_LABELS = PROJECT_ROOT / "output" / "cross_model_concept_labels_mnn_only.json"
+DEFAULT_CONCEPT_LABELS = PROJECT_ROOT / "output" / "cross_model_concept_labels_round8.json"
 DEFAULT_CONCEPT_REGRESSION = PROJECT_ROOT / "output" / f"sae_concept_analysis_round{DEFAULT_SAE_ROUND}.json"
 DEFAULT_PYMFE_CACHE = PROJECT_ROOT / "output" / "pymfe_tabarena_cache.json"
 
