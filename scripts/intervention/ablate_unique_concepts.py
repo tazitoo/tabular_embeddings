@@ -140,12 +140,11 @@ def ablate_pair_dataset(
     Returns:
         Dict with baseline/ablated metrics, or None if skipped.
     """
-    from scripts.embeddings.extract_layer_embeddings import get_dataset_task
-    from data.extended_loader import load_tabarena_dataset
+    from data.extended_loader import TABARENA_DATASETS, load_tabarena_dataset
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import LabelEncoder
 
-    task = get_dataset_task(dataset)
+    task = TABARENA_DATASETS.get(dataset, {}).get("task", "classification")
     display_a = DISPLAY_NAMES[model_a]
     display_b = DISPLAY_NAMES[model_b]
 
