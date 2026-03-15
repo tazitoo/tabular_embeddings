@@ -1187,6 +1187,11 @@ class HyperFastTail:
         n_query = len(X_query)
         X_query_t = torch.tensor(X_query, dtype=torch.float32).to(device)
 
+        # Clamp extraction_layer to last hidden layer
+        first_net = hf_clf._move_to_device(hf_clf._main_networks[0])
+        if extraction_layer >= len(first_net) - 1:
+            extraction_layer = len(first_net) - 2
+
         main_networks = []
         intermediates = []
         baseline_outputs = []
