@@ -27,10 +27,9 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.intervene_sae import (
+from scripts.intervention.intervene_sae import (
     DEFAULT_LAYERS_PATH,
     DEFAULT_SAE_DIR,
     DEFAULT_TRAINING_DIR,
@@ -43,12 +42,12 @@ from scripts.intervene_sae import (
     load_sae,
     load_training_mean,
 )
-from scripts.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
-from scripts.plot_prediction_scatter import (
+from scripts.intervention.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
+from scripts.figures.plot_prediction_scatter import (
     _logloss,
     get_unmatched_features,
 )
-from scripts.transfer_concepts import capture_embeddings
+from scripts.intervention.transfer_concepts import capture_embeddings
 
 logger = logging.getLogger(__name__)
 

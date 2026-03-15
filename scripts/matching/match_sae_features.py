@@ -18,16 +18,15 @@ import numpy as np
 import torch
 from scipy.optimize import linear_sum_assignment
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import SAEConfig, SparseAutoencoder
-from scripts.analyze_sae_concepts_deep import (
+from scripts.sae.analyze_sae_concepts_deep import (
     NumpyEncoder,
     convert_keys_to_native,
     load_sae_checkpoint,
 )
-from scripts.compare_sae_cross_model import (
+from scripts.sae.compare_sae_cross_model import (
     DEFAULT_MODELS,
     DEFAULT_SAE_ROUND,
     SAE_FILENAME,

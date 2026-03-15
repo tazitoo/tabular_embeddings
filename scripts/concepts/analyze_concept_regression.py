@@ -22,10 +22,9 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_architectures import (
+from scripts.sae.compare_sae_architectures import (
     META_NAMES,
     compute_activations,
     compute_basic_metrics,
@@ -33,7 +32,7 @@ from scripts.compare_sae_architectures import (
     get_train_test_split,
     meta_features_to_array,
 )
-from scripts.compare_sae_cross_model import (
+from scripts.sae.compare_sae_cross_model import (
     DEFAULT_MODELS,
     DEFAULT_SAE_ROUND,
     SAE_FILENAME,
@@ -42,13 +41,13 @@ from scripts.compare_sae_cross_model import (
     pool_embeddings_for_datasets,
     sae_sweep_dir,
 )
-from scripts.analyze_sae_concepts_deep import (
+from scripts.sae.analyze_sae_concepts_deep import (
     NumpyEncoder,
     compute_concept_coverage,
     convert_keys_to_native,
     load_sae_checkpoint,
 )
-from scripts.match_sae_features import (
+from scripts.matching.match_sae_features import (
     compute_alive_mask,
     load_test_embeddings,
     load_train_embeddings,
@@ -753,7 +752,7 @@ def collect_test_meta_features(
     """
     import pandas as pd
     from data.extended_loader import load_tabarena_dataset
-    from scripts.analyze_sae_concepts_deep import (
+    from scripts.sae.analyze_sae_concepts_deep import (
         compute_column_stats,
         compute_row_meta_features,
     )

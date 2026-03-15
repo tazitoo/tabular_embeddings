@@ -10,7 +10,7 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.sae.compare_sae_cross_model import sae_sweep_dir
 
 def load_tabicl_embeddings():
     """Load pooled TabICL embeddings - use pre-extracted embeddings from sweep."""

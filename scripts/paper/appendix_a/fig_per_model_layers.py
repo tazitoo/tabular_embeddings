@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+from scripts._project_root import PROJECT_ROOT
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
 # Style settings
@@ -333,8 +333,7 @@ def plot_all_model_appendix_figures():
     """Generate individual appendix figures for all models using batch analysis data."""
     import json
     import sys
-    sys.path.insert(0, str(PROJECT_ROOT))
-
+    
     # Load optimal layer config
     try:
         from config import load_optimal_layers

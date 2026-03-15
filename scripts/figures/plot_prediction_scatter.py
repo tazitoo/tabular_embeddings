@@ -31,13 +31,12 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.concept_performance_diagnostic import (
+from scripts.intervention.concept_performance_diagnostic import (
     _load_splits, compute_metric, DISPLAY_NAMES,
 )
-from scripts.intervene_sae import (
+from scripts.intervention.intervene_sae import (
     compute_perrow_logloss, get_improvable_rows,
 )
 
@@ -49,7 +48,7 @@ def get_ablated_predictions(
     ablate_features: list, device: str,
 ) -> np.ndarray:
     """Get P(class=1) after ablating specific SAE features."""
-    from scripts.intervene_sae import intervene
+    from scripts.intervention.intervene_sae import intervene
 
     X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
 
@@ -121,7 +120,7 @@ def get_differential_features(
 
 def get_predictions(model_key: str, dataset: str, task: str, device: str) -> np.ndarray:
     """Get P(class=1) predictions from a model on query rows."""
-    from scripts.concept_performance_diagnostic import (
+    from scripts.intervention.concept_performance_diagnostic import (
         predict_intervention_model, predict_hyperfast,
     )
 
@@ -217,8 +216,8 @@ def find_optimal_ablation(
     Returns:
         dict with: optimal_k, optimal_features, logloss_curve, etc.
     """
-    from scripts.intervene_sae import sweep_intervene
-    from scripts.concept_performance_diagnostic import _load_splits
+    from scripts.intervention.intervene_sae import sweep_intervene
+    from scripts.intervention.concept_performance_diagnostic import _load_splits
 
     X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
 
@@ -479,8 +478,8 @@ def find_per_row_optimal_ablation(
         unmatched_features: list of (feature_index, drop) sorted by aggregate drop
         preds_other: P(class=1) from the weaker model for per-row target logloss
     """
-    from scripts.intervene_sae import perrow_sweep_intervene
-    from scripts.concept_performance_diagnostic import _load_splits
+    from scripts.intervention.intervene_sae import perrow_sweep_intervene
+    from scripts.intervention.concept_performance_diagnostic import _load_splits
 
     X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
     feat_indices = [f for f, _ in unmatched_features]

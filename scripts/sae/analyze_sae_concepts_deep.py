@@ -54,8 +54,7 @@ def convert_keys_to_native(obj):
         return obj.tolist()
     return obj
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 from data.extended_loader import load_tabarena_dataset
@@ -848,7 +847,7 @@ def analyze_feature_triggers(
     print(f"Total: {len(all_meta)} samples from {len(set(all_dataset_names))} datasets")
 
     # Convert meta-features to array — use canonical META_NAMES from compare_sae_architectures
-    from scripts.compare_sae_architectures import META_NAMES as meta_names, meta_features_to_array
+    from scripts.sae.compare_sae_architectures import META_NAMES as meta_names, meta_features_to_array
     meta_array = np.array([meta_features_to_array(m) for m in all_meta])
 
     # Compute baseline statistics

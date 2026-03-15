@@ -36,10 +36,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.concept_description_utils import (
+from scripts.concepts.concept_description_utils import (
     format_haiku_prompt,
     format_sonnet_group_prompt,
     format_sonnet_unexplained_prompt,
@@ -201,12 +200,12 @@ def load_activations_cached(
 
     try:
         import torch
-        from scripts.intervene_sae import load_sae, load_training_mean
+        from scripts.intervention.intervene_sae import load_sae, load_training_mean
 
         sae, config = load_sae(model_key, sae_dir=sae_dir, device=device)
 
         # Load raw training embeddings
-        from scripts.intervene_sae import get_extraction_layer
+        from scripts.intervention.intervene_sae import get_extraction_layer
         layer = get_extraction_layer(model_key)
         training_path = training_dir / f"{model_key}_layer{layer}_sae_training.npz"
         if not training_path.exists():
@@ -256,7 +255,7 @@ def _embedding_rows_as_dicts(
     raw embedding dimensions as a proxy.
     """
     try:
-        from scripts.intervene_sae import get_extraction_layer
+        from scripts.intervention.intervene_sae import get_extraction_layer
 
         layer = get_extraction_layer(model_key)
         training_path = training_dir / f"{model_key}_layer{layer}_sae_training.npz"
@@ -519,7 +518,7 @@ def _find_best_member(
 
 def _resolve_sae_dir(model_key: str) -> Path:
     """Return the SAE sweep directory for a model, preferring round 6."""
-    from scripts.compare_sae_cross_model import sae_sweep_dir
+    from scripts.sae.compare_sae_cross_model import sae_sweep_dir
 
     round6 = sae_sweep_dir(6)
     ckpt = round6 / model_key / "sae_matryoshka_archetypal_validated.pt"

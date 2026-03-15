@@ -33,15 +33,14 @@ import matplotlib.pyplot as plt
 from scipy.cluster.hierarchy import linkage, fcluster
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import (
+from scripts.sae.compare_sae_cross_model import (
     DEFAULT_MODELS,
     SAE_FILENAME,
     sae_sweep_dir,
 )
-from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
+from scripts.sae.analyze_sae_concepts_deep import load_sae_checkpoint
 
 # Map display names to prebuilt training data base names
 _MODEL_BASE_NAMES = {
@@ -662,7 +661,7 @@ def main():
     print(f"\nSaved: {output_json}")
 
     # --- Generate figures ---
-    fig_dir = PROJECT_ROOT / "scripts" / "section43"
+    fig_dir = PROJECT_ROOT / "scripts" / "concepts"
     make_selectivity_figure(all_selectivity, fig_dir / "feature_selectivity.pdf")
     make_reconstruction_figure(all_r2, fig_dir / "domain_reconstruction.pdf")
 

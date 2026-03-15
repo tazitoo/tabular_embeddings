@@ -24,11 +24,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.analyze_sae_concepts_deep import NumpyEncoder, convert_keys_to_native
-from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND
+from scripts.sae.analyze_sae_concepts_deep import NumpyEncoder, convert_keys_to_native
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
 
 
 def load_concept_probes(

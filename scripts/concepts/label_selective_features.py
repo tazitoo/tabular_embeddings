@@ -28,19 +28,18 @@ import numpy as np
 import pandas as pd
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from data.extended_loader import TABARENA_DATASETS
-from scripts.concept_fingerprint import load_per_dataset_embeddings
-from scripts.concept_importance import (
+from scripts.concepts.concept_fingerprint import load_per_dataset_embeddings
+from scripts.intervention.concept_importance import (
     get_alive_features,
     get_feature_labels,
     get_matryoshka_bands,
     feature_to_band,
 )
-from scripts.intervene_sae import load_sae
-from scripts.row_level_probes import (
+from scripts.intervention.intervene_sae import load_sae
+from scripts.concepts.row_level_probes import (
     get_column_names,
     get_train_indices,
     reconstruct_query_data,

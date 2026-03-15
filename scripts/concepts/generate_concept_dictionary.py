@@ -24,10 +24,9 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import SAE_FILENAME, sae_sweep_dir
+from scripts.sae.compare_sae_cross_model import SAE_FILENAME, sae_sweep_dir
 
 
 # Concise label rules: maps (meta_feature, direction) to short descriptors

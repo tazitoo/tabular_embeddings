@@ -25,18 +25,17 @@ import torch
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
-from scripts.compare_sae_cross_model import (
+from scripts.sae.compare_sae_cross_model import (
     DEFAULT_MODELS,
     DEFAULT_SAE_ROUND,
     SAE_FILENAME,
     find_common_datasets,
     sae_sweep_dir,
 )
-from scripts.analyze_sae_concepts_deep import (
+from scripts.sae.analyze_sae_concepts_deep import (
     NumpyEncoder,
     convert_keys_to_native,
     load_sae_checkpoint,

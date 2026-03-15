@@ -39,11 +39,9 @@ torch.set_num_threads(num_threads)
 os.environ['OMP_NUM_THREADS'] = str(num_threads)
 os.environ['MKL_NUM_THREADS'] = str(num_threads)
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND, sae_sweep_dir
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND, sae_sweep_dir
 
 from analysis.sparse_autoencoder import (
     SAEConfig,

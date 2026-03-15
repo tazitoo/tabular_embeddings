@@ -26,22 +26,21 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy import stats
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import (
+from scripts.sae.compare_sae_cross_model import (
     DEFAULT_MODELS,
     SAE_FILENAME,
     find_common_datasets,
     sae_sweep_dir,
 )
-from scripts.compare_sae_architectures import compute_activations
-from scripts.analyze_sae_concepts_deep import (
+from scripts.sae.compare_sae_architectures import compute_activations
+from scripts.sae.analyze_sae_concepts_deep import (
     NumpyEncoder,
     convert_keys_to_native,
     load_sae_checkpoint,
 )
-from scripts.section43.universal_concepts import pool_embeddings_with_offsets
+from scripts.concepts.universal_concepts import pool_embeddings_with_offsets
 
 
 # ---------------------------------------------------------------------------

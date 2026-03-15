@@ -18,8 +18,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import (
     SAEConfig,
@@ -27,7 +26,7 @@ from analysis.sparse_autoencoder import (
     create_random_baseline,
     train_sae,
 )
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.sae.compare_sae_cross_model import sae_sweep_dir
 
 
 STABILITY_SEEDS = [123, 456, 789]
@@ -64,7 +63,7 @@ def save_seed_models(model_name: str, device: str = "cuda"):
         return
 
     # Load training data
-    from scripts.build_sae_training_data import OUTPUT_DIR as TRAINING_DIR
+    from scripts.embeddings.build_sae_training_data import OUTPUT_DIR as TRAINING_DIR
     from config import get_optimal_layer
 
     layer = get_optimal_layer(model_name)

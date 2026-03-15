@@ -33,8 +33,7 @@ import torch.nn.functional as F
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 import hashlib
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig

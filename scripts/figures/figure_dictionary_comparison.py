@@ -26,14 +26,13 @@ from matplotlib.gridspec import GridSpec
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_architectures import (
+from scripts.sae.compare_sae_architectures import (
     compute_activations,
     get_train_test_split,
 )
-from scripts.compare_sae_cross_model import (
+from scripts.sae.compare_sae_cross_model import (
     DEFAULT_MODELS,
     SAE_FILENAME,
     collect_meta_for_datasets,
@@ -41,7 +40,7 @@ from scripts.compare_sae_cross_model import (
     pool_embeddings_for_datasets,
     sae_sweep_dir,
 )
-from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
+from scripts.sae.analyze_sae_concepts_deep import load_sae_checkpoint
 
 BAND_LABELS = ['S1 [0,32)', 'S2 [32,64)', 'S3 [64,128)', 'S4 [128,256)', 'S5 [256,N)']
 

@@ -20,7 +20,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+from scripts._project_root import PROJECT_ROOT
 DATA_PATH = PROJECT_ROOT / "output" / "domain_concept_analysis.json"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "paper_figures" / "appendix_d"
 

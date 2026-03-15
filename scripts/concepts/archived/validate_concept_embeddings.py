@@ -23,10 +23,9 @@ import numpy as np
 from scipy import stats
 from scipy.spatial.distance import pdist, squareform, cosine as cosine_dist
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.embed_concept_descriptions import embed_descriptions
+from scripts.concepts.embed_concept_descriptions import embed_descriptions
 
 INPUT_DIR = PROJECT_ROOT / "output" / "concept_descriptions"
 LABELS_PATH = PROJECT_ROOT / "output" / "cross_model_concept_labels_round8.json"

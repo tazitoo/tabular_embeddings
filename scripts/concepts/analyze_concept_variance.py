@@ -23,11 +23,10 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import SAEConfig, SparseAutoencoder
-from scripts.compare_sae_cross_model import SAE_FILENAME, sae_sweep_dir
+from scripts.sae.compare_sae_cross_model import SAE_FILENAME, sae_sweep_dir
 
 
 class NumpyEncoder(json.JSONEncoder):

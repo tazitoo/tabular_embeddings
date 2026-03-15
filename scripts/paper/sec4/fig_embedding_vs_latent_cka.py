@@ -26,8 +26,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from adjustText import adjust_text
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from scripts.paper.sec4.fig_geometric_vs_concept import (
     compute_cka_for_task,

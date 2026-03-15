@@ -30,11 +30,10 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.intervene_sae import load_sae, load_training_mean, get_extraction_layer
-from scripts.concept_importance import (
+from scripts.intervention.intervene_sae import load_sae, load_training_mean, get_extraction_layer
+from scripts.intervention.concept_importance import (
     get_alive_features,
     get_feature_labels,
     get_matryoshka_bands,

@@ -24,8 +24,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import (
     SAEConfig,
@@ -33,7 +32,7 @@ from analysis.sparse_autoencoder import (
     create_random_baseline,
     train_sae,
 )
-from scripts.sae_tabarena_sweep import (
+from scripts.sae.sae_tabarena_sweep import (
     build_sae_config,
     compute_stability,
     measure_dictionary_richness,

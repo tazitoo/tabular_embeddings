@@ -45,11 +45,10 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from config import load_optimal_layers, get_optimal_layer
-from scripts.extract_layer_embeddings import sort_layer_names
+from scripts.embeddings.extract_layer_embeddings import sort_layer_names
 
 
 LAYERWISE_DIR = PROJECT_ROOT / "output" / "embeddings" / "tabarena_layerwise_round5"

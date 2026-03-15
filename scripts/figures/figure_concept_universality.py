@@ -22,16 +22,15 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_architectures import (
+from scripts.sae.compare_sae_architectures import (
     META_NAMES,
     compute_activations,
     get_train_test_split,
     meta_features_to_array,
 )
-from scripts.compare_sae_cross_model import (
+from scripts.sae.compare_sae_cross_model import (
     DEFAULT_MODELS,
     SAE_FILENAME,
     collect_meta_for_datasets,
@@ -39,7 +38,7 @@ from scripts.compare_sae_cross_model import (
     pool_embeddings_for_datasets,
     sae_sweep_dir,
 )
-from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
+from scripts.sae.analyze_sae_concepts_deep import load_sae_checkpoint
 
 
 BAND_LABELS_SHORT = ['S1', 'S2', 'S3', 'S4', 'S5']

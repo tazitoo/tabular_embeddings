@@ -33,11 +33,10 @@ torch.set_num_threads(num_threads)
 os.environ['OMP_NUM_THREADS'] = str(num_threads)
 os.environ['MKL_NUM_THREADS'] = str(num_threads)
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND, sae_sweep_dir
-from scripts.sae_tabarena_sweep import (
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND, sae_sweep_dir
+from scripts.sae.sae_tabarena_sweep import (
     _load_prebuilt_embeddings,
     run_sae_trial,
     save_sae_model,

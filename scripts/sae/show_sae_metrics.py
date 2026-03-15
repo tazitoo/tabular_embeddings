@@ -13,12 +13,11 @@ import numpy as np
 from pathlib import Path
 import sys
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig, compute_c_dec
 from data.tabarena_utils import load_embeddings_raw, get_tabarena_splits
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.sae.compare_sae_cross_model import sae_sweep_dir
 
 
 def compute_sae_metrics(model, embeddings, device='cpu'):

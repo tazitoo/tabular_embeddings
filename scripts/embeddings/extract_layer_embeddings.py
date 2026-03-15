@@ -35,11 +35,10 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "4_results"))
+from scripts._project_root import PROJECT_ROOT
 
 from data.extended_loader import TABARENA_DATASETS, load_tabarena_dataset
+sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "figures" / "4_results"))
 from layerwise_cka_analysis import (
     extract_tabpfn_all_layers,
     extract_mitra_all_layers,

@@ -28,10 +28,9 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.intervene_sae import (
+from scripts.intervention.intervene_sae import (
     DEFAULT_LAYERS_PATH,
     DEFAULT_SAE_DIR,
     DEFAULT_TRAINING_DIR,
@@ -43,8 +42,8 @@ from scripts.intervene_sae import (
     load_sae,
     load_training_mean,
 )
-from scripts.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
-from scripts.plot_prediction_scatter import (
+from scripts.intervention.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
+from scripts.figures.plot_prediction_scatter import (
     _logloss,
     get_unmatched_features,
 )
@@ -68,7 +67,7 @@ def _load_translator_for_pair(
     if not path.exists():
         return None
 
-    from scripts.embedding_translator import load_translator
+    from scripts.intervention.embedding_translator import load_translator
     model, meta = load_translator(path, device=device)
     logger.info("Loaded translator %s → %s (arch=%s, val_R²=%.4f)",
                 source_model, target_model,
@@ -1118,7 +1117,7 @@ def main():
         auc_strong, auc_weak = auc_b, auc_a
 
     # ── Import plot functions ──────────────────────────────────────────────
-    from scripts.plot_prediction_scatter import (
+    from scripts.figures.plot_prediction_scatter import (
         plot_perrow_diagnostic,
         plot_perrow_results,
         plot_perrow_scatter,

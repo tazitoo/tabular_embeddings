@@ -28,10 +28,9 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import SAE_FILENAME
+from scripts.sae.compare_sae_cross_model import SAE_FILENAME
 
 # Default paths
 DEFAULT_LABELS_PATH = PROJECT_ROOT / "output" / "cross_model_concept_labels.json"

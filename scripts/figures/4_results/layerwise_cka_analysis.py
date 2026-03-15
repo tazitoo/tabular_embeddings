@@ -19,8 +19,7 @@ import numpy as np
 import torch
 
 # Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.similarity import centered_kernel_alignment
 

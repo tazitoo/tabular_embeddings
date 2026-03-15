@@ -28,7 +28,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-PROJECT_ROOT = Path(__file__).parent.parent
+from scripts._project_root import PROJECT_ROOT
 
 # Consistent with scripts/section43/universal_concepts.py
 MODEL_ORDER = ["TabPFN", "CARTE", "TabICL", "TabDPT", "Mitra", "Tabula-8B"]

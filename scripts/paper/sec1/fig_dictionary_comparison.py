@@ -24,8 +24,7 @@ from matplotlib.gridspec import GridSpec
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from scripts.compare_sae_architectures import (
     compute_activations,

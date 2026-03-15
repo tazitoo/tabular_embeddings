@@ -28,11 +28,10 @@ matplotlib.use('Agg')
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import SAEConfig
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.sae.compare_sae_cross_model import sae_sweep_dir
 
 
 # Architecture display names and colors

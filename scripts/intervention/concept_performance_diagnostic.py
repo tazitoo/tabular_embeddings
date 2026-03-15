@@ -37,8 +37,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +158,7 @@ def predict_intervention_model(
     device: str = "cuda",
 ) -> Dict:
     """Get predictions from an intervention-ready model (baseline, no ablation)."""
-    from scripts.intervene_sae import intervene
+    from scripts.intervention.intervene_sae import intervene
 
     X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
 
@@ -269,7 +268,7 @@ def collect_performance(
 
     Appends results to existing CSV if present (idempotent — skips existing entries).
     """
-    from scripts.extract_layer_embeddings import get_dataset_task
+    from scripts.embeddings.extract_layer_embeddings import get_dataset_task
     from data.extended_loader import TABARENA_DATASETS
 
     if datasets is None:
@@ -362,7 +361,7 @@ def compute_all_fingerprints(
 
     Returns dict mapping model_key -> fingerprint data.
     """
-    from scripts.concept_fingerprint import compute_fingerprints
+    from scripts.concepts.concept_fingerprint import compute_fingerprints
 
     if models is None:
         models = ALL_MODELS
@@ -558,7 +557,7 @@ def compute_concept_gaps(
             row["cosine_sim"] = 0.0
 
         # Per-Matryoshka-band breakdown
-        from scripts.concept_importance import feature_to_band
+        from scripts.intervention.concept_importance import feature_to_band
 
         for band_name in ["S1", "S2", "S3", "S4", "S5"]:
             # Unmatched in this band

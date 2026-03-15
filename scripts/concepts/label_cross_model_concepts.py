@@ -4,19 +4,40 @@ Cross-model SAE concept grouping and prompt generation.
 
 Groups features identified by cross-model matching into concept groups, then
 generates labeling prompts with contrastive examples and dataset context.
-Labeling is done externally in Claude Code, not via API.
+Labeling is done externally (see label_concept_groups.py for the dispatch
+pipeline).
 
-Runs in three phases:
+Runs in three phases, plus an optional post-hoc splitting step:
+
   Phase 1: MNN-matched groups (union-find on tier-1 edges)
   Phase 2: Extend groups via cross-correlation direct assignment
   Phase 3: Cluster unmatched features by probe signature
 
+  Split:   Break oversized groups via Leiden community detection
+
+Phase 1 uses transitive closure (union-find) on mutual nearest neighbor
+edges, which can produce very large "mega-groups" when loosely related
+features chain together (A↔B, B↔C, ... → all in one component). In our
+8-model analysis this produced a group 0 with 8,883 members spanning all
+models — not a real concept, but a graph artifact. The --split-megagroup
+step applies Leiden community detection on the cross-correlation subgraph
+to decompose such groups into coherent sub-communities.
+
+Whether a mega-group forms depends on the number of models, the MNN
+threshold, and the density of cross-model correlations. With fewer models
+or stricter thresholds, the largest connected component may already be
+small enough. Check group 0's size after Phase 1 to decide if splitting
+is needed.
+
 Usage:
     # Run all phases (default)
-    python scripts/label_cross_model_concepts.py
+    python -m scripts.concepts.label_cross_model_concepts
 
     # Single phase
-    python scripts/label_cross_model_concepts.py --phase 1
+    python -m scripts.concepts.label_cross_model_concepts --phase 1
+
+    # Split oversized group after phases complete
+    python -m scripts.concepts.label_cross_model_concepts --split-megagroup 0
 """
 
 import argparse
@@ -28,14 +49,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.analyze_sae_concepts_deep import (
+from scripts.sae.analyze_sae_concepts_deep import (
     NumpyEncoder,
     convert_keys_to_native,
 )
-from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
 
 
 # ── Data loading ──────────────────────────────────────────────────────────
@@ -198,20 +218,26 @@ def aggregate_group_probes(
 
 SYSTEM_PROMPT = """\
 You are an expert at analyzing tabular data patterns. You are labeling \
-universal concepts found by Sparse Autoencoders trained on different tabular \
-foundation models. A "concept group" means features from multiple independent \
-models that activate on the same data rows, indicating they detect the same \
-underlying tabular pattern.
+universal concepts found by Sparse Autoencoders (SAEs) trained on different \
+tabular foundation models. Each SAE feature should be MONOSEMANTIC — encoding \
+exactly one coherent meaning. A "concept group" means features from multiple \
+independent models that activate on the same data rows, indicating they detect \
+the same underlying tabular pattern.
 
 You will see:
-- Probe regression coefficients (statistical summaries of row-level properties)
-- Contrastive examples: raw data rows where the feature fires vs nearby rows \
-where it doesn't. Look for patterns in the actual column values.
-- Dataset context: PyMFE meta-features describing each dataset.
+- Contrastive examples: raw data rows where the feature fires strongly vs \
+nearby rows where it stays silent. This is the PRIMARY evidence — look for \
+patterns in the actual column values that distinguish activating from \
+non-activating rows.
+- Statistical hints: probe regression coefficients summarizing row-level \
+properties. These are secondary guidance to confirm your interpretation.
+- Dataset context: meta-features describing each dataset.
 
-Respond with ONLY a concept label (2-5 words). Focus on data properties, \
-not semantics. Examples: "extreme outliers", "high feature correlation", \
-"sparse rows", "right-skewed distribution", "isolated points"."""
+Describe the single coherent data pattern this concept encodes. Focus on \
+abstract structural properties (magnitude, sparsity, distribution shape, \
+outlier status, etc.) — not domain-specific semantics. Never reference \
+column names (col0, col3) or probe names (numeric_std, frac_zeros) in \
+your output."""
 
 
 def _format_raw_row(raw: dict, max_cols: int = 12) -> str:
@@ -304,8 +330,14 @@ def format_group_prompt(
         "",
     ]
 
-    # Primary evidence: contrastive examples from the highest-R² member
-    best_member = max(agg["per_member"], key=lambda m: m.get("r2", 0))
+    # Primary evidence: contrastive examples from the member with the most
+    # non-zero activating examples (ties broken by R²)
+    def _example_quality(m):
+        ex = m.get("examples", {})
+        n_active = sum(1 for r in ex.get("top", []) if r.get("activation", 0) > 0)
+        return (n_active, m.get("r2", 0))
+
+    best_member = max(agg["per_member"], key=_example_quality)
     examples = best_member.get("examples", {})
     if examples:
         lines.append(f"CONTRASTIVE EXAMPLES (from {best_member['model']} #{best_member['feature_idx']}):")
@@ -964,6 +996,294 @@ def build_summary(result: dict) -> dict:
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
+# ── Mega-group splitting via Leiden community detection ──────────────────
+
+
+def split_megagroup(
+    groups_path: Path,
+    concepts_path: Path,
+    corr_dir: Path,
+    group_id: str = "0",
+    max_group_size: int = 100,
+    min_edge_weight: float = 0.05,
+    resolution: float = 1.0,
+):
+    """Split a large concept group using Leiden community detection.
+
+    Phase 1's union-find produces connected components via transitive closure.
+    With 8 models and ~14K MNN edges, the largest component ("group 0")
+    contained 8,883 features — not a coherent concept, but a chain artifact.
+    This matters downstream: build_concept_hierarchy.py uses group membership
+    to determine which concepts are unique vs shared between model pairs, so
+    an all-models mega-group masks thousands of genuinely unique concepts as
+    "shared."
+
+    This function builds a weighted subgraph from the cross-correlation
+    matrices for just the mega-group's members, then runs Leiden
+    (RBConfigurationVertexPartition) to find dense sub-communities.
+    Communities exceeding max_group_size are recursively split at doubled
+    resolution. The original group is retained (marked with split metadata)
+    and new sub-groups are appended with sequential IDs.
+
+    Whether this step is needed depends on your data: check the size of
+    group 0 after Phase 1. If it's under max_group_size, skip this.
+    """
+    import igraph as ig
+    import leidenalg
+    import numpy as np
+
+    print(f"Loading {groups_path}...")
+    with open(groups_path) as f:
+        data = json.load(f)
+
+    print(f"Loading {concepts_path}...")
+    with open(concepts_path) as f:
+        concepts = json.load(f)
+    probe_lookup, dataset_context = load_concept_data(concepts, top_k=5)
+
+    # Load domain lookup for prompts
+    domain_path = PROJECT_ROOT / "data" / "tabarena_domains.json"
+    domain_lookup = {}
+    if domain_path.exists():
+        with open(domain_path) as f:
+            domain_lookup = json.load(f).get("dataset_domain", {})
+
+    group = data["concept_groups"][group_id]
+    members = [tuple(m) for m in group["members"]]
+    print(f"Group {group_id}: {len(members)} members across {group['n_models']} models")
+
+    # Build node index: (model, feat_idx) -> integer node ID
+    node_to_idx = {(m, int(f)): i for i, (m, f) in enumerate(members)}
+    idx_to_node = {i: n for n, i in node_to_idx.items()}
+    n_nodes = len(members)
+
+    # Load cross-correlation matrices
+    print(f"Loading cross-correlations from {corr_dir}...")
+    corr_data = _load_cross_correlations(corr_dir)
+    corr_lookup = _build_corr_lookup(corr_data)
+
+    # Build member index per model for fast lookup
+    model_members = defaultdict(dict)  # model -> {feat_idx: node_idx}
+    for (model, fidx), nidx in node_to_idx.items():
+        model_members[model][int(fidx)] = nidx
+
+    # Build edge list from cross-correlations
+    print("Building weighted edge list...")
+    edges = []
+    weights = []
+    models = sorted(model_members.keys())
+
+    for i, ma in enumerate(models):
+        for mb in models[i + 1:]:
+            key = (ma, mb)
+            if key not in corr_lookup:
+                continue
+
+            info = corr_lookup[key]
+            corr_matrix = info["corr_matrix"]
+            indices_a = info["indices_a"]
+            indices_b = info["indices_b"]
+
+            # Build local index maps for this pair
+            idx_a_map = {int(v): j for j, v in enumerate(indices_a)}
+            idx_b_map = {int(v): j for j, v in enumerate(indices_b)}
+
+            members_a = model_members.get(ma, {})
+            members_b = model_members.get(mb, {})
+
+            for fidx_a, nidx_a in members_a.items():
+                if fidx_a not in idx_a_map:
+                    continue
+                row = corr_matrix[idx_a_map[fidx_a]]
+
+                for fidx_b, nidx_b in members_b.items():
+                    if fidx_b not in idx_b_map:
+                        continue
+                    w = float(row[idx_b_map[fidx_b]])
+                    if w >= min_edge_weight:
+                        edges.append((nidx_a, nidx_b))
+                        weights.append(w)
+
+    print(f"  {len(edges)} edges (min_weight={min_edge_weight}), {n_nodes} nodes")
+
+    # Build igraph graph
+    g = ig.Graph(n=n_nodes, edges=edges, directed=False)
+    g.es["weight"] = weights
+
+    # Run Leiden
+    print(f"Running Leiden (resolution={resolution})...")
+    partition = leidenalg.find_partition(
+        g,
+        leidenalg.RBConfigurationVertexPartition,
+        weights="weight",
+        resolution_parameter=resolution,
+        seed=42,
+    )
+    print(f"  Found {len(partition)} communities, modularity={partition.modularity:.4f}")
+
+    # Collect communities
+    communities = []
+    for comm_nodes in partition:
+        comm_members = [idx_to_node[i] for i in comm_nodes]
+        communities.append(comm_members)
+
+    # Sort by size descending
+    communities.sort(key=len, reverse=True)
+
+    # Report size distribution
+    sizes = [len(c) for c in communities]
+    print(f"  Size distribution: min={min(sizes)}, median={sorted(sizes)[len(sizes)//2]}, "
+          f"max={max(sizes)}, singletons={sum(1 for s in sizes if s == 1)}")
+
+    # Recursively split oversized communities
+    final_communities = []
+    for comm in communities:
+        if len(comm) <= max_group_size:
+            final_communities.append(comm)
+        else:
+            print(f"  Recursively splitting community of {len(comm)} at resolution={resolution * 2}...")
+            sub_comms = _leiden_split(
+                comm, corr_lookup, model_members, node_to_idx,
+                min_edge_weight, resolution * 2, max_group_size,
+            )
+            final_communities.extend(sub_comms)
+
+    # Filter: keep communities with 2+ members
+    final_communities = [c for c in final_communities if len(c) >= 2]
+    final_communities.sort(key=len, reverse=True)
+
+    print(f"\nFinal: {len(final_communities)} sub-groups from group {group_id}")
+    sizes = [len(c) for c in final_communities]
+    print(f"  Size distribution: min={min(sizes)}, median={sorted(sizes)[len(sizes)//2]}, "
+          f"max={max(sizes)}")
+    print(f"  Members covered: {sum(sizes)}/{len(members)}")
+
+    # Generate prompts and add sub-groups to data
+    n_new = 0
+    next_id = max(int(k) for k in data["concept_groups"].keys()) + 1
+
+    for i, comm_members in enumerate(final_communities):
+        gid = str(next_id + i)
+        agg = aggregate_group_probes(comm_members, probe_lookup)
+        prompt = format_group_prompt(
+            next_id + i, agg,
+            dataset_context=dataset_context,
+            domain_lookup=domain_lookup,
+        )
+        data["concept_groups"][gid] = {
+            "members": [[m, f] for m, f in comm_members],
+            "n_models": agg["n_models"],
+            "tier": 1,
+            "mean_r2": agg["mean_r2"],
+            "label": "unlabeled",
+            "top_probes": agg["top_probes"][:5],
+            "phase_added": 1,
+            "split_from": group_id,
+            "prompt": prompt,
+        }
+        n_new += 1
+
+    # Mark original group as split
+    group["split_into"] = n_new
+    group["split_method"] = "leiden"
+    group["split_params"] = {
+        "resolution": resolution,
+        "min_edge_weight": min_edge_weight,
+        "max_group_size": max_group_size,
+    }
+
+    # Update summary
+    data.setdefault("metadata", {})
+    data["metadata"]["megagroup_split"] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "group_id": group_id,
+        "original_members": len(members),
+        "n_subcommunities": n_new,
+        "members_in_subcommunities": sum(sizes),
+        "singletons_dropped": len(members) - sum(sizes),
+        "method": "leiden",
+        "resolution": resolution,
+        "min_edge_weight": min_edge_weight,
+    }
+
+    with open(groups_path, "w") as f:
+        json.dump(convert_keys_to_native(data), f, indent=2, cls=NumpyEncoder)
+
+    print(f"\nWrote {n_new} new sub-groups (IDs {next_id}–{next_id + n_new - 1}) to {groups_path}")
+    print(f"  Singletons dropped: {len(members) - sum(sizes)}")
+
+
+def _leiden_split(
+    members, corr_lookup, model_members, node_to_idx,
+    min_edge_weight, resolution, max_group_size,
+):
+    """Recursively split a community using Leiden at higher resolution."""
+    import igraph as ig
+    import leidenalg
+
+    # Build local node index
+    local_to_global = {i: m for i, m in enumerate(members)}
+    global_to_local = {m: i for i, m in enumerate(members)}
+    n = len(members)
+
+    # Build local member index per model
+    local_model_members = defaultdict(dict)
+    for i, (model, fidx) in enumerate(members):
+        local_model_members[model][int(fidx)] = i
+
+    models = sorted(local_model_members.keys())
+    edges = []
+    weights = []
+
+    for mi, ma in enumerate(models):
+        for mb in models[mi + 1:]:
+            key = (ma, mb)
+            if key not in corr_lookup:
+                continue
+            info = corr_lookup[key]
+            corr_matrix = info["corr_matrix"]
+            indices_a = info["indices_a"]
+            indices_b = info["indices_b"]
+            idx_a_map = {int(v): j for j, v in enumerate(indices_a)}
+            idx_b_map = {int(v): j for j, v in enumerate(indices_b)}
+
+            for fidx_a, lidx_a in local_model_members.get(ma, {}).items():
+                if fidx_a not in idx_a_map:
+                    continue
+                row = corr_matrix[idx_a_map[fidx_a]]
+                for fidx_b, lidx_b in local_model_members.get(mb, {}).items():
+                    if fidx_b not in idx_b_map:
+                        continue
+                    w = float(row[idx_b_map[fidx_b]])
+                    if w >= min_edge_weight:
+                        edges.append((lidx_a, lidx_b))
+                        weights.append(w)
+
+    g = ig.Graph(n=n, edges=edges, directed=False)
+    g.es["weight"] = weights
+
+    partition = leidenalg.find_partition(
+        g,
+        leidenalg.RBConfigurationVertexPartition,
+        weights="weight",
+        resolution_parameter=resolution,
+        seed=42,
+    )
+
+    result = []
+    for comm_nodes in partition:
+        comm_members = [local_to_global[i] for i in comm_nodes]
+        if len(comm_members) > max_group_size and resolution < 64.0:
+            sub = _leiden_split(
+                comm_members, corr_lookup, model_members, node_to_idx,
+                min_edge_weight, resolution * 2, max_group_size,
+            )
+            result.extend(sub)
+        else:
+            result.append(comm_members)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Build cross-model concept groups and generate labeling prompts"
@@ -992,7 +1312,28 @@ def main():
         "--corr-dir", type=str,
         default="output/sae_cross_correlations",
     )
+    parser.add_argument(
+        "--split-megagroup", type=str, default=None, metavar="GROUP_ID",
+        help="Split a large group via Leiden community detection (e.g. --split-megagroup 0)",
+    )
+    parser.add_argument("--resolution", type=float, default=1.0,
+                        help="Leiden resolution parameter (higher = more communities)")
+    parser.add_argument("--min-edge-weight", type=float, default=0.05,
+                        help="Minimum cross-correlation to include as edge")
     args = parser.parse_args()
+
+    # Handle split-megagroup mode
+    if args.split_megagroup is not None:
+        split_megagroup(
+            groups_path=PROJECT_ROOT / args.output,
+            concepts_path=PROJECT_ROOT / args.concepts,
+            corr_dir=PROJECT_ROOT / args.corr_dir,
+            group_id=args.split_megagroup,
+            max_group_size=args.max_group_size,
+            min_edge_weight=args.min_edge_weight,
+            resolution=args.resolution,
+        )
+        return
 
     phases = [args.phase] if args.phase else [1, 2, 3]
     t0 = time.time()

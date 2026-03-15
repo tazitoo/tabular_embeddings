@@ -5,10 +5,9 @@ import torch
 import numpy as np
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.sae.compare_sae_cross_model import sae_sweep_dir
 
 # Models to analyze
 model_dir = sae_sweep_dir() / "tabicl_layer10"

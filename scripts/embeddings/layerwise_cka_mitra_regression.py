@@ -23,11 +23,10 @@ from pathlib import Path
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "4_results"))
+from scripts._project_root import PROJECT_ROOT
 
 from data.extended_loader import TABARENA_DATASETS
+sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "figures" / "4_results"))
 from layerwise_cka_analysis import (
     extract_mitra_all_layers,
     compute_layerwise_cka,

@@ -1,0 +1,20 @@
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrrrrrrr}
+\toprule
+ & TabPFN & Mitra & TabDPT & TabICL & CARTE & HyperFast & Tabula-8B & TabICL-v2 \\
+\midrule
+TabPFN & --- & 14 & 15 & 16 & 10 & 18 & 13 & 27 \\
+Mitra & 14 & --- & 56 & 55 & 43 & 99 & 64 & 108 \\
+TabDPT & 15 & 56 & --- & 85 & 56 & 155 & 102 & 181 \\
+TabICL & 16 & 55 & 85 & --- & 51 & 123 & 85 & 188 \\
+CARTE & 10 & 43 & 56 & 51 & --- & 95 & 64 & 99 \\
+HyperFast & 18 & 99 & 155 & 123 & 95 & --- & 170 & 348 \\
+Tabula-8B & 13 & 64 & 102 & 85 & 64 & 170 & --- & 182 \\
+TabICL-v2 & 27 & 108 & 181 & 188 & 99 & 348 & 182 & --- \\
+\bottomrule
+\end{tabular}
+\caption{Pairwise shared concept counts between models. Each cell shows the number of concept groups containing features from both models, after Leiden community detection splits the mega-group into coherent sub-communities.}
+\label{tab:shared_concepts}
+\end{table}

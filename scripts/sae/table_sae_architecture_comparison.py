@@ -20,12 +20,11 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.analyze_sae_concepts_deep import load_sae_checkpoint
-from scripts.compare_sae_cross_model import sae_sweep_dir
-from scripts.sae_tabarena_sweep import get_tabarena_splits, pool_embeddings
+from scripts.sae.analyze_sae_concepts_deep import load_sae_checkpoint
+from scripts.sae.compare_sae_cross_model import sae_sweep_dir
+from scripts.sae.sae_tabarena_sweep import get_tabarena_splits, pool_embeddings
 
 
 def compute_sae_metrics(model, embeddings: np.ndarray) -> Dict:

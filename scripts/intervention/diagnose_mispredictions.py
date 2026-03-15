@@ -37,10 +37,9 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.intervene_sae import (
+from scripts.intervention.intervene_sae import (
     intervene,
     load_sae,
     get_extraction_layer,
@@ -118,7 +117,7 @@ def get_sae_activations(
     """
     import inspect
     from layerwise_cka_analysis import sort_layer_names
-    from scripts.extract_layer_embeddings import EXTRACT_FN
+    from scripts.embeddings.extract_layer_embeddings import EXTRACT_FN
 
     extract_fn = EXTRACT_FN[model_key]
     layer = get_extraction_layer(model_key, layers_path)
@@ -195,7 +194,7 @@ def diagnose_dataset(
 
     Returns diagnostic results or None if skipped.
     """
-    from scripts.extract_layer_embeddings import get_dataset_task
+    from scripts.embeddings.extract_layer_embeddings import get_dataset_task
     from data.extended_loader import load_tabarena_dataset
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import LabelEncoder

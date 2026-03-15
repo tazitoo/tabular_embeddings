@@ -11,10 +11,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.sae.compare_sae_cross_model import sae_sweep_dir
 
 SWEEP_DIR = sae_sweep_dir()
 OUTPUT_DIR = Path(__file__).parent  # Save outputs in scripts/pareto/

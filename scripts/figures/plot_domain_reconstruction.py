@@ -12,7 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 from data.extended_loader import TABARENA_DATASETS
-from scripts.compare_sae_cross_model import sae_sweep_dir
+from scripts.sae.compare_sae_cross_model import sae_sweep_dir
 
 # Domain mapping for TabArena datasets
 DOMAIN_COLORS = {

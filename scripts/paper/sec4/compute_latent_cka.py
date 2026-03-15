@@ -23,8 +23,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.similarity import linear_cka
 from scripts.analyze_sae_concepts_deep import load_sae_checkpoint

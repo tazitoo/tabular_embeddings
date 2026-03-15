@@ -1,49 +1,20 @@
 \begin{table}[h]
 \centering
 \small
-\begin{tabular}{llrrrr}
+\begin{tabular}{lrrrrrrr rrr}
 \toprule
-Model & Architecture & Expansion & LR & Sparsity & TopK \\
+Model & $d$ & $d_{\text{SAE}}$ & TopK & LR & $\lambda$ & $K$ & $\tau$ & Recon & \%Alive & $s_n^{\text{dec}}$ \\
 \midrule
-TabPFN & L1 & 8 & 3.04e-03 & 2.81e-04 & - \\
-TabPFN & TopK & 8 & 4.68e-03 & 1.52e-04 & 256 \\
-TabPFN & Matryoshka & 8 & 9.96e-03 & 1.67e-03 & - \\
-TabPFN & Archetypal & 16 & 3.42e-03 & 1.75e-03 & 16 \\
-TabPFN & Mat-Arch & 16 & 2.59e-03 & 6.16e-03 & 16 \\
-\midrule
-TabICL & L1 & 8 & 3.97e-03 & 6.61e-04 & - \\
-TabICL & TopK & 8 & 1.91e-03 & 2.22e-03 & 256 \\
-TabICL & Matryoshka & 8 & 2.78e-03 & 2.58e-03 & - \\
-TabICL & Archetypal & 4 & 3.00e-03 & 1.51e-04 & 256 \\
-TabICL & Mat-Arch & 8 & 4.63e-03 & 1.44e-03 & 16 \\
-\midrule
-Mitra & L1 & 8 & 1.83e-03 & 3.88e-04 & - \\
-Mitra & TopK & 8 & 2.18e-03 & 5.56e-04 & 256 \\
-Mitra & Matryoshka & 8 & 5.29e-03 & 1.49e-03 & - \\
-Mitra & Archetypal & 4 & 8.37e-04 & 1.43e-04 & 16 \\
-Mitra & Mat-Arch & 4 & 1.21e-03 & 1.22e-03 & 128 \\
-\midrule
-TabDPT & L1 & 8 & 6.48e-03 & 4.43e-04 & - \\
-TabDPT & TopK & 4 & 2.37e-03 & 9.03e-03 & 256 \\
-TabDPT & Matryoshka & 4 & 9.90e-03 & 3.37e-04 & - \\
-TabDPT & Archetypal & 4 & 2.04e-04 & 1.10e-03 & 64 \\
-TabDPT & Mat-Arch & 8 & 1.41e-03 & 5.36e-03 & 64 \\
-\midrule
-CARTE & L1 & 8 & 5.85e-03 & 7.90e-04 & - \\
-CARTE & TopK & 8 & 5.95e-03 & 3.64e-04 & 256 \\
-CARTE & Matryoshka & 4 & 9.41e-03 & 1.00e-04 & - \\
-CARTE & Archetypal & 16 & 3.59e-03 & 2.79e-03 & 32 \\
-CARTE & Mat-Arch & 16 & 5.62e-03 & 1.94e-03 & 128 \\
-\midrule
-HyperFast & L1 & 8 & 9.97e-03 & 2.89e-03 & - \\
-HyperFast & TopK & 8 & 5.19e-03 & 5.69e-04 & 256 \\
-HyperFast & Matryoshka & 8 & 9.59e-03 & 1.65e-04 & - \\
-HyperFast & Archetypal & 4 & 9.94e-03 & 3.05e-03 & 16 \\
-HyperFast & Mat-Arch & 4 & 9.63e-03 & 2.40e-03 & 16 \\
-\midrule
-Tabula-8B & Mat-Arch & 2 & 3.67e-03 & 9.61e-04 & 16 \\
+TabPFN & 192 & 768 & 256 & 3.4e-04 & 7.6e-03 & 2000 & 0.13 & 0.0701 & 92.4 & 0.692 \\
+CARTE & 300 & 2400 & 128 & 2.0e-04 & 1.3e-04 & 2000 & 0.15 & 0.0337 & 90.5 & 0.838 \\
+TabICL & 512 & 2048 & 256 & 1.8e-04 & 9.1e-04 & 2000 & 0.49 & 0.0887 & 94.6 & 0.659 \\
+TabICL-v2 & 512 & 8192 & 256 & 1.4e-04 & 5.2e-04 & 2000 & 0.30 & 0.0858 & 87.8 & 0.795 \\
+TabDPT & 768 & 3072 & 256 & 1.7e-04 & 5.9e-04 & 1000 & 0.34 & 0.1430 & 89.7 & 0.848 \\
+Mitra & 512 & 2048 & 128 & 3.0e-04 & 8.8e-04 & 1000 & 0.10 & 0.0716 & 91.2 & 0.907 \\
+HyperFast & 784 & 6272 & 128 & 5.5e-04 & 2.0e-04 & 2000 & 0.19 & 0.1000 & 84.4 & 0.866 \\
+Tabula-8B & 4096 & 4096 & 256 & 6.4e-05 & 6.6e-03 & 512 & 0.34 & 0.2730 & 95.4 & 0.829 \\
 \bottomrule
 \end{tabular}
-\caption{Best hyperparameters for each SAE architecture across models. LR = learning rate, Sparsity = sparsity penalty.}
+\caption{SAE configuration and quality metrics per model (Matryoshka-Archetypal architecture). $d$ = embedding dim, $d_{\text{SAE}}$ = dictionary size, $\lambda$ = sparsity penalty, $K$ = archetypes, $\tau$ = simplex temperature, Recon = MSE reconstruction loss, \%Alive = percentage of active dictionary elements, $s_n^{\text{dec}}$ = decoder stability across seeds.}
 \label{tab:sae_hyperparameters}
 \end{table}

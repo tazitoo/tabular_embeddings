@@ -25,11 +25,10 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import DEFAULT_SAE_ROUND, SAE_FILENAME
-from scripts.intervene_sae import (
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND, SAE_FILENAME
+from scripts.intervention.intervene_sae import (
     load_sae,
     load_training_mean,
     get_extraction_layer,
@@ -1591,7 +1590,7 @@ def main():
         print(f"\nSaved to {out_path}")
         return
 
-    from scripts.extract_layer_embeddings import get_dataset_task
+    from scripts.embeddings.extract_layer_embeddings import get_dataset_task
     task = get_dataset_task(args.dataset)
 
     # Determine output path

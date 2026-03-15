@@ -20,12 +20,11 @@ from pathlib import Path
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from config import load_optimal_layers
 from data.extended_loader import TABARENA_DATASETS
-from scripts.extract_layer_embeddings import sort_layer_names
+from scripts.embeddings.extract_layer_embeddings import sort_layer_names
 
 
 def get_dataset_task(dataset_name: str) -> str:

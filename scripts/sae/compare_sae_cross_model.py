@@ -19,10 +19,9 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_architectures import (
+from scripts.sae.compare_sae_architectures import (
     META_NAMES,
     collect_meta_features,
     compute_activations,
@@ -34,7 +33,7 @@ from scripts.compare_sae_architectures import (
     load_embeddings_and_normalize,
     meta_features_to_array,
 )
-from scripts.analyze_sae_concepts_deep import (
+from scripts.sae.analyze_sae_concepts_deep import (
     NumpyEncoder,
     compute_column_stats,
     compute_concept_coverage,
@@ -256,7 +255,7 @@ def analyze_single_model(
     print(f"  Embeddings: {pooled.shape}")
 
     # Normalize (train split stats)
-    from scripts.compare_sae_architectures import get_train_test_split
+    from scripts.sae.compare_sae_architectures import get_train_test_split
     train_ds, _ = get_train_test_split(datasets)
     train_embs = []
     for ds in train_ds:

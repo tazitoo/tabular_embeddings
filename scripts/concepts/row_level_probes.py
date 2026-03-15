@@ -25,24 +25,23 @@ import torch
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from data.extended_loader import TABARENA_DATASETS, load_tabarena_dataset
-from scripts.analyze_sae_concepts_deep import (
+from scripts.sae.analyze_sae_concepts_deep import (
     compute_column_stats,
     compute_row_meta_features,
 )
-from scripts.compare_sae_architectures import META_NAMES, meta_features_to_array
-from scripts.concept_fingerprint import load_per_dataset_embeddings
-from scripts.concept_importance import (
+from scripts.sae.compare_sae_architectures import META_NAMES, meta_features_to_array
+from scripts.concepts.concept_fingerprint import load_per_dataset_embeddings
+from scripts.intervention.concept_importance import (
     get_alive_features,
     get_feature_labels,
     get_matryoshka_bands,
     feature_to_band,
 )
-from scripts.extract_layer_embeddings import SPLIT_SEED, get_dataset_task
-from scripts.intervene_sae import (
+from scripts.embeddings.extract_layer_embeddings import SPLIT_SEED, get_dataset_task
+from scripts.intervention.intervene_sae import (
     DEFAULT_SAE_DIR,
     DEFAULT_TRAINING_DIR,
     get_extraction_layer,
@@ -465,7 +464,7 @@ def verify_row_alignment(model_key: str, n_datasets: int = 3) -> bool:
             if not npz_path.exists():
                 continue
 
-            from scripts.extract_layer_embeddings import sort_layer_names
+            from scripts.embeddings.extract_layer_embeddings import sort_layer_names
 
             data = np.load(npz_path, allow_pickle=True)
             layer_names = list(data["layer_names"])

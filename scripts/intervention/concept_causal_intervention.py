@@ -38,8 +38,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +180,7 @@ def _load_splits(dataset: str, task: str):
 
 def _compute_metric(preds, y_true, task):
     """Compute performance metric. Returns (metric_name, metric_value)."""
-    from scripts.concept_performance_diagnostic import compute_metric
+    from scripts.intervention.concept_performance_diagnostic import compute_metric
     return compute_metric(preds, y_true, task)
 
 
@@ -275,7 +274,7 @@ def dose_response_ablation(
 
     Returns dict with dose-response curve data.
     """
-    from scripts.intervene_sae import intervene
+    from scripts.intervention.intervene_sae import intervene
 
     X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
 
@@ -368,7 +367,7 @@ def dose_response_boost(
     Tests: does B's performance improve toward A's level?
     """
     import torch
-    from scripts.intervene_sae import (
+    from scripts.intervention.intervene_sae import (
         load_sae, load_training_mean, get_extraction_layer,
         compute_boost_delta, INTERVENE_FN,
     )
@@ -410,7 +409,7 @@ def dose_response_boost(
     n_features = min(len(differentials), max_steps)
 
     # Get baselines
-    from scripts.intervene_sae import intervene
+    from scripts.intervention.intervene_sae import intervene
 
     result_a = intervene(
         model_key=model_a, X_context=X_ctx, y_context=y_ctx,
@@ -511,7 +510,7 @@ def _run_boost_intervention(
     Dispatches to model-specific implementations.
     """
     import torch
-    from scripts.intervene_sae import compute_boost_delta
+    from scripts.intervention.intervene_sae import compute_boost_delta
 
     # Use model-specific prediction code from intervene_sae.
     # The pattern is: capture hidden → compute boost delta → inject delta.
@@ -550,7 +549,7 @@ def _boost_tabpfn(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
                    target_activations, extraction_layer, device, task, data_mean):
     """Boost intervention for TabPFN."""
     import torch
-    from scripts.intervene_sae import compute_boost_delta
+    from scripts.intervention.intervene_sae import compute_boost_delta
     from models.tabpfn_utils import load_tabpfn
 
     clf = load_tabpfn(task=task, device=device, n_estimators=1)
@@ -608,7 +607,7 @@ def _boost_tabdpt(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
                    target_activations, extraction_layer, device, task, data_mean):
     """Boost intervention for TabDPT."""
     import torch
-    from scripts.intervene_sae import compute_boost_delta
+    from scripts.intervention.intervene_sae import compute_boost_delta
     from tabdpt import TabDPTClassifier, TabDPTRegressor
 
     if task == "regression":
@@ -674,7 +673,7 @@ def _boost_mitra(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
                   target_activations, extraction_layer, device, task, data_mean):
     """Boost intervention for Mitra."""
     import torch
-    from scripts.intervene_sae import compute_boost_delta
+    from scripts.intervention.intervene_sae import compute_boost_delta
 
     n_features = X_q.shape[1]
     max_context = max(100, 200_000 // max(n_features, 1))
@@ -781,7 +780,7 @@ def _boost_tabicl(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
                    target_activations, extraction_layer, device, task, data_mean):
     """Boost intervention for TabICL."""
     import torch
-    from scripts.intervene_sae import compute_boost_delta
+    from scripts.intervention.intervene_sae import compute_boost_delta
     from tabicl import TabICLClassifier
 
     clf = TabICLClassifier(device=device, n_estimators=1)
@@ -834,7 +833,7 @@ def _boost_hyperfast(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
     """Boost intervention for HyperFast."""
     import torch
     import torch.nn.functional as F
-    from scripts.intervene_sae import compute_boost_delta
+    from scripts.intervention.intervene_sae import compute_boost_delta
     from hyperfast.hyperfast import forward_main_network, transform_data_for_main_network
     from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
@@ -921,8 +920,8 @@ def fit_concept_projection(
     from sklearn.linear_model import RidgeCV
     from sklearn.model_selection import cross_val_score
 
-    from scripts.intervene_sae import load_sae, load_training_mean, get_extraction_layer
-    from scripts.concept_fingerprint import load_per_dataset_embeddings
+    from scripts.intervention.intervene_sae import load_sae, load_training_mean, get_extraction_layer
+    from scripts.concepts.concept_fingerprint import load_per_dataset_embeddings
 
     # Load embeddings for both models
     emb_a_dict = load_per_dataset_embeddings(model_a, training_dir)
@@ -1001,7 +1000,7 @@ def dose_response_transplant(
     Tests: does B's performance improve toward A's level?
     """
     import torch
-    from scripts.intervene_sae import intervene, get_extraction_layer, INTERVENE_FN
+    from scripts.intervention.intervene_sae import intervene, get_extraction_layer, INTERVENE_FN
 
     X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
 
@@ -1121,7 +1120,7 @@ def _run_transplant_intervention(
     the concept direction in B's embedding space.
     """
     import torch
-    from scripts.intervene_sae import INTERVENE_FN
+    from scripts.intervention.intervene_sae import INTERVENE_FN
 
     # We need to add delta = sum(target * projection) to B's hidden state.
     # To reuse existing hook machinery, we compute a fixed delta vector
@@ -1596,7 +1595,7 @@ def main():
 
     # Determine targets
     if args.model_a and args.model_b:
-        from scripts.extract_layer_embeddings import get_dataset_task
+        from scripts.embeddings.extract_layer_embeddings import get_dataset_task
         from data.extended_loader import TABARENA_DATASETS
 
         datasets = args.datasets or sorted(TABARENA_DATASETS.keys())
@@ -1610,7 +1609,7 @@ def main():
                 "task": task,
             })
     elif args.all_pairs:
-        from scripts.extract_layer_embeddings import get_dataset_task
+        from scripts.embeddings.extract_layer_embeddings import get_dataset_task
         from data.extended_loader import TABARENA_DATASETS
 
         datasets = args.datasets or sorted(TABARENA_DATASETS.keys())
@@ -1631,7 +1630,7 @@ def main():
             min_gap=args.min_gap, top_n=args.top_targets,
         )
         targets = []
-        from scripts.extract_layer_embeddings import get_dataset_task
+        from scripts.embeddings.extract_layer_embeddings import get_dataset_task
         for t in raw_targets:
             t["task"] = get_dataset_task(t["dataset"])
             targets.append(t)

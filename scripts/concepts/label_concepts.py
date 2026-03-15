@@ -24,8 +24,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import (
     SAEConfig,
