@@ -5,9 +5,19 @@
 set -uo pipefail
 
 PYTHON="/home/brian/anaconda3/envs/tfm/bin/python"
+PYTHON2="/home/brian/anaconda3/envs/tfm2/bin/python"
 export PYTHONPATH="/home/brian/src/tabular_embeddings${PYTHONPATH:+:$PYTHONPATH}"
 MODELS=(tabpfn tabicl tabicl_v2 carte tabula8b mitra tabdpt hyperfast)
 DATASETS=(credit-g kddcup09_appetency)
+
+# Select the right Python for a model
+py_for_model() {
+  if [[ "$1" == "tabicl_v2" ]]; then
+    echo "$PYTHON2"
+  else
+    echo "$PYTHON"
+  fi
+}
 
 echo "========================================"
 echo "Phase 1: Per-model concept importance"
@@ -20,7 +30,8 @@ for d in "${DATASETS[@]}"; do
       continue
     fi
     echo "--- $m on $d ---"
-    $PYTHON scripts/intervention/concept_importance.py \
+    PY=$(py_for_model "$m")
+    $PY scripts/intervention/concept_importance.py \
       --model "$m" --dataset "$d" --device cuda \
       2>&1 | tail -5
     echo ""
@@ -61,7 +72,13 @@ for d in "${DATASETS[@]}"; do
       b="${MODELS[$j]}"
       count=$((count+1))
       echo "=== [$count/$total] $a vs $b on $d ==="
-      $PYTHON scripts/intervention/transfer_concepts.py \
+      # Use tfm2 python if either model is tabicl_v2
+      if [[ "$a" == "tabicl_v2" || "$b" == "tabicl_v2" ]]; then
+        PY="$PYTHON2"
+      else
+        PY="$PYTHON"
+      fi
+      $PY scripts/intervention/transfer_concepts.py \
         --source "$a" --target "$b" --dataset "$d" \
         --bidirectional --device cuda \
         2>&1 | tail -20
