@@ -455,27 +455,17 @@ def sweep_mitra(
     Mitra layers return (support, query) tuples. Must modify both.
     Must save/restore RNG state for determinism.
     """
-    from autogluon.tabular.models.mitra import MitraModel
-
-    ag_model = MitraModel(path="/tmp/mitra_importance", name="mitra_imp")
-    from autogluon.tabular.models.mitra._internal.config.enums import Task as MitraTask
-    from autogluon.tabular.models.mitra._internal.core.trainer_finetune import DatasetFinetune
-
-    import pandas as pd
-    df_ctx = pd.DataFrame(X_context)
-    df_ctx["__target__"] = y_context
-    df_q = pd.DataFrame(X_query)
-    df_q["__target__"] = y_query
-
     if task == "regression":
-        mitra_task = MitraTask.REGRESSION
+        from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
+        clf = MitraRegressor(device=device, n_estimators=1, fine_tune=False)
     else:
-        mitra_task = MitraTask.CLASSIFICATION
+        from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
+        clf = MitraClassifier(device=device, n_estimators=1, fine_tune=False)
 
-    trainer = ag_model._build_trainer(
-        df_ctx, df_q, target="__target__", task=mitra_task
-    )
+    clf.fit(X_context, y_context)
+    torch.cuda.empty_cache()
 
+    trainer = clf.trainers[0]
     model = trainer.model
     layers = model.layers
 
@@ -497,7 +487,10 @@ def sweep_mitra(
     handle = layers[extraction_layer].register_forward_hook(capture_hook)
     try:
         with torch.no_grad():
-            baseline_preds = trainer.predict(return_proba=(task == "classification"))
+            if task == "regression":
+                baseline_preds = clf.predict(X_query)
+            else:
+                baseline_preds = clf.predict_proba(X_query)
     finally:
         handle.remove()
 
@@ -576,7 +569,10 @@ def sweep_mitra(
         handle = layers[extraction_layer].register_forward_hook(make_hook(delta_sup, delta_qry))
         try:
             with torch.no_grad():
-                preds = trainer.predict(return_proba=(task == "classification"))
+                if task == "regression":
+                    preds = clf.predict(X_query)
+                else:
+                    preds = clf.predict_proba(X_query)
         finally:
             handle.remove()
 
@@ -1165,7 +1161,10 @@ def sweep_tabula8b(
             f"(~{n_sub * len(alive_features)} forward passes)"
         )
 
+    import os
     model_path = "/data/models/tabula-8b"
+    if not os.path.isdir(model_path):
+        model_path = "mlfoundations/tabula-8b"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
