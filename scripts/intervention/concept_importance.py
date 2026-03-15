@@ -1616,7 +1616,7 @@ def get_matryoshka_bands(model_key: str, sae_dir: Path = None) -> Dict[str, int]
     import torch as _torch
 
     if sae_dir is None:
-        sae_dir = PROJECT_ROOT / "output" / "sae_tabarena_sweep_round5"
+        sae_dir = PROJECT_ROOT / "output" / f"sae_tabarena_sweep_round{DEFAULT_SAE_ROUND}"
 
     ckpt_path = sae_dir / model_key / SAE_FILENAME
     ckpt = _torch.load(ckpt_path, map_location="cpu", weights_only=False)

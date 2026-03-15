@@ -33,7 +33,7 @@ for d in "${DATASETS[@]}"; do
     PY=$(py_for_model "$m")
     $PY scripts/intervention/concept_importance.py \
       --model "$m" --dataset "$d" --device cuda \
-      2>&1 | tail -5
+      2>&1 | tail -20
     echo ""
   done
 done

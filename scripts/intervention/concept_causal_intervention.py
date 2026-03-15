@@ -39,6 +39,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ DEFAULT_FINGERPRINT_DIR = PROJECT_ROOT / "output" / "concept_fingerprints"
 DEFAULT_DIAGNOSTIC_PATH = PROJECT_ROOT / "output" / "concept_performance_diagnostic.json"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "output" / "concept_causal_results.json"
 DEFAULT_FIGURES_DIR = PROJECT_ROOT / "output" / "figures"
-DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / "sae_training_round5"
+DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / f"sae_training_round{DEFAULT_SAE_ROUND}"
 
 # Models with intervention support
 INTERVENTION_MODELS = [
