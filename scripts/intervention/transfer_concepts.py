@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from scripts._project_root import PROJECT_ROOT
 
@@ -275,6 +276,18 @@ def capture_embeddings(
         return _capture_tabpfn(X_ctx, y_ctx, X_query, extraction_layer, device, task)
     elif model_key == "tabicl":
         return _capture_tabicl(X_ctx, y_ctx, X_query, extraction_layer, device)
+    elif model_key == "tabicl_v2":
+        return _capture_tabicl_v2(X_ctx, y_ctx, X_query, extraction_layer, device, task)
+    elif model_key == "carte":
+        return _capture_carte(X_ctx, y_ctx, X_query, extraction_layer, device, task)
+    elif model_key == "tabula8b":
+        return _capture_tabula8b(X_ctx, y_ctx, X_query, extraction_layer, device, task)
+    elif model_key == "mitra":
+        return _capture_mitra(X_ctx, y_ctx, X_query, extraction_layer, device, task)
+    elif model_key == "tabdpt":
+        return _capture_tabdpt(X_ctx, y_ctx, X_query, extraction_layer, device, task)
+    elif model_key == "hyperfast":
+        return _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task)
     else:
         raise ValueError(f"capture_embeddings not implemented for {model_key}")
 
@@ -330,6 +343,376 @@ def _capture_tabicl(X_ctx, y_ctx, X_query, extraction_layer, device):
     # (n_ensemble, seq_len, 512) → mean over ensemble
     all_emb = captured["hidden"].mean(dim=0)  # (seq_len, 512)
     return all_emb, np.asarray(preds)
+
+
+def _capture_tabicl_v2(X_ctx, y_ctx, X_query, extraction_layer, device, task):
+    if task == "regression":
+        from tabicl import TabICLRegressor
+        clf = TabICLRegressor(device=device, n_estimators=1)
+    else:
+        from tabicl import TabICLClassifier
+        clf = TabICLClassifier(device=device, n_estimators=1)
+
+    clf.fit(X_ctx, y_ctx)
+    blocks = clf.model_.icl_predictor.tf_icl.blocks
+
+    captured = {}
+
+    def hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["hidden"] = output.detach()
+
+    handle = blocks[extraction_layer].register_forward_hook(hook)
+    try:
+        with torch.no_grad():
+            if task == "regression":
+                preds = clf.predict(X_query)
+            else:
+                preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    # (n_ensemble, seq_len, 512) → mean over ensemble
+    all_emb = captured["hidden"].mean(dim=0)  # (seq_len, 512)
+    return all_emb, np.asarray(preds)
+
+
+def _capture_carte(X_ctx, y_ctx, X_query, extraction_layer, device, task):
+    from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
+    _patch_carte_amp()
+
+    from carte_ai import CARTEClassifier, Table2GraphTransformer
+    from torch_geometric.data import Batch
+    from sklearn.preprocessing import RobustScaler
+    from scripts.intervention.intervene_sae import _carte_prepare_graphs
+
+    ft_path = _find_fasttext_model()
+    if not ft_path:
+        raise ValueError("FastText model not found for CARTE capture")
+
+    X_ctx = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+
+    col_std = X_ctx.std(axis=0)
+    nonconstant = col_std > 0
+    if not nonconstant.all():
+        X_ctx = X_ctx[:, nonconstant]
+        X_query = X_query[:, nonconstant]
+
+    scaler = RobustScaler()
+    X_ctx = scaler.fit_transform(X_ctx)
+    X_query = scaler.transform(X_query)
+    X_ctx = np.clip(X_ctx, -10, 10)
+    X_query = np.clip(X_query, -10, 10)
+
+    y_ctx_arr = np.asarray(y_ctx)
+    if y_ctx_arr.dtype == np.float64:
+        y_ctx_arr = y_ctx_arr.astype(np.int64)
+
+    feature_names = [f"f{i}" for i in range(X_ctx.shape[1])]
+    t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
+
+    X_ctx_graph = _carte_prepare_graphs(X_ctx, feature_names, t2g, fit=True)
+    X_query_graph = _carte_prepare_graphs(X_query, feature_names, t2g, fit=False)
+
+    for i, g in enumerate(X_ctx_graph):
+        g.y = torch.tensor([y_ctx_arr[i]], dtype=torch.float32)
+
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+    clf.fit(X_ctx_graph, y_ctx_arr)
+    torch.cuda.empty_cache()
+
+    n_query = len(X_query)
+    model = clf.model_list_[0]
+    model.eval()
+    base = model.ft_base
+
+    if extraction_layer == 0:
+        hook_module = base.initial_x
+    elif extraction_layer == 1:
+        hook_module = base.read_out_block
+    else:
+        classifier_layers = [m for m in model.ft_classifier
+                             if isinstance(m, torch.nn.Linear)]
+        cls_idx = extraction_layer - 2
+        hook_module = (classifier_layers[cls_idx]
+                       if cls_idx < len(classifier_layers)
+                       else base.read_out_block)
+
+    captured = {}
+
+    def hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            captured["hidden"] = out.detach()
+
+    batch = Batch.from_data_list(X_query_graph).to(device)
+    handle = hook_module.register_forward_hook(hook)
+    try:
+        with torch.no_grad():
+            model(batch)
+    finally:
+        handle.remove()
+
+    hidden = captured["hidden"]
+    if hidden.shape[0] > n_query and hasattr(batch, 'ptr'):
+        central_indices = [int(batch.ptr[i]) for i in range(n_query)]
+    elif hidden.shape[0] == n_query:
+        central_indices = list(range(n_query))
+    else:
+        raise ValueError(f"Cannot extract central nodes: hidden {hidden.shape}")
+
+    # Return only central node embeddings (query-only, no context positions)
+    central_emb = torch.stack([hidden[idx] for idx in central_indices])
+
+    with torch.no_grad():
+        preds = clf.predict_proba(X_query_graph)
+
+    return central_emb, np.asarray(preds)
+
+
+def _capture_tabula8b(X_ctx, y_ctx, X_query, extraction_layer, device, task):
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    model_path = "/data/models/tabula-8b"
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    llm = AutoModelForCausalLM.from_pretrained(
+        model_path, device_map="auto",
+        quantization_config=bnb_config, torch_dtype=torch.float16,
+    )
+    llm.eval()
+    llm_layers = llm.model.layers
+
+    X_ctx = np.asarray(X_ctx, dtype=np.float32)
+    y_ctx_arr = np.asarray(y_ctx)
+    X_query = np.asarray(X_query, dtype=np.float32)
+    n_query = len(X_query)
+    n_classes = len(np.unique(y_ctx_arr))
+    feature_names = [f"f{i}" for i in range(X_ctx.shape[1])]
+
+    if task == "classification":
+        class_token_ids = [
+            tokenizer.encode(str(c), add_special_tokens=False)[0]
+            for c in range(n_classes)
+        ]
+
+    # Serialize context
+    max_ctx_rows = min(32, len(X_ctx))
+    ctx_lines = []
+    for row, label in zip(X_ctx[:max_ctx_rows], y_ctx_arr[:max_ctx_rows]):
+        parts = []
+        for name, val in zip(feature_names, row):
+            if not (isinstance(val, float) and np.isnan(val)):
+                parts.append(f"the {name} is {val}")
+        ctx_lines.append(", ".join(parts) + f", the target is {label}")
+    ctx_text = "\n".join(ctx_lines)
+
+    # Per-row capture
+    embeddings = []
+    preds_list = []
+    for row_idx in range(n_query):
+        row = X_query[row_idx]
+        parts = [f"the {name} is {val}" for name, val in zip(feature_names, row)
+                 if not (isinstance(val, float) and np.isnan(val))]
+        full_text = f"{ctx_text}\n{', '.join(parts)}, the target is"
+
+        inputs = tokenizer(full_text, return_tensors="pt",
+                           truncation=True, max_length=8000).to(llm.device)
+
+        captured = {}
+
+        def capture_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                captured["hidden"] = out.detach()
+
+        handle = llm_layers[extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                outputs = llm(**inputs)
+                logits = outputs.logits[0, -1, :]
+        finally:
+            handle.remove()
+
+        emb = captured["hidden"][0, -1, :].float()
+        embeddings.append(emb)
+
+        if task == "classification":
+            probs = torch.softmax(logits[class_token_ids].float(), dim=0)
+            preds_list.append(probs.cpu().numpy())
+        else:
+            token = tokenizer.decode(logits.argmax().item()).strip()
+            try:
+                preds_list.append(float(token))
+            except ValueError:
+                preds_list.append(0.0)
+
+        if (row_idx + 1) % 50 == 0:
+            logger.info("  Tabula-8B capture: %d/%d", row_idx + 1, n_query)
+
+    # Return query-only embeddings (no context positions)
+    all_emb = torch.stack(embeddings)  # (n_query, 4096)
+
+    del llm
+    torch.cuda.empty_cache()
+
+    return all_emb, np.array(preds_list)
+
+
+def _capture_mitra(X_ctx, y_ctx, X_query, extraction_layer, device, task):
+    n_features = X_query.shape[1]
+    max_context = max(100, 200_000 // max(n_features, 1))
+    if len(X_ctx) > max_context:
+        X_ctx = X_ctx[:max_context]
+        y_ctx = y_ctx[:max_context]
+
+    if task == "regression":
+        from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
+        clf = MitraRegressor(device=device, n_estimators=1, fine_tune=False)
+    else:
+        from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
+        clf = MitraClassifier(device=device, n_estimators=1, fine_tune=False)
+
+    clf.fit(X_ctx, y_ctx)
+    torch.cuda.empty_cache()
+
+    trainer = clf.trainers[0]
+    layers = trainer.model.layers
+
+    captured_support = []
+    captured_query = []
+
+    def hook(module, input, output):
+        if isinstance(output, tuple) and len(output) >= 2:
+            sup, qry = output[0], output[1]
+            if isinstance(sup, torch.Tensor):
+                captured_support.append(sup.detach())
+            if isinstance(qry, torch.Tensor):
+                captured_query.append(qry.detach())
+
+    handle = layers[extraction_layer].register_forward_hook(hook)
+    try:
+        with torch.no_grad():
+            if task == "regression":
+                preds = clf.predict(X_query)
+            else:
+                preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    # Extract y-token embeddings from support and query
+    def extract_y_tokens(tensor_list):
+        embs = []
+        for h in tensor_list:
+            if h.ndim == 4:
+                embs.append(h[0, :, 0, :])
+            elif h.ndim == 3:
+                embs.append(h.squeeze(0))
+            elif h.ndim == 2:
+                embs.append(h)
+        return torch.cat(embs, dim=0) if embs else None
+
+    support_emb = extract_y_tokens(captured_support)
+    query_emb = extract_y_tokens(captured_query)
+    # Return concatenation of support + query y-token embeddings
+    all_emb = torch.cat([support_emb, query_emb], dim=0)
+    return all_emb, np.asarray(preds)
+
+
+def _capture_tabdpt(X_ctx, y_ctx, X_query, extraction_layer, device, task):
+    from tabdpt import TabDPTClassifier, TabDPTRegressor
+
+    if task == "regression":
+        clf = TabDPTRegressor(device=device, compile=False)
+    else:
+        clf = TabDPTClassifier(device=device, compile=False)
+    clf.fit(X_ctx, y_ctx)
+
+    encoder_layers = clf.model.transformer_encoder
+
+    captured = {}
+
+    def hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            captured["hidden"] = out.detach()
+
+    handle = encoder_layers[extraction_layer].register_forward_hook(hook)
+    try:
+        with torch.no_grad():
+            if task == "regression":
+                preds = clf.predict(X_query)
+            else:
+                preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    hidden = captured["hidden"]
+    # Mean over seq dim for 3D, identity for 2D
+    if hidden.ndim == 3:
+        all_emb = hidden.mean(dim=1)  # (n_samples, H)
+    else:
+        all_emb = hidden
+    return all_emb, np.asarray(preds)
+
+
+def _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task):
+    from hyperfast.hyperfast import transform_data_for_main_network
+    from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
+
+    extractor = HyperFastEmbeddingExtractor(device=device)
+    extractor.load_model()
+    X_ctx_clean = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0)
+    y_ctx_clean = np.asarray(y_ctx, dtype=np.int64)
+    extractor._model.fit(X_ctx_clean, y_ctx_clean)
+    hf_clf = extractor._model
+
+    X_query_t = torch.tensor(X_query, dtype=torch.float32).to(device)
+
+    intermediates = []
+    baseline_outputs = []
+
+    for jj in range(len(hf_clf._main_networks)):
+        main_network = hf_clf._move_to_device(hf_clf._main_networks[jj])
+        rf = hf_clf._move_to_device(hf_clf._rfs[jj])
+        pca = hf_clf._move_to_device(hf_clf._pcas[jj])
+
+        if hf_clf.feature_bagging:
+            X_b = X_query_t[:, hf_clf.selected_features[jj]]
+        else:
+            X_b = X_query_t
+
+        X_transformed = transform_data_for_main_network(
+            X=X_b, cfg=hf_clf._cfg, rf=rf, pca=pca,
+        )
+
+        with torch.no_grad():
+            x = X_transformed
+            for layer_idx, (weight, bias) in enumerate(main_network):
+                weight = hf_clf._move_to_device(weight)
+                bias = hf_clf._move_to_device(bias)
+                x_new = F.linear(x, weight, bias)
+                if layer_idx < len(main_network) - 1:
+                    x_new = F.relu(x_new)
+                    if x_new.shape[-1] == x.shape[-1]:
+                        x = x + x_new
+                    else:
+                        x = x_new
+                else:
+                    x = x_new
+                if layer_idx == extraction_layer:
+                    intermediates.append(x.detach().clone())
+
+            baseline_outputs.append(F.softmax(x, dim=1).cpu().numpy())
+
+    # Return first ensemble member's intermediate (query-only, no context)
+    all_emb = intermediates[0]
+    preds = np.mean(baseline_outputs, axis=0)
+    return all_emb, preds
 
 
 # ── Delta Construction ────────────────────────────────────────────────────────
@@ -423,7 +806,7 @@ def sweep_transfer(
 
     # Load source SAE once
     sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
-    if source_model == "tabicl":
+    if source_model in ("tabicl", "tabicl_v2"):
         data_mean = emb_source.mean(dim=0)
     else:
         data_mean = load_training_mean(
@@ -569,7 +952,7 @@ def perrow_sweep_transfer(
 
     # Load source SAE
     sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
-    if source_model == "tabicl":
+    if source_model in ("tabicl", "tabicl_v2"):
         data_mean = emb_source.mean(dim=0)
     else:
         data_mean = load_training_mean(

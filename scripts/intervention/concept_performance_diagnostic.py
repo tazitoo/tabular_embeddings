@@ -49,19 +49,29 @@ DEFAULT_DIAGNOSTIC_PATH = PROJECT_ROOT / "output" / "concept_performance_diagnos
 DEFAULT_FIGURES_DIR = PROJECT_ROOT / "output" / "figures"
 
 # Models with intervention support (can get predictions via intervene_sae)
-INTERVENTION_MODELS = ["tabpfn", "mitra", "tabicl", "tabdpt", "hyperfast"]
+INTERVENTION_MODELS = [
+    "tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt",
+    "hyperfast", "carte", "tabula8b",
+]
 
 # All models with SAE checkpoints (for fingerprints)
-ALL_MODELS = ["tabpfn", "mitra", "tabicl", "tabdpt", "hyperfast", "carte", "tabula8b"]
+ALL_MODELS = [
+    "tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt",
+    "hyperfast", "carte", "tabula8b",
+]
 
 # Models that can produce predictions (intervention-ready or with predict API)
-PREDICTABLE_MODELS = ["tabpfn", "mitra", "tabicl", "tabdpt", "hyperfast", "carte"]
+PREDICTABLE_MODELS = [
+    "tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt",
+    "hyperfast", "carte", "tabula8b",
+]
 
 # Display name mapping (matching MNN file convention)
 DISPLAY_NAMES = {
     "tabpfn": "TabPFN",
     "mitra": "Mitra",
     "tabicl": "TabICL",
+    "tabicl_v2": "TabICL-v2",
     "tabdpt": "TabDPT",
     "hyperfast": "HyperFast",
     "carte": "CARTE",

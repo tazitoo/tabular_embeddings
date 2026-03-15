@@ -440,6 +440,842 @@ class TabICLTail:
         return self._predict_with_modified_state(state)
 
 
+class TabICLV2Tail:
+    """Cached TabICL-v2 tail: same as TabICLTail but supports regression.
+
+    Usage:
+        tail = TabICLV2Tail.from_data(X_ctx, y_ctx, X_query, layer=9, task="classification", device="cuda")
+        preds = tail.predict(delta)
+        preds = tail.predict_row(row_idx, delta_row)
+    """
+
+    def __init__(self, clf, blocks, hidden_state, train_size,
+                 extraction_layer, n_query, X_query, task, device):
+        self.clf = clf
+        self.blocks = blocks
+        self.hidden_state = hidden_state  # (n_ensemble, seq_len, 512)
+        self.train_size = train_size
+        self.extraction_layer = extraction_layer
+        self.n_query = n_query
+        self.X_query = X_query
+        self.task = task
+        self.device = device
+
+    @classmethod
+    def from_data(cls, X_context, y_context, X_query, extraction_layer,
+                  task="classification", device="cuda"):
+        """One-time setup: fit model, capture hidden state at layer L."""
+        if task == "regression":
+            from tabicl import TabICLRegressor
+            clf = TabICLRegressor(device=device, n_estimators=1)
+        else:
+            from tabicl import TabICLClassifier
+            clf = TabICLClassifier(device=device, n_estimators=1)
+
+        clf.fit(X_context, y_context)
+
+        model = clf.model_
+        blocks = model.icl_predictor.tf_icl.blocks
+
+        captured = {}
+
+        def capture_hook(module, input, output):
+            if isinstance(output, torch.Tensor):
+                captured["hidden"] = output.detach()
+
+        handle = blocks[extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    baseline_preds = clf.predict(X_query)
+                else:
+                    baseline_preds = clf.predict_proba(X_query)
+        finally:
+            handle.remove()
+
+        n_query = len(X_query)
+        train_size = captured["hidden"].shape[1] - n_query
+
+        tail = cls(
+            clf=clf, blocks=blocks,
+            hidden_state=captured["hidden"],
+            train_size=train_size,
+            extraction_layer=extraction_layer,
+            n_query=n_query, X_query=X_query,
+            task=task, device=device,
+        )
+        tail.baseline_preds = np.asarray(baseline_preds)
+        return tail
+
+    def _predict_with_modified_state(self, modified_state):
+        """Monkey-patch Encoder.forward to skip blocks 0..L, run predict."""
+        tail_blocks = self.blocks[self.extraction_layer + 1:]
+        cached_state = modified_state
+
+        encoder = self.clf.model_.icl_predictor.tf_icl
+        original_forward = encoder.forward
+
+        def tail_forward(src, key_padding_mask=None, attn_mask=None, **kwargs):
+            out = cached_state
+            for block in tail_blocks:
+                out = block(
+                    q=out, key_padding_mask=key_padding_mask,
+                    attn_mask=attn_mask, rope=encoder.rope,
+                )
+            return out
+
+        encoder.forward = tail_forward
+        try:
+            with torch.no_grad():
+                if self.task == "regression":
+                    preds = self.clf.predict(self.X_query)
+                else:
+                    preds = self.clf.predict_proba(self.X_query)
+        finally:
+            encoder.forward = original_forward
+        return np.asarray(preds)
+
+    def predict(self, delta):
+        """Full-batch intervention: delta shape (seq_len, hidden_dim)."""
+        state = self.hidden_state.clone()
+        delta_broadcast = delta.unsqueeze(0)  # (1, seq_len, hidden_dim)
+        state += delta_broadcast
+        return self._predict_with_modified_state(state)
+
+    def predict_row(self, row_idx, delta_row):
+        """Single-row intervention: delta_row shape (hidden_dim,)."""
+        state = self.hidden_state.clone()
+        seq_idx = self.train_size + row_idx
+        state[:, seq_idx, :] += delta_row.unsqueeze(0)
+        return self._predict_with_modified_state(state)
+
+
+class CARTETail:
+    """Cached CARTE tail: injects delta at GNN layer via hook, runs predict.
+
+    CARTE processes rows as star graphs. We cache the hidden state at the
+    extraction layer (read_out_block) and the PyG Batch object, then modify
+    central node embeddings on re-run.
+
+    Usage:
+        tail = CARTETail.from_data(X_ctx, y_ctx, X_query, layer=1, device="cuda")
+        preds = tail.predict(delta)
+        preds = tail.predict_row(row_idx, delta_row)
+    """
+
+    def __init__(self, clf, model, hook_module, hidden_state,
+                 central_indices, batch, n_query, task, device):
+        self.clf = clf
+        self.model = model
+        self.hook_module = hook_module
+        self.hidden_state = hidden_state  # (n_nodes, emb_dim) full batched hidden
+        self.central_indices = central_indices  # list of int, length n_query
+        self.batch = batch  # PyG Batch on device
+        self.n_query = n_query
+        self.task = task
+        self.device = device
+
+    @classmethod
+    def from_data(cls, X_context, y_context, X_query, extraction_layer,
+                  task="classification", device="cuda"):
+        """One-time setup: fit CARTE, capture hidden state, build batch."""
+        from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
+        _patch_carte_amp()
+
+        from carte_ai import CARTEClassifier, Table2GraphTransformer
+        from torch_geometric.data import Batch
+        from sklearn.preprocessing import RobustScaler
+
+        ft_path = _find_fasttext_model()
+        if not ft_path:
+            raise ValueError("FastText model not found for CARTE tail")
+
+        # Robust preprocessing (matches extraction code)
+        X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32),
+                                  nan=0.0, posinf=0.0, neginf=0.0)
+        X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32),
+                                nan=0.0, posinf=0.0, neginf=0.0)
+
+        col_std = X_context.std(axis=0)
+        nonconstant = col_std > 0
+        if not nonconstant.all():
+            X_context = X_context[:, nonconstant]
+            X_query = X_query[:, nonconstant]
+
+        scaler = RobustScaler()
+        X_context = scaler.fit_transform(X_context)
+        X_query = scaler.transform(X_query)
+        X_context = np.clip(X_context, -10, 10)
+        X_query = np.clip(X_query, -10, 10)
+
+        # Prepare targets
+        y_context = np.asarray(y_context)
+        if y_context.dtype == np.float64:
+            y_context = y_context.astype(np.int64)
+
+        feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+        t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
+
+        X_context_graph = _carte_prepare_graphs(X_context, feature_names, t2g, fit=True)
+        X_query_graph = _carte_prepare_graphs(X_query, feature_names, t2g, fit=False)
+
+        for i, g in enumerate(X_context_graph):
+            g.y = torch.tensor([y_context[i]], dtype=torch.float32)
+
+        clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+        clf.fit(X_context_graph, y_context)
+        torch.cuda.empty_cache()
+
+        n_query = len(X_query)
+        model = clf.model_list_[0]
+        model.eval()
+        base = model.ft_base
+
+        # Map extraction_layer to module
+        if extraction_layer == 0:
+            hook_module = base.initial_x
+        elif extraction_layer == 1:
+            hook_module = base.read_out_block
+        else:
+            classifier_layers = [m for m in model.ft_classifier
+                                 if isinstance(m, torch.nn.Linear)]
+            cls_idx = extraction_layer - 2
+            hook_module = (classifier_layers[cls_idx]
+                           if cls_idx < len(classifier_layers)
+                           else base.read_out_block)
+
+        # Capture hidden state
+        captured = {}
+
+        def capture_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                captured["hidden"] = out.detach()
+
+        batch = Batch.from_data_list(X_query_graph).to(device)
+        handle = hook_module.register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                model(batch)
+        finally:
+            handle.remove()
+
+        hidden = captured["hidden"]
+        if hidden.shape[0] > n_query and hasattr(batch, 'ptr'):
+            central_indices = [int(batch.ptr[i]) for i in range(n_query)]
+        elif hidden.shape[0] == n_query:
+            central_indices = list(range(n_query))
+        else:
+            raise ValueError(f"Cannot extract central nodes: hidden {hidden.shape}")
+
+        # Get baseline predictions
+        with torch.no_grad():
+            baseline_preds = clf.predict_proba(X_query_graph)
+
+        tail = cls(
+            clf=clf, model=model, hook_module=hook_module,
+            hidden_state=hidden, central_indices=central_indices,
+            batch=batch, n_query=n_query, task=task, device=device,
+        )
+        tail.baseline_preds = np.asarray(baseline_preds)
+        tail.X_query_graph = X_query_graph
+        return tail
+
+    def _predict_with_hook(self, delta_tensor, central_only_indices=None):
+        """Run model with delta injection at hook module.
+
+        Args:
+            delta_tensor: Either (n_query, emb_dim) for all central nodes,
+                          or (emb_dim,) for a single central node.
+            central_only_indices: If set, list of (i, central_idx) pairs to modify.
+                                  If None, modify all central nodes.
+        """
+        cached = self.hidden_state
+
+        def modify_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                out = out.clone()
+                if central_only_indices is not None:
+                    for i, idx in central_only_indices:
+                        out[idx] += delta_tensor[i] if delta_tensor.ndim == 2 else delta_tensor
+                else:
+                    for i, idx in enumerate(self.central_indices):
+                        out[idx] += delta_tensor[i]
+                if isinstance(output, tuple):
+                    return (out,) + output[1:]
+                return out
+            return output
+
+        handle = self.hook_module.register_forward_hook(modify_hook)
+        try:
+            with torch.no_grad():
+                preds = self.clf.predict_proba(self.X_query_graph)
+        finally:
+            handle.remove()
+        return np.asarray(preds)
+
+    def predict(self, delta):
+        """Full-batch intervention: delta shape (n_query, emb_dim)."""
+        return self._predict_with_hook(delta)
+
+    def predict_row(self, row_idx, delta_row):
+        """Single-row intervention: delta_row shape (emb_dim,)."""
+        return self._predict_with_hook(
+            delta_row.unsqueeze(0),
+            central_only_indices=[(0, self.central_indices[row_idx])],
+        )
+
+
+class Tabula8BTail:
+    """Cached Tabula-8B tail: keeps LLM loaded, re-runs per-row with delta.
+
+    Tabula-8B is inherently per-row (causal LM). The tail caches the loaded
+    LLM, tokenizer, and serialized context to avoid reloading.
+
+    Usage:
+        tail = Tabula8BTail.from_data(X_ctx, y_ctx, X_query, layer=18, device="cuda")
+        preds = tail.predict(delta)
+        preds = tail.predict_row(row_idx, delta_row)
+    """
+
+    def __init__(self, llm, tokenizer, llm_layers, ctx_text, feature_names,
+                 extraction_layer, n_classes, n_query, X_query, task, device):
+        self.llm = llm
+        self.tokenizer = tokenizer
+        self.llm_layers = llm_layers
+        self.ctx_text = ctx_text
+        self.feature_names = feature_names
+        self.extraction_layer = extraction_layer
+        self.n_classes = n_classes
+        self.n_query = n_query
+        self.X_query = np.asarray(X_query, dtype=np.float32)
+        self.task = task
+        self.device = device
+        # Pre-compute class token IDs for classification
+        if task == "classification":
+            self.class_token_ids = [
+                tokenizer.encode(str(c), add_special_tokens=False)[0]
+                for c in range(n_classes)
+            ]
+
+    @classmethod
+    def from_data(cls, X_context, y_context, X_query, extraction_layer,
+                  task="classification", device="cuda"):
+        """Load LLM once, serialize context, compute baselines per row."""
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+        model_path = "/data/models/tabula-8b"
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        llm = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            device_map="auto",
+            quantization_config=bnb_config,
+            torch_dtype=torch.float16,
+        )
+        llm.eval()
+        llm_layers = llm.model.layers
+
+        X_context = np.asarray(X_context, dtype=np.float32)
+        y_context = np.asarray(y_context)
+        X_query = np.asarray(X_query, dtype=np.float32)
+
+        feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+        n_classes = len(np.unique(y_context))
+
+        # Serialize context (shared prefix)
+        max_ctx = min(32, len(X_context))
+        ctx_lines = []
+        for row, label in zip(X_context[:max_ctx], y_context[:max_ctx]):
+            parts = []
+            for name, val in zip(feature_names, row):
+                if not (isinstance(val, float) and np.isnan(val)):
+                    parts.append(f"the {name} is {val}")
+            ctx_lines.append(", ".join(parts) + f", the target is {label}")
+        ctx_text = "\n".join(ctx_lines)
+
+        n_query = len(X_query)
+
+        tail = cls(
+            llm=llm, tokenizer=tokenizer, llm_layers=llm_layers,
+            ctx_text=ctx_text, feature_names=feature_names,
+            extraction_layer=extraction_layer, n_classes=n_classes,
+            n_query=n_query, X_query=X_query, task=task, device=device,
+        )
+
+        # Compute baselines per row
+        baseline_preds = []
+        for row_idx in range(n_query):
+            preds = tail._forward_row(row_idx, delta_row=None)
+            baseline_preds.append(preds)
+            if (row_idx + 1) % 50 == 0:
+                logger.info("  Tabula-8B tail setup: %d/%d baselines", row_idx + 1, n_query)
+        tail.baseline_preds = np.array(baseline_preds)
+        return tail
+
+    def _forward_row(self, row_idx, delta_row=None):
+        """Single-row forward pass, optionally injecting delta at layer L."""
+        row = self.X_query[row_idx]
+        parts = [f"the {name} is {val}" for name, val in zip(self.feature_names, row)
+                 if not (isinstance(val, float) and np.isnan(val))]
+        query_text = ", ".join(parts)
+        full_text = f"{self.ctx_text}\n{query_text}, the target is"
+
+        inputs = self.tokenizer(
+            full_text, return_tensors="pt",
+            truncation=True, max_length=8000,
+        ).to(self.llm.device)
+
+        if delta_row is not None:
+            def modify_hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    out[0, -1, :] += delta_row.to(out.dtype)
+                    if isinstance(output, tuple):
+                        return (out,) + output[1:]
+                    return out
+                return output
+
+            handle = self.llm_layers[self.extraction_layer].register_forward_hook(modify_hook)
+        else:
+            handle = None
+
+        try:
+            with torch.no_grad():
+                outputs = self.llm(**inputs)
+                logits = outputs.logits[0, -1, :]
+        finally:
+            if handle is not None:
+                handle.remove()
+
+        if self.task == "classification":
+            probs = torch.softmax(logits[self.class_token_ids].float(), dim=0)
+            return probs.cpu().numpy()
+        else:
+            token = self.tokenizer.decode(logits.argmax().item()).strip()
+            try:
+                return float(token)
+            except ValueError:
+                return 0.0
+
+    def predict(self, delta):
+        """Full-batch intervention: delta shape (n_query, 4096)."""
+        preds = []
+        for row_idx in range(self.n_query):
+            preds.append(self._forward_row(row_idx, delta_row=delta[row_idx]))
+        return np.array(preds)
+
+    def predict_row(self, row_idx, delta_row):
+        """Single-row intervention: returns (n_query, n_classes) with only row_idx modified."""
+        # For consistency with other tails, return full prediction array
+        # but only row_idx is modified (others use baseline)
+        preds = self.baseline_preds.copy()
+        preds[row_idx] = self._forward_row(row_idx, delta_row=delta_row)
+        return preds
+
+
+class MitraTail:
+    """Cached Mitra tail: injects delta at Tab2D layer L via hook, runs predict.
+
+    Mitra's Tab2D layers return (support, query) tuples — both must be captured
+    and modified. Each tensor is 4D: (1, n_samples, n_feat+1, dim) with y-token
+    at position 0. RNG state must be saved/restored for deterministic batching.
+
+    Usage:
+        tail = MitraTail.from_data(X_ctx, y_ctx, X_query, layer=10, task="classification", device="cuda")
+        preds = tail.predict(delta)  # delta: (n_support + n_query, dim)
+        preds = tail.predict_row(row_idx, delta_row)  # delta_row: (dim,)
+    """
+
+    def __init__(self, clf, trainer, layers, captured_support, captured_query,
+                 rng_state, extraction_layer, n_query, X_query, task, device):
+        self.clf = clf
+        self.trainer = trainer
+        self.layers = layers
+        self.captured_support = captured_support  # list of (1, n_sup, n_feat+1, dim)
+        self.captured_query = captured_query      # list of (1, n_qry, n_feat+1, dim)
+        self.rng_state = rng_state
+        self.extraction_layer = extraction_layer
+        self.n_query = n_query
+        self.X_query = X_query
+        self.task = task
+        self.device = device
+
+    @classmethod
+    def from_data(cls, X_context, y_context, X_query, extraction_layer,
+                  task="classification", device="cuda"):
+        """One-time setup: fit Mitra, capture hidden state at layer L."""
+        n_features = X_query.shape[1]
+        max_context = max(100, 200_000 // max(n_features, 1))
+        if len(X_context) > max_context:
+            X_context = X_context[:max_context]
+            y_context = y_context[:max_context]
+
+        if task == "regression":
+            from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
+            clf = MitraRegressor(device=device, n_estimators=1, fine_tune=False)
+        else:
+            from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
+            clf = MitraClassifier(device=device, n_estimators=1, fine_tune=False)
+
+        clf.fit(X_context, y_context)
+        torch.cuda.empty_cache()
+
+        trainer = clf.trainers[0]
+        layers = trainer.model.layers
+
+        rng_state = trainer.rng.get_state()
+
+        captured_support = []
+        captured_query = []
+
+        def capture_hook(module, input, output):
+            if isinstance(output, tuple) and len(output) >= 2:
+                sup, qry = output[0], output[1]
+                if isinstance(sup, torch.Tensor):
+                    captured_support.append(sup.detach())
+                if isinstance(qry, torch.Tensor):
+                    captured_query.append(qry.detach())
+
+        handle = layers[extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    baseline_preds = clf.predict(X_query)
+                else:
+                    baseline_preds = clf.predict_proba(X_query)
+        finally:
+            handle.remove()
+
+        tail = cls(
+            clf=clf, trainer=trainer, layers=layers,
+            captured_support=captured_support,
+            captured_query=captured_query,
+            rng_state=rng_state,
+            extraction_layer=extraction_layer,
+            n_query=len(X_query), X_query=X_query,
+            task=task, device=device,
+        )
+        tail.baseline_preds = np.asarray(baseline_preds)
+        return tail
+
+    def _predict_with_delta(self, delta_support, delta_query):
+        """Re-run Mitra with delta injection at layer L for support and query."""
+        self.trainer.rng.set_state(self.rng_state)
+        sup_offset = [0]
+        qry_offset = [0]
+
+        def modify_hook(module, input, output):
+            if not (isinstance(output, tuple) and len(output) >= 2):
+                return output
+            sup, qry = output[0], output[1]
+            modified = list(output)
+            if isinstance(sup, torch.Tensor) and sup.ndim == 4:
+                sup = sup.clone()
+                n_sup = sup.shape[1]
+                s = sup_offset[0]
+                sup[0] += delta_support[s:s + n_sup].unsqueeze(1)
+                sup_offset[0] = s + n_sup
+                modified[0] = sup
+            if isinstance(qry, torch.Tensor) and qry.ndim == 4:
+                qry = qry.clone()
+                n_qry = qry.shape[1]
+                s = qry_offset[0]
+                qry[0] += delta_query[s:s + n_qry].unsqueeze(1)
+                qry_offset[0] = s + n_qry
+                modified[1] = qry
+            return tuple(modified)
+
+        handle = self.layers[self.extraction_layer].register_forward_hook(modify_hook)
+        try:
+            with torch.no_grad():
+                if self.task == "regression":
+                    preds = self.clf.predict(self.X_query)
+                else:
+                    preds = self.clf.predict_proba(self.X_query)
+        finally:
+            handle.remove()
+        return np.asarray(preds)
+
+    def predict(self, delta):
+        """Full-batch intervention: delta shape (n_support + n_query, dim).
+
+        Split delta into support and query portions based on captured sizes.
+        """
+        n_sup_total = sum(s.shape[1] for s in self.captured_support)
+        delta_sup = delta[:n_sup_total]
+        delta_qry = delta[n_sup_total:]
+        return self._predict_with_delta(delta_sup, delta_qry)
+
+    def predict_row(self, row_idx, delta_row):
+        """Single-row intervention: delta_row shape (dim,).
+
+        Modifies only query row `row_idx`. Support gets zero delta.
+        """
+        n_sup_total = sum(s.shape[1] for s in self.captured_support)
+        n_qry_total = sum(q.shape[1] for q in self.captured_query)
+        delta_sup = torch.zeros(n_sup_total, delta_row.shape[0],
+                                device=self.device, dtype=delta_row.dtype)
+        delta_qry = torch.zeros(n_qry_total, delta_row.shape[0],
+                                device=self.device, dtype=delta_row.dtype)
+        delta_qry[row_idx] = delta_row
+        return self._predict_with_delta(delta_sup, delta_qry)
+
+
+class TabDPTTail:
+    """Cached TabDPT tail: injects delta at encoder layer L via hook, runs predict.
+
+    TabDPT has standard transformer encoder layers. Hidden state is 3D:
+    (n_samples, seq, H) or 2D. We cache the hidden state and monkey-patch
+    the encoder to skip layers 0..L.
+
+    Usage:
+        tail = TabDPTTail.from_data(X_ctx, y_ctx, X_query, layer=13, task="classification", device="cuda")
+        preds = tail.predict(delta)  # delta: (n_samples, H)
+        preds = tail.predict_row(row_idx, delta_row)  # delta_row: (H,)
+    """
+
+    def __init__(self, clf, encoder_layers, hidden_state, extraction_layer,
+                 n_ctx, n_query, X_query, task, device):
+        self.clf = clf
+        self.encoder_layers = encoder_layers
+        self.hidden_state = hidden_state  # (n_samples, seq, H) or (n_samples, H)
+        self.extraction_layer = extraction_layer
+        self.n_ctx = n_ctx
+        self.n_query = n_query
+        self.X_query = X_query
+        self.task = task
+        self.device = device
+
+    @classmethod
+    def from_data(cls, X_context, y_context, X_query, extraction_layer,
+                  task="classification", device="cuda"):
+        """One-time setup: fit TabDPT, capture hidden state at layer L."""
+        from tabdpt import TabDPTClassifier, TabDPTRegressor
+
+        if task == "regression":
+            clf = TabDPTRegressor(device=device, compile=False)
+        else:
+            clf = TabDPTClassifier(device=device, compile=False)
+        clf.fit(X_context, y_context)
+
+        encoder_layers = clf.model.transformer_encoder
+
+        captured = {}
+
+        def capture_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                captured["hidden"] = out.detach()
+
+        handle = encoder_layers[extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    baseline_preds = clf.predict(X_query)
+                else:
+                    baseline_preds = clf.predict_proba(X_query)
+        finally:
+            handle.remove()
+
+        n_ctx = len(X_context)
+        n_query = len(X_query)
+
+        tail = cls(
+            clf=clf, encoder_layers=encoder_layers,
+            hidden_state=captured["hidden"],
+            extraction_layer=extraction_layer,
+            n_ctx=n_ctx, n_query=n_query, X_query=X_query,
+            task=task, device=device,
+        )
+        tail.baseline_preds = np.asarray(baseline_preds)
+        return tail
+
+    def _predict_with_modified_state(self, modified_state):
+        """Monkey-patch encoder to skip layers 0..L, run predict."""
+        tail_layers = list(self.encoder_layers[self.extraction_layer + 1:])
+        cached_state = modified_state
+
+        original_forward = self.encoder_layers.forward
+
+        def tail_forward(src, mask=None, src_key_padding_mask=None, **kwargs):
+            out = cached_state
+            for layer in tail_layers:
+                out = layer(out, src_mask=mask,
+                            src_key_padding_mask=src_key_padding_mask)
+            return out
+
+        self.encoder_layers.forward = tail_forward
+        try:
+            with torch.no_grad():
+                if self.task == "regression":
+                    preds = self.clf.predict(self.X_query)
+                else:
+                    preds = self.clf.predict_proba(self.X_query)
+        finally:
+            self.encoder_layers.forward = original_forward
+        return np.asarray(preds)
+
+    def predict(self, delta):
+        """Full-batch intervention: delta shape (n_samples, H)."""
+        state = self.hidden_state.clone()
+        if state.ndim == 3:
+            state += delta.unsqueeze(1)
+        else:
+            state += delta
+        return self._predict_with_modified_state(state)
+
+    def predict_row(self, row_idx, delta_row):
+        """Single-row intervention: delta_row shape (H,).
+
+        Modifies only query row `row_idx`. In TabDPT the samples dimension
+        includes n_ctx + n_query, with query at the end.
+        """
+        state = self.hidden_state.clone()
+        seq_idx = self.n_ctx + row_idx
+        if state.ndim == 3:
+            state[seq_idx, :, :] += delta_row.unsqueeze(0)
+        else:
+            state[seq_idx, :] += delta_row
+        return self._predict_with_modified_state(state)
+
+
+class HyperFastTail:
+    """Cached HyperFast tail: replays generated MLP from extraction layer.
+
+    HyperFast generates a task-specific MLP. We cache the intermediate
+    activation at extraction_layer and the weights for all layers, then
+    replay from the injection point for each intervention.
+
+    Classification only (HyperFast does not support regression).
+
+    Usage:
+        tail = HyperFastTail.from_data(X_ctx, y_ctx, X_query, layer=1, device="cuda")
+        preds = tail.predict(delta)  # delta: (n_query, H)
+        preds = tail.predict_row(row_idx, delta_row)  # delta_row: (H,)
+    """
+
+    def __init__(self, clf, main_networks, intermediates, extraction_layer,
+                 n_query, X_query_t, device):
+        self.clf = clf
+        self.main_networks = main_networks      # list of weight tuples per ensemble
+        self.intermediates = intermediates       # list of (n_query, H) per ensemble
+        self.extraction_layer = extraction_layer
+        self.n_query = n_query
+        self.X_query_t = X_query_t
+        self.device = device
+
+    @classmethod
+    def from_data(cls, X_context, y_context, X_query, extraction_layer,
+                  task="classification", device="cuda"):
+        """One-time setup: fit HyperFast, cache intermediates at layer L."""
+        from hyperfast.hyperfast import transform_data_for_main_network
+        from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
+
+        extractor = HyperFastEmbeddingExtractor(device=device)
+        extractor.load_model()
+        X_ctx_clean = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0)
+        y_ctx_clean = np.asarray(y_context, dtype=np.int64)
+        extractor._model.fit(X_ctx_clean, y_ctx_clean)
+        hf_clf = extractor._model
+
+        n_query = len(X_query)
+        X_query_t = torch.tensor(X_query, dtype=torch.float32).to(device)
+
+        main_networks = []
+        intermediates = []
+        baseline_outputs = []
+
+        for jj in range(len(hf_clf._main_networks)):
+            main_network = hf_clf._move_to_device(hf_clf._main_networks[jj])
+            rf = hf_clf._move_to_device(hf_clf._rfs[jj])
+            pca = hf_clf._move_to_device(hf_clf._pcas[jj])
+
+            if hf_clf.feature_bagging:
+                X_b = X_query_t[:, hf_clf.selected_features[jj]]
+            else:
+                X_b = X_query_t
+
+            X_transformed = transform_data_for_main_network(
+                X=X_b, cfg=hf_clf._cfg, rf=rf, pca=pca,
+            )
+
+            # Forward to extraction_layer, caching intermediate
+            with torch.no_grad():
+                x = X_transformed
+                for layer_idx, (weight, bias) in enumerate(main_network):
+                    weight = hf_clf._move_to_device(weight)
+                    bias = hf_clf._move_to_device(bias)
+                    x_new = F.linear(x, weight, bias)
+                    if layer_idx < len(main_network) - 1:
+                        x_new = F.relu(x_new)
+                        if x_new.shape[-1] == x.shape[-1]:
+                            x = x + x_new
+                        else:
+                            x = x_new
+                    else:
+                        x = x_new
+                    if layer_idx == extraction_layer:
+                        intermediate = x.detach().clone()
+
+                baseline_outputs.append(F.softmax(x, dim=1).cpu().numpy())
+
+            main_networks.append(main_network)
+            intermediates.append(intermediate)
+
+        baseline_avg = np.mean(baseline_outputs, axis=0)
+
+        tail = cls(
+            clf=hf_clf, main_networks=main_networks,
+            intermediates=intermediates,
+            extraction_layer=extraction_layer,
+            n_query=n_query, X_query_t=X_query_t, device=device,
+        )
+        tail.baseline_preds = baseline_avg
+        return tail
+
+    def _forward_from_layer(self, ensemble_idx, x):
+        """Forward through layers after extraction_layer."""
+        main_network = self.main_networks[ensemble_idx]
+        with torch.no_grad():
+            for layer_idx in range(self.extraction_layer + 1, len(main_network)):
+                weight, bias = main_network[layer_idx]
+                weight = self.clf._move_to_device(weight)
+                bias = self.clf._move_to_device(bias)
+                x_new = F.linear(x, weight, bias)
+                if layer_idx < len(main_network) - 1:
+                    x_new = F.relu(x_new)
+                    if x_new.shape[-1] == x.shape[-1]:
+                        x = x + x_new
+                    else:
+                        x = x_new
+                else:
+                    x = x_new
+        return F.softmax(x, dim=1).cpu().numpy()
+
+    def predict(self, delta):
+        """Full-batch intervention: delta shape (n_query, H)."""
+        outputs = []
+        for jj in range(len(self.main_networks)):
+            x = self.intermediates[jj].clone() + delta
+            outputs.append(self._forward_from_layer(jj, x))
+        return np.mean(outputs, axis=0)
+
+    def predict_row(self, row_idx, delta_row):
+        """Single-row intervention: delta_row shape (H,)."""
+        outputs = []
+        for jj in range(len(self.main_networks)):
+            x = self.intermediates[jj].clone()
+            x[row_idx] += delta_row
+            outputs.append(self._forward_from_layer(jj, x))
+        return np.mean(outputs, axis=0)
+
+
 def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
                task="classification", device="cuda"):
     """Factory: build the appropriate tail model for the given model key."""
@@ -450,6 +1286,30 @@ def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
     elif model_key == "tabicl":
         return TabICLTail.from_data(
             X_context, y_context, X_query, extraction_layer, device,
+        )
+    elif model_key == "tabicl_v2":
+        return TabICLV2Tail.from_data(
+            X_context, y_context, X_query, extraction_layer, task, device,
+        )
+    elif model_key == "carte":
+        return CARTETail.from_data(
+            X_context, y_context, X_query, extraction_layer, task, device,
+        )
+    elif model_key == "tabula8b":
+        return Tabula8BTail.from_data(
+            X_context, y_context, X_query, extraction_layer, task, device,
+        )
+    elif model_key == "mitra":
+        return MitraTail.from_data(
+            X_context, y_context, X_query, extraction_layer, task, device,
+        )
+    elif model_key == "tabdpt":
+        return TabDPTTail.from_data(
+            X_context, y_context, X_query, extraction_layer, task, device,
+        )
+    elif model_key == "hyperfast":
+        return HyperFastTail.from_data(
+            X_context, y_context, X_query, extraction_layer, task, device,
         )
     else:
         raise ValueError(f"Tail model not implemented for {model_key}")
@@ -1974,9 +2834,1057 @@ def perrow_sweep_intervene_tabicl(
     }
 
 
+def perrow_sweep_intervene_tabicl_v2(
+    X_context, y_context, X_query, y_query, sae,
+    unmatched_features, extraction_layer, device, task, data_mean,
+):
+    """Per-row heterogeneous ablation sweep for TabICL-v2.
+
+    Same structure as TabICL v1 version but supports regression and uses
+    task-conditional predict.
+    """
+    if task == "regression":
+        from tabicl import TabICLRegressor
+        clf = TabICLRegressor(device=device, n_estimators=1)
+    else:
+        from tabicl import TabICLClassifier
+        clf = TabICLClassifier(device=device, n_estimators=1)
+
+    clf.fit(X_context, y_context)
+    blocks = clf.model_.icl_predictor.tf_icl.blocks
+    n_ctx = len(X_context)
+    n_query = len(X_query)
+
+    def _predict():
+        with torch.no_grad():
+            if task == "regression":
+                return clf.predict(X_query)
+            return clf.predict_proba(X_query)
+
+    # --- Capture hidden state + baseline ---
+    captured = {}
+
+    def capture_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["hidden"] = output.detach()
+
+    handle = blocks[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        baseline_preds = _predict()
+    finally:
+        handle.remove()
+
+    all_emb = captured["hidden"].mean(dim=0)  # (seq_len, 512)
+    batch_mean = all_emb.mean(dim=0)  # batch-mean centering
+    query_emb = all_emb[-n_query:]
+    ctx_emb = all_emb[:-n_query]
+
+    # SAE encode query rows for activation detection
+    with torch.no_grad():
+        x_centered = query_emb - batch_mean
+        h_encoded = sae.encode(x_centered)
+    query_acts = h_encoded.cpu().numpy()
+
+    # --- Phase 1: per-feature importance ---
+    logger.info("Phase 1: per-row importance for %d features (%d forward passes)...",
+                len(unmatched_features), len(unmatched_features))
+    individual_preds = []
+    for feat_idx in unmatched_features:
+        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=batch_mean)
+        db = delta.unsqueeze(0)
+
+        def make_hook(d):
+            def hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 3:
+                    out = output.clone()
+                    out += d
+                    return out
+                return output
+            return hook
+
+        h = blocks[extraction_layer].register_forward_hook(make_hook(db))
+        try:
+            preds = _predict()
+        finally:
+            h.remove()
+        individual_preds.append(np.asarray(preds))
+
+    baseline_np = np.asarray(baseline_preds)
+    importance = _perrow_importance(baseline_np, individual_preds, y_query)
+    rankings = _perrow_rankings(importance, unmatched_features, query_acts)
+
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: heterogeneous sweep ---
+    logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
+    sae_hidden = h_encoded.shape[1]
+    sweep_preds = []
+
+    for k in range(1, max_k + 1):
+        all_feats_k = set()
+        for r in rankings:
+            all_feats_k.update(r[:k])
+        ctx_delta = compute_ablation_delta(
+            sae, ctx_emb, list(all_feats_k), data_mean=batch_mean,
+        )
+
+        masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool, device=device)
+        for row_idx in range(n_query):
+            feats = rankings[row_idx][:k]
+            if feats:
+                masks[row_idx, feats] = True
+        query_delta = compute_ablation_delta_perrow(
+            sae, query_emb, masks, data_mean=batch_mean,
+        )
+
+        combined = torch.cat([ctx_delta, query_delta], dim=0).unsqueeze(0)
+
+        def make_hook(d):
+            def hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 3:
+                    out = output.clone()
+                    out += d
+                    return out
+                return output
+            return hook
+
+        h = blocks[extraction_layer].register_forward_hook(make_hook(combined))
+        try:
+            preds = _predict()
+        finally:
+            h.remove()
+        sweep_preds.append(np.asarray(preds))
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": sweep_preds,
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "query_activations": query_acts,
+        "unmatched_features": list(unmatched_features),
+    }
+
+
+def perrow_sweep_intervene_carte(
+    X_context, y_context, X_query, y_query, sae,
+    unmatched_features, extraction_layer, device, task, data_mean,
+):
+    """Per-row heterogeneous ablation sweep for CARTE.
+
+    CARTE processes rows as star graphs. Hook on read_out_block, extract
+    central node embeddings via batch.ptr, apply per-row SAE ablation deltas.
+    """
+    from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
+    _patch_carte_amp()
+
+    from carte_ai import CARTEClassifier, Table2GraphTransformer
+    from torch_geometric.data import Batch
+    from sklearn.preprocessing import RobustScaler
+
+    ft_path = _find_fasttext_model()
+    if not ft_path:
+        raise ValueError("FastText model not found for CARTE per-row sweep")
+
+    # Robust preprocessing (matches extraction code)
+    X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32),
+                              nan=0.0, posinf=0.0, neginf=0.0)
+    X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32),
+                            nan=0.0, posinf=0.0, neginf=0.0)
+
+    col_std = X_context.std(axis=0)
+    nonconstant = col_std > 0
+    if not nonconstant.all():
+        X_context = X_context[:, nonconstant]
+        X_query = X_query[:, nonconstant]
+
+    scaler = RobustScaler()
+    X_context = scaler.fit_transform(X_context)
+    X_query = scaler.transform(X_query)
+    X_context = np.clip(X_context, -10, 10)
+    X_query = np.clip(X_query, -10, 10)
+
+    y_context = np.asarray(y_context)
+    if y_context.dtype == np.float64:
+        y_context = y_context.astype(np.int64)
+
+    feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+    t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
+
+    X_context_graph = _carte_prepare_graphs(X_context, feature_names, t2g, fit=True)
+    X_query_graph = _carte_prepare_graphs(X_query, feature_names, t2g, fit=False)
+
+    for i, g in enumerate(X_context_graph):
+        g.y = torch.tensor([y_context[i]], dtype=torch.float32)
+
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+    clf.fit(X_context_graph, y_context)
+    torch.cuda.empty_cache()
+
+    n_query = len(X_query)
+    model = clf.model_list_[0]
+    model.eval()
+    base = model.ft_base
+
+    # Map extraction_layer to module
+    if extraction_layer == 0:
+        hook_module = base.initial_x
+    elif extraction_layer == 1:
+        hook_module = base.read_out_block
+    else:
+        classifier_layers = [m for m in model.ft_classifier
+                             if isinstance(m, torch.nn.Linear)]
+        cls_idx = extraction_layer - 2
+        hook_module = (classifier_layers[cls_idx]
+                       if cls_idx < len(classifier_layers)
+                       else base.read_out_block)
+
+    # --- Capture hidden state + baseline ---
+    captured = {}
+
+    def capture_hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            captured["hidden"] = out.detach()
+
+    batch = Batch.from_data_list(X_query_graph).to(device)
+    handle = hook_module.register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            model(batch)
+    finally:
+        handle.remove()
+
+    hidden = captured["hidden"]
+    if hidden.shape[0] > n_query and hasattr(batch, 'ptr'):
+        central_indices = [int(batch.ptr[i]) for i in range(n_query)]
+    elif hidden.shape[0] == n_query:
+        central_indices = list(range(n_query))
+    else:
+        raise ValueError(f"Cannot extract central nodes: hidden {hidden.shape}")
+
+    # Extract central node embeddings
+    central_emb = torch.stack([hidden[idx] for idx in central_indices])  # (n_query, emb_dim)
+
+    with torch.no_grad():
+        baseline_preds = clf.predict_proba(X_query_graph)
+    baseline_np = np.asarray(baseline_preds)
+
+    # SAE encode central node embeddings for activation detection
+    with torch.no_grad():
+        x_centered = central_emb - data_mean if data_mean is not None else central_emb
+        h_encoded = sae.encode(x_centered)
+    query_acts = h_encoded.cpu().numpy()
+
+    # --- Phase 1: per-feature importance ---
+    logger.info("Phase 1: per-row importance for %d features (%d forward passes)...",
+                len(unmatched_features), len(unmatched_features))
+    individual_preds = []
+    for feat_idx in unmatched_features:
+        delta = compute_ablation_delta(sae, central_emb, [feat_idx], data_mean=data_mean)
+
+        def make_hook(d, ci):
+            def hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    for i, idx in enumerate(ci):
+                        out[idx] += d[i]
+                    if isinstance(output, tuple):
+                        return (out,) + output[1:]
+                    return out
+                return output
+            return hook
+
+        h = hook_module.register_forward_hook(make_hook(delta, central_indices))
+        try:
+            with torch.no_grad():
+                preds = clf.predict_proba(X_query_graph)
+        finally:
+            h.remove()
+        individual_preds.append(np.asarray(preds))
+
+    importance = _perrow_importance(baseline_np, individual_preds, y_query)
+    rankings = _perrow_rankings(importance, unmatched_features, query_acts)
+
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: heterogeneous sweep ---
+    logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
+    sae_hidden = h_encoded.shape[1]
+    sweep_preds = []
+
+    for k in range(1, max_k + 1):
+        masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool, device=device)
+        for row_idx in range(n_query):
+            feats = rankings[row_idx][:k]
+            if feats:
+                masks[row_idx, feats] = True
+        delta = compute_ablation_delta_perrow(
+            sae, central_emb, masks, data_mean=data_mean,
+        )
+
+        def make_hook(d, ci):
+            def hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    for i, idx in enumerate(ci):
+                        out[idx] += d[i]
+                    if isinstance(output, tuple):
+                        return (out,) + output[1:]
+                    return out
+                return output
+            return hook
+
+        h = hook_module.register_forward_hook(make_hook(delta, central_indices))
+        try:
+            with torch.no_grad():
+                preds = clf.predict_proba(X_query_graph)
+        finally:
+            h.remove()
+        sweep_preds.append(np.asarray(preds))
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": sweep_preds,
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "query_activations": query_acts,
+        "unmatched_features": list(unmatched_features),
+    }
+
+
+def perrow_sweep_intervene_tabula8b(
+    X_context, y_context, X_query, y_query, sae,
+    unmatched_features, extraction_layer, device, task, data_mean,
+):
+    """Per-row heterogeneous ablation sweep for Tabula-8B.
+
+    Tabula-8B is inherently per-row (causal LM). Each query row requires
+    a separate forward pass. Phase 1 subsamples query rows for efficiency.
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    model_path = "/data/models/tabula-8b"
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    llm = AutoModelForCausalLM.from_pretrained(
+        model_path, device_map="auto",
+        quantization_config=bnb_config, torch_dtype=torch.float16,
+    )
+    llm.eval()
+    llm_layers = llm.model.layers
+
+    X_context = np.asarray(X_context, dtype=np.float32)
+    y_context = np.asarray(y_context)
+    X_query = np.asarray(X_query, dtype=np.float32)
+    n_query = len(X_query)
+    n_classes = len(np.unique(y_context))
+    feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+
+    if task == "classification":
+        class_token_ids = [
+            tokenizer.encode(str(c), add_special_tokens=False)[0]
+            for c in range(n_classes)
+        ]
+
+    # Serialize context (shared prefix)
+    max_ctx = min(32, len(X_context))
+    ctx_lines = []
+    for row, label in zip(X_context[:max_ctx], y_context[:max_ctx]):
+        parts = []
+        for name, val in zip(feature_names, row):
+            if not (isinstance(val, float) and np.isnan(val)):
+                parts.append(f"the {name} is {val}")
+        ctx_lines.append(", ".join(parts) + f", the target is {label}")
+    ctx_text = "\n".join(ctx_lines)
+
+    def _forward_row(row_idx, delta_row=None):
+        """Single-row forward pass with optional delta injection."""
+        row = X_query[row_idx]
+        parts = [f"the {name} is {val}" for name, val in zip(feature_names, row)
+                 if not (isinstance(val, float) and np.isnan(val))]
+        full_text = f"{ctx_text}\n{', '.join(parts)}, the target is"
+
+        inputs = tokenizer(full_text, return_tensors="pt",
+                           truncation=True, max_length=8000).to(llm.device)
+
+        if delta_row is not None:
+            def modify_hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    out[0, -1, :] += delta_row.to(out.dtype)
+                    if isinstance(output, tuple):
+                        return (out,) + output[1:]
+                    return out
+                return output
+            handle = llm_layers[extraction_layer].register_forward_hook(modify_hook)
+        else:
+            handle = None
+
+        try:
+            with torch.no_grad():
+                outputs = llm(**inputs)
+                logits = outputs.logits[0, -1, :]
+        finally:
+            if handle is not None:
+                handle.remove()
+
+        if task == "classification":
+            probs = torch.softmax(logits[class_token_ids].float(), dim=0)
+            return probs.cpu().numpy()
+        else:
+            token = tokenizer.decode(logits.argmax().item()).strip()
+            try:
+                return float(token)
+            except ValueError:
+                return 0.0
+
+    def _capture_row(row_idx):
+        """Capture hidden state + baseline prediction for one row."""
+        row = X_query[row_idx]
+        parts = [f"the {name} is {val}" for name, val in zip(feature_names, row)
+                 if not (isinstance(val, float) and np.isnan(val))]
+        full_text = f"{ctx_text}\n{', '.join(parts)}, the target is"
+
+        inputs = tokenizer(full_text, return_tensors="pt",
+                           truncation=True, max_length=8000).to(llm.device)
+
+        captured = {}
+
+        def capture_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                captured["hidden"] = out.detach()
+
+        handle = llm_layers[extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                outputs = llm(**inputs)
+                logits = outputs.logits[0, -1, :]
+        finally:
+            handle.remove()
+
+        emb = captured["hidden"][0, -1, :].float()  # (4096,)
+
+        if task == "classification":
+            probs = torch.softmax(logits[class_token_ids].float(), dim=0)
+            return emb, probs.cpu().numpy()
+        else:
+            token = tokenizer.decode(logits.argmax().item()).strip()
+            try:
+                return emb, float(token)
+            except ValueError:
+                return emb, 0.0
+
+    # --- Capture baselines + embeddings for all rows ---
+    logger.info("Capturing Tabula-8B baselines + embeddings for %d rows...", n_query)
+    baseline_preds = []
+    query_embs = []
+    for row_idx in range(n_query):
+        emb, pred = _capture_row(row_idx)
+        query_embs.append(emb)
+        baseline_preds.append(pred)
+        if (row_idx + 1) % 50 == 0:
+            logger.info("  Captured %d/%d", row_idx + 1, n_query)
+    baseline_np = np.array(baseline_preds)
+    query_emb = torch.stack(query_embs)  # (n_query, 4096)
+
+    # SAE encode for activation detection
+    with torch.no_grad():
+        x_centered = query_emb - data_mean if data_mean is not None else query_emb
+        x_centered = x_centered.to(sae.W_enc.device)
+        h_encoded = sae.encode(x_centered)
+    query_acts = h_encoded.cpu().numpy()
+
+    # --- Phase 1: per-feature importance (subsampled) ---
+    # Subsample for efficiency: each feature x row = 1 forward pass
+    max_subsample = min(n_query, 20)
+    if n_query > max_subsample:
+        rng = np.random.RandomState(42)
+        subsample_idx = rng.choice(n_query, max_subsample, replace=False)
+        subsample_idx.sort()
+    else:
+        subsample_idx = np.arange(n_query)
+
+    n_sub = len(subsample_idx)
+    logger.info("Phase 1: per-row importance for %d features x %d rows (%d forward passes)...",
+                len(unmatched_features), n_sub, len(unmatched_features) * n_sub)
+
+    # Compute per-feature, per-row predictions on subsample
+    individual_preds_sub = []
+    for feat_idx in unmatched_features:
+        preds_sub = np.zeros_like(baseline_np[subsample_idx])
+        for j, ri in enumerate(subsample_idx):
+            delta = compute_ablation_delta(
+                sae, query_emb[ri:ri+1].to(sae.W_enc.device),
+                [feat_idx], data_mean=data_mean,
+            )
+            preds_sub[j] = _forward_row(ri, delta_row=delta[0])
+        individual_preds_sub.append(preds_sub)
+
+    # Compute importance on subsample, extrapolate to all rows
+    importance_sub = _perrow_importance(
+        baseline_np[subsample_idx], individual_preds_sub, y_query[subsample_idx],
+    )
+    # For non-subsampled rows, use mean importance per feature
+    importance = np.zeros((len(unmatched_features), n_query))
+    importance[:, subsample_idx] = importance_sub
+    mean_importance = importance_sub.mean(axis=1, keepdims=True)
+    non_sub_mask = np.ones(n_query, dtype=bool)
+    non_sub_mask[subsample_idx] = False
+    importance[:, non_sub_mask] = mean_importance
+
+    rankings = _perrow_rankings(importance, unmatched_features, query_acts)
+
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: heterogeneous sweep ---
+    logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
+    sae_hidden = h_encoded.shape[1]
+    sweep_preds = []
+
+    for k in range(1, max_k + 1):
+        preds_k = baseline_np.copy()
+        for row_idx in range(n_query):
+            feats = rankings[row_idx][:k]
+            if not feats:
+                continue
+            mask = torch.zeros(1, sae_hidden, dtype=torch.bool, device=sae.W_enc.device)
+            mask[0, feats] = True
+            delta = compute_ablation_delta_perrow(
+                sae, query_emb[row_idx:row_idx+1].to(sae.W_enc.device),
+                mask, data_mean=data_mean,
+            )
+            preds_k[row_idx] = _forward_row(row_idx, delta_row=delta[0])
+        sweep_preds.append(preds_k)
+        if k % 5 == 0:
+            logger.info("  sweep k=%d/%d complete", k, max_k)
+
+    # Clean up LLM
+    del llm
+    torch.cuda.empty_cache()
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": sweep_preds,
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "query_activations": query_acts,
+        "unmatched_features": list(unmatched_features),
+    }
+
+
+def perrow_sweep_intervene_mitra(
+    X_context, y_context, X_query, y_query, sae,
+    unmatched_features, extraction_layer, device, task, data_mean,
+):
+    """Per-row heterogeneous ablation sweep for Mitra.
+
+    Mitra's Tab2D layers return (support, query) tuples. We capture both,
+    extract y-token embeddings, and apply per-row SAE ablation deltas.
+    RNG state is saved/restored for deterministic batching across passes.
+    """
+    n_features = X_query.shape[1]
+    max_context = max(100, 200_000 // max(n_features, 1))
+    if len(X_context) > max_context:
+        X_context = X_context[:max_context]
+        y_context = y_context[:max_context]
+
+    if task == "regression":
+        from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
+        clf = MitraRegressor(device=device, n_estimators=1, fine_tune=False)
+    else:
+        from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
+        clf = MitraClassifier(device=device, n_estimators=1, fine_tune=False)
+
+    clf.fit(X_context, y_context)
+    torch.cuda.empty_cache()
+
+    n_query = len(X_query)
+    trainer = clf.trainers[0]
+    layers = trainer.model.layers
+
+    rng_state = trainer.rng.get_state()
+
+    # --- Capture hidden state + baseline ---
+    captured_support = []
+    captured_query = []
+
+    def capture_hook(module, input, output):
+        if isinstance(output, tuple) and len(output) >= 2:
+            sup, qry = output[0], output[1]
+            if isinstance(sup, torch.Tensor):
+                captured_support.append(sup.detach())
+            if isinstance(qry, torch.Tensor):
+                captured_query.append(qry.detach())
+
+    handle = layers[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            if task == "regression":
+                baseline_preds = clf.predict(X_query)
+            else:
+                baseline_preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    # Extract y-token embeddings
+    def extract_y_tokens(tensor_list):
+        embs = []
+        for h in tensor_list:
+            if h.ndim == 4:
+                embs.append(h[0, :, 0, :])
+            elif h.ndim == 3:
+                embs.append(h.squeeze(0))
+            elif h.ndim == 2:
+                embs.append(h)
+        return torch.cat(embs, dim=0) if embs else None
+
+    support_emb = extract_y_tokens(captured_support)
+    query_emb = extract_y_tokens(captured_query)
+    # Concat support + query for SAE encoding
+    all_emb = torch.cat([support_emb, query_emb], dim=0)
+
+    # SAE encode query rows for activation detection
+    with torch.no_grad():
+        x_centered = query_emb - data_mean if data_mean is not None else query_emb
+        h_encoded = sae.encode(x_centered)
+    query_acts = h_encoded.cpu().numpy()
+
+    # --- Phase 1: per-feature importance ---
+    logger.info("Phase 1: per-row importance for %d features (%d forward passes)...",
+                len(unmatched_features), len(unmatched_features))
+    individual_preds = []
+    for feat_idx in unmatched_features:
+        delta_sup = compute_ablation_delta(sae, support_emb, [feat_idx], data_mean=data_mean)
+        delta_qry = compute_ablation_delta(sae, query_emb, [feat_idx], data_mean=data_mean)
+
+        trainer.rng.set_state(rng_state)
+        sup_offset = [0]
+        qry_offset = [0]
+
+        def make_hook(d_sup, d_qry, s_off, q_off):
+            def hook(module, input, output):
+                if not (isinstance(output, tuple) and len(output) >= 2):
+                    return output
+                sup, qry = output[0], output[1]
+                modified = list(output)
+                if isinstance(sup, torch.Tensor) and sup.ndim == 4:
+                    sup = sup.clone()
+                    n_sup = sup.shape[1]
+                    s = s_off[0]
+                    sup[0] += d_sup[s:s + n_sup].unsqueeze(1)
+                    s_off[0] = s + n_sup
+                    modified[0] = sup
+                if isinstance(qry, torch.Tensor) and qry.ndim == 4:
+                    qry = qry.clone()
+                    n_qry = qry.shape[1]
+                    s = q_off[0]
+                    qry[0] += d_qry[s:s + n_qry].unsqueeze(1)
+                    q_off[0] = s + n_qry
+                    modified[1] = qry
+                return tuple(modified)
+            return hook
+
+        h = layers[extraction_layer].register_forward_hook(
+            make_hook(delta_sup, delta_qry, sup_offset, qry_offset)
+        )
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    preds = clf.predict(X_query)
+                else:
+                    preds = clf.predict_proba(X_query)
+        finally:
+            h.remove()
+        individual_preds.append(np.asarray(preds))
+
+    baseline_np = np.asarray(baseline_preds)
+    importance = _perrow_importance(baseline_np, individual_preds, y_query)
+    rankings = _perrow_rankings(importance, unmatched_features, query_acts)
+
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: heterogeneous sweep ---
+    logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
+    sae_hidden = h_encoded.shape[1]
+    sweep_preds = []
+
+    for k in range(1, max_k + 1):
+        # Support: ablate union of all features at this k
+        all_feats_k = set()
+        for r in rankings:
+            all_feats_k.update(r[:k])
+        sup_delta = compute_ablation_delta(
+            sae, support_emb, list(all_feats_k), data_mean=data_mean,
+        )
+
+        # Query: per-row ablation via feature masks
+        masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool, device=device)
+        for row_idx in range(n_query):
+            feats = rankings[row_idx][:k]
+            if feats:
+                masks[row_idx, feats] = True
+        qry_delta = compute_ablation_delta_perrow(
+            sae, query_emb, masks, data_mean=data_mean,
+        )
+
+        trainer.rng.set_state(rng_state)
+        sup_offset = [0]
+        qry_offset = [0]
+
+        def make_hook(d_sup, d_qry, s_off, q_off):
+            def hook(module, input, output):
+                if not (isinstance(output, tuple) and len(output) >= 2):
+                    return output
+                sup, qry = output[0], output[1]
+                modified = list(output)
+                if isinstance(sup, torch.Tensor) and sup.ndim == 4:
+                    sup = sup.clone()
+                    n_sup = sup.shape[1]
+                    s = s_off[0]
+                    sup[0] += d_sup[s:s + n_sup].unsqueeze(1)
+                    s_off[0] = s + n_sup
+                    modified[0] = sup
+                if isinstance(qry, torch.Tensor) and qry.ndim == 4:
+                    qry = qry.clone()
+                    n_qry = qry.shape[1]
+                    s = q_off[0]
+                    qry[0] += d_qry[s:s + n_qry].unsqueeze(1)
+                    q_off[0] = s + n_qry
+                    modified[1] = qry
+                return tuple(modified)
+            return hook
+
+        h = layers[extraction_layer].register_forward_hook(
+            make_hook(sup_delta, qry_delta, sup_offset, qry_offset)
+        )
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    preds = clf.predict(X_query)
+                else:
+                    preds = clf.predict_proba(X_query)
+        finally:
+            h.remove()
+        sweep_preds.append(np.asarray(preds))
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": sweep_preds,
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "query_activations": query_acts,
+        "unmatched_features": list(unmatched_features),
+    }
+
+
+def perrow_sweep_intervene_tabdpt(
+    X_context, y_context, X_query, y_query, sae,
+    unmatched_features, extraction_layer, device, task, data_mean,
+):
+    """Per-row heterogeneous ablation sweep for TabDPT.
+
+    Standard transformer encoder layers. Hidden state is 3D: (n_samples, seq, H).
+    Mean over seq dim to get embeddings.
+    """
+    from tabdpt import TabDPTClassifier, TabDPTRegressor
+
+    if task == "regression":
+        clf = TabDPTRegressor(device=device, compile=False)
+    else:
+        clf = TabDPTClassifier(device=device, compile=False)
+    clf.fit(X_context, y_context)
+
+    encoder_layers = clf.model.transformer_encoder
+    n_ctx = len(X_context)
+    n_query = len(X_query)
+
+    # --- Capture hidden state + baseline ---
+    captured = {}
+
+    def capture_hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            captured["hidden"] = out.detach()
+
+    handle = encoder_layers[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            if task == "regression":
+                baseline_preds = clf.predict(X_query)
+            else:
+                baseline_preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    hidden = captured["hidden"]
+    if hidden.ndim == 3:
+        all_emb = hidden.mean(dim=1)  # (n_samples, H)
+    else:
+        all_emb = hidden
+    query_emb = all_emb[-n_query:]
+    ctx_emb = all_emb[:-n_query]
+
+    # SAE encode query rows for activation detection
+    with torch.no_grad():
+        x_centered = query_emb - data_mean if data_mean is not None else query_emb
+        h_encoded = sae.encode(x_centered)
+    query_acts = h_encoded.cpu().numpy()
+
+    # --- Phase 1: per-feature importance ---
+    logger.info("Phase 1: per-row importance for %d features (%d forward passes)...",
+                len(unmatched_features), len(unmatched_features))
+    individual_preds = []
+    for feat_idx in unmatched_features:
+        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=data_mean)
+
+        def make_hook(d):
+            def hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    out += d.unsqueeze(1) if out.ndim == 3 else d
+                    return (out,) + output[1:] if isinstance(output, tuple) else out
+                return output
+            return hook
+
+        h = encoder_layers[extraction_layer].register_forward_hook(make_hook(delta))
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    preds = clf.predict(X_query)
+                else:
+                    preds = clf.predict_proba(X_query)
+        finally:
+            h.remove()
+        individual_preds.append(np.asarray(preds))
+
+    baseline_np = np.asarray(baseline_preds)
+    importance = _perrow_importance(baseline_np, individual_preds, y_query)
+    rankings = _perrow_rankings(importance, unmatched_features, query_acts)
+
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: heterogeneous sweep ---
+    logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
+    sae_hidden = h_encoded.shape[1]
+    sweep_preds = []
+
+    for k in range(1, max_k + 1):
+        all_feats_k = set()
+        for r in rankings:
+            all_feats_k.update(r[:k])
+        ctx_delta = compute_ablation_delta(
+            sae, ctx_emb, list(all_feats_k), data_mean=data_mean,
+        )
+
+        masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool, device=device)
+        for row_idx in range(n_query):
+            feats = rankings[row_idx][:k]
+            if feats:
+                masks[row_idx, feats] = True
+        query_delta = compute_ablation_delta_perrow(
+            sae, query_emb, masks, data_mean=data_mean,
+        )
+
+        combined_delta = torch.cat([ctx_delta, query_delta], dim=0)
+
+        def make_hook(d):
+            def hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    out += d.unsqueeze(1) if out.ndim == 3 else d
+                    return (out,) + output[1:] if isinstance(output, tuple) else out
+                return output
+            return hook
+
+        h = encoder_layers[extraction_layer].register_forward_hook(make_hook(combined_delta))
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    preds = clf.predict(X_query)
+                else:
+                    preds = clf.predict_proba(X_query)
+        finally:
+            h.remove()
+        sweep_preds.append(np.asarray(preds))
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": sweep_preds,
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "query_activations": query_acts,
+        "unmatched_features": list(unmatched_features),
+    }
+
+
+def perrow_sweep_intervene_hyperfast(
+    X_context, y_context, X_query, y_query, sae,
+    unmatched_features, extraction_layer, device, task, data_mean,
+):
+    """Per-row heterogeneous ablation sweep for HyperFast.
+
+    HyperFast generates a task-specific MLP. We cache intermediates at
+    extraction_layer, then replay from that point for each ablation level.
+    Classification only (HyperFast does not support regression).
+    """
+    from hyperfast.hyperfast import transform_data_for_main_network
+    from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
+
+    extractor = HyperFastEmbeddingExtractor(device=device)
+    extractor.load_model()
+    X_ctx_clean = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0)
+    y_ctx_clean = np.asarray(y_context, dtype=np.int64)
+    extractor._model.fit(X_ctx_clean, y_ctx_clean)
+    hf_clf = extractor._model
+
+    n_query = len(X_query)
+    X_query_t = torch.tensor(X_query, dtype=torch.float32).to(device)
+
+    # Cache intermediates and baseline per ensemble member
+    ensemble_data = []
+    baseline_outputs = []
+
+    for jj in range(len(hf_clf._main_networks)):
+        main_network = hf_clf._move_to_device(hf_clf._main_networks[jj])
+        rf = hf_clf._move_to_device(hf_clf._rfs[jj])
+        pca = hf_clf._move_to_device(hf_clf._pcas[jj])
+
+        if hf_clf.feature_bagging:
+            X_b = X_query_t[:, hf_clf.selected_features[jj]]
+        else:
+            X_b = X_query_t
+
+        X_transformed = transform_data_for_main_network(
+            X=X_b, cfg=hf_clf._cfg, rf=rf, pca=pca,
+        )
+
+        with torch.no_grad():
+            x = X_transformed
+            intermediate = None
+            for layer_idx, (weight, bias) in enumerate(main_network):
+                weight = hf_clf._move_to_device(weight)
+                bias = hf_clf._move_to_device(bias)
+                x_new = F.linear(x, weight, bias)
+                if layer_idx < len(main_network) - 1:
+                    x_new = F.relu(x_new)
+                    if x_new.shape[-1] == x.shape[-1]:
+                        x = x + x_new
+                    else:
+                        x = x_new
+                else:
+                    x = x_new
+                if layer_idx == extraction_layer:
+                    intermediate = x.detach().clone()
+
+            baseline_outputs.append(F.softmax(x, dim=1).cpu().numpy())
+
+        ensemble_data.append((main_network, intermediate))
+
+    baseline_avg = np.mean(baseline_outputs, axis=0)
+
+    # Use first ensemble member's intermediate for SAE encoding (they are similar)
+    query_emb = ensemble_data[0][1]  # (n_query, H)
+
+    # SAE encode query rows for activation detection
+    with torch.no_grad():
+        x_centered = query_emb - data_mean if data_mean is not None else query_emb
+        h_encoded = sae.encode(x_centered)
+    query_acts = h_encoded.cpu().numpy()
+
+    def _forward_ensemble_from_layer(delta):
+        """Forward all ensemble members from extraction_layer with delta."""
+        outputs = []
+        for jj, (main_network, intermediate) in enumerate(ensemble_data):
+            with torch.no_grad():
+                x = intermediate.clone() + delta
+                for layer_idx in range(extraction_layer + 1, len(main_network)):
+                    weight, bias = main_network[layer_idx]
+                    weight = hf_clf._move_to_device(weight)
+                    bias = hf_clf._move_to_device(bias)
+                    x_new = F.linear(x, weight, bias)
+                    if layer_idx < len(main_network) - 1:
+                        x_new = F.relu(x_new)
+                        if x_new.shape[-1] == x.shape[-1]:
+                            x = x + x_new
+                        else:
+                            x = x_new
+                    else:
+                        x = x_new
+                outputs.append(F.softmax(x, dim=1).cpu().numpy())
+        return np.mean(outputs, axis=0)
+
+    # --- Phase 1: per-feature importance ---
+    logger.info("Phase 1: per-row importance for %d features (%d forward passes)...",
+                len(unmatched_features), len(unmatched_features))
+    individual_preds = []
+    for feat_idx in unmatched_features:
+        delta = compute_ablation_delta(sae, query_emb, [feat_idx], data_mean=data_mean)
+        preds = _forward_ensemble_from_layer(delta)
+        individual_preds.append(preds)
+
+    baseline_np = baseline_avg
+    importance = _perrow_importance(baseline_np, individual_preds, y_query)
+    rankings = _perrow_rankings(importance, unmatched_features, query_acts)
+
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: heterogeneous sweep ---
+    logger.info("Phase 3: heterogeneous sweep k=1..%d...", max_k)
+    sae_hidden = h_encoded.shape[1]
+    sweep_preds = []
+
+    for k in range(1, max_k + 1):
+        masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool, device=device)
+        for row_idx in range(n_query):
+            feats = rankings[row_idx][:k]
+            if feats:
+                masks[row_idx, feats] = True
+        delta = compute_ablation_delta_perrow(
+            sae, query_emb, masks, data_mean=data_mean,
+        )
+        preds = _forward_ensemble_from_layer(delta)
+        sweep_preds.append(preds)
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": sweep_preds,
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "query_activations": query_acts,
+        "unmatched_features": list(unmatched_features),
+    }
+
+
 PERROW_SWEEP_FN = {
     "tabpfn": perrow_sweep_intervene_tabpfn,
     "tabicl": perrow_sweep_intervene_tabicl,
+    "tabicl_v2": perrow_sweep_intervene_tabicl_v2,
+    "carte": perrow_sweep_intervene_carte,
+    "tabula8b": perrow_sweep_intervene_tabula8b,
+    "mitra": perrow_sweep_intervene_mitra,
+    "tabdpt": perrow_sweep_intervene_tabdpt,
+    "hyperfast": perrow_sweep_intervene_hyperfast,
 }
 
 

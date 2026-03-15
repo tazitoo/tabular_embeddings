@@ -101,8 +101,11 @@ MODEL_KEY_TO_LABEL_KEY = {
     "tabpfn": "TabPFN",
     "mitra": "Mitra",
     "tabicl": "TabICL",
+    "tabicl_v2": "TabICL-v2",
     "tabdpt": "TabDPT",
     "hyperfast": "HyperFast",
+    "carte": "CARTE",
+    "tabula8b": "Tabula-8B",
 }
 
 

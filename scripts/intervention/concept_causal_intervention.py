@@ -52,12 +52,16 @@ DEFAULT_FIGURES_DIR = PROJECT_ROOT / "output" / "figures"
 DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / "sae_training_round5"
 
 # Models with intervention support
-INTERVENTION_MODELS = ["tabpfn", "mitra", "tabicl", "tabdpt", "hyperfast"]
+INTERVENTION_MODELS = [
+    "tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt",
+    "hyperfast", "carte", "tabula8b",
+]
 
 DISPLAY_NAMES = {
     "tabpfn": "TabPFN",
     "mitra": "Mitra",
     "tabicl": "TabICL",
+    "tabicl_v2": "TabICL-v2",
     "tabdpt": "TabDPT",
     "hyperfast": "HyperFast",
     "carte": "CARTE",

@@ -66,7 +66,7 @@ _REDIRECTS: dict[str, str] = {
     "concept_causal_intervention": "intervention.concept_causal_intervention",
     "concept_importance": "intervention.concept_importance",
     "concept_performance_diagnostic": "intervention.concept_performance_diagnostic",
-    "ablate_unique_concepts": "intervention.ablate_unique_concepts",
+    "ablate_unique_concepts": "intervention.archived.ablate_unique_concepts",
     "diagnose_mispredictions": "intervention.diagnose_mispredictions",
     "transfer_concepts": "intervention.transfer_concepts",
     "transfer_virtual_nodes": "intervention.transfer_virtual_nodes",
