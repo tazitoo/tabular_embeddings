@@ -32,15 +32,14 @@ import numpy as np
 import torch
 from scipy import stats
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
 from analysis.sparse_autoencoder import (
     SAEConfig,
     SparseAutoencoder,
     compare_dictionaries,
 )
-from scripts.analyze_sae_concepts_deep import (
+from scripts.sae.analyze_sae_concepts_deep import (
     NumpyEncoder,
     RowMetaFeatures,
     compute_column_stats,
