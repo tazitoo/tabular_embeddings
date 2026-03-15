@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Run all 28 pairwise transfer experiments for given datasets.
 # Usage: bash run_all_pairs.sh
-set -euo pipefail
+set -uo pipefail
 
 PYTHON="/home/brian/anaconda3/envs/tfm/bin/python"
+export PYTHONPATH="/home/brian/src/tabular_embeddings${PYTHONPATH:+:$PYTHONPATH}"
 MODELS=(tabpfn tabicl tabicl_v2 carte tabula8b mitra tabdpt hyperfast)
 DATASETS=(credit-g kddcup09_appetency)
 
