@@ -23,9 +23,9 @@ tabpfn = ["tabpfn>=2.0"]
 tabicl = ["tabicl"]
 tabdpt = ["tabdpt"]
 hyperfast = ["hyperfast"]
-carte = ["carte-ai"]
+carte = ["carte-ai", "torch_geometric"]
 mitra = ["autogluon.tabular[mitra]"]
-tabula8b = ["transformers>=4.36"]
+tabula8b = ["transformers>=4.36", "bitsandbytes>=0.41", "accelerate"]
 mothernet = ["ticl @ git+https://github.com/microsoft/ticl.git"]
 
 # All models (except mothernet which requires manual install)
@@ -35,8 +35,11 @@ models = [
     "tabdpt",
     "hyperfast",
     "carte-ai",
+    "torch_geometric",
     "autogluon.tabular[mitra]",
     "transformers>=4.36",
+    "bitsandbytes>=0.41",
+    "accelerate",
 ]
 
 # SAE training and hyperparameter optimization
