@@ -965,8 +965,7 @@ def perrow_sweep_transfer(
     # Build tail model once (used for Phase 1 importance probing and Phase 3 line search)
     logger.info("Building %s tail model (layer %d)...", target_model, target_layer)
     tail = build_tail(target_model, X_ctx, y_ctx, X_q, target_layer, task, device)
-    seq_len = (tail.hidden_state.shape[1] if target_model == "tabpfn"
-               else tail.hidden_state.shape[1])
+    seq_len = len(X_ctx) + len(X_q)
 
     # --- Phase 1: per-feature importance via tail model ---
     logger.info("Phase 1: per-feature importance for %d features...", len(feat_indices))
