@@ -1403,6 +1403,15 @@ def sweep_hyperfast(
     intermediates = []
     baseline_outputs = []
 
+    # Clamp extraction_layer to last hidden layer (before output)
+    first_net = hf_clf._move_to_device(hf_clf._main_networks[0])
+    if extraction_layer >= len(first_net) - 1:
+        logger.warning(
+            f"HyperFast: extraction_layer {extraction_layer} >= n_layers-1 "
+            f"({len(first_net)}), clamping to {len(first_net) - 2}"
+        )
+        extraction_layer = len(first_net) - 2
+
     for jj in range(len(hf_clf._main_networks)):
         main_network = hf_clf._move_to_device(hf_clf._main_networks[jj])
         rf = hf_clf._move_to_device(hf_clf._rfs[jj])
