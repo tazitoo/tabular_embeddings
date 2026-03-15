@@ -40,17 +40,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "4_results"))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.compare_sae_cross_model import SAE_FILENAME
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND, SAE_FILENAME, sae_sweep_dir
 
 logger = logging.getLogger(__name__)
 
 # Default paths
-DEFAULT_SAE_DIR = PROJECT_ROOT / "output" / "sae_tabarena_sweep_round5"
-DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / "sae_training_round5"
+DEFAULT_SAE_DIR = sae_sweep_dir()
+DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / f"sae_training_round{DEFAULT_SAE_ROUND}"
 DEFAULT_LAYERS_PATH = PROJECT_ROOT / "config" / "optimal_extraction_layers.json"
 
 # Model display name -> checkpoint key
@@ -58,8 +56,11 @@ MODEL_KEYS = {
     "tabpfn": "tabpfn",
     "mitra": "mitra",
     "tabicl": "tabicl",
+    "tabicl_v2": "tabicl_v2",
     "tabdpt": "tabdpt",
     "hyperfast": "hyperfast",
+    "carte": "carte",
+    "tabula8b": "tabula8b",
 }
 
 
@@ -961,6 +962,465 @@ def intervene_hyperfast(
     }
 
 
+# ── TabICL-v2 Intervention ─────────────────────────────────────────────────
+
+
+def intervene_tabicl_v2(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    sae: torch.nn.Module,
+    ablate_features: List[int],
+    extraction_layer: int,
+    device: str = "cuda",
+    task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
+    external_delta: Optional[torch.Tensor] = None,
+) -> Dict[str, np.ndarray]:
+    """Run TabICL-v2 with SAE feature ablation at extraction layer.
+
+    Same architecture as TabICL v1 (model.icl_predictor.tf_icl.blocks, 512-dim)
+    but supports regression via TabICLRegressor + predict().
+    Uses BATCH-MEAN centering (same rationale as TabICL v1).
+    """
+    if task == "regression":
+        from tabicl import TabICLRegressor
+        clf = TabICLRegressor(device=device, n_estimators=1)
+    else:
+        from tabicl import TabICLClassifier
+        clf = TabICLClassifier(device=device, n_estimators=1)
+
+    clf.fit(X_context, y_context)
+
+    model = clf.model_
+    blocks = model.icl_predictor.tf_icl.blocks
+
+    # --- Pass 1: Capture hidden state + baseline predictions ---
+    captured = {}
+
+    def capture_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["hidden"] = output.detach()
+
+    handle = blocks[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            if task == "regression":
+                baseline_preds = clf.predict(X_query)
+            else:
+                baseline_preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    hidden_state = captured["hidden"]
+    # Shape: (n_ensemble, n_ctx+n_query, 512)
+    all_emb = hidden_state.mean(dim=0)  # (seq_len, 512)
+
+    # Batch-mean centering (same as TabICL v1)
+    batch_mean = all_emb.mean(dim=0)  # (512,)
+
+    # --- Compute delta for all positions ---
+    if external_delta is not None:
+        delta = external_delta
+    else:
+        delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=batch_mean)
+    delta_broadcast = delta.unsqueeze(0)  # (1, seq_len, 512)
+
+    # --- Pass 2: Inject delta at block L output for all positions ---
+    def modify_output_hook(module, input, output):
+        if isinstance(output, torch.Tensor) and output.ndim == 3:
+            output = output.clone()
+            output += delta_broadcast
+            return output
+        return output
+
+    handle = blocks[extraction_layer].register_forward_hook(modify_output_hook)
+    try:
+        with torch.no_grad():
+            if task == "regression":
+                ablated_preds = clf.predict(X_query)
+            else:
+                ablated_preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    return {
+        "baseline_preds": np.asarray(baseline_preds),
+        "ablated_preds": np.asarray(ablated_preds),
+        "y_query": np.asarray(y_query),
+    }
+
+
+# ── CARTE Intervention ────────────────────────────────────────────────────────
+
+
+def _carte_prepare_graphs(X, feature_names, t2g, fit=False):
+    """Convert numpy array to CARTE graph objects via Table2GraphTransformer.
+
+    Args:
+        X: (n_samples, n_features) float array
+        feature_names: Column names for DataFrame
+        t2g: Fitted Table2GraphTransformer (or to be fitted if fit=True)
+        fit: If True, fit t2g on this data first
+
+    Returns:
+        List of PyG Data objects
+    """
+    import pandas as pd
+
+    X = np.nan_to_num(np.asarray(X, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    df = pd.DataFrame(X, columns=feature_names)
+
+    # Add synthetic categorical column (CARTE requires at least one)
+    n_bins = min(5, X.shape[1])
+    df["_cat"] = pd.cut(
+        df[feature_names[0]], bins=n_bins,
+        labels=[f"bin_{i}" for i in range(n_bins)],
+    ).astype(str)
+
+    if fit:
+        t2g.fit(df)
+    return t2g.transform(df)
+
+
+def intervene_carte(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    sae: torch.nn.Module,
+    ablate_features: List[int],
+    extraction_layer: int,
+    device: str = "cuda",
+    task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
+) -> Dict[str, np.ndarray]:
+    """Run CARTE with SAE feature ablation at extraction layer.
+
+    CARTE converts rows to star graphs (central node = row, leaf nodes = features).
+    A GNN processes the graphs and we hook layer outputs to capture/modify
+    central node embeddings.
+
+    The extraction layer maps to CARTE's shallow architecture:
+    0 = initial_x, 1 = read_out_block (attention+MLP), 2+ = classifier layers.
+    We hook read_out_block for layer 1 (the standard extraction point).
+
+    CARTE's predict_proba takes graph objects, not numpy arrays.
+    """
+    from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
+    _patch_carte_amp()
+
+    from carte_ai import CARTEClassifier, Table2GraphTransformer
+    from torch_geometric.data import Batch
+    from sklearn.preprocessing import RobustScaler
+
+    ft_path = _find_fasttext_model()
+    if not ft_path:
+        raise ValueError("FastText model not found for CARTE intervention")
+
+    # Robust preprocessing (matches extraction code)
+    X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+
+    col_std = X_context.std(axis=0)
+    nonconstant = col_std > 0
+    if not nonconstant.all():
+        X_context = X_context[:, nonconstant]
+        X_query = X_query[:, nonconstant]
+
+    scaler = RobustScaler()
+    X_context = scaler.fit_transform(X_context)
+    X_query = scaler.transform(X_query)
+    X_context = np.clip(X_context, -10, 10)
+    X_query = np.clip(X_query, -10, 10)
+
+    # Prepare targets
+    if task == "regression":
+        import pandas as pd
+        y_context = np.asarray(y_context, dtype=np.float32)
+        n_bins = min(10, len(np.unique(y_context)))
+        y_for_fit = pd.qcut(y_context, q=n_bins, labels=False, duplicates='drop').astype(np.int64)
+    else:
+        y_context = np.asarray(y_context)
+        if y_context.dtype == np.float64:
+            y_context = y_context.astype(np.int64)
+        y_for_fit = y_context
+
+    feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+    t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
+
+    # Convert to graphs
+    X_context_graph = _carte_prepare_graphs(X_context, feature_names, t2g, fit=True)
+    X_query_graph = _carte_prepare_graphs(X_query, feature_names, t2g, fit=False)
+
+    # Attach y values to context graphs
+    for i, g in enumerate(X_context_graph):
+        g.y = torch.tensor([y_for_fit[i]], dtype=torch.float32)
+
+    # Fit CARTE (single model for deterministic intervention)
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+    clf.fit(X_context_graph, y_for_fit)
+    torch.cuda.empty_cache()
+
+    n_query = len(X_query)
+    model = clf.model_list_[0]
+    model.eval()
+    base = model.ft_base
+
+    # Map extraction_layer to the appropriate module
+    # Layer 0 = initial_x, 1 = read_out_block, 2+ = classifier
+    if extraction_layer == 0:
+        hook_module = base.initial_x
+    elif extraction_layer == 1:
+        hook_module = base.read_out_block
+    else:
+        # Classifier layers
+        classifier_layers = [m for m in model.ft_classifier if isinstance(m, torch.nn.Linear)]
+        cls_idx = extraction_layer - 2
+        if cls_idx < len(classifier_layers):
+            hook_module = classifier_layers[cls_idx]
+        else:
+            hook_module = base.read_out_block
+
+    # --- Pass 1: Capture hidden state + baseline predictions ---
+    # Process query graphs through the hooked model
+    captured = {}
+
+    def capture_hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            captured["hidden"] = out.detach()
+
+    handle = hook_module.register_forward_hook(capture_hook)
+    batch = Batch.from_data_list(X_query_graph).to(device)
+    try:
+        with torch.no_grad():
+            baseline_logits = model(batch)
+    finally:
+        handle.remove()
+
+    # Extract central node embeddings using batch.ptr
+    hidden = captured["hidden"]
+    if hidden.shape[0] > n_query and hasattr(batch, 'ptr'):
+        # Per-node output → extract central node (index 0) per graph
+        ptr = batch.ptr.cpu()
+        central_emb = torch.stack([hidden[ptr[i]] for i in range(n_query)])
+    elif hidden.shape[0] == n_query:
+        central_emb = hidden
+    else:
+        raise ValueError(f"Cannot extract central nodes: hidden {hidden.shape}, n_query {n_query}")
+
+    # Get baseline predictions via the full CARTE predict_proba pipeline
+    with torch.no_grad():
+        baseline_preds = clf.predict_proba(X_query_graph)
+
+    # --- Compute delta ---
+    delta = compute_ablation_delta(sae, central_emb, ablate_features, data_mean=data_mean)
+
+    # --- Pass 2: Inject delta at hook point ---
+    # Build index map: for per-node tensors, need to know which nodes are central
+    if hidden.shape[0] > n_query and hasattr(batch, 'ptr'):
+        central_indices = [int(batch.ptr[i]) for i in range(n_query)]
+    else:
+        central_indices = None
+
+    def modify_output_hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            out = out.clone()
+            if central_indices is not None:
+                # Per-node: modify only central nodes
+                for i, idx in enumerate(central_indices):
+                    out[idx] += delta[i]
+            else:
+                out += delta
+            if isinstance(output, tuple):
+                return (out,) + output[1:]
+            return out
+        return output
+
+    handle = hook_module.register_forward_hook(modify_output_hook)
+    try:
+        with torch.no_grad():
+            ablated_preds = clf.predict_proba(X_query_graph)
+    finally:
+        handle.remove()
+
+    return {
+        "baseline_preds": np.asarray(baseline_preds),
+        "ablated_preds": np.asarray(ablated_preds),
+        "y_query": np.asarray(y_query),
+    }
+
+
+# ── Tabula-8B Intervention ────────────────────────────────────────────────────
+
+
+def intervene_tabula8b(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    sae: torch.nn.Module,
+    ablate_features: List[int],
+    extraction_layer: int,
+    device: str = "cuda",
+    task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
+) -> Dict[str, np.ndarray]:
+    """Run Tabula-8B with SAE feature ablation at extraction layer.
+
+    Tabula-8B is a Llama-3 8B fine-tuned for tabular prediction. Each query row
+    requires a separate forward pass (causal LM). We serialize context as a text
+    prefix shared across all query rows.
+
+    For each query row:
+    1. Forward pass 1: capture hidden state at layer L, get baseline prediction
+    2. SAE encode last-token hidden (4096-dim), compute ablation delta
+    3. Forward pass 2: inject delta at layer L last-token position
+    4. Get ablated prediction
+
+    Uses 8-bit quantization to fit in 24GB VRAM.
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    model_path = "/data/models/tabula-8b"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    llm = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        device_map="auto",
+        quantization_config=bnb_config,
+        torch_dtype=torch.float16,
+    )
+    llm.eval()
+    llm_layers = llm.model.layers
+
+    X_context = np.asarray(X_context, dtype=np.float32)
+    y_context = np.asarray(y_context)
+    X_query = np.asarray(X_query, dtype=np.float32)
+
+    feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+
+    # Serialize context (shared prefix for all query rows)
+    max_ctx = min(32, len(X_context))
+    ctx_lines = []
+    for row, label in zip(X_context[:max_ctx], y_context[:max_ctx]):
+        parts = []
+        for name, val in zip(feature_names, row):
+            if not (isinstance(val, float) and np.isnan(val)):
+                parts.append(f"the {name} is {val}")
+        ctx_lines.append(", ".join(parts) + f", the target is {label}")
+    ctx_text = "\n".join(ctx_lines)
+
+    n_query = len(X_query)
+    n_classes = len(np.unique(y_context))
+
+    baseline_preds = []
+    ablated_preds = []
+
+    for row_idx in range(n_query):
+        row = X_query[row_idx]
+        parts = [f"the {name} is {val}" for name, val in zip(feature_names, row)
+                 if not (isinstance(val, float) and np.isnan(val))]
+        query_text = ", ".join(parts)
+        full_text = f"{ctx_text}\n{query_text}, the target is"
+
+        inputs = tokenizer(
+            full_text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=8000,
+        ).to(llm.device)
+
+        # --- Pass 1: Capture hidden state + baseline prediction ---
+        captured = {}
+
+        def capture_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                captured["hidden"] = out.detach()
+
+        handle = llm_layers[extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                outputs = llm(**inputs)
+                baseline_logits = outputs.logits[0, -1, :]
+        finally:
+            handle.remove()
+
+        # Extract last-token hidden state at layer L
+        hidden = captured["hidden"]
+        last_token_emb = hidden[0, -1, :].unsqueeze(0).float()  # (1, 4096)
+
+        # Compute delta via SAE
+        delta = compute_ablation_delta(sae, last_token_emb, ablate_features, data_mean=data_mean)
+        delta_row = delta[0]  # (4096,)
+
+        # --- Pass 2: Inject delta at layer L, last token only ---
+        def modify_output_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                out = out.clone()
+                out[0, -1, :] += delta_row.to(out.dtype)
+                if isinstance(output, tuple):
+                    return (out,) + output[1:]
+                return out
+            return output
+
+        handle = llm_layers[extraction_layer].register_forward_hook(modify_output_hook)
+        try:
+            with torch.no_grad():
+                outputs = llm(**inputs)
+                ablated_logits = outputs.logits[0, -1, :]
+        finally:
+            handle.remove()
+
+        # Parse predictions from logits
+        if task == "classification":
+            # Get probabilities for class tokens (0, 1, 2, ...)
+            class_token_ids = [tokenizer.encode(str(c), add_special_tokens=False)[0]
+                               for c in range(n_classes)]
+            base_probs = torch.softmax(baseline_logits[class_token_ids].float(), dim=0)
+            abl_probs = torch.softmax(ablated_logits[class_token_ids].float(), dim=0)
+            baseline_preds.append(base_probs.cpu().numpy())
+            ablated_preds.append(abl_probs.cpu().numpy())
+        else:
+            # Regression: use expected value from top-k token logits
+            # Simple approach: take argmax token and parse as float
+            base_token = tokenizer.decode(baseline_logits.argmax().item()).strip()
+            abl_token = tokenizer.decode(ablated_logits.argmax().item()).strip()
+            try:
+                baseline_preds.append(float(base_token))
+            except ValueError:
+                baseline_preds.append(0.0)
+            try:
+                ablated_preds.append(float(abl_token))
+            except ValueError:
+                ablated_preds.append(0.0)
+
+        if (row_idx + 1) % 50 == 0:
+            logger.info("  Tabula-8B: processed %d/%d query rows", row_idx + 1, n_query)
+
+    baseline_preds = np.array(baseline_preds)
+    ablated_preds = np.array(ablated_preds)
+
+    # Clean up LLM from GPU
+    del llm
+    torch.cuda.empty_cache()
+
+    return {
+        "baseline_preds": baseline_preds,
+        "ablated_preds": ablated_preds,
+        "y_query": np.asarray(y_query),
+    }
+
+
 # ── Sweep (one model load, many ablation levels) ─────────────────────────────
 
 
@@ -1606,8 +2066,11 @@ INTERVENE_FN = {
     "tabpfn": intervene_tabpfn,
     "mitra": intervene_mitra,
     "tabicl": intervene_tabicl,
+    "tabicl_v2": intervene_tabicl_v2,
     "tabdpt": intervene_tabdpt,
     "hyperfast": intervene_hyperfast,
+    "carte": intervene_carte,
+    "tabula8b": intervene_tabula8b,
 }
 
 
@@ -1628,7 +2091,8 @@ def intervene(
     """Run a model with SAE feature ablation at its optimal extraction layer.
 
     Args:
-        model_key: One of 'tabpfn', 'mitra', 'tabicl', 'tabdpt', 'hyperfast'
+        model_key: One of 'tabpfn', 'mitra', 'tabicl', 'tabicl_v2', 'tabdpt',
+            'hyperfast', 'carte', 'tabula8b'
         X_context, y_context: ICL context data
         X_query, y_query: Query data (y_query for evaluation only)
         ablate_features: SAE feature indices to zero out (optional when external_delta given)
@@ -1716,7 +2180,7 @@ def main():
         format="%(levelname)s: %(message)s",
     )
 
-    from scripts.extract_layer_embeddings import load_context_query, get_dataset_task
+    from scripts.embeddings.extract_layer_embeddings import load_context_query, get_dataset_task
 
     task = get_dataset_task(args.dataset)
     X_context, y_context, X_query = load_context_query(

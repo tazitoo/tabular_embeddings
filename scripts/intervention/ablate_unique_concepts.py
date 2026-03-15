@@ -30,10 +30,9 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from scripts._project_root import PROJECT_ROOT
 
-from scripts.intervene_sae import (
+from scripts.intervention.intervene_sae import (
     intervene,
     load_sae,
     get_extraction_layer,
@@ -48,16 +47,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_HIERARCHY_PATH = PROJECT_ROOT / "output" / "concept_hierarchy_full.json"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "output" / "pairwise_ablation_results.json"
 
-# Models to include in ablation experiments
-ABLATION_MODELS = ["tabpfn", "mitra", "tabicl", "tabdpt", "hyperfast"]
+# Models with intervention support (requires per-model hook in intervene_sae.py)
+ABLATION_MODELS = [
+    "tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt",
+    "hyperfast", "carte", "tabula8b",
+]
 
-# Display name mapping for hierarchy lookup
+# Display name mapping for hierarchy lookup (all 8 models for completeness)
 DISPLAY_NAMES = {
     "tabpfn": "TabPFN",
     "mitra": "Mitra",
     "tabicl": "TabICL",
+    "tabicl_v2": "TabICL-v2",
     "tabdpt": "TabDPT",
     "hyperfast": "HyperFast",
+    "carte": "CARTE",
+    "tabula8b": "Tabula-8B",
 }
 
 
@@ -135,7 +140,7 @@ def ablate_pair_dataset(
     Returns:
         Dict with baseline/ablated metrics, or None if skipped.
     """
-    from scripts.extract_layer_embeddings import get_dataset_task
+    from scripts.embeddings.extract_layer_embeddings import get_dataset_task
     from data.extended_loader import load_tabarena_dataset
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import LabelEncoder
