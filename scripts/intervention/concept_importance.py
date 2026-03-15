@@ -761,6 +761,788 @@ def sweep_tabicl(
     }
 
 
+# ── TabICL-v2 single-feature sweep ───────────────────────────────────────────
+
+
+def sweep_tabicl_v2(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    sae: torch.nn.Module,
+    alive_features: List[int],
+    extraction_layer: int,
+    device: str = "cuda",
+    task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
+) -> Dict[str, np.ndarray]:
+    """Sweep single-feature ablation for TabICL v2.
+
+    Clone of sweep_tabicl but supports regression via TabICLRegressor.
+    Uses batch-mean centering (not training-mean) because TabICL's
+    column-then-row architecture produces dataset-specific representations.
+    """
+    if task == "regression":
+        from tabicl import TabICLRegressor
+        clf = TabICLRegressor(device=device, n_estimators=1)
+    else:
+        from tabicl import TabICLClassifier
+        clf = TabICLClassifier(device=device, n_estimators=1)
+
+    clf.fit(X_context, y_context)
+
+    model = clf.model_
+    blocks = model.icl_predictor.tf_icl.blocks
+
+    # --- Pass 1: Capture hidden state + baseline predictions ---
+    captured = {}
+
+    def capture_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["hidden"] = output.detach()
+
+    handle = blocks[extraction_layer].register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            if task == "regression":
+                baseline_preds = clf.predict(X_query)
+            else:
+                baseline_preds = clf.predict_proba(X_query)
+    finally:
+        handle.remove()
+
+    hidden_state = captured["hidden"]
+    # Shape: (n_ensemble, n_ctx+n_query, 512) — mean-pool ensemble dim
+    all_emb = hidden_state.mean(dim=0)  # (seq_len, 512)
+
+    # Batch-mean centering for TabICL
+    batch_mean = all_emb.mean(dim=0)  # (512,)
+
+    with torch.no_grad():
+        x_centered = all_emb - batch_mean
+        h_full = sae.encode(x_centered)
+        recon_full = sae.decode(h_full)
+
+    baseline_preds_np = np.asarray(baseline_preds)
+    baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_row_loss = compute_per_row_loss(y_query, baseline_preds_np, task)
+
+    # Query-row SAE activations for firing detection
+    n_query = len(y_query)
+    h_query = h_full[-n_query:]
+
+    n_features = len(alive_features)
+    feature_drops = np.zeros(n_features)
+    feature_firing_drops = np.zeros(n_features)
+    feature_nonfiring_drops = np.zeros(n_features)
+    feature_n_firing = np.zeros(n_features, dtype=int)
+
+    t0 = time.time()
+    for i, feat_idx in enumerate(alive_features):
+        with torch.no_grad():
+            h_ablated = h_full.clone()
+            h_ablated[:, feat_idx] = 0.0
+            recon_ablated = sae.decode(h_ablated)
+            delta = recon_ablated - recon_full
+
+        # Broadcast delta to (1, seq_len, 512) for ensemble dim
+        delta_broadcast = delta.unsqueeze(0)
+
+        def make_hook(d):
+            def modify_hook(module, input, output):
+                if isinstance(output, torch.Tensor) and output.ndim == 3:
+                    out = output.clone()
+                    out += d
+                    return out
+                return output
+            return modify_hook
+
+        handle = blocks[extraction_layer].register_forward_hook(make_hook(delta_broadcast))
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    preds = clf.predict(X_query)
+                else:
+                    preds = clf.predict_proba(X_query)
+        finally:
+            handle.remove()
+
+        preds_np = np.asarray(preds)
+        ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
+        row_importance = ablated_row_loss - baseline_row_loss
+
+        fires = (h_query[:, feat_idx] > 0).cpu().numpy()
+        n_fire = int(fires.sum())
+
+        feature_drops[i] = float(row_importance.mean())
+        feature_n_firing[i] = n_fire
+        if n_fire > 0:
+            feature_firing_drops[i] = float(row_importance[fires].mean())
+        if n_fire < n_query:
+            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
+
+        if (i + 1) % 100 == 0 or i == 0:
+            elapsed = time.time() - t0
+            rate = (i + 1) / elapsed
+            eta = (n_features - i - 1) / rate
+            logger.info(
+                f"  [{i+1}/{n_features}] feat={feat_idx} "
+                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
+            )
+
+    # Count features that fire on at least one row
+    n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
+
+    return {
+        "baseline_preds": baseline_preds_np,
+        "baseline_metric": baseline_metric,
+        "metric_name": metric_name,
+        "feature_indices": np.array(alive_features),
+        "feature_drops": feature_drops,
+        "feature_firing_drops": feature_firing_drops,
+        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "feature_n_firing": feature_n_firing,
+        "n_query": n_query,
+        "n_active_features": n_active,
+        "y_query": np.asarray(y_query),
+    }
+
+
+# ── CARTE single-feature sweep ──────────────────────────────────────────────
+
+
+def sweep_carte(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    sae: torch.nn.Module,
+    alive_features: List[int],
+    extraction_layer: int,
+    device: str = "cuda",
+    task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
+) -> Dict[str, np.ndarray]:
+    """Sweep single-feature ablation for CARTE.
+
+    CARTE uses star graphs where central node = row embedding. We hook
+    on the appropriate GNN module, extract central node embeddings, and
+    inject deltas at central node positions only.
+    """
+    from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
+    from scripts.intervention.intervene_sae import _carte_prepare_graphs
+    _patch_carte_amp()
+
+    from carte_ai import CARTEClassifier, CARTERegressor, Table2GraphTransformer
+    from torch_geometric.data import Batch
+    from sklearn.preprocessing import RobustScaler
+
+    ft_path = _find_fasttext_model()
+    if not ft_path:
+        raise ValueError("FastText model not found for CARTE sweep")
+
+    # Robust preprocessing (matches extraction code)
+    X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32),
+                              nan=0.0, posinf=0.0, neginf=0.0)
+    X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32),
+                            nan=0.0, posinf=0.0, neginf=0.0)
+
+    col_std = X_context.std(axis=0)
+    nonconstant = col_std > 0
+    if not nonconstant.all():
+        X_context = X_context[:, nonconstant]
+        X_query = X_query[:, nonconstant]
+
+    scaler = RobustScaler()
+    X_context = scaler.fit_transform(X_context)
+    X_query = scaler.transform(X_query)
+    X_context = np.clip(X_context, -10, 10)
+    X_query = np.clip(X_query, -10, 10)
+
+    # Prepare targets
+    y_context = np.asarray(y_context)
+    if y_context.dtype == np.float64:
+        y_context = y_context.astype(np.int64)
+
+    feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+    t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
+
+    X_context_graph = _carte_prepare_graphs(X_context, feature_names, t2g, fit=True)
+    X_query_graph = _carte_prepare_graphs(X_query, feature_names, t2g, fit=False)
+
+    for i, g in enumerate(X_context_graph):
+        g.y = torch.tensor([y_context[i]], dtype=torch.float32)
+
+    if task == "regression":
+        clf = CARTERegressor(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+    else:
+        clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+    clf.fit(X_context_graph, y_context)
+    torch.cuda.empty_cache()
+
+    n_query = len(y_query)
+    model = clf.model_list_[0]
+    model.eval()
+    base = model.ft_base
+
+    # Map extraction_layer to module (same logic as CARTETail)
+    if extraction_layer == 0:
+        hook_module = base.initial_x
+    elif extraction_layer == 1:
+        hook_module = base.read_out_block
+    else:
+        classifier_layers = [m for m in model.ft_classifier
+                             if isinstance(m, torch.nn.Linear)]
+        cls_idx = extraction_layer - 2
+        hook_module = (classifier_layers[cls_idx]
+                       if cls_idx < len(classifier_layers)
+                       else base.read_out_block)
+
+    # --- Pass 1: Capture hidden state + baseline predictions ---
+    captured = {}
+
+    def capture_hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            captured["hidden"] = out.detach()
+
+    batch_q = Batch.from_data_list(X_query_graph).to(device)
+    handle = hook_module.register_forward_hook(capture_hook)
+    try:
+        with torch.no_grad():
+            model(batch_q)
+    finally:
+        handle.remove()
+
+    hidden = captured["hidden"]
+    # Extract central node indices from batch.ptr
+    if hidden.shape[0] > n_query and hasattr(batch_q, 'ptr'):
+        central_indices = [int(batch_q.ptr[i]) for i in range(n_query)]
+    elif hidden.shape[0] == n_query:
+        central_indices = list(range(n_query))
+    else:
+        raise ValueError(f"Cannot extract central nodes: hidden {hidden.shape}")
+
+    all_emb = hidden[central_indices]  # (n_query, emb_dim)
+
+    # Get baseline predictions via clf (which re-does graph conversion internally)
+    with torch.no_grad():
+        if task == "regression":
+            baseline_preds = clf.predict(X_query_graph)
+        else:
+            baseline_preds = clf.predict_proba(X_query_graph)
+
+    # Pre-compute SAE encoding with training-mean centering
+    with torch.no_grad():
+        x_centered = all_emb
+        if data_mean is not None:
+            x_centered = x_centered - data_mean
+        h_full = sae.encode(x_centered)
+        recon_full = sae.decode(h_full)
+
+    baseline_preds_np = np.asarray(baseline_preds)
+    baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_row_loss = compute_per_row_loss(y_query, baseline_preds_np, task)
+
+    # Query-row SAE activations for firing detection (all rows are query rows)
+    h_query = h_full
+
+    n_features = len(alive_features)
+    feature_drops = np.zeros(n_features)
+    feature_firing_drops = np.zeros(n_features)
+    feature_nonfiring_drops = np.zeros(n_features)
+    feature_n_firing = np.zeros(n_features, dtype=int)
+
+    t0 = time.time()
+    for i, feat_idx in enumerate(alive_features):
+        with torch.no_grad():
+            h_ablated = h_full.clone()
+            h_ablated[:, feat_idx] = 0.0
+            recon_ablated = sae.decode(h_ablated)
+            delta = recon_ablated - recon_full  # (n_query, emb_dim)
+
+        def make_hook(d, c_idx):
+            def modify_hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    for row_i, node_idx in enumerate(c_idx):
+                        out[node_idx] += d[row_i]
+                    if isinstance(output, tuple):
+                        return (out,) + output[1:]
+                    return out
+                return output
+            return modify_hook
+
+        handle = hook_module.register_forward_hook(make_hook(delta, central_indices))
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    preds = clf.predict(X_query_graph)
+                else:
+                    preds = clf.predict_proba(X_query_graph)
+        finally:
+            handle.remove()
+
+        preds_np = np.asarray(preds)
+        ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
+        row_importance = ablated_row_loss - baseline_row_loss
+
+        fires = (h_query[:, feat_idx] > 0).cpu().numpy()
+        n_fire = int(fires.sum())
+
+        feature_drops[i] = float(row_importance.mean())
+        feature_n_firing[i] = n_fire
+        if n_fire > 0:
+            feature_firing_drops[i] = float(row_importance[fires].mean())
+        if n_fire < n_query:
+            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
+
+        if (i + 1) % 100 == 0 or i == 0:
+            elapsed = time.time() - t0
+            rate = (i + 1) / elapsed
+            eta = (n_features - i - 1) / rate
+            logger.info(
+                f"  [{i+1}/{n_features}] feat={feat_idx} "
+                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
+            )
+
+    # Count features that fire on at least one row
+    n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
+
+    return {
+        "baseline_preds": baseline_preds_np,
+        "baseline_metric": baseline_metric,
+        "metric_name": metric_name,
+        "feature_indices": np.array(alive_features),
+        "feature_drops": feature_drops,
+        "feature_firing_drops": feature_firing_drops,
+        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "feature_n_firing": feature_n_firing,
+        "n_query": n_query,
+        "n_active_features": n_active,
+        "y_query": np.asarray(y_query),
+    }
+
+
+# ── Tabula-8B single-feature sweep ──────────────────────────────────────────
+
+
+def sweep_tabula8b(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    sae: torch.nn.Module,
+    alive_features: List[int],
+    extraction_layer: int,
+    device: str = "cuda",
+    task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
+) -> Dict[str, np.ndarray]:
+    """Sweep single-feature ablation for Tabula-8B.
+
+    Tabula-8B is a causal LLM that processes rows one at a time, making this
+    the most expensive sweep (n_features x n_query forward passes). Query rows
+    are subsampled to 20 to keep runtime manageable (~17 min on a 4090).
+
+    Uses training-mean centering for SAE.
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    # Subsample query rows for tractability
+    n_sub = min(20, len(y_query))
+    if n_sub < len(y_query):
+        rng = np.random.RandomState(42)
+        idx = rng.choice(len(y_query), n_sub, replace=False)
+        idx.sort()
+        X_query = X_query[idx]
+        y_query = y_query[idx]
+        logger.warning(
+            f"Tabula-8B sweep: subsampled to {n_sub} query rows "
+            f"(~{n_sub * len(alive_features)} forward passes)"
+        )
+
+    model_path = "/data/models/tabula-8b"
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    llm = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        device_map="auto",
+        quantization_config=bnb_config,
+        torch_dtype=torch.float16,
+    )
+    llm.eval()
+    llm_layers = llm.model.layers
+
+    X_context = np.asarray(X_context, dtype=np.float32)
+    y_context = np.asarray(y_context)
+    X_query = np.asarray(X_query, dtype=np.float32)
+    n_classes = len(np.unique(y_context))
+    n_query = len(y_query)
+
+    feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+
+    # Serialize context (shared prefix)
+    max_ctx = min(32, len(X_context))
+    ctx_lines = []
+    for row, label in zip(X_context[:max_ctx], y_context[:max_ctx]):
+        parts = []
+        for name, val in zip(feature_names, row):
+            if not (isinstance(val, float) and np.isnan(val)):
+                parts.append(f"the {name} is {val}")
+        ctx_lines.append(", ".join(parts) + f", the target is {label}")
+    ctx_text = "\n".join(ctx_lines)
+
+    # Pre-compute class token IDs for classification
+    if task == "classification":
+        class_token_ids = [
+            tokenizer.encode(str(c), add_special_tokens=False)[0]
+            for c in range(n_classes)
+        ]
+
+    def _forward_row(row_idx, delta_row=None):
+        """Single-row forward pass, optionally injecting delta at last token."""
+        row = X_query[row_idx]
+        parts = [f"the {name} is {val}" for name, val in zip(feature_names, row)
+                 if not (isinstance(val, float) and np.isnan(val))]
+        query_text = ", ".join(parts)
+        full_text = f"{ctx_text}\n{query_text}, the target is"
+
+        inputs = tokenizer(
+            full_text, return_tensors="pt",
+            truncation=True, max_length=8000,
+        ).to(llm.device)
+
+        if delta_row is not None:
+            def modify_hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    out[0, -1, :] += delta_row.to(out.dtype)
+                    if isinstance(output, tuple):
+                        return (out,) + output[1:]
+                    return out
+                return output
+
+            handle = llm_layers[extraction_layer].register_forward_hook(modify_hook)
+        else:
+            handle = None
+
+        try:
+            with torch.no_grad():
+                outputs = llm(**inputs)
+                logits = outputs.logits[0, -1, :]
+        finally:
+            if handle is not None:
+                handle.remove()
+
+        if task == "classification":
+            probs = torch.softmax(logits[class_token_ids].float(), dim=0)
+            return probs.cpu().numpy()
+        else:
+            token = tokenizer.decode(logits.argmax().item()).strip()
+            try:
+                return float(token)
+            except ValueError:
+                return 0.0
+
+    # --- Pass 1: Capture hidden states + baseline predictions per row ---
+    logger.info(f"Tabula-8B sweep: computing baselines for {n_query} rows...")
+    all_emb_list = []
+    baseline_preds_list = []
+
+    for row_idx in range(n_query):
+        captured = {}
+
+        def capture_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                captured["hidden"] = out.detach()
+
+        handle = llm_layers[extraction_layer].register_forward_hook(capture_hook)
+        try:
+            preds = _forward_row(row_idx, delta_row=None)
+        finally:
+            handle.remove()
+
+        # Last-token hidden state: (4096,)
+        all_emb_list.append(captured["hidden"][0, -1, :].float())
+        baseline_preds_list.append(preds)
+
+        if (row_idx + 1) % 10 == 0:
+            logger.info(f"  Tabula-8B baselines: {row_idx + 1}/{n_query}")
+
+    all_emb = torch.stack(all_emb_list, dim=0)  # (n_query, 4096)
+    baseline_preds_np = np.array(baseline_preds_list)
+
+    # Pre-compute SAE encoding with training-mean centering
+    with torch.no_grad():
+        x_centered = all_emb
+        if data_mean is not None:
+            x_centered = x_centered - data_mean
+        h_full = sae.encode(x_centered)
+        recon_full = sae.decode(h_full)
+
+    baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_row_loss = compute_per_row_loss(y_query, baseline_preds_np, task)
+
+    # All rows are query rows
+    h_query = h_full
+
+    # --- Sweep: ablate one feature at a time ---
+    n_features = len(alive_features)
+    feature_drops = np.zeros(n_features)
+    feature_firing_drops = np.zeros(n_features)
+    feature_nonfiring_drops = np.zeros(n_features)
+    feature_n_firing = np.zeros(n_features, dtype=int)
+
+    t0 = time.time()
+    for i, feat_idx in enumerate(alive_features):
+        with torch.no_grad():
+            h_ablated = h_full.clone()
+            h_ablated[:, feat_idx] = 0.0
+            recon_ablated = sae.decode(h_ablated)
+            delta = recon_ablated - recon_full  # (n_query, 4096)
+
+        # Re-run each query row with delta injection
+        ablated_preds_list = []
+        for row_idx in range(n_query):
+            delta_row = delta[row_idx]
+            preds = _forward_row(row_idx, delta_row=delta_row)
+            ablated_preds_list.append(preds)
+
+        preds_np = np.array(ablated_preds_list)
+        ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
+        row_importance = ablated_row_loss - baseline_row_loss
+
+        fires = (h_query[:, feat_idx] > 0).cpu().numpy()
+        n_fire = int(fires.sum())
+
+        feature_drops[i] = float(row_importance.mean())
+        feature_n_firing[i] = n_fire
+        if n_fire > 0:
+            feature_firing_drops[i] = float(row_importance[fires].mean())
+        if n_fire < n_query:
+            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
+
+        if (i + 1) % 100 == 0 or i == 0:
+            elapsed = time.time() - t0
+            rate = (i + 1) / elapsed
+            eta = (n_features - i - 1) / rate
+            logger.info(
+                f"  [{i+1}/{n_features}] feat={feat_idx} "
+                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
+            )
+
+    # Count features that fire on at least one row
+    n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
+
+    return {
+        "baseline_preds": baseline_preds_np,
+        "baseline_metric": baseline_metric,
+        "metric_name": metric_name,
+        "feature_indices": np.array(alive_features),
+        "feature_drops": feature_drops,
+        "feature_firing_drops": feature_firing_drops,
+        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "feature_n_firing": feature_n_firing,
+        "n_query": n_query,
+        "n_active_features": n_active,
+        "y_query": np.asarray(y_query),
+    }
+
+
+# ── HyperFast single-feature sweep ──────────────────────────────────────────
+
+
+def sweep_hyperfast(
+    X_context: np.ndarray,
+    y_context: np.ndarray,
+    X_query: np.ndarray,
+    y_query: np.ndarray,
+    sae: torch.nn.Module,
+    alive_features: List[int],
+    extraction_layer: int,
+    device: str = "cuda",
+    task: str = "classification",
+    data_mean: Optional[torch.Tensor] = None,
+) -> Dict[str, np.ndarray]:
+    """Sweep single-feature ablation for HyperFast.
+
+    HyperFast generates a task-specific MLP from context data. Instead of hooks,
+    we split the forward pass at extraction_layer and replay the tail with
+    modified activations. Averages over ensemble members.
+
+    Classification only — raises ValueError if task is regression.
+    """
+    import torch.nn.functional as F
+    from hyperfast.hyperfast import transform_data_for_main_network
+    from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
+
+    if task == "regression":
+        raise ValueError("HyperFast does not support regression")
+
+    extractor = HyperFastEmbeddingExtractor(device=device)
+    extractor.load_model()
+    X_ctx_clean = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0)
+    y_ctx_clean = np.asarray(y_context, dtype=np.int64)
+    extractor._model.fit(X_ctx_clean, y_ctx_clean)
+    hf_clf = extractor._model
+
+    n_query = len(y_query)
+    X_query_t = torch.tensor(X_query, dtype=torch.float32).to(device)
+
+    # Collect intermediates and baseline outputs across ensemble members
+    main_networks = []
+    intermediates = []
+    baseline_outputs = []
+
+    for jj in range(len(hf_clf._main_networks)):
+        main_network = hf_clf._move_to_device(hf_clf._main_networks[jj])
+        rf = hf_clf._move_to_device(hf_clf._rfs[jj])
+        pca = hf_clf._move_to_device(hf_clf._pcas[jj])
+
+        if hf_clf.feature_bagging:
+            X_b = X_query_t[:, hf_clf.selected_features[jj]]
+        else:
+            X_b = X_query_t
+
+        X_transformed = transform_data_for_main_network(
+            X=X_b, cfg=hf_clf._cfg, rf=rf, pca=pca,
+        )
+
+        # Full forward pass, caching intermediate at extraction_layer
+        with torch.no_grad():
+            x = X_transformed
+            intermediate = None
+            for layer_idx, (weight, bias) in enumerate(main_network):
+                weight = hf_clf._move_to_device(weight)
+                bias = hf_clf._move_to_device(bias)
+                x_new = F.linear(x, weight, bias)
+                if layer_idx < len(main_network) - 1:
+                    x_new = F.relu(x_new)
+                    if x_new.shape[-1] == x.shape[-1]:
+                        x = x + x_new
+                    else:
+                        x = x_new
+                else:
+                    x = x_new
+                if layer_idx == extraction_layer:
+                    intermediate = x.detach().clone()
+
+            baseline_outputs.append(F.softmax(x, dim=1).cpu().numpy())
+
+        main_networks.append(main_network)
+        intermediates.append(intermediate)
+
+    baseline_preds_np = np.mean(baseline_outputs, axis=0)
+
+    # Mean embedding across ensemble members for SAE
+    all_emb = torch.stack(intermediates, dim=0).mean(dim=0)  # (n_query, H)
+
+    # Pre-compute SAE encoding with training-mean centering
+    with torch.no_grad():
+        x_centered = all_emb
+        if data_mean is not None:
+            x_centered = x_centered - data_mean
+        h_full = sae.encode(x_centered)
+        recon_full = sae.decode(h_full)
+
+    baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
+    baseline_row_loss = compute_per_row_loss(y_query, baseline_preds_np, task)
+
+    # All rows are query rows
+    h_query = h_full
+
+    def _forward_from_layer(ensemble_idx, x):
+        """Forward through layers after extraction_layer for one ensemble member."""
+        main_network = main_networks[ensemble_idx]
+        with torch.no_grad():
+            for layer_idx in range(extraction_layer + 1, len(main_network)):
+                weight, bias = main_network[layer_idx]
+                weight = hf_clf._move_to_device(weight)
+                bias = hf_clf._move_to_device(bias)
+                x_new = F.linear(x, weight, bias)
+                if layer_idx < len(main_network) - 1:
+                    x_new = F.relu(x_new)
+                    if x_new.shape[-1] == x.shape[-1]:
+                        x = x + x_new
+                    else:
+                        x = x_new
+                else:
+                    x = x_new
+        return F.softmax(x, dim=1).cpu().numpy()
+
+    # --- Sweep: ablate one feature at a time ---
+    n_features = len(alive_features)
+    feature_drops = np.zeros(n_features)
+    feature_firing_drops = np.zeros(n_features)
+    feature_nonfiring_drops = np.zeros(n_features)
+    feature_n_firing = np.zeros(n_features, dtype=int)
+
+    t0 = time.time()
+    for i, feat_idx in enumerate(alive_features):
+        with torch.no_grad():
+            h_ablated = h_full.clone()
+            h_ablated[:, feat_idx] = 0.0
+            recon_ablated = sae.decode(h_ablated)
+            delta = recon_ablated - recon_full  # (n_query, H)
+
+        # Replay tail with delta for each ensemble member, average
+        ensemble_preds = []
+        for jj in range(len(main_networks)):
+            x = intermediates[jj].clone() + delta
+            ensemble_preds.append(_forward_from_layer(jj, x))
+        preds_np = np.mean(ensemble_preds, axis=0)
+
+        ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
+        row_importance = ablated_row_loss - baseline_row_loss
+
+        fires = (h_query[:, feat_idx] > 0).cpu().numpy()
+        n_fire = int(fires.sum())
+
+        feature_drops[i] = float(row_importance.mean())
+        feature_n_firing[i] = n_fire
+        if n_fire > 0:
+            feature_firing_drops[i] = float(row_importance[fires].mean())
+        if n_fire < n_query:
+            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
+
+        if (i + 1) % 100 == 0 or i == 0:
+            elapsed = time.time() - t0
+            rate = (i + 1) / elapsed
+            eta = (n_features - i - 1) / rate
+            logger.info(
+                f"  [{i+1}/{n_features}] feat={feat_idx} "
+                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
+            )
+
+    # Count features that fire on at least one row
+    n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
+
+    return {
+        "baseline_preds": baseline_preds_np,
+        "baseline_metric": baseline_metric,
+        "metric_name": metric_name,
+        "feature_indices": np.array(alive_features),
+        "feature_drops": feature_drops,
+        "feature_firing_drops": feature_firing_drops,
+        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "feature_n_firing": feature_n_firing,
+        "n_query": n_query,
+        "n_active_features": n_active,
+        "y_query": np.asarray(y_query),
+    }
+
+
 # ── Dispatcher ───────────────────────────────────────────────────────────────
 
 SWEEP_FN = {
@@ -768,6 +1550,10 @@ SWEEP_FN = {
     "mitra": sweep_mitra,
     "tabdpt": sweep_tabdpt,
     "tabicl": sweep_tabicl,
+    "tabicl_v2": sweep_tabicl_v2,
+    "carte": sweep_carte,
+    "tabula8b": sweep_tabula8b,
+    "hyperfast": sweep_hyperfast,
 }
 
 
