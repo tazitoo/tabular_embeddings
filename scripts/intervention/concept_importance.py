@@ -1449,12 +1449,16 @@ def sweep_hyperfast(
     h_query = h_full
 
     def _forward_tail(ensemble_idx, x):
-        """Forward through the output layer (last layer of generated MLP)."""
+        """Forward through the output layer (last layer of generated MLP).
+
+        HyperFast stores weights as (in_features, out_features) and uses
+        torch.mm(x, weight) — NOT F.linear which expects (out, in).
+        """
         weight, bias = main_networks[ensemble_idx][-1]
         weight = hf_clf._move_to_device(weight)
         bias = hf_clf._move_to_device(bias)
         with torch.no_grad():
-            logits = F.linear(x, weight, bias)
+            logits = torch.mm(x, weight) + bias
         return F.softmax(logits, dim=1).cpu().numpy()
 
     # --- Sweep: ablate one feature at a time ---

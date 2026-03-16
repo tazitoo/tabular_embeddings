@@ -183,26 +183,28 @@ def compute_ablation_delta(
     embeddings: torch.Tensor,
     ablate_features: List[int],
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute the delta from ablating SAE features.
 
-    The SAE was trained on mean-centered embeddings. We must center before
-    encoding, then the delta (decode(ablated) - decode(original)) is applied
-    in the original (uncentered) space — centering cancels in the subtraction.
+    SAEs were trained on per-dataset StandardScaler normalized embeddings.
+    We normalize before encoding, compute the delta in normalized space,
+    then denormalize so the delta can be injected into raw hidden states.
 
     Args:
         sae: Trained SAE in eval mode
-        embeddings: (n_query, emb_dim) mean-pooled query embeddings (raw, uncentered)
+        embeddings: (n_query, emb_dim) raw embeddings
         ablate_features: Feature indices to zero out
-        data_mean: (emb_dim,) training pool mean for centering. If None, no centering.
+        data_mean: (emb_dim,) per-dataset mean from norm_stats.npz
+        data_std: (emb_dim,) per-dataset std from norm_stats.npz
 
     Returns:
-        delta: (n_query, emb_dim) to add to hidden states
+        delta: (n_query, emb_dim) in raw space, to add to hidden states
     """
     with torch.no_grad():
         x = embeddings
         if data_mean is not None:
-            x = x - data_mean
+            x = (x - data_mean) / data_std
 
         h = sae.encode(x)
         original_recon = sae.decode(h)
@@ -213,6 +215,8 @@ def compute_ablation_delta(
         ablated_recon = sae.decode(h_ablated)
 
         delta = ablated_recon - original_recon
+        if data_std is not None:
+            delta = delta * data_std
 
     return delta
 
@@ -223,6 +227,7 @@ def compute_boost_delta(
     boost_features: List[int],
     target_activations: List[float],
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute the delta from boosting SAE features to target activation levels.
 
@@ -231,13 +236,14 @@ def compute_boost_delta(
 
     Args:
         sae: Trained SAE in eval mode
-        embeddings: (n_query, emb_dim) mean-pooled query embeddings (raw, uncentered)
+        embeddings: (n_query, emb_dim) raw embeddings
         boost_features: Feature indices to modify
         target_activations: Target activation value for each feature
-        data_mean: (emb_dim,) training pool mean for centering. If None, no centering.
+        data_mean: (emb_dim,) per-dataset mean from norm_stats.npz
+        data_std: (emb_dim,) per-dataset std from norm_stats.npz
 
     Returns:
-        delta: (n_query, emb_dim) to add to hidden states
+        delta: (n_query, emb_dim) in raw space, to add to hidden states
     """
     if len(boost_features) != len(target_activations):
         raise ValueError(
@@ -248,7 +254,7 @@ def compute_boost_delta(
     with torch.no_grad():
         x = embeddings
         if data_mean is not None:
-            x = x - data_mean
+            x = (x - data_mean) / data_std
 
         h = sae.encode(x)
         original_recon = sae.decode(h)
@@ -259,6 +265,8 @@ def compute_boost_delta(
         boosted_recon = sae.decode(h_boosted)
 
         delta = boosted_recon - original_recon
+        if data_std is not None:
+            delta = delta * data_std
 
     return delta
 
@@ -1276,13 +1284,17 @@ class HyperFastTail:
         return tail
 
     def _forward_tail(self, ensemble_idx, x):
-        """Forward through the output layer (last layer of generated MLP)."""
+        """Forward through the output layer (last layer of generated MLP).
+
+        HyperFast stores weights as (in_features, out_features) and uses
+        torch.mm(x, weight) — NOT F.linear which expects (out, in).
+        """
         main_network = self.main_networks[ensemble_idx]
         weight, bias = main_network[-1]
         weight = self.clf._move_to_device(weight)
         bias = self.clf._move_to_device(bias)
         with torch.no_grad():
-            logits = F.linear(x, weight, bias)
+            logits = torch.mm(x, weight) + bias
         return F.softmax(logits, dim=1).cpu().numpy()
 
     def predict(self, delta):
@@ -1356,6 +1368,7 @@ def intervene_tabpfn(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
     external_delta: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run TabPFN with SAE feature ablation at extraction layer.
@@ -1403,7 +1416,7 @@ def intervene_tabpfn(
     if external_delta is not None:
         delta = external_delta
     else:
-        delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
+        delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean, data_std=data_std)
     delta_broadcast = delta.unsqueeze(1)  # (seq_len, 1, hidden)
 
     # --- Pass 2: Inject delta at layer L output for all positions ---
@@ -1445,6 +1458,7 @@ def intervene_mitra(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run Mitra with SAE feature ablation at extraction layer.
 
@@ -1516,8 +1530,8 @@ def intervene_mitra(
     query_emb = extract_y_tokens(captured_query)
 
     # Compute delta for support and query separately
-    delta_support = compute_ablation_delta(sae, support_emb, ablate_features, data_mean=data_mean)
-    delta_query = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean)
+    delta_support = compute_ablation_delta(sae, support_emb, ablate_features, data_mean=data_mean, data_std=data_std)
+    delta_query = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean, data_std=data_std)
 
     # --- Pass 2: Inject delta at layer L output for both support and query ---
     # Restore RNG state so batching is identical to pass 1
@@ -1585,6 +1599,7 @@ def intervene_tabicl(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
     external_delta: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run TabICL with SAE feature ablation at extraction layer.
@@ -1592,12 +1607,9 @@ def intervene_tabicl(
     TabICL has 8 ICL predictor blocks. Hidden state is 3D: (n_ensemble, seq, 512).
     Ablates ALL positions (context + query).
 
-    Uses BATCH-MEAN centering instead of training-mean centering because TabICL's
-    column-then-row architecture creates highly dataset-specific representations.
-    Per-dataset means are orthogonal to the pooled training mean (cosine~0.02),
-    making the pooled SAE unable to reconstruct with training-mean centering
-    (R²=-1.2). Batch-mean centering gives R²=0.35 and genuine (though weaker)
-    ablation effects that consistently outperform random noise controls.
+    Uses per-dataset StandardScaler normalization (data_mean, data_std) from
+    SAE training. Previously used batch-mean centering, now corrected to match
+    the SAE training pipeline.
 
     If external_delta is provided, skip SAE delta computation and inject it
     directly (used by concept transfer from another model's SAE space).
@@ -1629,16 +1641,11 @@ def intervene_tabicl(
     # Mean-pool ensemble dim for ALL positions (context + query)
     all_emb = hidden_state.mean(dim=0)  # (seq_len, 512)
 
-    # Use batch-mean centering: TabICL per-dataset means are orthogonal to the
-    # pooled training mean, so training-mean centering produces garbage R²=-1.2.
-    # Batch-mean gives R²=0.35 with genuine (small) ablation signal.
-    batch_mean = all_emb.mean(dim=0)  # (512,)
-
     # --- Compute delta for all positions ---
     if external_delta is not None:
         delta = external_delta
     else:
-        delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=batch_mean)
+        delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean, data_std=data_std)
     delta_broadcast = delta.unsqueeze(0)  # (1, seq_len, 512)
 
     # --- Pass 2: Inject delta at block L output for all positions ---
@@ -1677,6 +1684,7 @@ def intervene_tabdpt(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run TabDPT with SAE feature ablation at extraction layer.
 
@@ -1722,7 +1730,7 @@ def intervene_tabdpt(
         raise ValueError(f"Unexpected hidden state shape: {hidden_state.shape}")
 
     # --- Compute delta for all positions ---
-    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean)
+    delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean, data_std=data_std)
 
     # --- Pass 2: Inject delta at layer L output for all positions ---
     def modify_output_hook(module, input, output):
@@ -1769,6 +1777,7 @@ def intervene_hyperfast(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run HyperFast with SAE feature ablation.
 
@@ -1814,13 +1823,14 @@ def intervene_hyperfast(
         baseline_outputs.append(F.softmax(outputs_base, dim=1).cpu().numpy())
 
         # --- Ablated forward: apply delta at extraction layer ---
-        # Manual forward to the extraction layer
+        # Manual forward matching HyperFast's forward_main_network
+        # (uses torch.mm, NOT F.linear — weights are (in, out) not (out, in))
         with torch.no_grad():
             x = X_transformed
             for layer_idx, (weight, bias) in enumerate(main_network):
                 weight = clf._move_to_device(weight)
                 bias = clf._move_to_device(bias)
-                x_new = F.linear(x, weight, bias)
+                x_new = torch.mm(x, weight) + bias
                 if layer_idx < len(main_network) - 1:
                     x_new = F.relu(x_new)
                     if x_new.shape[-1] == x.shape[-1]:
@@ -1833,7 +1843,7 @@ def intervene_hyperfast(
 
                 if layer_idx == extraction_layer:
                     # Apply SAE delta here
-                    delta = compute_ablation_delta(sae, x, ablate_features, data_mean=data_mean)
+                    delta = compute_ablation_delta(sae, x, ablate_features, data_mean=data_mean, data_std=data_std)
                     x = x + delta
 
             ablated_outputs.append(F.softmax(x, dim=1).cpu().numpy())
@@ -1863,13 +1873,14 @@ def intervene_tabicl_v2(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
     external_delta: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run TabICL-v2 with SAE feature ablation at extraction layer.
 
     Same architecture as TabICL v1 (model.icl_predictor.tf_icl.blocks, 512-dim)
     but supports regression via TabICLRegressor + predict().
-    Uses BATCH-MEAN centering (same rationale as TabICL v1).
+    Uses per-dataset StandardScaler normalization (data_mean, data_std).
     """
     if task == "regression":
         from tabicl import TabICLRegressor
@@ -1904,14 +1915,11 @@ def intervene_tabicl_v2(
     # Shape: (n_ensemble, n_ctx+n_query, 512)
     all_emb = hidden_state.mean(dim=0)  # (seq_len, 512)
 
-    # Batch-mean centering (same as TabICL v1)
-    batch_mean = all_emb.mean(dim=0)  # (512,)
-
     # --- Compute delta for all positions ---
     if external_delta is not None:
         delta = external_delta
     else:
-        delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=batch_mean)
+        delta = compute_ablation_delta(sae, all_emb, ablate_features, data_mean=data_mean, data_std=data_std)
     delta_broadcast = delta.unsqueeze(0)  # (1, seq_len, 512)
 
     # --- Pass 2: Inject delta at block L output for all positions ---
@@ -1982,6 +1990,7 @@ def intervene_carte(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run CARTE with SAE feature ablation at extraction layer.
 
@@ -2103,7 +2112,7 @@ def intervene_carte(
         baseline_preds = clf.predict_proba(X_query_graph)
 
     # --- Compute delta ---
-    delta = compute_ablation_delta(sae, central_emb, ablate_features, data_mean=data_mean)
+    delta = compute_ablation_delta(sae, central_emb, ablate_features, data_mean=data_mean, data_std=data_std)
 
     # --- Pass 2: Inject delta at hook point ---
     # Build index map: for per-node tensors, need to know which nodes are central
@@ -2155,6 +2164,7 @@ def intervene_tabula8b(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run Tabula-8B with SAE feature ablation at extraction layer.
 
@@ -2246,7 +2256,7 @@ def intervene_tabula8b(
         last_token_emb = hidden[0, -1, :].unsqueeze(0).float()  # (1, 4096)
 
         # Compute delta via SAE
-        delta = compute_ablation_delta(sae, last_token_emb, ablate_features, data_mean=data_mean)
+        delta = compute_ablation_delta(sae, last_token_emb, ablate_features, data_mean=data_mean, data_std=data_std)
         delta_row = delta[0]  # (4096,)
 
         # --- Pass 2: Inject delta at layer L, last token only ---
@@ -2313,7 +2323,7 @@ def intervene_tabula8b(
 
 def sweep_intervene_tabpfn(
     X_context, y_context, X_query, y_query, sae,
-    feature_lists, extraction_layer, device, task, data_mean,
+    feature_lists, extraction_layer, device, task, data_mean, data_std,
 ):
     """Sweep multiple ablation levels for TabPFN (one load, one capture)."""
     from models.tabpfn_utils import load_tabpfn
@@ -2339,7 +2349,7 @@ def sweep_intervene_tabpfn(
 
     results = []
     for features in feature_lists:
-        delta = compute_ablation_delta(sae, all_emb, features, data_mean=data_mean)
+        delta = compute_ablation_delta(sae, all_emb, features, data_mean=data_mean, data_std=data_std)
         delta_broadcast = delta.unsqueeze(1)
 
         def make_hook(db):
@@ -2364,7 +2374,7 @@ def sweep_intervene_tabpfn(
 
 def sweep_intervene_tabicl(
     X_context, y_context, X_query, y_query, sae,
-    feature_lists, extraction_layer, device, task, data_mean,
+    feature_lists, extraction_layer, device, task, data_mean, data_std,
 ):
     """Sweep multiple ablation levels for TabICL (one load, one capture)."""
     from tabicl import TabICLClassifier
@@ -2387,11 +2397,10 @@ def sweep_intervene_tabicl(
         handle.remove()
 
     all_emb = captured["hidden"].mean(dim=0)  # (seq_len, 512)
-    batch_mean = all_emb.mean(dim=0)
 
     results = []
     for features in feature_lists:
-        delta = compute_ablation_delta(sae, all_emb, features, data_mean=batch_mean)
+        delta = compute_ablation_delta(sae, all_emb, features, data_mean=data_mean, data_std=data_std)
         delta_broadcast = delta.unsqueeze(0)
 
         def make_hook(db):
@@ -2416,7 +2425,7 @@ def sweep_intervene_tabicl(
 
 def sweep_intervene_tabdpt(
     X_context, y_context, X_query, y_query, sae,
-    feature_lists, extraction_layer, device, task, data_mean,
+    feature_lists, extraction_layer, device, task, data_mean, data_std,
 ):
     """Sweep multiple ablation levels for TabDPT (one load, one capture)."""
     from tabdpt import TabDPTClassifier, TabDPTRegressor
@@ -2445,7 +2454,7 @@ def sweep_intervene_tabdpt(
 
     results = []
     for features in feature_lists:
-        delta = compute_ablation_delta(sae, all_emb, features, data_mean=data_mean)
+        delta = compute_ablation_delta(sae, all_emb, features, data_mean=data_mean, data_std=data_std)
 
         def make_hook(d):
             def hook(module, input, output):
@@ -2483,6 +2492,7 @@ def compute_ablation_delta_perrow(
     embeddings: torch.Tensor,
     feature_masks: torch.Tensor,
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute per-row ablation deltas with different features zeroed per row.
 
@@ -2490,19 +2500,25 @@ def compute_ablation_delta_perrow(
         sae: Trained SAE in eval mode
         embeddings: (n_rows, emb_dim) raw embeddings
         feature_masks: (n_rows, sae_hidden) boolean, True = ABLATE this feature
-        data_mean: (emb_dim,) centering mean
+        data_mean: (emb_dim,) per-dataset mean from norm_stats.npz
+        data_std: (emb_dim,) per-dataset std from norm_stats.npz
 
     Returns:
-        delta: (n_rows, emb_dim) per-row deltas
+        delta: (n_rows, emb_dim) in raw space, per-row deltas
     """
     with torch.no_grad():
-        x = embeddings - data_mean if data_mean is not None else embeddings
+        x = embeddings
+        if data_mean is not None:
+            x = (x - data_mean) / data_std
         h = sae.encode(x)
         original_recon = sae.decode(h)
         h_ablated = h.clone()
         h_ablated[feature_masks] = 0.0
         ablated_recon = sae.decode(h_ablated)
-        return ablated_recon - original_recon
+        delta = ablated_recon - original_recon
+        if data_std is not None:
+            delta = delta * data_std
+        return delta
 
 
 def compute_perrow_logloss(
@@ -2602,7 +2618,7 @@ def _perrow_rankings(
 
 def perrow_sweep_intervene_tabpfn(
     X_context, y_context, X_query, y_query, sae,
-    unmatched_features, extraction_layer, device, task, data_mean,
+    unmatched_features, extraction_layer, device, task, data_mean, data_std,
 ):
     """Per-row heterogeneous ablation sweep for TabPFN.
 
@@ -2640,8 +2656,8 @@ def perrow_sweep_intervene_tabpfn(
 
     # SAE encode query rows for activation detection
     with torch.no_grad():
-        x_centered = query_emb - data_mean if data_mean is not None else query_emb
-        h_encoded = sae.encode(x_centered)
+        x_norm = (query_emb - data_mean) / data_std if data_mean is not None else query_emb
+        h_encoded = sae.encode(x_norm)
     query_acts = h_encoded.cpu().numpy()  # (n_query, sae_hidden)
 
     # --- Phase 1: per-feature importance ---
@@ -2649,7 +2665,7 @@ def perrow_sweep_intervene_tabpfn(
                 len(unmatched_features), len(unmatched_features))
     individual_preds = []
     for feat_idx in unmatched_features:
-        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=data_mean)
+        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=data_mean, data_std=data_std)
         db = delta.unsqueeze(1)
 
         def make_hook(d):
@@ -2688,7 +2704,7 @@ def perrow_sweep_intervene_tabpfn(
         for r in rankings:
             all_feats_k.update(r[:k])
         ctx_delta = compute_ablation_delta(
-            sae, ctx_emb, list(all_feats_k), data_mean=data_mean,
+            sae, ctx_emb, list(all_feats_k), data_mean=data_mean, data_std=data_std,
         )
 
         # Query: per-row ablation via feature masks
@@ -2698,7 +2714,7 @@ def perrow_sweep_intervene_tabpfn(
             if feats:
                 masks[row_idx, feats] = True
         query_delta = compute_ablation_delta_perrow(
-            sae, query_emb, masks, data_mean=data_mean,
+            sae, query_emb, masks, data_mean=data_mean, data_std=data_std,
         )
 
         combined = torch.cat([ctx_delta, query_delta], dim=0).unsqueeze(1)
@@ -2734,12 +2750,12 @@ def perrow_sweep_intervene_tabpfn(
 
 def perrow_sweep_intervene_tabicl(
     X_context, y_context, X_query, y_query, sae,
-    unmatched_features, extraction_layer, device, task, data_mean,
+    unmatched_features, extraction_layer, device, task, data_mean, data_std,
 ):
     """Per-row heterogeneous ablation sweep for TabICL.
 
     Same structure as TabPFN version but with TabICL-specific hook patterns
-    and batch-mean centering.
+    and per-dataset StandardScaler normalization.
     """
     from tabicl import TabICLClassifier
 
@@ -2764,15 +2780,14 @@ def perrow_sweep_intervene_tabicl(
         handle.remove()
 
     all_emb = captured["hidden"].mean(dim=0)  # (seq_len, 512)
-    batch_mean = all_emb.mean(dim=0)  # batch-mean centering for TabICL
     # Use -n_query indexing: seq_len may differ from len(X_ctx)+len(X_query)
     query_emb = all_emb[-n_query:]
     ctx_emb = all_emb[:-n_query]
 
     # SAE encode query rows for activation detection
     with torch.no_grad():
-        x_centered = query_emb - batch_mean
-        h_encoded = sae.encode(x_centered)
+        x_norm = (query_emb - data_mean) / data_std if data_mean is not None else query_emb
+        h_encoded = sae.encode(x_norm)
     query_acts = h_encoded.cpu().numpy()  # (n_query, sae_hidden)
 
     # --- Phase 1: per-feature importance ---
@@ -2780,7 +2795,7 @@ def perrow_sweep_intervene_tabicl(
                 len(unmatched_features), len(unmatched_features))
     individual_preds = []
     for feat_idx in unmatched_features:
-        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=batch_mean)
+        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=data_mean, data_std=data_std)
         db = delta.unsqueeze(0)  # (1, seq_len, 512) broadcast over ensemble
 
         def make_hook(d):
@@ -2818,7 +2833,7 @@ def perrow_sweep_intervene_tabicl(
         for r in rankings:
             all_feats_k.update(r[:k])
         ctx_delta = compute_ablation_delta(
-            sae, ctx_emb, list(all_feats_k), data_mean=batch_mean,
+            sae, ctx_emb, list(all_feats_k), data_mean=data_mean, data_std=data_std,
         )
 
         # Query: per-row ablation via feature masks
@@ -2828,7 +2843,7 @@ def perrow_sweep_intervene_tabicl(
             if feats:
                 masks[row_idx, feats] = True
         query_delta = compute_ablation_delta_perrow(
-            sae, query_emb, masks, data_mean=batch_mean,
+            sae, query_emb, masks, data_mean=data_mean, data_std=data_std,
         )
 
         combined = torch.cat([ctx_delta, query_delta], dim=0).unsqueeze(0)
@@ -2863,12 +2878,12 @@ def perrow_sweep_intervene_tabicl(
 
 def perrow_sweep_intervene_tabicl_v2(
     X_context, y_context, X_query, y_query, sae,
-    unmatched_features, extraction_layer, device, task, data_mean,
+    unmatched_features, extraction_layer, device, task, data_mean, data_std,
 ):
     """Per-row heterogeneous ablation sweep for TabICL-v2.
 
     Same structure as TabICL v1 version but supports regression and uses
-    task-conditional predict.
+    task-conditional predict. Uses per-dataset StandardScaler normalization.
     """
     if task == "regression":
         from tabicl import TabICLRegressor
@@ -2902,14 +2917,13 @@ def perrow_sweep_intervene_tabicl_v2(
         handle.remove()
 
     all_emb = captured["hidden"].mean(dim=0)  # (seq_len, 512)
-    batch_mean = all_emb.mean(dim=0)  # batch-mean centering
     query_emb = all_emb[-n_query:]
     ctx_emb = all_emb[:-n_query]
 
     # SAE encode query rows for activation detection
     with torch.no_grad():
-        x_centered = query_emb - batch_mean
-        h_encoded = sae.encode(x_centered)
+        x_norm = (query_emb - data_mean) / data_std if data_mean is not None else query_emb
+        h_encoded = sae.encode(x_norm)
     query_acts = h_encoded.cpu().numpy()
 
     # --- Phase 1: per-feature importance ---
@@ -2917,7 +2931,7 @@ def perrow_sweep_intervene_tabicl_v2(
                 len(unmatched_features), len(unmatched_features))
     individual_preds = []
     for feat_idx in unmatched_features:
-        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=batch_mean)
+        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=data_mean, data_std=data_std)
         db = delta.unsqueeze(0)
 
         def make_hook(d):
@@ -2953,7 +2967,7 @@ def perrow_sweep_intervene_tabicl_v2(
         for r in rankings:
             all_feats_k.update(r[:k])
         ctx_delta = compute_ablation_delta(
-            sae, ctx_emb, list(all_feats_k), data_mean=batch_mean,
+            sae, ctx_emb, list(all_feats_k), data_mean=data_mean, data_std=data_std,
         )
 
         masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool, device=device)
@@ -2962,7 +2976,7 @@ def perrow_sweep_intervene_tabicl_v2(
             if feats:
                 masks[row_idx, feats] = True
         query_delta = compute_ablation_delta_perrow(
-            sae, query_emb, masks, data_mean=batch_mean,
+            sae, query_emb, masks, data_mean=data_mean, data_std=data_std,
         )
 
         combined = torch.cat([ctx_delta, query_delta], dim=0).unsqueeze(0)
@@ -2996,7 +3010,7 @@ def perrow_sweep_intervene_tabicl_v2(
 
 def perrow_sweep_intervene_carte(
     X_context, y_context, X_query, y_query, sae,
-    unmatched_features, extraction_layer, device, task, data_mean,
+    unmatched_features, extraction_layer, device, task, data_mean, data_std,
 ):
     """Per-row heterogeneous ablation sweep for CARTE.
 
@@ -3100,8 +3114,8 @@ def perrow_sweep_intervene_carte(
 
     # SAE encode central node embeddings for activation detection
     with torch.no_grad():
-        x_centered = central_emb - data_mean if data_mean is not None else central_emb
-        h_encoded = sae.encode(x_centered)
+        x_norm = (central_emb - data_mean) / data_std if data_mean is not None else central_emb
+        h_encoded = sae.encode(x_norm)
     query_acts = h_encoded.cpu().numpy()
 
     # --- Phase 1: per-feature importance ---
@@ -3109,7 +3123,7 @@ def perrow_sweep_intervene_carte(
                 len(unmatched_features), len(unmatched_features))
     individual_preds = []
     for feat_idx in unmatched_features:
-        delta = compute_ablation_delta(sae, central_emb, [feat_idx], data_mean=data_mean)
+        delta = compute_ablation_delta(sae, central_emb, [feat_idx], data_mean=data_mean, data_std=data_std)
 
         def make_hook(d, ci):
             def hook(module, input, output):
@@ -3150,7 +3164,7 @@ def perrow_sweep_intervene_carte(
             if feats:
                 masks[row_idx, feats] = True
         delta = compute_ablation_delta_perrow(
-            sae, central_emb, masks, data_mean=data_mean,
+            sae, central_emb, masks, data_mean=data_mean, data_std=data_std,
         )
 
         def make_hook(d, ci):
@@ -3187,7 +3201,7 @@ def perrow_sweep_intervene_carte(
 
 def perrow_sweep_intervene_tabula8b(
     X_context, y_context, X_query, y_query, sae,
-    unmatched_features, extraction_layer, device, task, data_mean,
+    unmatched_features, extraction_layer, device, task, data_mean, data_std,
 ):
     """Per-row heterogeneous ablation sweep for Tabula-8B.
 
@@ -3327,9 +3341,9 @@ def perrow_sweep_intervene_tabula8b(
 
     # SAE encode for activation detection
     with torch.no_grad():
-        x_centered = query_emb - data_mean if data_mean is not None else query_emb
-        x_centered = x_centered.to(sae.W_enc.device)
-        h_encoded = sae.encode(x_centered)
+        x_norm = (query_emb - data_mean) / data_std if data_mean is not None else query_emb
+        x_norm = x_norm.to(sae.W_enc.device)
+        h_encoded = sae.encode(x_norm)
     query_acts = h_encoded.cpu().numpy()
 
     # --- Phase 1: per-feature importance (subsampled) ---
@@ -3353,7 +3367,7 @@ def perrow_sweep_intervene_tabula8b(
         for j, ri in enumerate(subsample_idx):
             delta = compute_ablation_delta(
                 sae, query_emb[ri:ri+1].to(sae.W_enc.device),
-                [feat_idx], data_mean=data_mean,
+                [feat_idx], data_mean=data_mean, data_std=data_std,
             )
             preds_sub[j] = _forward_row(ri, delta_row=delta[0])
         individual_preds_sub.append(preds_sub)
@@ -3390,7 +3404,7 @@ def perrow_sweep_intervene_tabula8b(
             mask[0, feats] = True
             delta = compute_ablation_delta_perrow(
                 sae, query_emb[row_idx:row_idx+1].to(sae.W_enc.device),
-                mask, data_mean=data_mean,
+                mask, data_mean=data_mean, data_std=data_std,
             )
             preds_k[row_idx] = _forward_row(row_idx, delta_row=delta[0])
         sweep_preds.append(preds_k)
@@ -3414,7 +3428,7 @@ def perrow_sweep_intervene_tabula8b(
 
 def perrow_sweep_intervene_mitra(
     X_context, y_context, X_query, y_query, sae,
-    unmatched_features, extraction_layer, device, task, data_mean,
+    unmatched_features, extraction_layer, device, task, data_mean, data_std,
 ):
     """Per-row heterogeneous ablation sweep for Mitra.
 
@@ -3485,8 +3499,8 @@ def perrow_sweep_intervene_mitra(
 
     # SAE encode query rows for activation detection
     with torch.no_grad():
-        x_centered = query_emb - data_mean if data_mean is not None else query_emb
-        h_encoded = sae.encode(x_centered)
+        x_norm = (query_emb - data_mean) / data_std if data_mean is not None else query_emb
+        h_encoded = sae.encode(x_norm)
     query_acts = h_encoded.cpu().numpy()
 
     # --- Phase 1: per-feature importance ---
@@ -3494,8 +3508,8 @@ def perrow_sweep_intervene_mitra(
                 len(unmatched_features), len(unmatched_features))
     individual_preds = []
     for feat_idx in unmatched_features:
-        delta_sup = compute_ablation_delta(sae, support_emb, [feat_idx], data_mean=data_mean)
-        delta_qry = compute_ablation_delta(sae, query_emb, [feat_idx], data_mean=data_mean)
+        delta_sup = compute_ablation_delta(sae, support_emb, [feat_idx], data_mean=data_mean, data_std=data_std)
+        delta_qry = compute_ablation_delta(sae, query_emb, [feat_idx], data_mean=data_mean, data_std=data_std)
 
         trainer.rng.set_state(rng_state)
         sup_offset = [0]
@@ -3555,7 +3569,7 @@ def perrow_sweep_intervene_mitra(
         for r in rankings:
             all_feats_k.update(r[:k])
         sup_delta = compute_ablation_delta(
-            sae, support_emb, list(all_feats_k), data_mean=data_mean,
+            sae, support_emb, list(all_feats_k), data_mean=data_mean, data_std=data_std,
         )
 
         # Query: per-row ablation via feature masks
@@ -3565,7 +3579,7 @@ def perrow_sweep_intervene_mitra(
             if feats:
                 masks[row_idx, feats] = True
         qry_delta = compute_ablation_delta_perrow(
-            sae, query_emb, masks, data_mean=data_mean,
+            sae, query_emb, masks, data_mean=data_mean, data_std=data_std,
         )
 
         trainer.rng.set_state(rng_state)
@@ -3621,7 +3635,7 @@ def perrow_sweep_intervene_mitra(
 
 def perrow_sweep_intervene_tabdpt(
     X_context, y_context, X_query, y_query, sae,
-    unmatched_features, extraction_layer, device, task, data_mean,
+    unmatched_features, extraction_layer, device, task, data_mean, data_std,
 ):
     """Per-row heterogeneous ablation sweep for TabDPT.
 
@@ -3668,8 +3682,8 @@ def perrow_sweep_intervene_tabdpt(
 
     # SAE encode query rows for activation detection
     with torch.no_grad():
-        x_centered = query_emb - data_mean if data_mean is not None else query_emb
-        h_encoded = sae.encode(x_centered)
+        x_norm = (query_emb - data_mean) / data_std if data_mean is not None else query_emb
+        h_encoded = sae.encode(x_norm)
     query_acts = h_encoded.cpu().numpy()
 
     # --- Phase 1: per-feature importance ---
@@ -3677,7 +3691,7 @@ def perrow_sweep_intervene_tabdpt(
                 len(unmatched_features), len(unmatched_features))
     individual_preds = []
     for feat_idx in unmatched_features:
-        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=data_mean)
+        delta = compute_ablation_delta(sae, all_emb, [feat_idx], data_mean=data_mean, data_std=data_std)
 
         def make_hook(d):
             def hook(module, input, output):
@@ -3717,7 +3731,7 @@ def perrow_sweep_intervene_tabdpt(
         for r in rankings:
             all_feats_k.update(r[:k])
         ctx_delta = compute_ablation_delta(
-            sae, ctx_emb, list(all_feats_k), data_mean=data_mean,
+            sae, ctx_emb, list(all_feats_k), data_mean=data_mean, data_std=data_std,
         )
 
         masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool, device=device)
@@ -3726,7 +3740,7 @@ def perrow_sweep_intervene_tabdpt(
             if feats:
                 masks[row_idx, feats] = True
         query_delta = compute_ablation_delta_perrow(
-            sae, query_emb, masks, data_mean=data_mean,
+            sae, query_emb, masks, data_mean=data_mean, data_std=data_std,
         )
 
         combined_delta = torch.cat([ctx_delta, query_delta], dim=0)
@@ -3765,7 +3779,7 @@ def perrow_sweep_intervene_tabdpt(
 
 def perrow_sweep_intervene_hyperfast(
     X_context, y_context, X_query, y_query, sae,
-    unmatched_features, extraction_layer, device, task, data_mean,
+    unmatched_features, extraction_layer, device, task, data_mean, data_std,
 ):
     """Per-row heterogeneous ablation sweep for HyperFast.
 
@@ -3804,13 +3818,15 @@ def perrow_sweep_intervene_hyperfast(
             X=X_b, cfg=hf_clf._cfg, rf=rf, pca=pca,
         )
 
+        # Manual forward matching HyperFast's forward_main_network
+        # (uses torch.mm, NOT F.linear — weights are (in, out) not (out, in))
         with torch.no_grad():
             x = X_transformed
             intermediate = None
             for layer_idx, (weight, bias) in enumerate(main_network):
                 weight = hf_clf._move_to_device(weight)
                 bias = hf_clf._move_to_device(bias)
-                x_new = F.linear(x, weight, bias)
+                x_new = torch.mm(x, weight) + bias
                 if layer_idx < len(main_network) - 1:
                     x_new = F.relu(x_new)
                     if x_new.shape[-1] == x.shape[-1]:
@@ -3833,8 +3849,8 @@ def perrow_sweep_intervene_hyperfast(
 
     # SAE encode query rows for activation detection
     with torch.no_grad():
-        x_centered = query_emb - data_mean if data_mean is not None else query_emb
-        h_encoded = sae.encode(x_centered)
+        x_norm = (query_emb - data_mean) / data_std if data_mean is not None else query_emb
+        h_encoded = sae.encode(x_norm)
     query_acts = h_encoded.cpu().numpy()
 
     def _forward_ensemble_from_layer(delta):
@@ -3847,7 +3863,7 @@ def perrow_sweep_intervene_hyperfast(
                     weight, bias = main_network[layer_idx]
                     weight = hf_clf._move_to_device(weight)
                     bias = hf_clf._move_to_device(bias)
-                    x_new = F.linear(x, weight, bias)
+                    x_new = torch.mm(x, weight) + bias
                     if layer_idx < len(main_network) - 1:
                         x_new = F.relu(x_new)
                         if x_new.shape[-1] == x.shape[-1]:
@@ -3864,7 +3880,7 @@ def perrow_sweep_intervene_hyperfast(
                 len(unmatched_features), len(unmatched_features))
     individual_preds = []
     for feat_idx in unmatched_features:
-        delta = compute_ablation_delta(sae, query_emb, [feat_idx], data_mean=data_mean)
+        delta = compute_ablation_delta(sae, query_emb, [feat_idx], data_mean=data_mean, data_std=data_std)
         preds = _forward_ensemble_from_layer(delta)
         individual_preds.append(preds)
 
@@ -3887,7 +3903,7 @@ def perrow_sweep_intervene_hyperfast(
             if feats:
                 masks[row_idx, feats] = True
         delta = compute_ablation_delta_perrow(
-            sae, query_emb, masks, data_mean=data_mean,
+            sae, query_emb, masks, data_mean=data_mean, data_std=data_std,
         )
         preds = _forward_ensemble_from_layer(delta)
         sweep_preds.append(preds)
@@ -3917,6 +3933,7 @@ PERROW_SWEEP_FN = {
 
 def perrow_sweep_intervene(
     model_key: str,
+    dataset_name: str,
     X_context: np.ndarray,
     y_context: np.ndarray,
     X_query: np.ndarray,
@@ -3931,6 +3948,7 @@ def perrow_sweep_intervene(
     """Per-row heterogeneous ablation sweep (one model load, per-row feature ranking).
 
     Args:
+        dataset_name: Dataset name for loading per-dataset norm stats.
         unmatched_features: Feature indices unique to this model (not in the other).
 
     Returns:
@@ -3949,18 +3967,20 @@ def perrow_sweep_intervene(
 
     sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
     extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
-    data_mean = load_training_mean(
-        model_key, training_dir=training_dir, layers_path=layers_path, device=device,
+    data_mean, data_std = load_norm_stats(
+        model_key, dataset_name, training_dir=training_dir,
+        layers_path=layers_path, device=device,
     )
 
     return PERROW_SWEEP_FN[model_key](
         X_context, y_context, X_query, y_query, sae,
-        unmatched_features, extraction_layer, device, task, data_mean,
+        unmatched_features, extraction_layer, device, task, data_mean, data_std,
     )
 
 
 def sweep_intervene(
     model_key: str,
+    dataset_name: str,
     X_context: np.ndarray,
     y_context: np.ndarray,
     X_query: np.ndarray,
@@ -3975,6 +3995,7 @@ def sweep_intervene(
     """Sweep multiple ablation levels efficiently (one model load).
 
     Args:
+        dataset_name: Dataset name for loading per-dataset norm stats.
         feature_lists: List of feature index lists, e.g. [[0], [0,1], [0,1,2], ...]
 
     Returns:
@@ -3985,13 +4006,14 @@ def sweep_intervene(
 
     sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
     extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
-    data_mean = load_training_mean(
-        model_key, training_dir=training_dir, layers_path=layers_path, device=device,
+    data_mean, data_std = load_norm_stats(
+        model_key, dataset_name, training_dir=training_dir,
+        layers_path=layers_path, device=device,
     )
 
     return SWEEP_FN[model_key](
         X_context, y_context, X_query, y_query, sae,
-        feature_lists, extraction_layer, device, task, data_mean,
+        feature_lists, extraction_layer, device, task, data_mean, data_std,
     )
 
 
@@ -4022,6 +4044,7 @@ def intervene(
     layers_path: Path = DEFAULT_LAYERS_PATH,
     training_dir: Path = DEFAULT_TRAINING_DIR,
     external_delta: Optional[torch.Tensor] = None,
+    dataset_name: Optional[str] = None,
 ) -> Dict[str, np.ndarray]:
     """Run a model with SAE feature ablation at its optimal extraction layer.
 
@@ -4035,9 +4058,10 @@ def intervene(
         task: 'classification' or 'regression'
         sae_dir: Path to SAE checkpoints
         layers_path: Path to optimal_extraction_layers.json
-        training_dir: Path to SAE training data (for centering mean)
+        training_dir: Path to SAE training data (for norm stats)
         external_delta: Pre-computed delta to inject directly, skipping SAE computation.
             Used by concept transfer to inject deltas translated from another model's space.
+        dataset_name: Dataset name for loading per-dataset norm stats.
 
     Returns:
         Dict with 'baseline_preds', 'ablated_preds', 'y_query'
@@ -4058,12 +4082,19 @@ def intervene(
         if ablate_features is None:
             ablate_features = []
         data_mean = None
+        data_std = None
     else:
         sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
         if ablate_features is None:
             ablate_features = []
-        data_mean = load_training_mean(
-            model_key, training_dir=training_dir, layers_path=layers_path, device=device,
+        if dataset_name is None:
+            raise ValueError(
+                "dataset_name is required for loading per-dataset norm stats. "
+                "Pass dataset_name= to intervene()."
+            )
+        data_mean, data_std = load_norm_stats(
+            model_key, dataset_name, training_dir=training_dir,
+            layers_path=layers_path, device=device,
         )
 
     kwargs = dict(
@@ -4077,6 +4108,7 @@ def intervene(
         device=device,
         task=task,
         data_mean=data_mean,
+        data_std=data_std,
     )
 
     # Only pass external_delta to functions that support it
@@ -4181,6 +4213,7 @@ def main():
         sae_dir=args.sae_dir,
         layers_path=args.layers_config,
         training_dir=args.training_dir,
+        dataset_name=args.dataset,
     )
 
     # Evaluate

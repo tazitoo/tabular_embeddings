@@ -877,7 +877,7 @@ def _boost_hyperfast(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
             for layer_idx, (weight, bias) in enumerate(main_network):
                 weight = clf._move_to_device(weight)
                 bias = clf._move_to_device(bias)
-                x_new = F.linear(x, weight, bias)
+                x_new = torch.mm(x, weight) + bias
                 if layer_idx < len(main_network) - 1:
                     x_new = F.relu(x_new)
                     if x_new.shape[-1] == x.shape[-1]:
@@ -1399,7 +1399,7 @@ def _transplant_hyperfast(X_ctx, y_ctx, X_q, y_q, delta, extraction_layer, devic
             for layer_idx, (weight, bias) in enumerate(main_network):
                 weight = clf._move_to_device(weight)
                 bias = clf._move_to_device(bias)
-                x_new = F.linear(x, weight, bias)
+                x_new = torch.mm(x, weight) + bias
                 if layer_idx < len(main_network) - 1:
                     x_new = F.relu(x_new)
                     if x_new.shape[-1] == x.shape[-1]:
