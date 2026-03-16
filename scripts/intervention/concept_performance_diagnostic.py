@@ -181,6 +181,7 @@ def predict_intervention_model(
         ablate_features=[],  # No ablation — baseline only
         device=device,
         task=task,
+        dataset_name=dataset,
     )
 
     return {

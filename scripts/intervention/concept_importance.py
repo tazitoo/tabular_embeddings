@@ -2012,12 +2012,12 @@ def compare_concept_importance(
     import numpy as _np
 
     if importance_dir is None:
-        importance_dir = PROJECT_ROOT / "output" / "concept_importance"
+        importance_dir = PROJECT_ROOT / "output" / "interventions" / dataset / "importance"
 
     # Load importance results
-    with open(importance_dir / f"{model_a}_{dataset}.json") as f:
+    with open(importance_dir / f"{model_a}.json") as f:
         imp_a = json.load(f)
-    with open(importance_dir / f"{model_b}_{dataset}.json") as f:
+    with open(importance_dir / f"{model_b}.json") as f:
         imp_b = json.load(f)
 
     # Build feature_idx -> drop lookup
@@ -2354,9 +2354,9 @@ def main():
         result = compare_concept_importance(args.model, args.compare, args.dataset)
         print_concept_comparison(result)
         # Save comparison
-        out_dir = PROJECT_ROOT / "output" / "concept_importance"
+        out_dir = PROJECT_ROOT / "output" / "interventions" / args.dataset / "comparison"
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"compare_{args.model}_vs_{args.compare}_{args.dataset}.json"
+        out_path = out_dir / f"{args.model}_vs_{args.compare}.json"
         with open(out_path, "w") as f:
             json.dump(result, f, indent=2)
         print(f"\nSaved to {out_path}")
@@ -2368,9 +2368,9 @@ def main():
     # Determine output path
     output_path = args.output
     if output_path is None:
-        output_dir = PROJECT_ROOT / "output" / "concept_importance"
+        output_dir = PROJECT_ROOT / "output" / "interventions" / args.dataset / "importance"
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(output_dir / f"{args.model}_{args.dataset}.json")
+        output_path = str(output_dir / f"{args.model}.json")
 
     if args.analyze:
         # Analysis-only mode: load existing results

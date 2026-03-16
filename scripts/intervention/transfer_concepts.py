@@ -1457,12 +1457,12 @@ def main():
                         help="Directory with MLP translator checkpoints "
                              "({source}_to_{target}.pt). Auto-detected per direction.")
     parser.add_argument("--output-dir", type=Path,
-                        default=PROJECT_ROOT / "output" / "figures")
+                        default=PROJECT_ROOT / "output" / "interventions")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    fig_dir = args.output_dir / args.dataset
+    fig_dir = args.output_dir / args.dataset / "transfer"
 
     translator_dir = args.translator_dir
 
