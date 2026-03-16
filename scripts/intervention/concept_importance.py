@@ -1090,18 +1090,21 @@ def sweep_tabula8b(
     data_mean: Optional[torch.Tensor] = None,
     data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
-    """Sweep single-feature ablation for Tabula-8B.
+    """Sweep single-feature ablation for Tabula-8B (row-first).
 
-    Tabula-8B is a causal LLM that processes rows one at a time, making this
-    the most expensive sweep (n_features x n_query forward passes). Query rows
-    are subsampled to 20 to keep runtime manageable (~17 min on a 4090).
+    Architecture:
+      1. One baseline pass per query row → hidden states + baseline preds
+      2. SAE encode all rows → firing map (which concepts fire on which rows)
+      3. Row-first LOO: for each row, ablate only its firing concepts
+      4. Rows sharing identical firing sets are grouped (same delta)
+
+    Cost: sum(n_firing_per_row) forward passes, not n_features × n_query.
+    With topk=128, worst case is 128 × n_query.
 
     Uses training-mean centering for SAE.
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-    # Note: no subsampling — per-row importance is the output.
-    # Each query row gets one forward pass per feature.
+    from collections import defaultdict
 
     import os
     model_path = "/data/models/tabula-8b"
@@ -1216,13 +1219,13 @@ def sweep_tabula8b(
         all_emb_list.append(captured["hidden"][0, -1, :].float())
         baseline_preds_list.append(preds)
 
-        if (row_idx + 1) % 10 == 0:
+        if (row_idx + 1) % 50 == 0:
             logger.info(f"  Tabula-8B baselines: {row_idx + 1}/{n_query}")
 
     all_emb = torch.stack(all_emb_list, dim=0)  # (n_query, 4096)
     baseline_preds_np = np.array(baseline_preds_list)
 
-    # Pre-compute SAE encoding with per-dataset normalization
+    # --- Step 2: SAE encode → firing map ---
     with torch.no_grad():
         x_norm = all_emb
         if data_mean is not None:
@@ -1233,51 +1236,100 @@ def sweep_tabula8b(
     baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
     baseline_row_loss = compute_per_row_loss(y_query, baseline_preds_np, task)
 
-    # All rows are query rows
-    h_query = h_full
+    # Build alive feature index mapping: position in alive_features list
+    alive_set = set(alive_features)
+    feat_to_pos = {f: i for i, f in enumerate(alive_features)}
 
-    # --- Sweep: ablate one feature at a time ---
+    # Per-row firing map: which alive features fire on each row
+    row_firing = []  # row_firing[row_idx] = list of alive feature indices
+    total_forward_passes = 0
+    for row_idx in range(n_query):
+        firing = [f for f in alive_features if h_full[row_idx, f].item() > 0]
+        row_firing.append(firing)
+        total_forward_passes += len(firing)
+
+    logger.info(
+        f"Tabula-8B firing map: {total_forward_passes} forward passes "
+        f"({total_forward_passes / n_query:.0f} avg features/row, "
+        f"vs {len(alive_features)} alive features)"
+    )
+
+    # Group rows by identical firing sets for delta reuse
+    firing_groups = defaultdict(list)  # frozenset(firing) → [row_indices]
+    for row_idx, firing in enumerate(row_firing):
+        key = frozenset(firing)
+        firing_groups[key].append(row_idx)
+
+    n_unique = len(firing_groups)
+    logger.info(
+        f"  {n_unique} unique firing patterns across {n_query} rows "
+        f"({n_query / n_unique:.1f}x reuse)"
+    )
+
+    # --- Step 3: Row-first LOO ablation ---
     n_features = len(alive_features)
     row_feature_drops = np.zeros((n_query, n_features))
     feature_n_firing = np.zeros(n_features, dtype=int)
 
+    # Count firings across all rows
+    for row_idx in range(n_query):
+        for f in row_firing[row_idx]:
+            feature_n_firing[feat_to_pos[f]] += 1
+
     t0 = time.time()
-    for i, feat_idx in enumerate(alive_features):
-        with torch.no_grad():
-            h_ablated = h_full.clone()
-            h_ablated[:, feat_idx] = 0.0
-            recon_ablated = sae.decode(h_ablated)
-            delta = (recon_ablated - recon_full) * data_std  # denormalize to raw space
+    n_done = 0
 
-        # Re-run each query row with delta injection
-        ablated_preds_list = []
-        for row_idx in range(n_query):
-            delta_row = delta[row_idx]
-            preds = _forward_row(row_idx, delta_row=delta_row)
-            ablated_preds_list.append(preds)
+    for group_idx, (firing_key, group_rows) in enumerate(firing_groups.items()):
+        firing_list = sorted(firing_key)
+        if not firing_list:
+            continue
 
-        preds_np = np.array(ablated_preds_list)
-        ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
-        row_importance = ablated_row_loss - baseline_row_loss
+        # For each feature that fires in this group, compute delta once
+        # then apply to all rows in the group
+        for feat_idx in firing_list:
+            feat_pos = feat_to_pos[feat_idx]
 
-        fires = (h_query[:, feat_idx] > 0).cpu().numpy()
-        n_fire = int(fires.sum())
+            with torch.no_grad():
+                h_ablated = h_full[group_rows].clone()
+                h_ablated[:, feat_idx] = 0.0
+                recon_ablated = sae.decode(h_ablated)
+                recon_orig = recon_full[group_rows]
+                delta = (recon_ablated - recon_orig) * data_std
 
-        row_feature_drops[:, i] = row_importance
-        feature_n_firing[i] = n_fire
+            # Forward pass for each row in the group
+            for i, row_idx in enumerate(group_rows):
+                delta_row = delta[i]
+                preds = _forward_row(row_idx, delta_row=delta_row)
+                preds_np = np.atleast_1d(np.asarray(preds))
+                ablated_loss = compute_per_row_loss(
+                    y_query[row_idx:row_idx+1], preds_np.reshape(1, -1), task
+                )
+                row_feature_drops[row_idx, feat_pos] = float(
+                    ablated_loss[0] - baseline_row_loss[row_idx]
+                )
 
-        if (i + 1) % 100 == 0 or i == 0:
+            n_done += len(group_rows)
+
+        if (group_idx + 1) % 10 == 0 or group_idx == 0:
             elapsed = time.time() - t0
-            rate = (i + 1) / elapsed
-            eta = (n_features - i - 1) / rate
+            pct = n_done / total_forward_passes * 100 if total_forward_passes > 0 else 0
+            rate = n_done / elapsed if elapsed > 0 else 0
+            eta = (total_forward_passes - n_done) / rate if rate > 0 else 0
             logger.info(
-                f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"drop={row_feature_drops[:, i].mean():+.4f} fire={n_fire}/{n_query} "
-                f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
+                f"  group {group_idx+1}/{n_unique}: "
+                f"{n_done}/{total_forward_passes} passes ({pct:.0f}%) "
+                f"({rate:.1f} pass/s, ETA {eta:.0f}s)"
             )
 
+    # Final progress
+    elapsed = time.time() - t0
+    logger.info(
+        f"  Tabula-8B sweep complete: {total_forward_passes} passes in {elapsed:.0f}s "
+        f"({total_forward_passes / elapsed:.1f} pass/s)"
+    )
+
     # Count features that fire on at least one row
-    n_active = int((h_full[:, alive_features] > 0).any(dim=0).sum().item())
+    n_active = int((feature_n_firing > 0).sum())
 
     return {
         "baseline_preds": baseline_preds_np,
