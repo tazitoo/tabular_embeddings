@@ -1216,8 +1216,15 @@ class HyperFastTail:
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
                   task="classification", device="cuda"):
-        """One-time setup: fit HyperFast, cache intermediates at layer L."""
-        from hyperfast.hyperfast import transform_data_for_main_network
+        """One-time setup: fit HyperFast, cache intermediates at layer L.
+
+        Uses forward_main_network() from hyperfast to get penultimate
+        activations — same code path as embedding extraction. No layer
+        index needed; the function always returns the penultimate hidden.
+        """
+        from hyperfast.hyperfast import (
+            forward_main_network, transform_data_for_main_network,
+        )
         from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
         extractor = HyperFastEmbeddingExtractor(device=device)
@@ -1229,11 +1236,6 @@ class HyperFastTail:
 
         n_query = len(X_query)
         X_query_t = torch.tensor(X_query, dtype=torch.float32).to(device)
-
-        # Clamp extraction_layer to last hidden layer
-        first_net = hf_clf._move_to_device(hf_clf._main_networks[0])
-        if extraction_layer >= len(first_net) - 1:
-            extraction_layer = len(first_net) - 2
 
         main_networks = []
         intermediates = []
@@ -1253,28 +1255,14 @@ class HyperFastTail:
                 X=X_b, cfg=hf_clf._cfg, rf=rf, pca=pca,
             )
 
-            # Forward to extraction_layer, caching intermediate
             with torch.no_grad():
-                x = X_transformed
-                for layer_idx, (weight, bias) in enumerate(main_network):
-                    weight = hf_clf._move_to_device(weight)
-                    bias = hf_clf._move_to_device(bias)
-                    x_new = F.linear(x, weight, bias)
-                    if layer_idx < len(main_network) - 1:
-                        x_new = F.relu(x_new)
-                        if x_new.shape[-1] == x.shape[-1]:
-                            x = x + x_new
-                        else:
-                            x = x_new
-                    else:
-                        x = x_new
-                    if layer_idx == extraction_layer:
-                        intermediate = x.detach().clone()
-
-                baseline_outputs.append(F.softmax(x, dim=1).cpu().numpy())
+                outputs, intermediate = forward_main_network(
+                    X_transformed, main_network,
+                )
+                baseline_outputs.append(F.softmax(outputs, dim=1).cpu().numpy())
 
             main_networks.append(main_network)
-            intermediates.append(intermediate)
+            intermediates.append(intermediate.detach().clone())
 
         baseline_avg = np.mean(baseline_outputs, axis=0)
 
@@ -1287,31 +1275,22 @@ class HyperFastTail:
         tail.baseline_preds = baseline_avg
         return tail
 
-    def _forward_from_layer(self, ensemble_idx, x):
-        """Forward through layers after extraction_layer."""
+    def _forward_tail(self, ensemble_idx, x):
+        """Forward through the output layer (last layer of generated MLP)."""
         main_network = self.main_networks[ensemble_idx]
+        weight, bias = main_network[-1]
+        weight = self.clf._move_to_device(weight)
+        bias = self.clf._move_to_device(bias)
         with torch.no_grad():
-            for layer_idx in range(self.extraction_layer + 1, len(main_network)):
-                weight, bias = main_network[layer_idx]
-                weight = self.clf._move_to_device(weight)
-                bias = self.clf._move_to_device(bias)
-                x_new = F.linear(x, weight, bias)
-                if layer_idx < len(main_network) - 1:
-                    x_new = F.relu(x_new)
-                    if x_new.shape[-1] == x.shape[-1]:
-                        x = x + x_new
-                    else:
-                        x = x_new
-                else:
-                    x = x_new
-        return F.softmax(x, dim=1).cpu().numpy()
+            logits = F.linear(x, weight, bias)
+        return F.softmax(logits, dim=1).cpu().numpy()
 
     def predict(self, delta):
         """Full-batch intervention: delta shape (n_query, H)."""
         outputs = []
         for jj in range(len(self.main_networks)):
             x = self.intermediates[jj].clone() + delta
-            outputs.append(self._forward_from_layer(jj, x))
+            outputs.append(self._forward_tail(jj, x))
         return np.mean(outputs, axis=0)
 
     def predict_row(self, row_idx, delta_row):
@@ -1320,7 +1299,7 @@ class HyperFastTail:
         for jj in range(len(self.main_networks)):
             x = self.intermediates[jj].clone()
             x[row_idx] += delta_row
-            outputs.append(self._forward_from_layer(jj, x))
+            outputs.append(self._forward_tail(jj, x))
         return np.mean(outputs, axis=0)
 
 

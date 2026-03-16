@@ -661,7 +661,10 @@ def _capture_tabdpt(X_ctx, y_ctx, X_query, extraction_layer, device, task):
 
 
 def _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task):
-    from hyperfast.hyperfast import transform_data_for_main_network
+    """Capture penultimate activations using forward_main_network (same as extraction)."""
+    from hyperfast.hyperfast import (
+        forward_main_network, transform_data_for_main_network,
+    )
     from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
     extractor = HyperFastEmbeddingExtractor(device=device)
@@ -691,23 +694,11 @@ def _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task):
         )
 
         with torch.no_grad():
-            x = X_transformed
-            for layer_idx, (weight, bias) in enumerate(main_network):
-                weight = hf_clf._move_to_device(weight)
-                bias = hf_clf._move_to_device(bias)
-                x_new = F.linear(x, weight, bias)
-                if layer_idx < len(main_network) - 1:
-                    x_new = F.relu(x_new)
-                    if x_new.shape[-1] == x.shape[-1]:
-                        x = x + x_new
-                    else:
-                        x = x_new
-                else:
-                    x = x_new
-                if layer_idx == extraction_layer:
-                    intermediates.append(x.detach().clone())
-
-            baseline_outputs.append(F.softmax(x, dim=1).cpu().numpy())
+            outputs, intermediate = forward_main_network(
+                X_transformed, main_network,
+            )
+            intermediates.append(intermediate.detach().clone())
+            baseline_outputs.append(F.softmax(outputs, dim=1).cpu().numpy())
 
     # Return first ensemble member's intermediate (query-only, no context)
     all_emb = intermediates[0]

@@ -1376,14 +1376,16 @@ def sweep_hyperfast(
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for HyperFast.
 
-    HyperFast generates a task-specific MLP from context data. Instead of hooks,
-    we split the forward pass at extraction_layer and replay the tail with
-    modified activations. Averages over ensemble members.
+    Uses forward_main_network() from hyperfast to get penultimate activations
+    (same code path as embedding extraction). Tail replay is just the output
+    layer. Averages over ensemble members.
 
     Classification only — raises ValueError if task is regression.
     """
     import torch.nn.functional as F
-    from hyperfast.hyperfast import transform_data_for_main_network
+    from hyperfast.hyperfast import (
+        forward_main_network, transform_data_for_main_network,
+    )
     from models.hyperfast_embeddings import HyperFastEmbeddingExtractor
 
     if task == "regression":
@@ -1404,15 +1406,6 @@ def sweep_hyperfast(
     intermediates = []
     baseline_outputs = []
 
-    # Clamp extraction_layer to last hidden layer (before output)
-    first_net = hf_clf._move_to_device(hf_clf._main_networks[0])
-    if extraction_layer >= len(first_net) - 1:
-        logger.warning(
-            f"HyperFast: extraction_layer {extraction_layer} >= n_layers-1 "
-            f"({len(first_net)}), clamping to {len(first_net) - 2}"
-        )
-        extraction_layer = len(first_net) - 2
-
     for jj in range(len(hf_clf._main_networks)):
         main_network = hf_clf._move_to_device(hf_clf._main_networks[jj])
         rf = hf_clf._move_to_device(hf_clf._rfs[jj])
@@ -1427,29 +1420,14 @@ def sweep_hyperfast(
             X=X_b, cfg=hf_clf._cfg, rf=rf, pca=pca,
         )
 
-        # Full forward pass, caching intermediate at extraction_layer
         with torch.no_grad():
-            x = X_transformed
-            intermediate = None
-            for layer_idx, (weight, bias) in enumerate(main_network):
-                weight = hf_clf._move_to_device(weight)
-                bias = hf_clf._move_to_device(bias)
-                x_new = F.linear(x, weight, bias)
-                if layer_idx < len(main_network) - 1:
-                    x_new = F.relu(x_new)
-                    if x_new.shape[-1] == x.shape[-1]:
-                        x = x + x_new
-                    else:
-                        x = x_new
-                else:
-                    x = x_new
-                if layer_idx == extraction_layer:
-                    intermediate = x.detach().clone()
-
-            baseline_outputs.append(F.softmax(x, dim=1).cpu().numpy())
+            outputs, intermediate = forward_main_network(
+                X_transformed, main_network,
+            )
+            baseline_outputs.append(F.softmax(outputs, dim=1).cpu().numpy())
 
         main_networks.append(main_network)
-        intermediates.append(intermediate)
+        intermediates.append(intermediate.detach().clone())
 
     baseline_preds_np = np.mean(baseline_outputs, axis=0)
 
@@ -1470,24 +1448,14 @@ def sweep_hyperfast(
     # All rows are query rows
     h_query = h_full
 
-    def _forward_from_layer(ensemble_idx, x):
-        """Forward through layers after extraction_layer for one ensemble member."""
-        main_network = main_networks[ensemble_idx]
+    def _forward_tail(ensemble_idx, x):
+        """Forward through the output layer (last layer of generated MLP)."""
+        weight, bias = main_networks[ensemble_idx][-1]
+        weight = hf_clf._move_to_device(weight)
+        bias = hf_clf._move_to_device(bias)
         with torch.no_grad():
-            for layer_idx in range(extraction_layer + 1, len(main_network)):
-                weight, bias = main_network[layer_idx]
-                weight = hf_clf._move_to_device(weight)
-                bias = hf_clf._move_to_device(bias)
-                x_new = F.linear(x, weight, bias)
-                if layer_idx < len(main_network) - 1:
-                    x_new = F.relu(x_new)
-                    if x_new.shape[-1] == x.shape[-1]:
-                        x = x + x_new
-                    else:
-                        x = x_new
-                else:
-                    x = x_new
-        return F.softmax(x, dim=1).cpu().numpy()
+            logits = F.linear(x, weight, bias)
+        return F.softmax(logits, dim=1).cpu().numpy()
 
     # --- Sweep: ablate one feature at a time ---
     n_features = len(alive_features)
@@ -1508,7 +1476,7 @@ def sweep_hyperfast(
         ensemble_preds = []
         for jj in range(len(main_networks)):
             x = intermediates[jj].clone() + delta
-            ensemble_preds.append(_forward_from_layer(jj, x))
+            ensemble_preds.append(_forward_tail(jj, x))
         preds_np = np.mean(ensemble_preds, axis=0)
 
         ablated_row_loss = compute_per_row_loss(y_query, preds_np, task)
