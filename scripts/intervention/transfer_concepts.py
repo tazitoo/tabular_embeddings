@@ -38,6 +38,7 @@ from scripts.intervention.intervene_sae import (
     _perrow_importance,
     _perrow_rankings,
     build_tail,
+    compute_ablation_delta,
     get_extraction_layer,
     intervene,
     load_sae,
@@ -1207,6 +1208,281 @@ def perrow_sweep_transfer(
     }
 
 
+# ── Ablation Sweep ───────────────────────────────────────────────────────────
+
+
+def sweep_ablation(
+    strong_model: str,
+    weak_model: str,
+    dataset: str,
+    ranked_features: List[Tuple[int, float]],
+    device: str,
+    task: str = "classification",
+    sae_dir: Path = DEFAULT_SAE_DIR,
+    layers_path: Path = DEFAULT_LAYERS_PATH,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
+    emb_strong: Optional[torch.Tensor] = None,
+    strong_preds: Optional[np.ndarray] = None,
+    weak_preds: Optional[np.ndarray] = None,
+) -> Dict:
+    """Per-row selective ablation: remove strong model's unique concepts.
+
+    Destructive complement to perrow_sweep_transfer. For each row where the
+    strong model outperforms the weak model, cumulatively ablate (zero out)
+    the strong model's unmatched concepts, accepting only ablations that move
+    the prediction toward the weak model's level.
+
+    Uses the same 3-phase pipeline as transfer:
+      Phase 1: Per-feature importance (N forward passes through strong model)
+      Phase 2: Per-row ranking (filtered to firing features)
+      Phase 3: Per-row selective ablation (accept/reject per concept)
+
+    Returns dict with same structure as perrow_sweep_transfer.
+    """
+    X_ctx, y_ctx, X_q, y_q = _load_splits(dataset, task)
+    n_query = len(X_q)
+
+    # Capture embeddings/predictions if not provided
+    strong_layer = get_extraction_layer(strong_model, layers_path)
+    if emb_strong is None or strong_preds is None:
+        logger.info("Capturing %s embeddings (layer %d)...", strong_model, strong_layer)
+        emb_strong, strong_preds = capture_embeddings(
+            strong_model, X_ctx, y_ctx, X_q, strong_layer, device, task,
+        )
+    if weak_preds is None:
+        weak_layer = get_extraction_layer(weak_model, layers_path)
+        logger.info("Capturing %s predictions...", weak_model)
+        _, weak_preds = capture_embeddings(
+            weak_model, X_ctx, y_ctx, X_q, weak_layer, device, task,
+        )
+
+    # Load strong model's SAE and norm stats
+    sae, _ = load_sae(strong_model, sae_dir=sae_dir, device=device)
+    data_mean, data_std = load_norm_stats(
+        strong_model, dataset, training_dir=training_dir,
+        layers_path=layers_path, device=device,
+    )
+
+    # SAE-encode the strong model's embeddings
+    all_emb = emb_strong  # (seq_len, d_model)
+    query_emb = all_emb[-n_query:]
+    with torch.no_grad():
+        x_norm = (query_emb - data_mean) / data_std
+        h_encoded = sae.encode(x_norm)
+    query_acts = h_encoded.cpu().numpy()
+
+    feat_indices = [f for f, _ in ranked_features]
+
+    # Build tail model for the strong model
+    logger.info("Building %s tail model (layer %d)...", strong_model, strong_layer)
+    tail = build_tail(strong_model, X_ctx, y_ctx, X_q, strong_layer, task, device)
+    seq_len = all_emb.shape[0]
+
+    # --- Phase 1: per-feature importance via tail model ---
+    logger.info("Phase 1: per-feature importance for %d features...", len(feat_indices))
+    baseline_np = strong_preds
+    individual_preds = []
+
+    for feat_idx in feat_indices:
+        delta = compute_ablation_delta(
+            sae, all_emb, [feat_idx], data_mean=data_mean, data_std=data_std,
+        )
+        preds = tail.predict(delta)
+        individual_preds.append(preds)
+
+    # Positive importance = ablation hurts (logloss increases)
+    importance = _perrow_importance(baseline_np, individual_preds, y_q)
+
+    # --- Phase 2: per-row ranking (filtered to firing features) ---
+    rankings = _perrow_rankings(importance, feat_indices, query_acts)
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info("Phase 2: rankings built. Max firing features/row: %d", max_k)
+
+    # --- Phase 3: per-row selective ablation ---
+    # For each row where strong > weak, walk through ranked features:
+    #   - ablate (zero out) each feature
+    #   - accept if prediction moves toward weak model's prediction
+    #   - reject if it overshoots or moves away
+    #   - stop when close enough to weak model
+    sae_hidden = h_encoded.shape[1]
+    d_model = all_emb.shape[1]
+    max_backtrack = 6
+
+    # Goal: degrade strong model toward weak model's per-row P(class=1)
+    sp1 = strong_preds[:, 1] if strong_preds.ndim == 2 else strong_preds
+    wp1 = weak_preds[:, 1] if weak_preds.ndim == 2 else weak_preds
+
+    # Pre-filter: skip rows where strong model is already worse
+    eps = 1e-7
+    y = y_q.astype(float)
+    sp_clip = np.clip(sp1, eps, 1 - eps)
+    wp_clip = np.clip(wp1, eps, 1 - eps)
+    strong_row_ll = -(y * np.log(sp_clip) + (1 - y) * np.log(1 - sp_clip))
+    weak_row_ll = -(y * np.log(wp_clip) + (1 - y) * np.log(1 - wp_clip))
+    fixable = strong_row_ll < weak_row_ll  # strong is better (lower logloss)
+    n_fixable = fixable.sum()
+    logger.info("Fixable rows: %d / %d (%.0f%% strong already worse)",
+                n_fixable, n_query, 100 * (1 - n_fixable / n_query))
+
+    # Precompute per-concept ablation deltas
+    logger.info("Precomputing per-concept ablation deltas for %d features...",
+                len(feat_indices))
+    concept_deltas = {}
+    for feat_idx in feat_indices:
+        delta = compute_ablation_delta(
+            sae, all_emb[-n_query:], [feat_idx],
+            data_mean=data_mean, data_std=data_std,
+        )
+        # Normalize to unit norm (line search scale controls magnitude)
+        norms = delta.norm(dim=1, keepdim=True).clamp(min=1e-10)
+        delta = delta / norms
+        concept_deltas[feat_idx] = delta  # (n_query, d_model) unit-norm
+
+    # Per-row line search
+    cumulative_deltas = torch.zeros(n_query, d_model,
+                                    dtype=all_emb.dtype, device=all_emb.device)
+    accepted_counts = np.zeros(n_query, dtype=int)
+    final_p1 = sp1.copy()
+    converge_threshold = 1e-3
+
+    concept_stats = defaultdict(lambda: {"tried": 0, "accepted": 0, "scales": []})
+    min_tries_before_skip = 10
+
+    logger.info("Per-row ablation: %d fixable rows, max %d concepts/row...",
+                n_fixable, max_k)
+
+    for row_idx in range(n_query):
+        if not fixable[row_idx]:
+            continue
+
+        current_p1 = float(sp1[row_idx])
+        target_p1 = float(wp1[row_idx])  # degrade toward weak model
+        best_dist = abs(current_p1 - target_p1)
+
+        if best_dist < 1e-8:
+            final_p1[row_idx] = current_p1
+            continue
+
+        for feat_idx in rankings[row_idx]:
+            cs = concept_stats[feat_idx]
+
+            if (cs["tried"] >= min_tries_before_skip
+                    and cs["accepted"] == 0):
+                continue
+
+            concept_delta_row = concept_deltas[feat_idx][row_idx]
+
+            # Probe at scale=1
+            probe_delta = cumulative_deltas[row_idx] + concept_delta_row
+            probe_preds = tail.predict_row(row_idx, probe_delta)
+            probe_p1 = float(probe_preds[row_idx, 1] if probe_preds.ndim == 2
+                             else probe_preds[row_idx])
+
+            grad = probe_p1 - current_p1
+            if abs(grad) < 1e-10:
+                cs["tried"] += 1
+                continue
+
+            # Analytical optimal scale
+            s_star = (target_p1 - current_p1) / grad
+
+            # Cap using historical data
+            if cs["scales"]:
+                hist_median = float(np.median(cs["scales"]))
+                if abs(s_star) > 2 * abs(hist_median) and abs(hist_median) > 1e-6:
+                    s_star = np.sign(s_star) * 2 * abs(hist_median)
+
+            # Backtracking line search
+            cs["tried"] += 1
+            trial_scale = s_star
+            for bt in range(max_backtrack + 1):
+                if abs(trial_scale) < 1e-10:
+                    break
+
+                if bt == 0 and abs(trial_scale - 1.0) < 0.01:
+                    trial_p1 = probe_p1
+                    trial_delta = probe_delta
+                else:
+                    trial_delta = cumulative_deltas[row_idx] + trial_scale * concept_delta_row
+                    trial_preds = tail.predict_row(row_idx, trial_delta)
+                    trial_p1 = float(trial_preds[row_idx, 1] if trial_preds.ndim == 2
+                                     else trial_preds[row_idx])
+                trial_dist = abs(trial_p1 - target_p1)
+
+                if trial_dist < best_dist - 1e-8:
+                    cumulative_deltas[row_idx] = trial_delta
+                    accepted_counts[row_idx] += 1
+                    best_dist = trial_dist
+                    current_p1 = trial_p1
+                    cs["accepted"] += 1
+                    cs["scales"].append(float(trial_scale))
+                    break
+
+                trial_scale *= 0.5
+
+            if best_dist < converge_threshold:
+                break
+
+        final_p1[row_idx] = current_p1
+
+        if (row_idx + 1) % 50 == 0 or row_idx == n_query - 1:
+            logger.info("  row %d/%d: %d concepts, dist %.4f → %.4f",
+                        row_idx + 1, n_query,
+                        int(accepted_counts[row_idx]),
+                        abs(float(sp1[row_idx]) - float(wp1[row_idx])),
+                        best_dist)
+
+    logger.info("Ablation complete: mean %.1f, median %.0f, max %d concepts/row",
+                accepted_counts.mean(), np.median(accepted_counts),
+                int(accepted_counts.max()))
+
+    # Per-concept summary
+    all_scales = []
+    for cs in concept_stats.values():
+        all_scales.extend(cs["scales"])
+    if all_scales:
+        scales_arr = np.array(all_scales)
+        n_neg = (scales_arr < 0).sum()
+        logger.info("Scales: median=%.2f, range=[%.2f, %.2f], %d negative (%.0f%%)",
+                    np.median(scales_arr), scales_arr.min(), scales_arr.max(),
+                    n_neg, 100 * n_neg / len(scales_arr))
+
+    n_tried = sum(1 for cs in concept_stats.values() if cs["tried"] > 0)
+    n_ever_accepted = sum(1 for cs in concept_stats.values() if cs["accepted"] > 0)
+    n_skipped = sum(1 for cs in concept_stats.values()
+                    if cs["tried"] >= min_tries_before_skip and cs["accepted"] == 0)
+    logger.info("Concepts: %d tried, %d ever accepted (%.0f%%), %d skipped as dead",
+                n_tried, n_ever_accepted,
+                100 * n_ever_accepted / max(n_tried, 1), n_skipped)
+
+    # Build accepted_masks
+    accepted_masks = torch.zeros(n_query, sae_hidden, dtype=torch.bool,
+                                 device=all_emb.device)
+    for row_idx in range(n_query):
+        for ki in range(min(int(accepted_counts[row_idx]), len(rankings[row_idx]))):
+            accepted_masks[row_idx, rankings[row_idx][ki]] = True
+    n_accepted = accepted_masks.sum(dim=1)
+
+    accepted_preds = np.column_stack([1.0 - final_p1, final_p1])
+
+    return {
+        "baseline_preds": baseline_np,
+        "perrow_importance": importance,
+        "perrow_rankings": rankings,
+        "sweep_preds": [],
+        "accepted_preds": accepted_preds,
+        "accepted_counts": n_accepted.cpu().numpy(),
+        "max_k_per_row": np.array([len(r) for r in rankings]),
+        "accepted_masks": accepted_masks.cpu(),
+        "query_activations": query_acts,
+        "unmatched_features": list(feat_indices),
+        "strong_preds": strong_preds,
+        "weak_preds": weak_preds,
+        "y_query": y_q,
+        "concept_stats": dict(concept_stats),
+    }
+
+
 # ── Per-Row Optimal Transfer ─────────────────────────────────────────────────
 
 
@@ -1447,6 +1723,9 @@ def main():
     parser.add_argument("--bidirectional", action="store_true",
                         help="Run both forward and reverse transfer, "
                              "plot both directions on one scatter")
+    parser.add_argument("--ablation", action="store_true",
+                        help="Also run ablation: degrade strong model by "
+                             "removing its unique concepts")
     parser.add_argument("--alpha", type=float, default=1.0,
                         help="Ridge regularization for linear map")
     parser.add_argument("--sae-dir", type=Path, default=DEFAULT_SAE_DIR)
@@ -1677,6 +1956,77 @@ def main():
             strong_model, weak_model, args.dataset,
             fig_dir / "transfer_perrow_diagnostic.pdf", action="transferring",
         )
+
+    # ── Ablation (destructive complement) ────────────────────────────────
+    if args.ablation:
+        ablation_dir = args.output_dir / args.dataset / "ablation"
+
+        # Get strong model's unmatched features (concepts it has that weak doesn't)
+        try:
+            ablation_feat = get_unmatched_features(
+                strong_model, weak_model, args.dataset, positive_only=False,
+            )
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"No comparison data for {strong_model} vs {weak_model} on {args.dataset}. "
+                f"Run: python scripts/intervention/concept_importance.py "
+                f"--model {strong_model} --compare {weak_model} --dataset {args.dataset}"
+            )
+
+        if not ablation_feat:
+            logger.warning("No unmatched features for ablation.")
+        else:
+            n_pos = sum(1 for _, d in ablation_feat if d > 0)
+            logger.info("Ablation: %d unmatched %s-only features (%d positive drop)",
+                        len(ablation_feat), strong_model, n_pos)
+
+            abl_result = sweep_ablation(
+                strong_model=strong_model, weak_model=weak_model,
+                dataset=args.dataset, ranked_features=ablation_feat,
+                device=args.device, task=args.task,
+                sae_dir=args.sae_dir, layers_path=args.layers_config,
+                training_dir=args.training_dir,
+                emb_strong=emb_strong, strong_preds=strong_preds,
+                weak_preds=weak_preds,
+            )
+
+            # Compute gap closed (reuse transfer's function with swapped roles:
+            # "source" = weak model (the target level), "baseline" = strong model)
+            abl_optimal = find_per_row_optimal_transfer(
+                abl_result, weak_preds, strong_preds, y_q,
+            )
+
+            # Print ablation results
+            ablated_p1 = abl_result["accepted_preds"][:, 1]
+            auc_abl = float(roc_auc_score(y_q, ablated_p1))
+            gap = auc_strong - auc_weak
+            pct_explained = (auc_strong - auc_abl) / gap * 100 if abs(gap) > 0.001 else float("nan")
+
+            print(f"\n  Ablation ({disp_strong} ─ unique): "
+                  f"{disp_strong}⁻ AUC = {auc_abl:.4f} "
+                  f"({pct_explained:.1f}% of gap explained)")
+
+            # Save summary
+            transfer_summary(
+                abl_optimal, strong_model, weak_model, args.dataset,
+                "Ablation", ablation_dir,
+            )
+
+            # Plots
+            plot_perrow_scatter(
+                strong_p1, weak_p1, ablated_p1,
+                abl_optimal["optimal_k"], y_q,
+                strong_model, weak_model, args.dataset,
+                auc_strong, auc_weak,
+                ablation_dir / "ablation_perrow_scatter.pdf",
+                mode="ablation",
+            )
+            plot_perrow_results(
+                abl_optimal["optimal_k"], abl_optimal["row_gap_closed"],
+                abl_optimal["max_k_per_row"], abl_optimal["perrow_rankings"],
+                strong_model, weak_model, args.dataset,
+                ablation_dir / "ablation_perrow.pdf", action="ablating",
+            )
 
 
 if __name__ == "__main__":

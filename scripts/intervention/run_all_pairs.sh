@@ -51,7 +51,7 @@ for d in "${DATASETS[@]}"; do
 done
 
 echo "========================================"
-echo "Phase 3: Pairwise transfer (bidirectional)"
+echo "Phase 3: Pairwise transfer + ablation (bidirectional)"
 echo "========================================"
 total=$((${#MODELS[@]} * (${#MODELS[@]} - 1) / 2 * ${#DATASETS[@]}))
 count=0
@@ -70,7 +70,7 @@ for d in "${DATASETS[@]}"; do
       fi
       $PY scripts/intervention/transfer_concepts.py \
         --source "$a" --target "$b" --dataset "$d" \
-        --bidirectional --device cuda \
+        --bidirectional --ablation --device cuda \
         2>&1 | tail -20
       echo ""
     done
