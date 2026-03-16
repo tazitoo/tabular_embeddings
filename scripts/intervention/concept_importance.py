@@ -149,8 +149,8 @@ def sweep_tabdpt(
     Each iteration: compute delta for 1 feature, inject via hook, get predictions.
 
     Returns:
-        Dict with baseline_preds, baseline_metric, feature_indices, feature_drops,
-        feature_firing_drops, feature_nonfiring_drops, feature_n_firing,
+        Dict with baseline_preds, baseline_metric, feature_indices, row_feature_drops,
+        feature_n_firing,
         n_query, y_query, metric_name.
     """
     from tabdpt import TabDPTClassifier, TabDPTRegressor
@@ -208,9 +208,7 @@ def sweep_tabdpt(
 
     # --- Sweep: ablate one feature at a time ---
     n_features = len(alive_features)
-    feature_drops = np.zeros(n_features)
-    feature_firing_drops = np.zeros(n_features)
-    feature_nonfiring_drops = np.zeros(n_features)
+    row_feature_drops = np.zeros((n_query, n_features))
     feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
@@ -255,12 +253,8 @@ def sweep_tabdpt(
         fires = (h_query[:, feat_idx] > 0).cpu().numpy()
         n_fire = int(fires.sum())
 
-        feature_drops[i] = float(row_importance.mean())
+        row_feature_drops[:, i] = row_importance
         feature_n_firing[i] = n_fire
-        if n_fire > 0:
-            feature_firing_drops[i] = float(row_importance[fires].mean())
-        if n_fire < n_query:
-            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -268,7 +262,7 @@ def sweep_tabdpt(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"drop={row_feature_drops[:, i].mean():+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -280,9 +274,7 @@ def sweep_tabdpt(
         "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_drops": feature_drops,
-        "feature_firing_drops": feature_firing_drops,
-        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "row_feature_drops": row_feature_drops,
         "feature_n_firing": feature_n_firing,
         "n_query": n_query,
         "n_active_features": n_active,
@@ -357,9 +349,7 @@ def sweep_tabpfn(
     h_query = h_full[-n_query:]
 
     n_features = len(alive_features)
-    feature_drops = np.zeros(n_features)
-    feature_firing_drops = np.zeros(n_features)
-    feature_nonfiring_drops = np.zeros(n_features)
+    row_feature_drops = np.zeros((n_query, n_features))
     feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
@@ -402,12 +392,8 @@ def sweep_tabpfn(
         fires = (h_query[:, feat_idx] > 0).cpu().numpy()
         n_fire = int(fires.sum())
 
-        feature_drops[i] = float(row_importance.mean())
+        row_feature_drops[:, i] = row_importance
         feature_n_firing[i] = n_fire
-        if n_fire > 0:
-            feature_firing_drops[i] = float(row_importance[fires].mean())
-        if n_fire < n_query:
-            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -415,7 +401,7 @@ def sweep_tabpfn(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"drop={row_feature_drops[:, i].mean():+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -427,9 +413,7 @@ def sweep_tabpfn(
         "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_drops": feature_drops,
-        "feature_firing_drops": feature_firing_drops,
-        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "row_feature_drops": row_feature_drops,
         "feature_n_firing": feature_n_firing,
         "n_query": n_query,
         "n_active_features": n_active,
@@ -524,9 +508,7 @@ def sweep_mitra(
     h_query = h_full[n_sup:]  # query portion of SAE activations
 
     n_features = len(alive_features)
-    feature_drops = np.zeros(n_features)
-    feature_firing_drops = np.zeros(n_features)
-    feature_nonfiring_drops = np.zeros(n_features)
+    row_feature_drops = np.zeros((n_query, n_features))
     feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
@@ -586,12 +568,8 @@ def sweep_mitra(
         fires = (h_query[:, feat_idx] > 0).cpu().numpy()
         n_fire = int(fires.sum())
 
-        feature_drops[i] = float(row_importance.mean())
+        row_feature_drops[:, i] = row_importance
         feature_n_firing[i] = n_fire
-        if n_fire > 0:
-            feature_firing_drops[i] = float(row_importance[fires].mean())
-        if n_fire < n_query:
-            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -599,7 +577,7 @@ def sweep_mitra(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"drop={row_feature_drops[:, i].mean():+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -611,9 +589,7 @@ def sweep_mitra(
         "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_drops": feature_drops,
-        "feature_firing_drops": feature_firing_drops,
-        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "row_feature_drops": row_feature_drops,
         "feature_n_firing": feature_n_firing,
         "n_query": n_query,
         "n_active_features": n_active,
@@ -683,9 +659,7 @@ def sweep_tabicl(
     h_query = h_full[-n_query:]
 
     n_features = len(alive_features)
-    feature_drops = np.zeros(n_features)
-    feature_firing_drops = np.zeros(n_features)
-    feature_nonfiring_drops = np.zeros(n_features)
+    row_feature_drops = np.zeros((n_query, n_features))
     feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
@@ -722,12 +696,8 @@ def sweep_tabicl(
         fires = (h_query[:, feat_idx] > 0).cpu().numpy()
         n_fire = int(fires.sum())
 
-        feature_drops[i] = float(row_importance.mean())
+        row_feature_drops[:, i] = row_importance
         feature_n_firing[i] = n_fire
-        if n_fire > 0:
-            feature_firing_drops[i] = float(row_importance[fires].mean())
-        if n_fire < n_query:
-            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -735,7 +705,7 @@ def sweep_tabicl(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"drop={row_feature_drops[:, i].mean():+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -747,9 +717,7 @@ def sweep_tabicl(
         "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_drops": feature_drops,
-        "feature_firing_drops": feature_firing_drops,
-        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "row_feature_drops": row_feature_drops,
         "feature_n_firing": feature_n_firing,
         "n_query": n_query,
         "n_active_features": n_active,
@@ -826,9 +794,7 @@ def sweep_tabicl_v2(
     h_query = h_full[-n_query:]
 
     n_features = len(alive_features)
-    feature_drops = np.zeros(n_features)
-    feature_firing_drops = np.zeros(n_features)
-    feature_nonfiring_drops = np.zeros(n_features)
+    row_feature_drops = np.zeros((n_query, n_features))
     feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
@@ -868,12 +834,8 @@ def sweep_tabicl_v2(
         fires = (h_query[:, feat_idx] > 0).cpu().numpy()
         n_fire = int(fires.sum())
 
-        feature_drops[i] = float(row_importance.mean())
+        row_feature_drops[:, i] = row_importance
         feature_n_firing[i] = n_fire
-        if n_fire > 0:
-            feature_firing_drops[i] = float(row_importance[fires].mean())
-        if n_fire < n_query:
-            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -881,7 +843,7 @@ def sweep_tabicl_v2(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"drop={row_feature_drops[:, i].mean():+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -893,9 +855,7 @@ def sweep_tabicl_v2(
         "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_drops": feature_drops,
-        "feature_firing_drops": feature_firing_drops,
-        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "row_feature_drops": row_feature_drops,
         "feature_n_firing": feature_n_firing,
         "n_query": n_query,
         "n_active_features": n_active,
@@ -1044,9 +1004,7 @@ def sweep_carte(
     h_query = h_full
 
     n_features = len(alive_features)
-    feature_drops = np.zeros(n_features)
-    feature_firing_drops = np.zeros(n_features)
-    feature_nonfiring_drops = np.zeros(n_features)
+    row_feature_drops = np.zeros((n_query, n_features))
     feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
@@ -1087,12 +1045,8 @@ def sweep_carte(
         fires = (h_query[:, feat_idx] > 0).cpu().numpy()
         n_fire = int(fires.sum())
 
-        feature_drops[i] = float(row_importance.mean())
+        row_feature_drops[:, i] = row_importance
         feature_n_firing[i] = n_fire
-        if n_fire > 0:
-            feature_firing_drops[i] = float(row_importance[fires].mean())
-        if n_fire < n_query:
-            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -1100,7 +1054,7 @@ def sweep_carte(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"drop={row_feature_drops[:, i].mean():+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -1112,9 +1066,7 @@ def sweep_carte(
         "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_drops": feature_drops,
-        "feature_firing_drops": feature_firing_drops,
-        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "row_feature_drops": row_feature_drops,
         "feature_n_firing": feature_n_firing,
         "n_query": n_query,
         "n_active_features": n_active,
@@ -1148,18 +1100,8 @@ def sweep_tabula8b(
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-    # Subsample query rows for tractability
-    n_sub = min(20, len(y_query))
-    if n_sub < len(y_query):
-        rng = np.random.RandomState(42)
-        idx = rng.choice(len(y_query), n_sub, replace=False)
-        idx.sort()
-        X_query = X_query[idx]
-        y_query = y_query[idx]
-        logger.warning(
-            f"Tabula-8B sweep: subsampled to {n_sub} query rows "
-            f"(~{n_sub * len(alive_features)} forward passes)"
-        )
+    # Note: no subsampling — per-row importance is the output.
+    # Each query row gets one forward pass per feature.
 
     import os
     model_path = "/data/models/tabula-8b"
@@ -1296,9 +1238,7 @@ def sweep_tabula8b(
 
     # --- Sweep: ablate one feature at a time ---
     n_features = len(alive_features)
-    feature_drops = np.zeros(n_features)
-    feature_firing_drops = np.zeros(n_features)
-    feature_nonfiring_drops = np.zeros(n_features)
+    row_feature_drops = np.zeros((n_query, n_features))
     feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
@@ -1323,12 +1263,8 @@ def sweep_tabula8b(
         fires = (h_query[:, feat_idx] > 0).cpu().numpy()
         n_fire = int(fires.sum())
 
-        feature_drops[i] = float(row_importance.mean())
+        row_feature_drops[:, i] = row_importance
         feature_n_firing[i] = n_fire
-        if n_fire > 0:
-            feature_firing_drops[i] = float(row_importance[fires].mean())
-        if n_fire < n_query:
-            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -1336,7 +1272,7 @@ def sweep_tabula8b(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"drop={row_feature_drops[:, i].mean():+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -1348,9 +1284,7 @@ def sweep_tabula8b(
         "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_drops": feature_drops,
-        "feature_firing_drops": feature_firing_drops,
-        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "row_feature_drops": row_feature_drops,
         "feature_n_firing": feature_n_firing,
         "n_query": n_query,
         "n_active_features": n_active,
@@ -1463,9 +1397,7 @@ def sweep_hyperfast(
 
     # --- Sweep: ablate one feature at a time ---
     n_features = len(alive_features)
-    feature_drops = np.zeros(n_features)
-    feature_firing_drops = np.zeros(n_features)
-    feature_nonfiring_drops = np.zeros(n_features)
+    row_feature_drops = np.zeros((n_query, n_features))
     feature_n_firing = np.zeros(n_features, dtype=int)
 
     t0 = time.time()
@@ -1489,12 +1421,8 @@ def sweep_hyperfast(
         fires = (h_query[:, feat_idx] > 0).cpu().numpy()
         n_fire = int(fires.sum())
 
-        feature_drops[i] = float(row_importance.mean())
+        row_feature_drops[:, i] = row_importance
         feature_n_firing[i] = n_fire
-        if n_fire > 0:
-            feature_firing_drops[i] = float(row_importance[fires].mean())
-        if n_fire < n_query:
-            feature_nonfiring_drops[i] = float(row_importance[~fires].mean())
 
         if (i + 1) % 100 == 0 or i == 0:
             elapsed = time.time() - t0
@@ -1502,7 +1430,7 @@ def sweep_hyperfast(
             eta = (n_features - i - 1) / rate
             logger.info(
                 f"  [{i+1}/{n_features}] feat={feat_idx} "
-                f"drop={feature_drops[i]:+.4f} fire={n_fire}/{n_query} "
+                f"drop={row_feature_drops[:, i].mean():+.4f} fire={n_fire}/{n_query} "
                 f"({rate:.1f} feat/s, ETA {eta:.0f}s)"
             )
 
@@ -1514,9 +1442,7 @@ def sweep_hyperfast(
         "baseline_metric": baseline_metric,
         "metric_name": metric_name,
         "feature_indices": np.array(alive_features),
-        "feature_drops": feature_drops,
-        "feature_firing_drops": feature_firing_drops,
-        "feature_nonfiring_drops": feature_nonfiring_drops,
+        "row_feature_drops": row_feature_drops,
         "feature_n_firing": feature_n_firing,
         "n_query": n_query,
         "n_active_features": n_active,
@@ -1550,7 +1476,7 @@ def sweep_concept_importance(
 ) -> Dict:
     """Run single-feature ablation sweep for all alive features.
 
-    Returns dict with feature_indices, feature_drops, feature_labels, baseline_metric.
+    Returns dict with feature_indices, row_feature_drops, feature_labels, baseline_metric.
     """
     if model_key not in SWEEP_FN:
         raise ValueError(f"Unsupported model: {model_key}. Choose from {list(SWEEP_FN.keys())}")
@@ -1656,9 +1582,23 @@ def analyze_importance(
     feature_lookup = concept_data["feature_lookup"][label_key]
     concept_groups = concept_data["concept_groups"]
 
+    # Build feature list from new format (feature_indices + mean_feature_drops)
+    # or old format (features list with per-feature dicts)
+    if "feature_indices" in importance and "mean_feature_drops" in importance:
+        features = []
+        for i, idx in enumerate(importance["feature_indices"]):
+            features.append({
+                "index": idx,
+                "drop": importance["mean_feature_drops"][i],
+                "n_firing": importance["feature_n_firing"][i],
+                "label": importance["feature_labels"][i],
+            })
+    else:
+        features = importance["features"]
+
     # Enrich each feature with band and group info
     enriched = []
-    for feat in importance["features"]:
+    for feat in features:
         idx = feat["index"]
         info = feature_lookup.get(str(idx), {})
         enriched.append({
@@ -2407,82 +2347,66 @@ def main():
     logger.info(f"Sweep completed in {elapsed:.1f}s ({len(result['feature_indices'])} features)")
     logger.info("")
 
-    # Sort by importance (largest drop first)
-    order = np.argsort(-result["feature_drops"])
+    # Per-row importance matrix: (n_query, n_features)
+    row_drops = result["row_feature_drops"]
     n_query = result.get("n_query", len(result["y_query"]))
+    mean_drops = row_drops.mean(axis=0)
 
-    logger.info(f"Top {args.top} most important features (per-row logloss):")
-    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {'FireDrop':>8} {'N_fire':>8} {'Label'}")
-    logger.info("-" * 80)
+    # Sort by mean importance for display (largest drop first)
+    order = np.argsort(-mean_drops)
+
+    logger.info(f"Top {args.top} most important features (mean per-row loss):")
+    logger.info(f"{'Rank':>4} {'Feat':>6} {'MeanDrop':>10} {'N_fire':>8} {'Label'}")
+    logger.info("-" * 70)
     for rank, idx in enumerate(order[:args.top]):
         feat_idx = result["feature_indices"][idx]
-        drop = result["feature_drops"][idx]
-        fire_drop = result["feature_firing_drops"][idx]
-        n_fire = result["feature_n_firing"][idx]
-        label = result["feature_labels"][idx]
         logger.info(
-            f"{rank+1:>4} {feat_idx:>6} {drop:>+8.4f} {fire_drop:>+8.4f} "
-            f"{n_fire:>4}/{n_query:<3} {label}"
-        )
-
-    # Also show bottom features (least important / improve when ablated)
-    logger.info(f"\nBottom {min(10, args.top)} features (least important / improve when ablated):")
-    logger.info(f"{'Rank':>4} {'Feat':>6} {'Drop':>8} {'FireDrop':>8} {'N_fire':>8} {'Label'}")
-    logger.info("-" * 80)
-    for rank, idx in enumerate(order[-min(10, args.top):]):
-        feat_idx = result["feature_indices"][idx]
-        drop = result["feature_drops"][idx]
-        fire_drop = result["feature_firing_drops"][idx]
-        n_fire = result["feature_n_firing"][idx]
-        label = result["feature_labels"][idx]
-        logger.info(
-            f"{'':>4} {feat_idx:>6} {drop:>+8.4f} {fire_drop:>+8.4f} "
-            f"{n_fire:>4}/{n_query:<3} {label}"
+            f"{rank+1:>4} {feat_idx:>6} {mean_drops[idx]:>+10.4f} "
+            f"{result['feature_n_firing'][idx]:>4}/{n_query:<3} "
+            f"{result['feature_labels'][idx]}"
         )
 
     # Summary stats
-    drops = result["feature_drops"]
-    fire_counts = result["feature_n_firing"]
-    logger.info(f"\nImportance distribution (per-row logloss):")
-    logger.info(f"  Mean drop:   {drops.mean():+.4f}")
-    logger.info(f"  Std drop:    {drops.std():.4f}")
-    logger.info(f"  Max drop:    {drops.max():+.4f}")
-    logger.info(f"  Min drop:    {drops.min():+.4f}")
-    logger.info(f"  >0 (helpful): {(drops > 0).sum()} ({(drops > 0).mean()*100:.1f}%)")
-    logger.info(f"  Median fire count: {int(np.median(fire_counts))}/{n_query}")
+    logger.info(f"\nImportance distribution (mean per-row loss):")
+    logger.info(f"  Mean drop:   {mean_drops.mean():+.4f}")
+    logger.info(f"  Std drop:    {mean_drops.std():.4f}")
+    logger.info(f"  Max drop:    {mean_drops.max():+.4f}")
+    logger.info(f"  Min drop:    {mean_drops.min():+.4f}")
+    logger.info(f"  >0 (helpful): {(mean_drops > 0).sum()} ({(mean_drops > 0).mean()*100:.1f}%)")
 
     n_active = result.get("n_active_features", -1)
     logger.info(f"  Active features (fire on >=1 row): {n_active}")
 
-    # Save results
+    # Save results: JSON metadata + NPZ for per-row matrix
     save_data = {
         "model": args.model,
         "dataset": args.dataset,
         "task": task,
-        "metric_name": "per_row_logloss",
+        "metric_name": "per_row_loss",
         "baseline_metric": float(result["baseline_metric"]),
         "baseline_metric_name": metric_name,
         "n_query": n_query,
         "n_active_features": n_active,
         "n_features": len(result["feature_indices"]),
         "elapsed_seconds": elapsed,
-        "features": [],
+        "feature_indices": [int(x) for x in result["feature_indices"]],
+        "feature_labels": result["feature_labels"],
+        "feature_n_firing": [int(x) for x in result["feature_n_firing"]],
+        "mean_feature_drops": [float(x) for x in mean_drops],
     }
-    for i in range(len(result["feature_indices"])):
-        save_data["features"].append({
-            "index": int(result["feature_indices"][i]),
-            "drop": float(result["feature_drops"][i]),
-            "firing_drop": float(result["feature_firing_drops"][i]),
-            "nonfiring_drop": float(result["feature_nonfiring_drops"][i]),
-            "n_firing": int(result["feature_n_firing"][i]),
-            "label": result["feature_labels"][i],
-        })
-    # Sort by drop descending
-    save_data["features"].sort(key=lambda x: -x["drop"])
 
     with open(output_path, "w") as f:
         json.dump(save_data, f, indent=2)
-    logger.info(f"\nSaved to {output_path}")
+
+    # Save per-row importance matrix as NPZ (compact)
+    npz_path = output_path.replace(".json", ".npz") if isinstance(output_path, str) else str(output_path).replace(".json", ".npz")
+    np.savez_compressed(
+        npz_path,
+        row_feature_drops=row_drops,
+        feature_indices=result["feature_indices"],
+        y_query=result["y_query"],
+    )
+    logger.info(f"\nSaved to {output_path} + {npz_path}")
 
     # Auto-run analysis
     logger.info("")
