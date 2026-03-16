@@ -55,6 +55,42 @@ logger = logging.getLogger(__name__)
 DEFAULT_TRANSLATOR_DIR = PROJECT_ROOT / "output" / "embedding_translator"
 
 
+# ── Task-aware helpers ───────────────────────────────────────────────────────
+
+
+def _pred_scalar(preds: np.ndarray) -> np.ndarray:
+    """Extract scalar prediction: P(class=1) for classification, raw value for regression."""
+    return preds[:, 1] if preds.ndim == 2 else preds
+
+
+def _row_loss(y: np.ndarray, p: np.ndarray, task: str) -> np.ndarray:
+    """Per-row loss: logloss for classification, squared error for regression."""
+    if task == "regression":
+        return (y - p) ** 2
+    eps = 1e-7
+    p_clip = np.clip(p, eps, 1 - eps)
+    return -(y * np.log(p_clip) + (1 - y) * np.log(1 - p_clip))
+
+
+def _aggregate_metric(y: np.ndarray, p: np.ndarray, task: str) -> float:
+    """Aggregate metric: AUC for classification, -RMSE for regression (higher=better)."""
+    if task == "regression":
+        return -float(np.sqrt(np.mean((y - p) ** 2)))
+    from sklearn.metrics import roc_auc_score
+    return float(roc_auc_score(y, p))
+
+
+def _metric_name(task: str) -> str:
+    return "RMSE" if task == "regression" else "AUC"
+
+
+def _format_metric(value: float, task: str) -> str:
+    """Format metric for display (negate RMSE back to positive for readability)."""
+    if task == "regression":
+        return f"{-value:.4f}"  # show positive RMSE
+    return f"{value:.4f}"
+
+
 def _load_translator_for_pair(
     source_model: str, target_model: str,
     translator_dir: Path = DEFAULT_TRANSLATOR_DIR,
@@ -819,13 +855,13 @@ def sweep_transfer(
 
     # Compute baselines
     y = y_q.astype(float)
-    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
-    tp1 = target_baseline_preds[:, 1] if target_baseline_preds.ndim == 2 else target_baseline_preds
-    target_logloss = _logloss(y, sp1)  # what we're trying to match (source's logloss)
-    baseline_logloss = _logloss(y, tp1)  # target model's starting logloss
+    sp1 = _pred_scalar(source_preds)
+    tp1 = _pred_scalar(target_baseline_preds)
+    target_loss = _row_loss(y, sp1, task).mean()   # source's mean loss (the goal)
+    baseline_loss = _row_loss(y, tp1, task).mean()  # target's starting mean loss
 
-    logger.info("Target (weaker) baseline logloss=%.4f, source logloss=%.4f",
-                baseline_logloss, target_logloss)
+    logger.info("Target (weaker) baseline loss=%.4f, source loss=%.4f",
+                baseline_loss, target_loss)
 
     # Cumulative sweep: top-1, top-2, ..., top-N
     feat_indices = [f for f, _ in ranked_features]
@@ -852,32 +888,32 @@ def sweep_transfer(
         )
 
         preds_k = result["ablated_preds"]
-        pk1 = preds_k[:, 1] if preds_k.ndim == 2 else preds_k
+        pk1 = _pred_scalar(preds_k)
         all_transferred_p1.append(pk1)
 
-        ll = _logloss(y, pk1)
-        delta_ll = ll - baseline_logloss
-        logger.info("  k=%d (f%d): logloss=%.4f (Δ=%+.4f from baseline)",
+        ll = _row_loss(y, pk1, task).mean()
+        delta_ll = ll - baseline_loss
+        logger.info("  k=%d (f%d): loss=%.4f (Δ=%+.4f from baseline)",
                      k, feat_indices[k - 1], ll, delta_ll)
 
-    # Logloss at each k
-    logloss_curve = [_logloss(y, p) for p in all_transferred_p1]
+    # Loss at each k
+    loss_curve = [float(_row_loss(y, p, task).mean()) for p in all_transferred_p1]
 
-    # Find k where transferred logloss best matches source (target_logloss)
-    gaps = [abs(ll - target_logloss) for ll in logloss_curve]
+    # Find k where transferred loss best matches source (target_loss)
+    gaps = [abs(ll - target_loss) for ll in loss_curve]
     optimal_k = int(np.argmin(gaps)) + 1
 
-    logger.info("Optimal k=%d (logloss=%.4f, gap to source=%.4f)",
-                optimal_k, logloss_curve[optimal_k - 1],
-                logloss_curve[optimal_k - 1] - target_logloss)
+    logger.info("Optimal k=%d (loss=%.4f, gap to source=%.4f)",
+                optimal_k, loss_curve[optimal_k - 1],
+                loss_curve[optimal_k - 1] - target_loss)
 
     return {
         "optimal_k": optimal_k,
         "optimal_features": feat_indices[:optimal_k],
         "optimal_preds": all_transferred_p1[optimal_k - 1],
-        "logloss_curve": logloss_curve,
-        "baseline_logloss": baseline_logloss,
-        "target_logloss": target_logloss,
+        "loss_curve": loss_curve,
+        "baseline_loss": baseline_loss,
+        "target_loss": target_loss,
         "all_transferred_preds": all_transferred_p1,
         "source_preds_p1": sp1,
         "target_baseline_p1": tp1,
@@ -1007,18 +1043,15 @@ def perrow_sweep_transfer(
     d_target = query_target.shape[1]
     max_backtrack = 6  # halve up to 6 times (minimum step = s*/64)
 
-    # Source (strong) P(class=1) — the goal for each row
-    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
-    bp1 = baseline_np[:, 1] if baseline_np.ndim == 2 else baseline_np
+    # Source (strong) prediction — the goal for each row
+    sp1 = _pred_scalar(source_preds)
+    bp1 = _pred_scalar(baseline_np)
 
     # Pre-filter: skip rows where weak model already outperforms strong
-    eps = 1e-7
     y = y_q.astype(float)
-    sp_clip = np.clip(sp1, eps, 1 - eps)
-    bp_clip = np.clip(bp1, eps, 1 - eps)
-    source_row_ll = -(y * np.log(sp_clip) + (1 - y) * np.log(1 - sp_clip))
-    baseline_row_ll = -(y * np.log(bp_clip) + (1 - y) * np.log(1 - bp_clip))
-    fixable = baseline_row_ll > source_row_ll  # weak is worse → transfer can help
+    source_row_loss = _row_loss(y, sp1, task)
+    baseline_row_loss = _row_loss(y, bp1, task)
+    fixable = baseline_row_loss > source_row_loss  # weak is worse → transfer can help
     n_fixable = fixable.sum()
     logger.info("Fixable rows: %d / %d (%.0f%% already equal or better)",
                 n_fixable, n_query, 100 * (1 - n_fixable / n_query))
@@ -1081,10 +1114,9 @@ def perrow_sweep_transfer(
             # Probe at scale=1 to estimate gradient direction
             probe_delta = cumulative_deltas[row_idx] + concept_delta_row
             probe_preds = tail.predict_row(row_idx, probe_delta)
-            probe_p1 = float(probe_preds[row_idx, 1] if probe_preds.ndim == 2
-                             else probe_preds[row_idx])
+            probe_p1 = float(_pred_scalar(probe_preds)[row_idx])
 
-            # Gradient: change in P(class=1) per unit scale
+            # Gradient: change in prediction per unit scale
             grad = probe_p1 - current_p1
             if abs(grad) < 1e-10:
                 cs["tried"] += 1
@@ -1116,8 +1148,7 @@ def perrow_sweep_transfer(
                 else:
                     trial_delta = cumulative_deltas[row_idx] + trial_scale * concept_delta_row
                     trial_preds = tail.predict_row(row_idx, trial_delta)
-                    trial_p1 = float(trial_preds[row_idx, 1] if trial_preds.ndim == 2
-                                     else trial_preds[row_idx])
+                    trial_p1 = float(_pred_scalar(trial_preds)[row_idx])
                 trial_dist = abs(trial_p1 - target_p1)
 
                 if trial_dist < best_dist - 1e-8:
@@ -1188,7 +1219,10 @@ def perrow_sweep_transfer(
     n_accepted = accepted_masks.sum(dim=1)
 
     # Reconstruct full prediction array (binary: p0 = 1 - p1)
-    accepted_preds = np.column_stack([1.0 - final_p1, final_p1])
+    if task == "regression":
+        accepted_preds = final_p1
+    else:
+        accepted_preds = np.column_stack([1.0 - final_p1, final_p1])
 
     return {
         "baseline_preds": baseline_np,
@@ -1308,18 +1342,15 @@ def sweep_ablation(
     d_model = all_emb.shape[1]
     max_backtrack = 6
 
-    # Goal: degrade strong model toward weak model's per-row P(class=1)
-    sp1 = strong_preds[:, 1] if strong_preds.ndim == 2 else strong_preds
-    wp1 = weak_preds[:, 1] if weak_preds.ndim == 2 else weak_preds
+    # Goal: degrade strong model toward weak model's per-row predictions
+    sp1 = _pred_scalar(strong_preds)
+    wp1 = _pred_scalar(weak_preds)
 
     # Pre-filter: skip rows where strong model is already worse
-    eps = 1e-7
     y = y_q.astype(float)
-    sp_clip = np.clip(sp1, eps, 1 - eps)
-    wp_clip = np.clip(wp1, eps, 1 - eps)
-    strong_row_ll = -(y * np.log(sp_clip) + (1 - y) * np.log(1 - sp_clip))
-    weak_row_ll = -(y * np.log(wp_clip) + (1 - y) * np.log(1 - wp_clip))
-    fixable = strong_row_ll < weak_row_ll  # strong is better (lower logloss)
+    strong_row_loss = _row_loss(y, sp1, task)
+    weak_row_loss = _row_loss(y, wp1, task)
+    fixable = strong_row_loss < weak_row_loss  # strong is better (lower loss)
     n_fixable = fixable.sum()
     logger.info("Fixable rows: %d / %d (%.0f%% strong already worse)",
                 n_fixable, n_query, 100 * (1 - n_fixable / n_query))
@@ -1375,8 +1406,7 @@ def sweep_ablation(
             # Probe at scale=1
             probe_delta = cumulative_deltas[row_idx] + concept_delta_row
             probe_preds = tail.predict_row(row_idx, probe_delta)
-            probe_p1 = float(probe_preds[row_idx, 1] if probe_preds.ndim == 2
-                             else probe_preds[row_idx])
+            probe_p1 = float(_pred_scalar(probe_preds)[row_idx])
 
             grad = probe_p1 - current_p1
             if abs(grad) < 1e-10:
@@ -1405,8 +1435,7 @@ def sweep_ablation(
                 else:
                     trial_delta = cumulative_deltas[row_idx] + trial_scale * concept_delta_row
                     trial_preds = tail.predict_row(row_idx, trial_delta)
-                    trial_p1 = float(trial_preds[row_idx, 1] if trial_preds.ndim == 2
-                                     else trial_preds[row_idx])
+                    trial_p1 = float(_pred_scalar(trial_preds)[row_idx])
                 trial_dist = abs(trial_p1 - target_p1)
 
                 if trial_dist < best_dist - 1e-8:
@@ -1463,7 +1492,10 @@ def sweep_ablation(
             accepted_masks[row_idx, rankings[row_idx][ki]] = True
     n_accepted = accepted_masks.sum(dim=1)
 
-    accepted_preds = np.column_stack([1.0 - final_p1, final_p1])
+    if task == "regression":
+        accepted_preds = final_p1
+    else:
+        accepted_preds = np.column_stack([1.0 - final_p1, final_p1])
 
     return {
         "baseline_preds": baseline_np,
@@ -1491,6 +1523,7 @@ def find_per_row_optimal_transfer(
     source_preds: np.ndarray,
     target_baseline_preds: np.ndarray,
     y_query: np.ndarray,
+    task: str = "classification",
 ) -> Dict:
     """Compute per-row gap closed using selective transfer results.
 
@@ -1498,24 +1531,20 @@ def find_per_row_optimal_transfer(
     (accepted_counts). This function computes the gap-closed metric and packages
     results for plotting.
     """
-    eps = 1e-7
     y = y_query.astype(float)
 
-    # Source (strong) model's per-row logloss — this is the goal
-    sp1 = source_preds[:, 1] if source_preds.ndim == 2 else source_preds
-    sp = np.clip(sp1, eps, 1 - eps)
-    target_row_ll = -(y * np.log(sp) + (1 - y) * np.log(1 - sp))
+    # Source (strong) model's per-row loss — this is the goal
+    sp1 = _pred_scalar(source_preds)
+    target_row_loss = _row_loss(y, sp1, task)
 
-    # Target (weak) model's per-row logloss — starting point
-    bp1 = target_baseline_preds[:, 1] if target_baseline_preds.ndim == 2 else target_baseline_preds
-    bp = np.clip(bp1, eps, 1 - eps)
-    baseline_row_ll = -(y * np.log(bp) + (1 - y) * np.log(1 - bp))
+    # Target (weak) model's per-row loss — starting point
+    bp1 = _pred_scalar(target_baseline_preds)
+    baseline_row_loss = _row_loss(y, bp1, task)
 
     # Accepted predictions — the final state after selective accept/reject
     ap = perrow_result["accepted_preds"]
-    ap1 = ap[:, 1] if ap.ndim == 2 else ap
-    ap_clipped = np.clip(ap1, eps, 1 - eps)
-    accepted_row_ll = -(y * np.log(ap_clipped) + (1 - y) * np.log(1 - ap_clipped))
+    ap1 = _pred_scalar(ap)
+    accepted_row_loss = _row_loss(y, ap1, task)
 
     # optimal_k = number of concepts accepted per row
     # Zero out for rows where weak model is already better (no transfer needed)
@@ -1525,14 +1554,14 @@ def find_per_row_optimal_transfer(
     n_query = len(y_query)
     row_gap_closed = np.zeros(n_query)
     for row_idx in range(n_query):
-        orig_gap = baseline_row_ll[row_idx] - target_row_ll[row_idx]
+        orig_gap = baseline_row_loss[row_idx] - target_row_loss[row_idx]
         if orig_gap <= 0:
             # Weak model already equal or better — no transfer needed
             optimal_k[row_idx] = 0
             row_gap_closed[row_idx] = 1.0
         else:
             optimal_k[row_idx] = raw_counts[row_idx]
-            gap_remaining = abs(accepted_row_ll[row_idx] - target_row_ll[row_idx])
+            gap_remaining = abs(accepted_row_loss[row_idx] - target_row_loss[row_idx])
             row_gap_closed[row_idx] = 1.0 - gap_remaining / orig_gap
 
     logger.info("Per-row accepted concepts: mean=%.1f, median=%d, max=%d",
@@ -1549,8 +1578,8 @@ def find_per_row_optimal_transfer(
         "baseline_preds": perrow_result["baseline_preds"],
         "accepted_preds": perrow_result["accepted_preds"],
         "max_k_per_row": perrow_result["max_k_per_row"],
-        "target_row_ll": target_row_ll,
-        "baseline_row_ll": baseline_row_ll,
+        "target_row_loss": target_row_loss,
+        "baseline_row_loss": baseline_row_loss,
         "unmatched_features": perrow_result["unmatched_features"],
         "concept_stats": perrow_result.get("concept_stats", {}),
     }
@@ -1745,10 +1774,8 @@ def main():
 
     translator_dir = args.translator_dir
 
-    # Auto-detect stronger model by running both and comparing AUC.
+    # Auto-detect stronger model by comparing metrics.
     # Transfer FROM the stronger model TO the weaker one.
-    from sklearn.metrics import roc_auc_score
-
     model_a, model_b = args.source, args.target
 
     logger.info("Getting baseline predictions to determine transfer direction...")
@@ -1759,22 +1786,23 @@ def main():
     emb_a, preds_a = capture_embeddings(model_a, X_ctx, y_ctx, X_q, layer_a, args.device, args.task)
     emb_b, preds_b = capture_embeddings(model_b, X_ctx, y_ctx, X_q, layer_b, args.device, args.task)
 
-    pa1 = preds_a[:, 1] if preds_a.ndim == 2 else preds_a
-    pb1 = preds_b[:, 1] if preds_b.ndim == 2 else preds_b
-    auc_a = float(roc_auc_score(y_q, pa1))
-    auc_b = float(roc_auc_score(y_q, pb1))
+    pa1 = _pred_scalar(preds_a)
+    pb1 = _pred_scalar(preds_b)
+    metric_a = _aggregate_metric(y_q, pa1, args.task)
+    metric_b = _aggregate_metric(y_q, pb1, args.task)
+    mname = _metric_name(args.task)
 
-    # Always identify strong/weak by AUC
-    if auc_a >= auc_b:
+    # Always identify strong/weak by metric (higher = better for both AUC and -RMSE)
+    if metric_a >= metric_b:
         strong_model, weak_model = model_a, model_b
         emb_strong, emb_weak = emb_a, emb_b
         strong_preds, weak_preds = preds_a, preds_b
-        auc_strong, auc_weak = auc_a, auc_b
+        metric_strong, metric_weak = metric_a, metric_b
     else:
         strong_model, weak_model = model_b, model_a
         emb_strong, emb_weak = emb_b, emb_a
         strong_preds, weak_preds = preds_b, preds_a
-        auc_strong, auc_weak = auc_b, auc_a
+        metric_strong, metric_weak = metric_b, metric_a
 
     # ── Import plot functions ──────────────────────────────────────────────
     from scripts.figures.plot_prediction_scatter import (
@@ -1783,8 +1811,8 @@ def main():
         plot_perrow_scatter,
     )
 
-    strong_p1 = strong_preds[:, 1] if strong_preds.ndim == 2 else strong_preds
-    weak_p1 = weak_preds[:, 1] if weak_preds.ndim == 2 else weak_preds
+    strong_p1 = _pred_scalar(strong_preds)
+    weak_p1 = _pred_scalar(weak_preds)
     disp_strong = DISPLAY_NAMES.get(strong_model, strong_model)
     disp_weak = DISPLAY_NAMES.get(weak_model, weak_model)
 
@@ -1794,12 +1822,13 @@ def main():
         disp_src = DISPLAY_NAMES.get(src_model, src_model)
         disp_tgt = DISPLAY_NAMES.get(tgt_model, tgt_model)
 
-        sp1 = src_preds[:, 1] if src_preds.ndim == 2 else src_preds
-        logger.info("%s: %s (AUC=%.3f) → %s (AUC=%.3f)",
-                    label, disp_src,
-                    float(roc_auc_score(y_q, sp1)),
-                    disp_tgt,
-                    float(roc_auc_score(y_q, tgt_preds[:, 1] if tgt_preds.ndim == 2 else tgt_preds)))
+        sp1 = _pred_scalar(src_preds)
+        tp1 = _pred_scalar(tgt_preds)
+        logger.info("%s: %s (%s=%s) → %s (%s=%s)",
+                    label, disp_src, mname,
+                    _format_metric(_aggregate_metric(y_q, sp1, args.task), args.task),
+                    disp_tgt, mname,
+                    _format_metric(_aggregate_metric(y_q, tp1, args.task), args.task))
 
         try:
             feat = get_unmatched_features(
@@ -1834,11 +1863,10 @@ def main():
             source_preds=src_preds, target_baseline_preds=tgt_preds,
             translator=translator,
         )
-        opt = find_per_row_optimal_transfer(result, src_preds, tgt_preds, y_q)
+        opt = find_per_row_optimal_transfer(result, src_preds, tgt_preds, y_q, args.task)
 
-        tp1_dir = tgt_preds[:, 1] if tgt_preds.ndim == 2 else tgt_preds
-        ap = opt["accepted_preds"]
-        ap1 = ap[:, 1] if ap.ndim == 2 else ap
+        tp1_dir = _pred_scalar(tgt_preds)
+        ap1 = _pred_scalar(opt["accepted_preds"])
         trans_p1 = np.where(opt["optimal_k"] > 0, ap1, tp1_dir)
 
         return trans_p1, opt
@@ -1870,21 +1898,22 @@ def main():
     # ── Print results ────────────────────────────────────────────────────
     print(f"\n{'='*60}")
     print(f"Dataset: {args.dataset}")
-    print(f"  {disp_strong} AUC = {auc_strong:.4f}")
-    print(f"  {disp_weak} AUC = {auc_weak:.4f}")
+    print(f"  {disp_strong} {mname} = {_format_metric(metric_strong, args.task)}")
+    print(f"  {disp_weak} {mname} = {_format_metric(metric_weak, args.task)}")
 
     if fwd_transferred is not None:
-        auc_fwd = float(roc_auc_score(y_q, fwd_transferred))
-        gap = auc_strong - auc_weak
-        pct = (auc_fwd - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
+        m_fwd = _aggregate_metric(y_q, fwd_transferred, args.task)
+        gap = metric_strong - metric_weak
+        pct = (m_fwd - metric_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
         print(f"  Forward ({disp_strong}→{disp_weak}): "
-              f"{disp_weak}+ AUC = {auc_fwd:.4f} ({pct:+.1f}%)")
+              f"{disp_weak}+ {mname} = {_format_metric(m_fwd, args.task)} ({pct:+.1f}%)")
 
     if rev_transferred is not None:
-        auc_rev = float(roc_auc_score(y_q, rev_transferred))
-        delta = auc_rev - auc_strong
+        m_rev = _aggregate_metric(y_q, rev_transferred, args.task)
+        delta = m_rev - metric_strong
         print(f"  Reverse ({disp_weak}→{disp_strong}): "
-              f"{disp_strong}+ AUC = {auc_rev:.4f} (\u0394={delta:+.4f})")
+              f"{disp_strong}+ {mname} = {_format_metric(m_rev, args.task)} "
+              f"(Δ={delta:+.4f})")
 
     print(f"{'='*60}")
 
@@ -1906,7 +1935,7 @@ def main():
         plot_perrow_scatter(
             strong_p1, weak_p1, fwd_transferred, fwd_optimal["optimal_k"],
             y_q, strong_model, weak_model, args.dataset,
-            auc_strong, auc_weak,
+            metric_strong, metric_weak,
             fig_dir / "transfer_bidirectional_scatter.pdf",
             mode="bidirectional",
             preds_intervened_rev=rev_transferred,
@@ -1917,7 +1946,7 @@ def main():
             strong_p1, weak_p1, rev_transferred,
             rev_optimal["optimal_k"], y_q,
             strong_model, weak_model, args.dataset,
-            auc_strong, auc_weak,
+            metric_strong, metric_weak,
             fig_dir / "transfer_perrow_scatter.pdf",
             mode="reverse_transfer",
         )
@@ -1939,7 +1968,7 @@ def main():
             strong_p1, weak_p1, fwd_transferred,
             fwd_optimal["optimal_k"], y_q,
             strong_model, weak_model, args.dataset,
-            auc_strong, auc_weak,
+            metric_strong, metric_weak,
             fig_dir / "transfer_perrow_scatter.pdf",
             mode="transfer",
         )
@@ -1993,17 +2022,17 @@ def main():
             # Compute gap closed (reuse transfer's function with swapped roles:
             # "source" = weak model (the target level), "baseline" = strong model)
             abl_optimal = find_per_row_optimal_transfer(
-                abl_result, weak_preds, strong_preds, y_q,
+                abl_result, weak_preds, strong_preds, y_q, args.task,
             )
 
             # Print ablation results
-            ablated_p1 = abl_result["accepted_preds"][:, 1]
-            auc_abl = float(roc_auc_score(y_q, ablated_p1))
-            gap = auc_strong - auc_weak
-            pct_explained = (auc_strong - auc_abl) / gap * 100 if abs(gap) > 0.001 else float("nan")
+            ablated_p1 = _pred_scalar(abl_result["accepted_preds"])
+            m_abl = _aggregate_metric(y_q, ablated_p1, args.task)
+            gap = metric_strong - metric_weak
+            pct_explained = (metric_strong - m_abl) / gap * 100 if abs(gap) > 0.001 else float("nan")
 
             print(f"\n  Ablation ({disp_strong} ─ unique): "
-                  f"{disp_strong}⁻ AUC = {auc_abl:.4f} "
+                  f"{disp_strong}⁻ {mname} = {_format_metric(m_abl, args.task)} "
                   f"({pct_explained:.1f}% of gap explained)")
 
             # Save summary
@@ -2017,7 +2046,7 @@ def main():
                 strong_p1, weak_p1, ablated_p1,
                 abl_optimal["optimal_k"], y_q,
                 strong_model, weak_model, args.dataset,
-                auc_strong, auc_weak,
+                metric_strong, metric_weak,
                 ablation_dir / "ablation_perrow_scatter.pdf",
                 mode="ablation",
             )
