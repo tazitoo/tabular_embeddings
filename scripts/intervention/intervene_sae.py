@@ -104,9 +104,49 @@ def load_sae(model_key: str, sae_dir: Path = DEFAULT_SAE_DIR, device: str = "cud
 
 def get_extraction_layer(model_key: str, layers_path: Path = DEFAULT_LAYERS_PATH) -> int:
     """Get the optimal extraction layer index for a model."""
-    with open(layers_path) as f:
+    with open(layers_path, encoding="utf-8") as f:
         layers_config = json.load(f)
     return layers_config[model_key]["optimal_layer"]
+
+
+def load_norm_stats(
+    model_key: str,
+    dataset_name: str,
+    training_dir: Path = DEFAULT_TRAINING_DIR,
+    layers_path: Path = DEFAULT_LAYERS_PATH,
+    device: str = "cuda",
+) -> tuple:
+    """Load per-dataset normalization stats used during SAE training.
+
+    SAEs were trained on per-dataset StandardScaler normalized embeddings:
+        x_norm = (x_raw - mean_d) / std_d
+
+    The stats are stored in {model}_layer{N}_norm_stats.npz with keys:
+        datasets: (n_datasets,) sorted dataset names
+        means: (n_datasets, hidden_dim)
+        stds: (n_datasets, hidden_dim)
+
+    Returns:
+        (mean, std) tensors, each (hidden_dim,) on device
+    """
+    layer = get_extraction_layer(model_key, layers_path)
+    stats_path = training_dir / f"{model_key}_layer{layer}_norm_stats.npz"
+    if not stats_path.exists():
+        raise FileNotFoundError(
+            f"Norm stats not found: {stats_path}. "
+            f"Run build_sae_training_data.py first."
+        )
+    stats = np.load(stats_path)
+    datasets = list(stats["datasets"])
+    if dataset_name not in datasets:
+        raise ValueError(
+            f"Dataset '{dataset_name}' not in norm_stats ({len(datasets)} datasets). "
+            f"Available: {datasets[:5]}..."
+        )
+    idx = datasets.index(dataset_name)
+    mean = torch.tensor(stats["means"][idx], dtype=torch.float32, device=device)
+    std = torch.tensor(stats["stds"][idx], dtype=torch.float32, device=device)
+    return mean, std
 
 
 def load_training_mean(
@@ -115,14 +155,17 @@ def load_training_mean(
     layers_path: Path = DEFAULT_LAYERS_PATH,
     device: str = "cuda",
 ) -> torch.Tensor:
-    """Load the training pool mean used to center data before SAE training.
+    """DEPRECATED: Use load_norm_stats() instead.
 
-    train_sae() centers data via X_centered = X - X.mean(dim=0), but doesn't
-    save the mean. We recompute it from the training .npz file.
-
-    Returns:
-        (emb_dim,) tensor on device
+    Returns pooled mean across all datasets, which is ~0 for StandardScaler-
+    normalized data. Kept only for backward compatibility.
     """
+    import warnings
+    warnings.warn(
+        "load_training_mean() returns ~0 for StandardScaler-normalized data. "
+        "Use load_norm_stats(model_key, dataset_name) instead.",
+        DeprecationWarning, stacklevel=2,
+    )
     layer = get_extraction_layer(model_key, layers_path)
     training_path = training_dir / f"{model_key}_layer{layer}_sae_training.npz"
     if not training_path.exists():

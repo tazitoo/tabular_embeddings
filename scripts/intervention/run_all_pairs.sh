@@ -24,11 +24,6 @@ echo "Phase 1: Per-model concept importance"
 echo "========================================"
 for d in "${DATASETS[@]}"; do
   for m in "${MODELS[@]}"; do
-    out="output/concept_importance/${m}_${d}.json"
-    if [[ -f "$out" ]]; then
-      echo "SKIP: $m on $d (already exists)"
-      continue
-    fi
     echo "--- $m on $d ---"
     PY=$(py_for_model "$m")
     $PY scripts/intervention/concept_importance.py \
@@ -46,11 +41,6 @@ for d in "${DATASETS[@]}"; do
     for ((j=i+1; j<${#MODELS[@]}; j++)); do
       a="${MODELS[$i]}"
       b="${MODELS[$j]}"
-      out="output/concept_importance/compare_${a}_vs_${b}_${d}.json"
-      if [[ -f "$out" ]]; then
-        echo "SKIP: $a vs $b on $d (already exists)"
-        continue
-      fi
       echo "--- $a vs $b on $d ---"
       $PYTHON scripts/intervention/concept_importance.py \
         --model "$a" --compare "$b" --dataset "$d" \

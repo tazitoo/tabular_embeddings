@@ -30,7 +30,7 @@ from scripts._project_root import PROJECT_ROOT
 from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND, SAE_FILENAME
 from scripts.intervention.intervene_sae import (
     load_sae,
-    load_training_mean,
+    load_norm_stats,
     get_extraction_layer,
     compute_ablation_delta,
 )
@@ -141,6 +141,7 @@ def sweep_tabdpt(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for TabDPT.
 
@@ -191,10 +192,10 @@ def sweep_tabdpt(
 
     # Pre-compute SAE encoding (once) for delta computation
     with torch.no_grad():
-        x_centered = all_emb
+        x_norm = all_emb
         if data_mean is not None:
-            x_centered = x_centered - data_mean
-        h_full = sae.encode(x_centered)
+            x_norm = (x_norm - data_mean) / data_std
+        h_full = sae.encode(x_norm)
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
@@ -219,7 +220,7 @@ def sweep_tabdpt(
             h_ablated = h_full.clone()
             h_ablated[:, feat_idx] = 0.0
             recon_ablated = sae.decode(h_ablated)
-            delta = recon_ablated - recon_full  # (n_samples, H)
+            delta = (recon_ablated - recon_full) * data_std  # denormalize to raw space
 
         # Inject delta via hook
         def make_hook(d):
@@ -303,6 +304,7 @@ def sweep_tabpfn(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for TabPFN."""
     from models.tabpfn_utils import load_tabpfn
@@ -340,10 +342,10 @@ def sweep_tabpfn(
         all_emb = hidden_state
 
     with torch.no_grad():
-        x_centered = all_emb
+        x_norm = all_emb
         if data_mean is not None:
-            x_centered = x_centered - data_mean
-        h_full = sae.encode(x_centered)
+            x_norm = (x_norm - data_mean) / data_std
+        h_full = sae.encode(x_norm)
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
@@ -366,7 +368,7 @@ def sweep_tabpfn(
             h_ablated = h_full.clone()
             h_ablated[:, feat_idx] = 0.0
             recon_ablated = sae.decode(h_ablated)
-            delta = recon_ablated - recon_full
+            delta = (recon_ablated - recon_full) * data_std
 
         def make_hook(d):
             def modify_hook(module, input, output):
@@ -449,6 +451,7 @@ def sweep_mitra(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for Mitra.
 
@@ -506,10 +509,10 @@ def sweep_mitra(
     all_emb = torch.cat([support_emb, query_emb], dim=0)  # (n_ctx+n_query, H)
 
     with torch.no_grad():
-        x_centered = all_emb
+        x_norm = all_emb
         if data_mean is not None:
-            x_centered = x_centered - data_mean
-        h_full = sae.encode(x_centered)
+            x_norm = (x_norm - data_mean) / data_std
+        h_full = sae.encode(x_norm)
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
@@ -532,7 +535,7 @@ def sweep_mitra(
             h_ablated = h_full.clone()
             h_ablated[:, feat_idx] = 0.0
             recon_ablated = sae.decode(h_ablated)
-            delta = recon_ablated - recon_full
+            delta = (recon_ablated - recon_full) * data_std
 
         delta_sup = delta[:n_sup]  # (n_ctx, H)
         delta_qry = delta[n_sup:]  # (n_query, H)
@@ -632,13 +635,11 @@ def sweep_tabicl(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for TabICL.
 
     TabICL has ICL predictor blocks with 3D hidden state (n_ensemble, seq, 512).
-    Uses batch-mean centering (not training-mean) because TabICL's column-then-row
-    architecture produces dataset-specific representations orthogonal to the pooled
-    training mean.
     """
     from tabicl import TabICLClassifier
 
@@ -666,12 +667,11 @@ def sweep_tabicl(
     # Shape: (n_ensemble, n_ctx+n_query, 512) — mean-pool ensemble dim
     all_emb = hidden_state.mean(dim=0)  # (seq_len, 512)
 
-    # Batch-mean centering for TabICL
-    batch_mean = all_emb.mean(dim=0)  # (512,)
-
     with torch.no_grad():
-        x_centered = all_emb - batch_mean
-        h_full = sae.encode(x_centered)
+        x_norm = all_emb
+        if data_mean is not None:
+            x_norm = (x_norm - data_mean) / data_std
+        h_full = sae.encode(x_norm)
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
@@ -694,7 +694,7 @@ def sweep_tabicl(
             h_ablated = h_full.clone()
             h_ablated[:, feat_idx] = 0.0
             recon_ablated = sae.decode(h_ablated)
-            delta = recon_ablated - recon_full
+            delta = (recon_ablated - recon_full) * data_std
 
         # Broadcast delta to (1, seq_len, 512) for ensemble dim
         delta_broadcast = delta.unsqueeze(0)
@@ -771,12 +771,11 @@ def sweep_tabicl_v2(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for TabICL v2.
 
     Clone of sweep_tabicl but supports regression via TabICLRegressor.
-    Uses batch-mean centering (not training-mean) because TabICL's
-    column-then-row architecture produces dataset-specific representations.
     """
     if task == "regression":
         from tabicl import TabICLRegressor
@@ -811,12 +810,11 @@ def sweep_tabicl_v2(
     # Shape: (n_ensemble, n_ctx+n_query, 512) — mean-pool ensemble dim
     all_emb = hidden_state.mean(dim=0)  # (seq_len, 512)
 
-    # Batch-mean centering for TabICL
-    batch_mean = all_emb.mean(dim=0)  # (512,)
-
     with torch.no_grad():
-        x_centered = all_emb - batch_mean
-        h_full = sae.encode(x_centered)
+        x_norm = all_emb
+        if data_mean is not None:
+            x_norm = (x_norm - data_mean) / data_std
+        h_full = sae.encode(x_norm)
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
@@ -839,7 +837,7 @@ def sweep_tabicl_v2(
             h_ablated = h_full.clone()
             h_ablated[:, feat_idx] = 0.0
             recon_ablated = sae.decode(h_ablated)
-            delta = recon_ablated - recon_full
+            delta = (recon_ablated - recon_full) * data_std
 
         # Broadcast delta to (1, seq_len, 512) for ensemble dim
         delta_broadcast = delta.unsqueeze(0)
@@ -919,6 +917,7 @@ def sweep_carte(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for CARTE.
 
@@ -1029,12 +1028,12 @@ def sweep_carte(
         else:
             baseline_preds = clf.predict_proba(X_query_graph)
 
-    # Pre-compute SAE encoding with training-mean centering
+    # Pre-compute SAE encoding with per-dataset normalization
     with torch.no_grad():
-        x_centered = all_emb
+        x_norm = all_emb
         if data_mean is not None:
-            x_centered = x_centered - data_mean
-        h_full = sae.encode(x_centered)
+            x_norm = (x_norm - data_mean) / data_std
+        h_full = sae.encode(x_norm)
         recon_full = sae.decode(h_full)
 
     baseline_preds_np = np.asarray(baseline_preds)
@@ -1056,7 +1055,7 @@ def sweep_carte(
             h_ablated = h_full.clone()
             h_ablated[:, feat_idx] = 0.0
             recon_ablated = sae.decode(h_ablated)
-            delta = recon_ablated - recon_full  # (n_query, emb_dim)
+            delta = (recon_ablated - recon_full) * data_std  # denormalize to raw space
 
         def make_hook(d, c_idx):
             def modify_hook(module, input, output):
@@ -1137,6 +1136,7 @@ def sweep_tabula8b(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for Tabula-8B.
 
@@ -1280,12 +1280,12 @@ def sweep_tabula8b(
     all_emb = torch.stack(all_emb_list, dim=0)  # (n_query, 4096)
     baseline_preds_np = np.array(baseline_preds_list)
 
-    # Pre-compute SAE encoding with training-mean centering
+    # Pre-compute SAE encoding with per-dataset normalization
     with torch.no_grad():
-        x_centered = all_emb
+        x_norm = all_emb
         if data_mean is not None:
-            x_centered = x_centered - data_mean
-        h_full = sae.encode(x_centered)
+            x_norm = (x_norm - data_mean) / data_std
+        h_full = sae.encode(x_norm)
         recon_full = sae.decode(h_full)
 
     baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
@@ -1307,7 +1307,7 @@ def sweep_tabula8b(
             h_ablated = h_full.clone()
             h_ablated[:, feat_idx] = 0.0
             recon_ablated = sae.decode(h_ablated)
-            delta = recon_ablated - recon_full  # (n_query, 4096)
+            delta = (recon_ablated - recon_full) * data_std  # denormalize to raw space
 
         # Re-run each query row with delta injection
         ablated_preds_list = []
@@ -1372,6 +1372,7 @@ def sweep_hyperfast(
     device: str = "cuda",
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Sweep single-feature ablation for HyperFast.
 
@@ -1455,12 +1456,12 @@ def sweep_hyperfast(
     # Mean embedding across ensemble members for SAE
     all_emb = torch.stack(intermediates, dim=0).mean(dim=0)  # (n_query, H)
 
-    # Pre-compute SAE encoding with training-mean centering
+    # Pre-compute SAE encoding with per-dataset normalization
     with torch.no_grad():
-        x_centered = all_emb
+        x_norm = all_emb
         if data_mean is not None:
-            x_centered = x_centered - data_mean
-        h_full = sae.encode(x_centered)
+            x_norm = (x_norm - data_mean) / data_std
+        h_full = sae.encode(x_norm)
         recon_full = sae.decode(h_full)
 
     baseline_metric, metric_name = compute_importance_metric(y_query, baseline_preds_np, task)
@@ -1501,7 +1502,7 @@ def sweep_hyperfast(
             h_ablated = h_full.clone()
             h_ablated[:, feat_idx] = 0.0
             recon_ablated = sae.decode(h_ablated)
-            delta = recon_ablated - recon_full  # (n_query, H)
+            delta = (recon_ablated - recon_full) * data_std  # denormalize to raw space
 
         # Replay tail with delta for each ensemble member, average
         ensemble_preds = []
@@ -1567,6 +1568,7 @@ SWEEP_FN = {
 
 def sweep_concept_importance(
     model_key: str,
+    dataset: str,
     X_context: np.ndarray,
     y_context: np.ndarray,
     X_query: np.ndarray,
@@ -1583,7 +1585,7 @@ def sweep_concept_importance(
 
     sae, config = load_sae(model_key, device=device)
     extraction_layer = get_extraction_layer(model_key)
-    data_mean = load_training_mean(model_key, device=device)
+    data_mean, data_std = load_norm_stats(model_key, dataset, device=device)
     alive_features = get_alive_features(model_key)
     feature_labels = get_feature_labels(model_key)
 
@@ -1603,6 +1605,7 @@ def sweep_concept_importance(
         device=device,
         task=task,
         data_mean=data_mean,
+        data_std=data_std,
     )
 
     # Attach labels
@@ -2416,6 +2419,7 @@ def main():
     t0 = time.time()
     result = sweep_concept_importance(
         model_key=args.model,
+        dataset=args.dataset,
         X_context=X_ctx,
         y_context=y_ctx,
         X_query=X_q,

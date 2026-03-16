@@ -30,7 +30,7 @@
     "architecture": "Column-then-Row TFM v2",
     "task": "both",
     "extraction_point": "layer_8",
-    "rationale": "Layer 9 (ICL block 8) is optimal — CKA plateau at 0.736 before drop to 0.655 at L10. Gradual decline (no sharp cliff); first big late drop at L9->L10 (-0.081). 51 datasets, cls+reg."
+    "rationale": "Layer 9 (ICL block 8) is optimal - CKA plateau at 0.736 before drop to 0.655 at L10. Gradual decline (no sharp cliff); first big late drop at L9->L10 (-0.081). 51 datasets, cls+reg."
   },
   "mitra": {
     "optimal_layer": 10,
