@@ -42,6 +42,7 @@ from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_sae import (
     intervene,
     load_sae,
+    load_norm_stats,
     get_extraction_layer,
     INTERVENE_FN,
     DEFAULT_SAE_DIR,
@@ -102,6 +103,7 @@ def get_sae_activations(
     X_context: np.ndarray,
     y_context: np.ndarray,
     X_query: np.ndarray,
+    dataset: str,
     device: str = "cuda",
     task: str = "classification",
     sae_dir: Path = DEFAULT_SAE_DIR,
@@ -141,8 +143,10 @@ def get_sae_activations(
     sae, _ = load_sae(model_key, sae_dir=sae_dir, device=device)
     emb_tensor = torch.tensor(embeddings, dtype=torch.float32).to(device)
 
+    data_mean, data_std = load_norm_stats(model_key, dataset, device=device)
     with torch.no_grad():
-        h = sae.encode(emb_tensor)
+        x_norm = (emb_tensor - data_mean) / data_std
+        h = sae.encode(x_norm)
 
     return h.cpu().numpy(), embeddings
 
@@ -286,7 +290,7 @@ def diagnose_dataset(
 
     try:
         activations, _ = get_sae_activations(
-            model_a, X_ctx, y_ctx, X_q,
+            model_a, X_ctx, y_ctx, X_q, dataset,
             device=device, task=task, sae_dir=sae_dir, layers_path=layers_path,
         )
     except Exception as e:

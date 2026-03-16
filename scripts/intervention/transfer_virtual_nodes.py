@@ -40,7 +40,7 @@ from scripts.intervention.intervene_sae import (
     get_improvable_rows,
     intervene,
     load_sae,
-    load_training_mean,
+    load_norm_stats,
 )
 from scripts.intervention.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
 from scripts.figures.plot_prediction_scatter import (
@@ -587,6 +587,7 @@ def _encode_unmatched_activations(
     emb_source: torch.Tensor,
     unmatched_indices: List[int],
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
 ) -> np.ndarray:
     """Encode source embeddings and extract activations for unmatched features.
 
@@ -596,7 +597,7 @@ def _encode_unmatched_activations(
     with torch.no_grad():
         x = emb_source
         if data_mean is not None:
-            x = x - data_mean
+            x = (x - data_mean) / data_std
         h = sae_source.encode(x)
     return h[:, unmatched_indices].cpu().numpy()
 
@@ -713,19 +714,16 @@ def sweep_virtual_transfer(
             target_model, X_ctx, y_ctx, X_q, target_layer, device, task,
         )
 
-    # 3. Load source SAE and compute data mean for centering
+    # 3. Load source SAE and normalization stats
     sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
-    if source_model == "tabicl":
-        data_mean = emb_source.mean(dim=0)
-    else:
-        data_mean = load_training_mean(
-            source_model, training_dir=training_dir,
-            layers_path=layers_path, device=device,
-        )
+    data_mean, data_std = load_norm_stats(
+        source_model, dataset, training_dir=training_dir,
+        layers_path=layers_path, device=device,
+    )
 
     # 4. Encode all source positions and split into context / query
     acts_all = _encode_unmatched_activations(
-        sae_source, emb_source, bridge["unmatched_indices"], data_mean,
+        sae_source, emb_source, bridge["unmatched_indices"], data_mean, data_std,
     )
     acts_ctx = acts_all[:-n_query]
     acts_query = acts_all[-n_query:]
@@ -879,21 +877,18 @@ def perrow_sweep_virtual_transfer(
             target_model, X_ctx, y_ctx, X_q, target_layer, device, task,
         )
 
-    # 3. Load source SAE and compute data mean for centering
+    # 3. Load source SAE and normalization stats
     sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
-    if source_model == "tabicl":
-        data_mean = emb_source.mean(dim=0)
-    else:
-        data_mean = load_training_mean(
-            source_model, training_dir=training_dir,
-            layers_path=layers_path, device=device,
-        )
+    data_mean, data_std = load_norm_stats(
+        source_model, dataset, training_dir=training_dir,
+        layers_path=layers_path, device=device,
+    )
 
     # 4. Encode source embeddings → extract unmatched activations
     unmatched_indices = bridge["unmatched_indices"]
     n_unmatched = len(unmatched_indices)
     acts_all = _encode_unmatched_activations(
-        sae_source, emb_source, unmatched_indices, data_mean,
+        sae_source, emb_source, unmatched_indices, data_mean, data_std,
     )
     acts_ctx = acts_all[:-n_query]
     acts_query = acts_all[-n_query:]

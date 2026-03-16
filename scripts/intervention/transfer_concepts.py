@@ -41,7 +41,7 @@ from scripts.intervention.intervene_sae import (
     get_extraction_layer,
     intervene,
     load_sae,
-    load_training_mean,
+    load_norm_stats,
 )
 from scripts.intervention.concept_performance_diagnostic import _load_splits, DISPLAY_NAMES
 from scripts.figures.plot_prediction_scatter import (
@@ -149,16 +149,20 @@ def compute_transfer_delta(
     b: Optional[np.ndarray],
     transfer_features: List[int],
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
     scale: float = 1.0,
     translator: Optional[torch.nn.Module] = None,
 ) -> torch.Tensor:
     """Compute delta in target space for given source concepts.
 
-    1. SAE encode source embeddings → h_source (sparse activations)
+    1. SAE encode source embeddings (normalized) → h_source (sparse activations)
     2. Concept contribution: decode(h_selected) - decode(0)  (bias cancels)
-    3. Map to target space: contribution @ W.T  (or MLP translator)
+    3. Denormalize contribution back to raw space (* data_std)
+    4. Map to target space: contribution @ W.T  (or MLP translator)
 
     Args:
+        data_mean: (d_source_emb,) per-dataset mean from norm_stats.npz
+        data_std: (d_source_emb,) per-dataset std from norm_stats.npz
         translator: Optional EmbeddingTranslator. If provided, uses MLP-based
             delta mapping instead of linear W @ contribution.
 
@@ -172,7 +176,7 @@ def compute_transfer_delta(
     with torch.no_grad():
         x = emb_source
         if data_mean is not None:
-            x = x - data_mean
+            x = (x - data_mean) / data_std
 
         h = sae_source.encode(x)
 
@@ -182,7 +186,11 @@ def compute_transfer_delta(
         h_with[:, transfer_features] = h[:, transfer_features]
         contribution_source = sae_source.decode(h_with) - sae_source.decode(
             torch.zeros_like(h)
-        )  # (n_samples, d_source)
+        )  # (n_samples, d_source) in normalized space
+
+        # Denormalize contribution back to raw embedding space
+        if data_std is not None:
+            contribution_source = contribution_source * data_std
 
         delta_target = _map_to_target_space(
             contribution_source, emb_source, W, translator, scale,
@@ -198,6 +206,7 @@ def compute_transfer_delta_perrow(
     b: Optional[np.ndarray],
     feature_masks: torch.Tensor,
     data_mean: Optional[torch.Tensor] = None,
+    data_std: Optional[torch.Tensor] = None,
     scale: float = 1.0,
     translator: Optional[torch.nn.Module] = None,
 ) -> torch.Tensor:
@@ -212,7 +221,8 @@ def compute_transfer_delta_perrow(
         W: (d_target, d_source_emb) linear map weight matrix (or None if using translator)
         b: (d_target,) bias (unused — cancels in delta)
         feature_masks: (n_rows, sae_hidden) boolean, True = TRANSFER this feature
-        data_mean: (d_source_emb,) centering mean for SAE
+        data_mean: (d_source_emb,) per-dataset mean from norm_stats.npz
+        data_std: (d_source_emb,) per-dataset std from norm_stats.npz
         scale: Multiplicative scaling factor
         translator: Optional EmbeddingTranslator for MLP-based delta mapping
 
@@ -227,7 +237,7 @@ def compute_transfer_delta_perrow(
     with torch.no_grad():
         x = emb_source
         if data_mean is not None:
-            x = x - data_mean
+            x = (x - data_mean) / data_std
 
         h = sae_source.encode(x)
 
@@ -238,7 +248,11 @@ def compute_transfer_delta_perrow(
         # Concept contribution in source space (bias cancels)
         contribution_source = sae_source.decode(h_masked) - sae_source.decode(
             torch.zeros_like(h)
-        )
+        )  # in normalized space
+
+        # Denormalize contribution back to raw embedding space
+        if data_std is not None:
+            contribution_source = contribution_source * data_std
 
         delta_target = _map_to_target_space(
             contribution_source, emb_source, W, translator, scale,
@@ -797,13 +811,10 @@ def sweep_transfer(
 
     # Load source SAE once
     sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
-    if source_model in ("tabicl", "tabicl_v2"):
-        data_mean = emb_source.mean(dim=0)
-    else:
-        data_mean = load_training_mean(
-            source_model, training_dir=training_dir,
-            layers_path=layers_path, device=device,
-        )
+    data_mean, data_std = load_norm_stats(
+        source_model, dataset, training_dir=training_dir,
+        layers_path=layers_path, device=device,
+    )
 
     # Compute baselines
     y = y_q.astype(float)
@@ -825,8 +836,8 @@ def sweep_transfer(
 
         delta_query = compute_transfer_delta(
             sae_source, query_source, W, b,
-            features_k, data_mean=data_mean, scale=1.0,
-            translator=translator,
+            features_k, data_mean=data_mean, data_std=data_std,
+            scale=1.0, translator=translator,
         )
         full_delta = _build_full_delta(delta_query, n_total_target, n_query)
 
@@ -943,13 +954,10 @@ def perrow_sweep_transfer(
 
     # Load source SAE
     sae_source, _ = load_sae(source_model, sae_dir=sae_dir, device=device)
-    if source_model in ("tabicl", "tabicl_v2"):
-        data_mean = emb_source.mean(dim=0)
-    else:
-        data_mean = load_training_mean(
-            source_model, training_dir=training_dir,
-            layers_path=layers_path, device=device,
-        )
+    data_mean, data_std = load_norm_stats(
+        source_model, dataset, training_dir=training_dir,
+        layers_path=layers_path, device=device,
+    )
 
     feat_indices = [f for f, _ in ranked_features]
 
@@ -966,8 +974,8 @@ def perrow_sweep_transfer(
     for feat_idx in feat_indices:
         delta_query = compute_transfer_delta(
             sae_source, query_source, W, b,
-            [feat_idx], data_mean=data_mean, scale=1.0,
-            translator=translator,
+            [feat_idx], data_mean=data_mean, data_std=data_std,
+            scale=1.0, translator=translator,
         )
         full_delta = _build_full_delta(delta_query, seq_len, n_query)
         preds = tail.predict(full_delta.to(device))
@@ -979,8 +987,8 @@ def perrow_sweep_transfer(
 
     # --- Phase 2: per-row ranking (filtered to source SAE firing features) ---
     with torch.no_grad():
-        x_centered = query_source - data_mean if data_mean is not None else query_source
-        h_encoded = sae_source.encode(x_centered)
+        x_norm = (query_source - data_mean) / data_std
+        h_encoded = sae_source.encode(x_norm)
     query_acts = h_encoded.cpu().numpy()
 
     rankings = _perrow_rankings(importance, feat_indices, query_acts)
@@ -1022,8 +1030,8 @@ def perrow_sweep_transfer(
     for feat_idx in feat_indices:
         delta = compute_transfer_delta(
             sae_source, query_source, W, b,
-            [feat_idx], data_mean=data_mean, scale=1.0,
-            translator=translator,
+            [feat_idx], data_mean=data_mean, data_std=data_std,
+            scale=1.0, translator=translator,
         )
         # Normalize each row's delta to unit norm so the line search
         # scale directly represents target-space displacement magnitude.

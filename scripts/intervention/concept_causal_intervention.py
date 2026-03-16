@@ -299,13 +299,13 @@ def dose_response_ablation(
     # Get baselines (A and B with no ablation)
     result_a = intervene(
         model_key=model_a, X_context=X_ctx, y_context=y_ctx,
-        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task,
+        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task, dataset_name=dataset,
     )
     _, baseline_a = _compute_metric(result_a["baseline_preds"], y_q, task)
 
     result_b = intervene(
         model_key=model_b, X_context=X_ctx, y_context=y_ctx,
-        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task,
+        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task, dataset_name=dataset,
     )
     _, baseline_b = _compute_metric(result_b["baseline_preds"], y_q, task)
 
@@ -316,7 +316,7 @@ def dose_response_ablation(
         result = intervene(
             model_key=model_a, X_context=X_ctx, y_context=y_ctx,
             X_query=X_q, y_query=y_q, ablate_features=features_to_ablate,
-            device=device, task=task,
+            device=device, task=task, dataset_name=dataset,
         )
         _, ablated_metric = _compute_metric(result["ablated_preds"], y_q, task)
 
@@ -373,7 +373,7 @@ def dose_response_boost(
     """
     import torch
     from scripts.intervention.intervene_sae import (
-        load_sae, load_training_mean, get_extraction_layer,
+        load_sae, load_norm_stats, get_extraction_layer,
         compute_boost_delta, INTERVENE_FN,
     )
 
@@ -418,20 +418,20 @@ def dose_response_boost(
 
     result_a = intervene(
         model_key=model_a, X_context=X_ctx, y_context=y_ctx,
-        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task,
+        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task, dataset_name=dataset,
     )
     _, baseline_a = _compute_metric(result_a["baseline_preds"], y_q, task)
 
     result_b = intervene(
         model_key=model_b, X_context=X_ctx, y_context=y_ctx,
-        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task,
+        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task, dataset_name=dataset,
     )
     _, baseline_b = _compute_metric(result_b["baseline_preds"], y_q, task)
 
     # Load B's SAE for boost delta computation
     sae_b, _ = load_sae(model_b, device=device)
     extraction_layer_b = get_extraction_layer(model_b)
-    data_mean_b = load_training_mean(model_b, device=device)
+    data_mean_b, data_std_b = load_norm_stats(model_b, dataset, device=device)
 
     # We need to capture B's hidden state for boost computation.
     # Run B's intervention function with custom delta injection.
@@ -457,7 +457,7 @@ def dose_response_boost(
             sae=sae_b, boost_features=boost_features,
             target_activations=target_activations,
             extraction_layer=extraction_layer_b,
-            data_mean=data_mean_b,
+            data_mean=data_mean_b, data_std=data_std_b,
             device=device, task=task,
         )
 
@@ -506,6 +506,7 @@ def _run_boost_intervention(
     target_activations: List[float],
     extraction_layer: int,
     data_mean,
+    data_std=None,
     device: str = "cuda",
     task: str = "classification",
 ) -> Dict:
@@ -524,34 +525,34 @@ def _run_boost_intervention(
     if model_key == "tabpfn":
         return _boost_tabpfn(
             X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-            target_activations, extraction_layer, device, task, data_mean,
+            target_activations, extraction_layer, device, task, data_mean, data_std,
         )
     elif model_key == "tabdpt":
         return _boost_tabdpt(
             X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-            target_activations, extraction_layer, device, task, data_mean,
+            target_activations, extraction_layer, device, task, data_mean, data_std,
         )
     elif model_key == "mitra":
         return _boost_mitra(
             X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-            target_activations, extraction_layer, device, task, data_mean,
+            target_activations, extraction_layer, device, task, data_mean, data_std,
         )
     elif model_key == "tabicl":
         return _boost_tabicl(
             X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-            target_activations, extraction_layer, device, task, data_mean,
+            target_activations, extraction_layer, device, task, data_mean, data_std,
         )
     elif model_key == "hyperfast":
         return _boost_hyperfast(
             X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-            target_activations, extraction_layer, device, task, data_mean,
+            target_activations, extraction_layer, device, task, data_mean, data_std,
         )
     else:
         raise ValueError(f"Boost not supported for {model_key}")
 
 
 def _boost_tabpfn(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-                   target_activations, extraction_layer, device, task, data_mean):
+                   target_activations, extraction_layer, device, task, data_mean, data_std=None):
     """Boost intervention for TabPFN."""
     import torch
     from scripts.intervention.intervene_sae import compute_boost_delta
@@ -581,7 +582,7 @@ def _boost_tabpfn(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
     hidden = captured["hidden"]
     all_emb = hidden[0].mean(dim=1)
 
-    delta = compute_boost_delta(sae, all_emb, boost_features, target_activations, data_mean)
+    delta = compute_boost_delta(sae, all_emb, boost_features, target_activations, data_mean, data_std=data_std)
     delta_broadcast = delta.unsqueeze(1)
 
     def modify_hook(module, input, output):
@@ -609,7 +610,7 @@ def _boost_tabpfn(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
 
 
 def _boost_tabdpt(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-                   target_activations, extraction_layer, device, task, data_mean):
+                   target_activations, extraction_layer, device, task, data_mean, data_std=None):
     """Boost intervention for TabDPT."""
     import torch
     from scripts.intervention.intervene_sae import compute_boost_delta
@@ -642,7 +643,7 @@ def _boost_tabdpt(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
     hidden = captured["hidden"]
     all_emb = hidden.mean(dim=1) if hidden.ndim == 3 else hidden
 
-    delta = compute_boost_delta(sae, all_emb, boost_features, target_activations, data_mean)
+    delta = compute_boost_delta(sae, all_emb, boost_features, target_activations, data_mean, data_std=data_std)
 
     def modify_hook(module, input, output):
         out = output[0] if isinstance(output, tuple) else output
@@ -675,7 +676,7 @@ def _boost_tabdpt(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
 
 
 def _boost_mitra(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-                  target_activations, extraction_layer, device, task, data_mean):
+                  target_activations, extraction_layer, device, task, data_mean, data_std=None):
     """Boost intervention for Mitra."""
     import torch
     from scripts.intervention.intervene_sae import compute_boost_delta
@@ -734,8 +735,8 @@ def _boost_mitra(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
     support_emb = extract_y_tokens(captured_support)
     query_emb = extract_y_tokens(captured_query)
 
-    delta_sup = compute_boost_delta(sae, support_emb, boost_features, target_activations, data_mean)
-    delta_qry = compute_boost_delta(sae, query_emb, boost_features, target_activations, data_mean)
+    delta_sup = compute_boost_delta(sae, support_emb, boost_features, target_activations, data_mean, data_std=data_std)
+    delta_qry = compute_boost_delta(sae, query_emb, boost_features, target_activations, data_mean, data_std=data_std)
 
     trainer.rng.set_state(rng_state)
     sup_offset = [0]
@@ -782,7 +783,7 @@ def _boost_mitra(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
 
 
 def _boost_tabicl(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-                   target_activations, extraction_layer, device, task, data_mean):
+                   target_activations, extraction_layer, device, task, data_mean, data_std=None):
     """Boost intervention for TabICL."""
     import torch
     from scripts.intervention.intervene_sae import compute_boost_delta
@@ -807,9 +808,8 @@ def _boost_tabicl(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
 
     hidden = captured["hidden"]
     all_emb = hidden.mean(dim=0)
-    batch_mean = all_emb.mean(dim=0)
 
-    delta = compute_boost_delta(sae, all_emb, boost_features, target_activations, batch_mean)
+    delta = compute_boost_delta(sae, all_emb, boost_features, target_activations, data_mean, data_std=data_std)
     delta_broadcast = delta.unsqueeze(0)
 
     def modify_hook(module, input, output):
@@ -834,7 +834,7 @@ def _boost_tabicl(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
 
 
 def _boost_hyperfast(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
-                      target_activations, extraction_layer, device, task, data_mean):
+                      target_activations, extraction_layer, device, task, data_mean, data_std=None):
     """Boost intervention for HyperFast."""
     import torch
     import torch.nn.functional as F
@@ -889,7 +889,7 @@ def _boost_hyperfast(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
 
                 if layer_idx == extraction_layer:
                     delta = compute_boost_delta(
-                        sae, x, boost_features, target_activations, data_mean,
+                        sae, x, boost_features, target_activations, data_mean, data_std=data_std,
                     )
                     x = x + delta
 
@@ -925,7 +925,7 @@ def fit_concept_projection(
     from sklearn.linear_model import RidgeCV
     from sklearn.model_selection import cross_val_score
 
-    from scripts.intervention.intervene_sae import load_sae, load_training_mean, get_extraction_layer
+    from scripts.intervention.intervene_sae import load_sae, load_norm_stats, get_extraction_layer
     from scripts.concepts.concept_fingerprint import load_per_dataset_embeddings
 
     # Load embeddings for both models
@@ -951,14 +951,23 @@ def fit_concept_projection(
     X_b = np.concatenate(embs_b, axis=0)
 
     # Encode A's embeddings through A's SAE → get activations for feature_a
+    # Normalize per-dataset before pooling (matches SAE training)
     sae_a, _ = load_sae(model_a, device=device)
-    data_mean_a = load_training_mean(model_a, device=device)
+
+    encoded_chunks = []
+    for ds in common:
+        ea = emb_a_dict[ds]
+        eb = emb_b_dict[ds]
+        n = min(len(ea), len(eb))
+        mean_a, std_a = load_norm_stats(model_a, ds, device=device)
+        with torch.no_grad():
+            x = torch.tensor(ea[:n], dtype=torch.float32, device=device)
+            x_norm = (x - mean_a) / std_a
+            h = sae_a.encode(x_norm)
+            encoded_chunks.append(h[:, feature_a].cpu().numpy())
 
     with torch.no_grad():
-        x = torch.tensor(X_a, dtype=torch.float32, device=device)
-        x_centered = x - data_mean_a
-        h = sae_a.encode(x_centered)
-        target = h[:, feature_a].cpu().numpy()
+        target = np.concatenate(encoded_chunks, axis=0)
 
     # Skip if feature is dead in training data
     if np.std(target) < 1e-8:
@@ -1022,13 +1031,13 @@ def dose_response_transplant(
     # Get baselines
     result_a = intervene(
         model_key=model_a, X_context=X_ctx, y_context=y_ctx,
-        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task,
+        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task, dataset_name=dataset,
     )
     _, baseline_a = _compute_metric(result_a["baseline_preds"], y_q, task)
 
     result_b = intervene(
         model_key=model_b, X_context=X_ctx, y_context=y_ctx,
-        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task,
+        X_query=X_q, y_query=y_q, ablate_features=[], device=device, task=task, dataset_name=dataset,
     )
     _, baseline_b = _compute_metric(result_b["baseline_preds"], y_q, task)
 
