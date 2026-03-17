@@ -901,6 +901,7 @@ def extract_hyperfast_all_layers(
     y_context: np.ndarray,
     X_query,
     device: str = "cuda",
+    task: str = "classification",
     cat_feature_indices: list = None,
 ) -> Dict[str, np.ndarray]:
     """
@@ -910,10 +911,16 @@ def extract_hyperfast_all_layers(
     network is a list of (weight, bias) tuples representing linear layers.
     We manually forward through each layer and capture activations.
 
+    HyperFast is classification-only. Raises ValueError for regression so the
+    batch script can skip the dataset cleanly without poisoning the CUDA context
+    (regression labels passed to F.one_hot trigger an unrecoverable CUDA assertion).
+
     Encodes X_context and X_query together for consistent category codes.
     Does NOT pass cat_features to HyperFast (avoids CUDA scatter out-of-bounds
     from query codes unseen in context). Uses _preprocess_test_data() for query.
     """
+    if task == "regression":
+        raise ValueError("HyperFast is classification-only; skipping regression dataset")
     from hyperfast import HyperFastClassifier
     from hyperfast.hyperfast import transform_data_for_main_network
     import os
