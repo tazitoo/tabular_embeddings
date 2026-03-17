@@ -26,13 +26,13 @@ import time
 import traceback
 from pathlib import Path
 
+# Ensure project root is on sys.path (works regardless of cwd)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-
-from scripts._project_root import PROJECT_ROOT
-
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from data.extended_loader import TABARENA_DATASETS, load_tabarena_dataset
 from analysis.similarity import centered_kernel_alignment
