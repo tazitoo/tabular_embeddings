@@ -908,17 +908,16 @@ def extract_hyperfast_all_layers(
     from hyperfast.hyperfast import transform_data_for_main_network
     import os
 
-    # Convert DataFrame to numpy, preserving categorical info
+    # Convert DataFrame to numpy with label-encoded categoricals
     if isinstance(X_context, pd.DataFrame):
-        cat_indices = [X_context.columns.get_loc(c)
-                       for c in X_context.select_dtypes(include=["object", "category"]).columns]
-        X_context = X_context.values
-        X_query = X_query.values if isinstance(X_query, pd.DataFrame) else X_query
+        X_context_np, cat_indices = _ensure_numpy(X_context)
+        X_query_np, _ = _ensure_numpy(X_query)
+        X_context = X_context_np
+        X_query = X_query_np
     else:
         cat_indices = cat_feature_indices or []
-
-    X_context = np.asarray(X_context, dtype=np.float32)
-    X_query = np.asarray(X_query, dtype=np.float32)
+        X_context = np.asarray(X_context, dtype=np.float32)
+        X_query = np.asarray(X_query, dtype=np.float32)
 
     # Load model
     worker_path = "/data/models/tabular_fm/hyperfast/hyperfast.ckpt"
