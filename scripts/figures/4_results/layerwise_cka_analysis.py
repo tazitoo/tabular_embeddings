@@ -910,8 +910,9 @@ def extract_hyperfast_all_layers(
     network is a list of (weight, bias) tuples representing linear layers.
     We manually forward through each layer and capture activations.
 
-    Passes cat_features to HyperFast so it applies proper one-hot encoding
-    and StandardScaler. Uses _preprocess_test_data() for query preprocessing.
+    Encodes X_context and X_query together for consistent category codes.
+    Does NOT pass cat_features to HyperFast (avoids CUDA scatter out-of-bounds
+    from query codes unseen in context). Uses _preprocess_test_data() for query.
     """
     from hyperfast import HyperFastClassifier
     from hyperfast.hyperfast import transform_data_for_main_network
@@ -937,9 +938,13 @@ def extract_hyperfast_all_layers(
     worker_path = "/data/models/tabular_fm/hyperfast/hyperfast.ckpt"
     custom_path = worker_path if os.path.exists(worker_path) else None
 
+    # Do NOT pass cat_features to HyperFast. Setting cat_features triggers
+    # internal one-hot encoding whose embedding table is sized by context-only
+    # codes; query rows with codes not seen in the context cause a CUDA
+    # out-of-bounds assertion in the scatter/gather kernel. Treating the
+    # integer-encoded categoricals as continuous (StandardScaler applied by
+    # HyperFast) is valid for CKA geometry analysis.
     clf = HyperFastClassifier(device=device, n_ensemble=16, custom_path=custom_path)
-    if cat_indices:
-        clf.cat_features = cat_indices
     clf.fit(X_context, y_context)
 
     # Use HyperFast's preprocessing for query data (fixes StandardScaler bypass)
