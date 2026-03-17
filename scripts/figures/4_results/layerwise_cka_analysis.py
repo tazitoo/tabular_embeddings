@@ -694,8 +694,12 @@ def _get_tabula8b_model(device: str = "cuda"):
     """Load and cache the Tabula-8B model."""
     if "model" not in _tabula8b_cache:
         import transformers
+        import os
 
-        MODEL_ID = "mlfoundations/tabula-8b"
+        # Prefer local weights if present (avoids re-downloading on workers
+        # that have the checkpoint at /data/models/tabula-8b).
+        LOCAL_PATH = "/data/models/tabula-8b"
+        MODEL_ID = LOCAL_PATH if os.path.isdir(LOCAL_PATH) else "mlfoundations/tabula-8b"
         print(f"Loading Tabula-8B from {MODEL_ID} (fp16)...")
         tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID)
         model = transformers.AutoModelForCausalLM.from_pretrained(
