@@ -8,9 +8,10 @@ and query (X_test) together. We can extract:
 3. Attention weights for interpretability
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
+import pandas as pd
 import torch
 
 from .base import EmbeddingExtractor, EmbeddingResult
@@ -55,11 +56,12 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
 
     def extract_embeddings(
         self,
-        X_context: np.ndarray,
+        X_context: Union[np.ndarray, pd.DataFrame],
         y_context: np.ndarray,
-        X_query: np.ndarray,
+        X_query: Union[np.ndarray, pd.DataFrame],
         layers: Optional[List[str]] = None,
         task: str = "classification",
+        cat_feature_indices: Optional[List[int]] = None,
     ) -> EmbeddingResult:
         """
         Extract embeddings from TabPFN's final transformer layer.
@@ -72,12 +74,17 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
         Supports both classification (TabPFNClassifier) and regression
         (TabPFNRegressor) — automatically reloads the correct model variant.
 
+        Accepts DataFrames with proper dtypes (object/category for categoricals).
+        TabPFN handles its own preprocessing: label encoding, scaling, etc.
+
         Args:
             X_context: Training features (n_context, n_features)
             y_context: Training labels (n_context,)
             X_query: Query features (n_query, n_features)
             layers: Unused (kept for API compatibility)
             task: "classification" or "regression"
+            cat_feature_indices: Indices of categorical columns (auto-detected
+                from DataFrame dtypes if not provided)
 
         Returns:
             EmbeddingResult with (n_query, 192) embeddings
@@ -86,15 +93,28 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
         if self._model is None or getattr(self, "_current_task", None) != task:
             self.load_model(task=task)
 
-        X_context = np.asarray(X_context, dtype=np.float32)
+        # Label-encode categoricals and convert to numpy for TabPFN.
+        # Track categorical indices so TabPFN knows which columns to treat
+        # as categorical in its internal preprocessing.
+        X_ctx_np, cat_indices = self._to_numpy_with_label_encoding(
+            X_context, cat_feature_indices
+        )
+        X_q_np, _ = self._to_numpy_with_label_encoding(
+            X_query, cat_feature_indices
+        )
+
         y_dtype = np.float32 if task == "regression" else np.int64
         y_context = np.asarray(y_context, dtype=y_dtype)
-        X_query = np.asarray(X_query, dtype=np.float32)
-        X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
-        X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
+        X_ctx_np = np.nan_to_num(X_ctx_np, nan=0.0, posinf=0.0, neginf=0.0)
+        X_q_np = np.nan_to_num(X_q_np, nan=0.0, posinf=0.0, neginf=0.0)
 
-        n_query = len(X_query)
-        self._model.fit(X_context, y_context)
+        n_query = len(X_q_np)
+
+        # Pass categorical indices to TabPFN so it applies proper preprocessing
+        if cat_indices:
+            self._model.categorical_features_indices = cat_indices
+
+        self._model.fit(X_ctx_np, y_context)
 
         layer_embeddings = {}
 
@@ -112,10 +132,10 @@ class TabPFNEmbeddingExtractor(EmbeddingExtractor):
         try:
             with torch.no_grad():
                 if task == "regression":
-                    preds = self._model.predict(X_query)
+                    preds = self._model.predict(X_q_np)
                     layer_embeddings["final_preds"] = preds
                 else:
-                    probs = self._model.predict_proba(X_query)
+                    probs = self._model.predict_proba(X_q_np)
                     layer_embeddings["final_probs"] = probs
         finally:
             handle.remove()

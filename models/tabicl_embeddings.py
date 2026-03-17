@@ -9,9 +9,10 @@ We extract embeddings from the row transformer output (between stage 1 and stage
 which captures learned sample-level representations after cross-feature attention.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
+import pandas as pd
 import torch
 
 from .base import EmbeddingExtractor, EmbeddingResult
@@ -63,11 +64,12 @@ class TabICLEmbeddingExtractor(EmbeddingExtractor):
 
     def extract_embeddings(
         self,
-        X_context: np.ndarray,
+        X_context: Union[np.ndarray, pd.DataFrame],
         y_context: np.ndarray,
-        X_query: np.ndarray,
+        X_query: Union[np.ndarray, pd.DataFrame],
         layers: Optional[List[str]] = None,
         task: str = "classification",
+        cat_feature_indices: Optional[List[int]] = None,
     ) -> EmbeddingResult:
         """
         Extract embeddings from TabICL's ICL predictor.
@@ -77,11 +79,16 @@ class TabICLEmbeddingExtractor(EmbeddingExtractor):
         (n_ensemble, n_ctx+n_query, 512). We slice query samples and mean-pool
         over the ensemble to get (n_query, 512).
 
+        Accepts DataFrames with proper dtypes. Categoricals are label-encoded
+        before passing to TabICL (matching AutoGluon's default pipeline).
+
         Args:
             X_context: Training features (n_context, n_features)
             y_context: Training labels (n_context,)
             X_query: Query features (n_query, n_features)
             layers: Unused (kept for API compatibility)
+            task: "classification" or "regression"
+            cat_feature_indices: Indices of categorical columns
 
         Returns:
             EmbeddingResult with (n_query, 512) embeddings
@@ -89,14 +96,20 @@ class TabICLEmbeddingExtractor(EmbeddingExtractor):
         if self._model is None:
             self.load_model()
 
-        X_context = np.asarray(X_context, dtype=np.float32)
-        y_context = np.asarray(y_context, dtype=np.int64)
-        X_query = np.asarray(X_query, dtype=np.float32)
-        X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
-        X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
+        # Label-encode categoricals and convert to numpy
+        X_ctx_np, _ = self._to_numpy_with_label_encoding(
+            X_context, cat_feature_indices
+        )
+        X_q_np, _ = self._to_numpy_with_label_encoding(
+            X_query, cat_feature_indices
+        )
 
-        n_query = len(X_query)
-        self._model.fit(X_context, y_context)
+        y_context = np.asarray(y_context, dtype=np.int64)
+        X_ctx_np = np.nan_to_num(X_ctx_np, nan=0.0, posinf=0.0, neginf=0.0)
+        X_q_np = np.nan_to_num(X_q_np, nan=0.0, posinf=0.0, neginf=0.0)
+
+        n_query = len(X_q_np)
+        self._model.fit(X_ctx_np, y_context)
 
         layer_embeddings = {}
         captured = {}
@@ -125,7 +138,7 @@ class TabICLEmbeddingExtractor(EmbeddingExtractor):
 
         try:
             with torch.no_grad():
-                probs = self._model.predict_proba(X_query)
+                probs = self._model.predict_proba(X_q_np)
             layer_embeddings["final_probs"] = probs
         finally:
             for h in handles:

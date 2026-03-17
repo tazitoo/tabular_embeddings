@@ -11,9 +11,10 @@ Note: By default uses ICL mode (fine_tune=False) for frozen-weight embedding
 extraction. Pass fine_tune=True to finetune pretrained weights per dataset.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
+import pandas as pd
 import torch
 
 from .base import EmbeddingExtractor, EmbeddingResult
@@ -62,11 +63,12 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
 
     def extract_embeddings(
         self,
-        X_context: np.ndarray,
+        X_context: Union[np.ndarray, pd.DataFrame],
         y_context: np.ndarray,
-        X_query: np.ndarray,
+        X_query: Union[np.ndarray, pd.DataFrame],
         layers: Optional[List[str]] = None,
         task: str = "classification",
+        cat_feature_indices: Optional[List[int]] = None,
     ) -> EmbeddingResult:
         """
         Extract embeddings from Mitra's last hidden state.
@@ -79,11 +81,16 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         We take the first feature position (y-token) and average across batches
         to get (n_query, dim).
 
+        Accepts DataFrames with proper dtypes. Categoricals are label-encoded
+        before passing to Mitra's sklearn interface.
+
         Args:
             X_context: Training features (n_context, n_features)
             y_context: Training labels (n_context,)
             X_query: Query features (n_query, n_features)
             layers: Unused (kept for API compatibility)
+            task: "classification" or "regression"
+            cat_feature_indices: Indices of categorical columns
 
         Returns:
             EmbeddingResult with last hidden state embeddings
@@ -91,24 +98,31 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         if self._model is None or getattr(self, "_current_task", None) != task:
             self.load_model(task=task)
 
-        X_context = np.asarray(X_context, dtype=np.float32)
+        # Label-encode categoricals and convert to numpy
+        X_ctx_np, _ = self._to_numpy_with_label_encoding(
+            X_context, cat_feature_indices
+        )
+        X_q_np, _ = self._to_numpy_with_label_encoding(
+            X_query, cat_feature_indices
+        )
+
         y_dtype = np.float32 if task == "regression" else np.int64
         y_context = np.asarray(y_context, dtype=y_dtype)
-        X_query = np.asarray(X_query, dtype=np.float32)
-        X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
-        X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
+        X_ctx_np = np.nan_to_num(X_ctx_np, nan=0.0, posinf=0.0, neginf=0.0)
+        X_q_np = np.nan_to_num(X_q_np, nan=0.0, posinf=0.0, neginf=0.0)
 
-        n_query = len(X_query)
-        n_features = X_query.shape[1]
+        n_query = len(X_q_np)
+        n_features = X_q_np.shape[1]
 
         # Fit (finetunes pretrained weights on context data)
-        self._classifier.fit(X_context, y_context)
+        self._classifier.fit(X_ctx_np, y_context)
 
         # Batch predict() calls for high-dim datasets to avoid OOM.
         # Tab2D attention is O(n_query * n_features) per layer; for
         # Bioresponse (1776 features) or QSAR-TID-11 (1024), a single
         # predict(500 rows) OOMs on 24GB GPUs.
         query_batch = min(n_query, max(50, 400_000 // max(n_features, 1)))
+        X_query = X_q_np  # Use preprocessed numpy for remaining code
 
         layer_embeddings = {}
 

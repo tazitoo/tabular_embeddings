@@ -266,14 +266,16 @@ def load_dataset(
                 if name in TABARENA_DATASETS:
                     result = load_tabarena_dataset(name, max_samples=max_samples)
                     if result:
-                        X, y, meta = result
-                        return X, y, {
+                        X_df, y, meta = result
+                        return X_df, y, {
                             "name": meta.name,
                             "task": meta.task,
                             "n_features": meta.n_features,
                             "n_samples": meta.n_samples,
                             "n_classes": meta.n_classes,
                             "source": "tabarena",
+                            "cat_feature_indices": meta.cat_feature_indices,
+                            "feature_names": meta.feature_names,
                         }
             except ImportError:
                 pass
@@ -297,14 +299,16 @@ def load_dataset(
             from data.extended_loader import load_tabarena_dataset
             result = load_tabarena_dataset(name, max_samples=max_samples)
             if result:
-                X, y, meta = result
-                return X, y, {
+                X_df, y, meta = result
+                return X_df, y, {
                     "name": meta.name,
                     "task": meta.task,
                     "n_features": meta.n_features,
                     "n_samples": meta.n_samples,
                     "n_classes": meta.n_classes,
                     "source": "tabarena",
+                    "cat_feature_indices": meta.cat_feature_indices,
+                    "feature_names": meta.feature_names,
                 }
         except ImportError:
             print("Extended loader not available for TabArena datasets")

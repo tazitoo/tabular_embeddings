@@ -2,9 +2,10 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import pandas as pd
 
 
 @dataclass
@@ -68,11 +69,12 @@ class EmbeddingExtractor(ABC):
     @abstractmethod
     def extract_embeddings(
         self,
-        X_context: np.ndarray,
+        X_context: Union[np.ndarray, pd.DataFrame],
         y_context: np.ndarray,
-        X_query: np.ndarray,
+        X_query: Union[np.ndarray, pd.DataFrame],
         layers: Optional[List[str]] = None,
         task: str = "classification",
+        cat_feature_indices: Optional[List[int]] = None,
     ) -> EmbeddingResult:
         """
         Extract embeddings for query samples given context.
@@ -83,11 +85,53 @@ class EmbeddingExtractor(ABC):
             X_query: Query features to get embeddings for (n_query, n_features)
             layers: Which layers to extract from (default: final layer only)
             task: "classification" or "regression"
+            cat_feature_indices: Indices of categorical columns in X.
+                When X is a DataFrame, categoricals are auto-detected from
+                object/category dtype. When X is a numpy array, this list
+                tells the model which columns are categorical.
 
         Returns:
             EmbeddingResult with embeddings and metadata
         """
         pass
+
+    @staticmethod
+    def _detect_cat_features(
+        X: Union[np.ndarray, pd.DataFrame],
+        cat_feature_indices: Optional[List[int]] = None,
+    ) -> List[int]:
+        """Detect categorical feature indices from DataFrame dtypes or explicit list."""
+        if cat_feature_indices is not None:
+            return cat_feature_indices
+        if isinstance(X, pd.DataFrame):
+            cat_cols = X.select_dtypes(include=["object", "category"]).columns
+            return [X.columns.get_loc(c) for c in cat_cols]
+        return []
+
+    @staticmethod
+    def _to_numpy_with_label_encoding(
+        X: Union[np.ndarray, pd.DataFrame],
+        cat_feature_indices: Optional[List[int]] = None,
+    ) -> Tuple[np.ndarray, List[int]]:
+        """Convert DataFrame to numpy with label-encoded categoricals.
+
+        Returns (X_array, cat_indices) where categorical columns are
+        integer-encoded but their indices are tracked.
+        """
+        if isinstance(X, np.ndarray):
+            return X.astype(np.float32), cat_feature_indices or []
+
+        X_df = X.copy()
+        cat_cols = X_df.select_dtypes(include=["object", "category"]).columns
+        cat_indices = [X_df.columns.get_loc(c) for c in cat_cols]
+
+        for col in cat_cols:
+            X_df[col] = X_df[col].astype("category").cat.codes.astype(np.float32)
+            # Replace -1 (NaN in cat.codes) with NaN
+            X_df[col] = X_df[col].replace(-1, np.nan)
+
+        X_array = X_df.values.astype(np.float32)
+        return X_array, cat_indices
 
     def _register_hook(self, module, name: str):
         """Register a forward hook to capture activations."""

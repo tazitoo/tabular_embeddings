@@ -11,9 +11,10 @@ Architecture: context → hypernetwork → generated NN weights → apply to que
 Extraction point: penultimate layer of generated NN (intermediate_activations)
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 
@@ -101,25 +102,26 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
 
     def extract_embeddings(
         self,
-        X_context: np.ndarray,
+        X_context: Union[np.ndarray, pd.DataFrame],
         y_context: np.ndarray,
-        X_query: np.ndarray,
+        X_query: Union[np.ndarray, pd.DataFrame],
         layers: Optional[List[str]] = None,
         task: str = "classification",
+        cat_feature_indices: Optional[List[int]] = None,
     ) -> EmbeddingResult:
         """
         Extract penultimate hidden activations from HyperFast's generated network.
 
         HyperFast generates a task-specific NN from context data, then applies it
-        to query samples. forward_main_network() returns (logits, intermediate_activations)
-        where intermediate_activations is the penultimate hidden state. We monkey-patch
-        the predict path to capture these per-ensemble-member, then average across
-        the ensemble.
+        to query samples. We use HyperFast's own _preprocess_test_data() to ensure
+        query data gets the same preprocessing (imputation, one-hot, StandardScaler)
+        as training data.
+
+        Accepts DataFrames with proper dtypes. Passes cat_features to HyperFast
+        so it applies one-hot encoding + StandardScaler properly.
 
         For regression tasks, continuous targets are discretized into bins so the
-        classifier can process them. The intermediate activations are computed
-        before the classification head, capturing data structure independent of
-        the target discretization.
+        classifier can process them.
 
         Args:
             X_context: Training features (n_context, n_features)
@@ -127,12 +129,21 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
             X_query: Query features (n_query, n_features)
             layers: Unused (kept for API compatibility)
             task: "classification" or "regression"
+            cat_feature_indices: Indices of categorical columns
 
         Returns:
             EmbeddingResult with penultimate hidden activations
         """
         if self._model is None:
             self.load_model()
+
+        # Convert DataFrame to numpy (HyperFast expects numpy arrays)
+        if isinstance(X_context, pd.DataFrame):
+            cat_indices = self._detect_cat_features(X_context, cat_feature_indices)
+            X_context = X_context.values
+            X_query = X_query.values if isinstance(X_query, pd.DataFrame) else X_query
+        else:
+            cat_indices = cat_feature_indices or []
 
         X_context = np.asarray(X_context, dtype=np.float32)
         X_query = np.asarray(X_query, dtype=np.float32)
@@ -142,20 +153,28 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
             y_context = self._discretize_targets(np.asarray(y_context), n_bins=10)
         else:
             y_context = np.asarray(y_context, dtype=np.int64)
-        X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
-        X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Pass cat_features to HyperFast so it applies one-hot + StandardScaler
+        if cat_indices:
+            self._model.cat_features = cat_indices
+        else:
+            self._model.cat_features = None
 
         n_query = len(X_query)
         self._model.fit(X_context, y_context)
 
         layer_embeddings = {}
 
-        # Capture intermediate activations during predict
+        # Use HyperFast's _preprocess_test_data() to apply the same
+        # preprocessing pipeline (imputation, one-hot, StandardScaler)
+        # that was fitted during fit(). This fixes the bug where query
+        # data previously bypassed preprocessing.
+        X_query_preprocessed = self._model._preprocess_test_data(X_query)
+
         from hyperfast.hyperfast import forward_main_network, transform_data_for_main_network
 
         all_activations = []
-        X_tensor = torch.from_numpy(X_query).to(self.device)
-        dataset = torch.utils.data.TensorDataset(X_tensor)
+        dataset = torch.utils.data.TensorDataset(X_query_preprocessed)
         loader = torch.utils.data.DataLoader(
             dataset, batch_size=self._model.batch_size, shuffle=False
         )
@@ -184,7 +203,6 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
                     )
                     batch_activations.append(intermediate_acts.cpu().numpy())
 
-                    # Also collect probs for first batch
                     predicted = F.softmax(outputs, dim=1)
                     if jj == 0:
                         all_probs_batch = predicted.cpu().numpy()

@@ -9,9 +9,10 @@ We extract hidden states from transformer layers before the prediction head.
 Note: flash attention must be disabled (compile=False) for hook-based extraction.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
+import pandas as pd
 import torch
 
 from .base import EmbeddingExtractor, EmbeddingResult
@@ -91,17 +92,22 @@ class TabDPTEmbeddingExtractor(EmbeddingExtractor):
 
     def extract_embeddings(
         self,
-        X_context: np.ndarray,
+        X_context: Union[np.ndarray, pd.DataFrame],
         y_context: np.ndarray,
-        X_query: np.ndarray,
+        X_query: Union[np.ndarray, pd.DataFrame],
         layers: Optional[List[str]] = None,
         task: str = "classification",
+        cat_feature_indices: Optional[List[int]] = None,
     ) -> EmbeddingResult:
         """
         Extract embeddings from TabDPT.
 
         Primary extraction: transformer hidden states before prediction head.
         Falls back to predict_proba pseudo-embedding.
+
+        Accepts DataFrames with proper dtypes. Categoricals are label-encoded
+        then converted to numpy (matching TabArena's TabDPT wrapper).
+        TabDPT has internal normalizer (default "standard").
         """
         # Load or reload model if task type changed
         if self._model is None or getattr(self, "_current_task", None) != task:
@@ -109,12 +115,20 @@ class TabDPTEmbeddingExtractor(EmbeddingExtractor):
 
         layers = layers or ["transformer_hidden", "final_probs"]
 
-        X_context = np.asarray(X_context, dtype=np.float32)
+        # Label-encode categoricals and convert to numpy
+        X_ctx_np, _ = self._to_numpy_with_label_encoding(
+            X_context, cat_feature_indices
+        )
+        X_q_np, _ = self._to_numpy_with_label_encoding(
+            X_query, cat_feature_indices
+        )
+
         y_dtype = np.float32 if task == "regression" else np.int64
         y_context = np.asarray(y_context, dtype=y_dtype)
-        X_query = np.asarray(X_query, dtype=np.float32)
-        X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
-        X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
+        X_ctx_np = np.nan_to_num(X_ctx_np, nan=0.0, posinf=0.0, neginf=0.0)
+        X_q_np = np.nan_to_num(X_q_np, nan=0.0, posinf=0.0, neginf=0.0)
+        X_context = X_ctx_np
+        X_query = X_q_np
 
         self._model.fit(X_context, y_context)
         layer_embeddings = {}

@@ -32,12 +32,13 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
 from scripts._project_root import PROJECT_ROOT
 
-from data.extended_loader import TABARENA_DATASETS, load_tabarena_dataset
+from data.extended_loader import TABARENA_DATASETS, DatasetMetadata, load_tabarena_dataset
 sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "figures" / "4_results"))
 from layerwise_cka_analysis import (
     extract_tabpfn_all_layers,
@@ -75,20 +76,21 @@ def load_context_query(
     dataset_name: str,
     context_size: int = 600,
     query_size: int = 500,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple:
     """Load a TabArena dataset and split into context/query sets.
 
     Uses stratified sampling for classification datasets to ensure all classes
     are represented in both context and query sets, even for highly imbalanced
     datasets (e.g. QSAR-TID-11 with 0.02% minority class).
 
-    Returns (X_context, y_context, X_query).
+    Returns (X_context, y_context, X_query, metadata) where X_context and
+    X_query are DataFrames with proper dtypes (categoricals as object dtype).
     """
     result = load_tabarena_dataset(dataset_name, max_samples=context_size + query_size)
     if result is None:
         raise ValueError(f"Failed to load dataset: {dataset_name}")
 
-    X, y, _ = result
+    X, y, meta = result
     n = len(X)
     if n < context_size + query_size:
         context_size = int(n * 0.7)
@@ -111,9 +113,13 @@ def load_context_query(
             X_ctx, X_q, y_ctx, _ = train_test_split(
                 X, y, test_size=query_frac, random_state=SPLIT_SEED,
             )
-        return X_ctx[:context_size], y_ctx[:context_size], X_q[:query_size]
+        X_ctx = X_ctx.iloc[:context_size] if isinstance(X_ctx, pd.DataFrame) else X_ctx[:context_size]
+        X_q = X_q.iloc[:query_size] if isinstance(X_q, pd.DataFrame) else X_q[:query_size]
+        return X_ctx, y_ctx[:context_size], X_q, meta
     else:
-        return X[:context_size], y[:context_size], X[context_size:context_size + query_size]
+        X_ctx = X.iloc[:context_size] if isinstance(X, pd.DataFrame) else X[:context_size]
+        X_q = X.iloc[context_size:context_size + query_size] if isinstance(X, pd.DataFrame) else X[context_size:context_size + query_size]
+        return X_ctx, y[:context_size], X_q, meta
 
 
 def get_dataset_task(dataset_name: str) -> str:
@@ -136,7 +142,7 @@ def extract_single_layer(
     """
     extract_fn = EXTRACT_FN[model]
 
-    X_context, y_context, X_query = load_context_query(
+    X_context, y_context, X_query, meta = load_context_query(
         dataset_name, context_size=context_size, query_size=query_size,
     )
 
@@ -146,6 +152,9 @@ def extract_single_layer(
     kwargs = dict(device=device)
     if "task" in sig.parameters:
         kwargs["task"] = task
+    # Pass cat_feature_indices for models that support it
+    if "cat_feature_indices" in sig.parameters:
+        kwargs["cat_feature_indices"] = meta.cat_feature_indices
 
     layer_embeddings = extract_fn(X_context, y_context, X_query, **kwargs)
 

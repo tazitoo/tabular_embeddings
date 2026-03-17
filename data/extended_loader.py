@@ -16,7 +16,7 @@ features in the foundation models' embedding spaces.
 from typing import Dict, List, Optional, Tuple, Callable
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -39,6 +39,10 @@ class DatasetMetadata:
     # Derived properties
     dim_ratio: float = 0.0  # n_features / n_samples
     class_balance: Optional[float] = None
+
+    # Preprocessing metadata (added for proper model-specific preprocessing)
+    cat_feature_indices: List[int] = field(default_factory=list)
+    feature_names: List[str] = field(default_factory=list)
 
 
 # =============================================================================
@@ -755,33 +759,39 @@ from pathlib import Path as _Path
 _TABARENA_CACHE_DIR = _Path(__file__).parent / "cache" / "tabarena"
 
 
-def _load_tabarena_cached(name: str, info: dict) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """Load preprocessed (X, y) from cache, or return None."""
-    cache_path = _TABARENA_CACHE_DIR / f"{name}.npz"
-    if cache_path.exists():
-        data = np.load(cache_path, allow_pickle=True)
-        return data["X"], data["y"]
+def _load_tabarena_cached_v2(name: str) -> Optional[Tuple[pd.DataFrame, np.ndarray]]:
+    """Load cached (X_df, y) from parquet+npy, or return None."""
+    parquet_path = _TABARENA_CACHE_DIR / f"{name}_v2.parquet"
+    y_path = _TABARENA_CACHE_DIR / f"{name}_v2_y.npy"
+    if parquet_path.exists() and y_path.exists():
+        X_df = pd.read_parquet(parquet_path)
+        y = np.load(y_path, allow_pickle=True)
+        return X_df, y
     return None
 
 
-def _save_tabarena_cache(name: str, X: np.ndarray, y: np.ndarray, task: str) -> None:
-    """Save preprocessed (X, y) to cache."""
+def _save_tabarena_cache_v2(
+    name: str, X_df: pd.DataFrame, y: np.ndarray,
+) -> None:
+    """Save (X_df, y) to parquet+npy cache."""
     _TABARENA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        str(_TABARENA_CACHE_DIR / f"{name}.npz"),
-        X=X, y=y, task=np.array(task),
-    )
+    X_df.to_parquet(_TABARENA_CACHE_DIR / f"{name}_v2.parquet")
+    np.save(_TABARENA_CACHE_DIR / f"{name}_v2_y.npy", y)
 
 
 def load_tabarena_dataset(
     name: str,
     max_samples: int = 10000,
-) -> Optional[Tuple[np.ndarray, np.ndarray, DatasetMetadata]]:
+) -> Optional[Tuple[pd.DataFrame, np.ndarray, DatasetMetadata]]:
     """
     Load a dataset from the TabArena benchmark (OpenML suite 457).
 
+    Returns a DataFrame with proper dtypes: categorical columns keep their
+    original string values (object dtype), numeric columns stay as float.
+    Each model wrapper is responsible for its own preprocessing.
+
     Uses a persistent cache at data/cache/tabarena/ to avoid repeated
-    OpenML downloads. The cache stores the full preprocessed dataset;
+    OpenML downloads. The cache stores the full dataset with proper dtypes;
     subsampling is applied after loading.
 
     Args:
@@ -789,7 +799,7 @@ def load_tabarena_dataset(
         max_samples: Maximum samples to return
 
     Returns:
-        (X, y, metadata) tuple or None
+        (X_df, y, metadata) tuple or None, where X_df is a pd.DataFrame
     """
     try:
         if name not in TABARENA_DATASETS:
@@ -799,24 +809,27 @@ def load_tabarena_dataset(
         info = TABARENA_DATASETS[name]
         task = info["task"]
 
-        # Try cache first
-        cached = _load_tabarena_cached(name, info)
+        # Try v2 cache first (parquet with proper dtypes)
+        cached = _load_tabarena_cached_v2(name)
         if cached is not None:
-            X, y = cached
+            X_df, y = cached
         else:
             from sklearn.datasets import fetch_openml
 
             dataset_id = info["openml_id"]
             data = fetch_openml(data_id=dataset_id, as_frame=True, parser="auto")
-            X = data.data.copy()
+            X_df = data.data.copy()
             y = data.target
 
-            # Handle categorical features
-            cat_cols = X.select_dtypes(include=["category", "object"]).columns
+            # Preserve categorical columns as object dtype (string values)
+            cat_cols = X_df.select_dtypes(include=["category"]).columns
             for col in cat_cols:
-                X[col] = X[col].astype("category").cat.codes
+                X_df[col] = X_df[col].astype("object")
 
-            X = X.values.astype(np.float32)
+            # Ensure numeric columns are float
+            num_cols = X_df.select_dtypes(include=["number"]).columns
+            for col in num_cols:
+                X_df[col] = pd.to_numeric(X_df[col], errors="coerce")
 
             # Handle target
             if task == "classification":
@@ -826,41 +839,60 @@ def load_tabarena_dataset(
             else:
                 y = np.asarray(y).astype(np.float32)
 
-            # Remove NaN targets
+            # Remove NaN targets (keep corresponding X rows)
             if task == "regression":
                 valid = ~np.isnan(y)
-                X, y = X[valid], y[valid]
+                X_df = X_df.loc[valid].reset_index(drop=True)
+                y = y[valid]
 
-            # Handle NaN in features
-            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
-            # Cache the full preprocessed dataset
-            _save_tabarena_cache(name, X, y, task)
+            # Cache with proper dtypes
+            _save_tabarena_cache_v2(name, X_df, y)
 
         # Subsample
-        if len(X) > max_samples:
+        if len(X_df) > max_samples:
             rng = np.random.RandomState(42)
-            idx = rng.choice(len(X), max_samples, replace=False)
-            X, y = X[idx], y[idx]
+            idx = rng.choice(len(X_df), max_samples, replace=False)
+            X_df = X_df.iloc[idx].reset_index(drop=True)
+            y = y[idx]
+
+        # Identify categorical columns
+        cat_cols = X_df.select_dtypes(include=["object", "category"]).columns
+        cat_feature_indices = [X_df.columns.get_loc(c) for c in cat_cols]
+        feature_names = list(X_df.columns)
+
+        # Determine feature_types
+        if len(cat_feature_indices) == 0:
+            feature_types = "numeric"
+        elif len(cat_feature_indices) == len(feature_names):
+            feature_types = "categorical"
+        else:
+            feature_types = "mixed"
 
         n_classes = len(np.unique(y)) if task == "classification" else None
+
+        # Compute sparsity on numeric columns only
+        num_df = X_df.select_dtypes(include=["number"])
+        sparsity = float((num_df == 0).values.mean()) if len(num_df.columns) > 0 else 0.0
 
         meta = DatasetMetadata(
             name=f"tabarena_{name}",
             source="tabarena",
             task=task,
-            n_samples=len(X),
-            n_features=X.shape[1],
+            n_samples=len(X_df),
+            n_features=len(feature_names),
             n_classes=n_classes,
+            feature_types=feature_types,
             domain=info.get("domain", "unknown"),
-            dim_ratio=X.shape[1] / len(X),
-            sparsity=float((X == 0).mean()),
+            dim_ratio=len(feature_names) / len(X_df),
+            sparsity=sparsity,
+            cat_feature_indices=cat_feature_indices,
+            feature_names=feature_names,
         )
 
         if task == "classification" and n_classes == 2:
             meta.class_balance = float(y.mean())
 
-        return X, y, meta
+        return X_df, y, meta
 
     except ImportError:
         print("scikit-learn not installed. Run: pip install scikit-learn")
@@ -875,7 +907,7 @@ def load_tabarena_suite(
     max_datasets: Optional[int] = None,
     task_filter: Optional[str] = None,
     domain_filter: Optional[str] = None,
-) -> List[Tuple[np.ndarray, np.ndarray, DatasetMetadata]]:
+) -> List[Tuple[pd.DataFrame, np.ndarray, DatasetMetadata]]:
     """
     Load datasets from the TabArena benchmark suite.
 
@@ -886,7 +918,7 @@ def load_tabarena_suite(
         domain_filter: Only load datasets from a specific domain
 
     Returns:
-        List of (X, y, metadata) tuples
+        List of (X_df, y, metadata) tuples
     """
     results = []
     loaded = 0
@@ -902,7 +934,7 @@ def load_tabarena_suite(
         print(f"Loading TabArena/{name}...", end=" ", flush=True)
         result = load_tabarena_dataset(name, max_samples=max_samples)
         if result:
-            X, y, meta = result
+            X_df, y, meta = result
             print(f"OK ({meta.n_samples}x{meta.n_features})")
             results.append(result)
             loaded += 1

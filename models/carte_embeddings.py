@@ -15,7 +15,7 @@ Requires FastText model for text embeddings. Download with:
 
 import copy
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -185,33 +185,58 @@ class CARTEEmbeddingExtractor(EmbeddingExtractor):
 
     def extract_embeddings(
         self,
-        X_context: np.ndarray,
+        X_context: Union[np.ndarray, pd.DataFrame],
         y_context: np.ndarray,
-        X_query: np.ndarray,
+        X_query: Union[np.ndarray, pd.DataFrame],
         layers: Optional[List[str]] = None,
         task: str = "classification",
+        cat_feature_indices: Optional[List[int]] = None,
     ) -> EmbeddingResult:
         """
         Extract embeddings from CARTE.
 
         Primary extraction: central node embedding from the final GNN layer
         after message passing on the star graph representation.
+
+        CARTE expects a DataFrame with:
+        - Categorical columns as object dtype (string values embedded via FastText)
+        - Numeric columns as float (PowerTransformer applied internally)
+        - Meaningful column names (embedded via FastText as edge attributes)
+
+        Table2GraphTransformer converts each row into a star graph:
+        - Central node: row representation (mean of neighbor features)
+        - Numeric leaf nodes: scaled_value * FastText(column_name)
+        - Categorical leaf nodes: FastText(value_string)
+        - Edge attributes: FastText(column_name)
         """
         if self._model is None:
             self.load_model()
 
         layers = layers or ["gnn_output", "final_probs"]
 
-        # Prepare data
-        X_context = np.asarray(X_context, dtype=np.float32)
-        X_query = np.asarray(X_query, dtype=np.float32)
-        X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
-        X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
+        # Convert to DataFrame if numpy array
+        if isinstance(X_context, np.ndarray):
+            feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+            df_context = pd.DataFrame(X_context, columns=feature_names)
+            df_query = pd.DataFrame(X_query, columns=feature_names)
+            # Mark categorical columns as object dtype
+            cat_indices = cat_feature_indices or []
+            for idx in cat_indices:
+                col = feature_names[idx]
+                df_context[col] = df_context[col].astype(int).astype(str)
+                df_query[col] = df_query[col].astype(int).astype(str)
+        else:
+            df_context = X_context.copy()
+            df_query = X_query.copy() if isinstance(X_query, pd.DataFrame) else pd.DataFrame(X_query, columns=X_context.columns)
+            # Ensure categorical columns are object dtype (string values)
+            cat_cols = df_context.select_dtypes(include=["category"]).columns
+            for col in cat_cols:
+                df_context[col] = df_context[col].astype("object")
+                df_query[col] = df_query[col].astype("object")
 
         # For regression, discretize targets for stratified splitting
         if task == "regression":
             y_context = np.asarray(y_context, dtype=np.float32)
-            # Bin continuous targets into classes for stratification
             n_bins = min(10, len(np.unique(y_context)))
             y_binned = pd.qcut(
                 y_context, q=n_bins, labels=False, duplicates='drop'
@@ -223,29 +248,25 @@ class CARTEEmbeddingExtractor(EmbeddingExtractor):
                 y_context = y_context.astype(np.int64)
             y_for_fit = y_context
 
-        # Convert to DataFrame with synthetic column names
-        feature_names = [f"f{i}" for i in range(X_context.shape[1])]
-        df_context = pd.DataFrame(X_context, columns=feature_names)
-        df_query = pd.DataFrame(X_query, columns=feature_names)
+        # CARTE needs at least one object-dtype column for graph construction.
+        # If there are no categorical columns, add a synthetic one.
+        has_object_cols = len(df_context.select_dtypes(include=["object"]).columns) > 0
+        if not has_object_cols:
+            n_bins = min(5, max(2, df_context.shape[1]))
+            bin_col = pd.cut(
+                df_context.iloc[:, 0],
+                bins=n_bins,
+                labels=[f"bin_{i}" for i in range(n_bins)]
+            ).astype(str)
+            df_context["_cat"] = bin_col
+            bin_col_query = pd.cut(
+                df_query.iloc[:, 0],
+                bins=n_bins,
+                labels=[f"bin_{i}" for i in range(n_bins)]
+            ).astype(str)
+            df_query["_cat"] = bin_col_query
 
-        # CARTE requires at least one categorical column for graph construction
-        # Add a synthetic categorical column based on binned values
-        n_bins = min(5, X_context.shape[1])
-        bin_col = pd.cut(
-            df_context.iloc[:, 0],
-            bins=n_bins,
-            labels=[f"bin_{i}" for i in range(n_bins)]
-        ).astype(str)
-        df_context["_cat"] = bin_col
-
-        bin_col_query = pd.cut(
-            df_query.iloc[:, 0],
-            bins=n_bins,
-            labels=[f"bin_{i}" for i in range(n_bins)]
-        ).astype(str)
-        df_query["_cat"] = bin_col_query
-
-        # Transform to graphs
+        # Transform to graphs — CARTE handles PowerTransformer + FastText internally
         self._t2g.fit(df_context)
         X_context_graph = self._t2g.transform(df_context)
         X_query_graph = self._t2g.transform(df_query)

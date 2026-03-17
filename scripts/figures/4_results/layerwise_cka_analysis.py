@@ -21,7 +21,30 @@ import torch
 # Add project root to path
 from scripts._project_root import PROJECT_ROOT
 
+import pandas as pd
+
 from analysis.similarity import centered_kernel_alignment
+
+
+def _ensure_numpy(X, y=None):
+    """Convert DataFrame to label-encoded numpy array if needed.
+
+    Returns (X_array, cat_indices) where X_array is float32 numpy and
+    cat_indices lists which columns were originally categorical.
+    """
+    if isinstance(X, pd.DataFrame):
+        cat_cols = X.select_dtypes(include=["object", "category"]).columns
+        cat_indices = [X.columns.get_loc(c) for c in cat_cols]
+        X_df = X.copy()
+        for col in cat_cols:
+            X_df[col] = X_df[col].astype("category").cat.codes.astype(np.float32)
+            X_df[col] = X_df[col].replace(-1, np.nan)
+        X_np = X_df.values.astype(np.float32)
+    else:
+        X_np = np.asarray(X, dtype=np.float32)
+        cat_indices = []
+    X_np = np.nan_to_num(X_np, nan=0.0, posinf=0.0, neginf=0.0)
+    return X_np, cat_indices
 
 
 def load_dataset(dataset_name: str, max_samples: int = 1000) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -82,21 +105,29 @@ def load_dataset(dataset_name: str, max_samples: int = 1000) -> Tuple[np.ndarray
 
 
 def extract_tabpfn_all_layers(
-    X_context: np.ndarray,
+    X_context,
     y_context: np.ndarray,
-    X_query: np.ndarray,
+    X_query,
     device: str = "cuda",
     task: str = "classification",
+    cat_feature_indices: list = None,
 ) -> Dict[str, np.ndarray]:
     """Extract embeddings from all TabPFN transformer layers.
 
     Args:
         task: "classification" or "regression" — selects the correct model variant.
+        cat_feature_indices: Indices of categorical columns for TabPFN preprocessing.
     """
     from models.tabpfn_utils import load_tabpfn
 
+    X_context_np, cat_indices = _ensure_numpy(X_context)
+    X_query_np, _ = _ensure_numpy(X_query)
+    cat_indices = cat_feature_indices or cat_indices
+
     clf = load_tabpfn(task=task, device=device, n_estimators=1)
-    clf.fit(X_context, y_context)
+    if cat_indices:
+        clf.categorical_features_indices = cat_indices
+    clf.fit(X_context_np, y_context)
 
     model = clf.model_
     n_layers = len(model.transformer_encoder.layers)
@@ -106,7 +137,7 @@ def extract_tabpfn_all_layers(
     # Use lists to accumulate across potential internal batches
     captured = defaultdict(list)
     handles = []
-    n_query = len(X_query)
+    n_query = len(X_query_np)
 
     for i, layer in enumerate(model.transformer_encoder.layers):
         def make_hook(layer_idx):
@@ -121,9 +152,9 @@ def extract_tabpfn_all_layers(
     try:
         with torch.no_grad():
             if task == "regression":
-                _ = clf.predict(X_query)
+                _ = clf.predict(X_query_np)
             else:
-                _ = clf.predict_proba(X_query)
+                _ = clf.predict_proba(X_query_np)
     finally:
         for handle in handles:
             handle.remove()
@@ -143,13 +174,16 @@ def extract_tabpfn_all_layers(
 
 
 def extract_mitra_all_layers(
-    X_context: np.ndarray,
+    X_context,
     y_context: np.ndarray,
-    X_query: np.ndarray,
+    X_query,
     device: str = "cuda",
     task: str = "classification",
+    cat_feature_indices: list = None,
 ) -> Dict[str, np.ndarray]:
     """Extract embeddings from all Mitra Tab2D transformer layers (12 layers)."""
+    X_context, _ = _ensure_numpy(X_context)
+    X_query, _ = _ensure_numpy(X_query)
     n_features = X_query.shape[1]
 
     # Cap context size for high-dim datasets to avoid system RAM OOM during fit().
@@ -260,16 +294,19 @@ def extract_mitra_all_layers(
 
 
 def extract_tabicl_all_layers(
-    X_context: np.ndarray,
+    X_context,
     y_context: np.ndarray,
-    X_query: np.ndarray,
+    X_query,
     device: str = "cuda",
     task: str = "classification",
+    cat_feature_indices: list = None,
 ) -> Dict[str, np.ndarray]:
     """Extract embeddings from all TabICL transformer layers.
 
     Supports both classification and regression via TabICL v2.
     """
+    X_context, _ = _ensure_numpy(X_context)
+    X_query, _ = _ensure_numpy(X_query)
     if task == "regression":
         from tabicl import TabICLRegressor
         clf = TabICLRegressor(device=device, n_estimators=1)
@@ -340,30 +377,35 @@ def extract_tabicl_all_layers(
 
 
 def extract_tabicl_v2_all_layers(
-    X_context: np.ndarray,
+    X_context,
     y_context: np.ndarray,
-    X_query: np.ndarray,
+    X_query,
     device: str = "cuda",
     task: str = "classification",
+    cat_feature_indices: list = None,
 ) -> Dict[str, np.ndarray]:
     """Extract from TabICL v2 (separate model registration, same architecture)."""
     return extract_tabicl_all_layers(
         X_context, y_context, X_query, device=device, task=task,
+        cat_feature_indices=cat_feature_indices,
     )
 
 
 def extract_tabdpt_all_layers(
-    X_context: np.ndarray,
+    X_context,
     y_context: np.ndarray,
-    X_query: np.ndarray,
+    X_query,
     device: str = "cuda",
     task: str = "classification",
+    cat_feature_indices: list = None,
 ) -> Dict[str, np.ndarray]:
     """
     Extract embeddings from all TabDPT transformer encoder layers (16 layers).
 
     TabDPT architecture: encoder → transformer_encoder (16 layers) → head
     """
+    X_context, _ = _ensure_numpy(X_context)
+    X_query, _ = _ensure_numpy(X_query)
     if task == "regression":
         from tabdpt import TabDPTRegressor
         clf = TabDPTRegressor(device=device, compile=False)
@@ -438,11 +480,12 @@ def extract_tabdpt_all_layers(
 
 
 def extract_carte_all_layers(
-    X_context: np.ndarray,
+    X_context,
     y_context: np.ndarray,
-    X_query: np.ndarray,
+    X_query,
     device: str = "cuda",
     task: str = "classification",
+    cat_feature_indices: list = None,
 ) -> Dict[str, np.ndarray]:
     """
     Extract embeddings from CARTE GNN layers.
@@ -453,6 +496,10 @@ def extract_carte_all_layers(
     - read_out_block.g_attn: Graph attention output
     - read_out_block: Full block output (after MLP)
     - ft_classifier intermediate layers
+
+    Accepts DataFrames with proper dtypes (object for categoricals, real column
+    names). CARTE embeds column names and categorical values via FastText, so
+    meaningful names carry semantic signal.
     """
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -460,7 +507,6 @@ def extract_carte_all_layers(
     _patch_carte_amp()
 
     from carte_ai import CARTEClassifier, Table2GraphTransformer
-    import pandas as pd
 
     ft_path = _find_fasttext_model()
     if not ft_path:
@@ -469,30 +515,55 @@ def extract_carte_all_layers(
     clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
     t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
 
-    # Robust preprocessing to prevent PowerTransformer bracket errors.
-    # CARTE's Table2GraphTransformer applies Yeo-Johnson internally, which
-    # diverges on constant columns or extreme value ranges (e.g. APSFailure
-    # has columns spanning 0 to 2e9).
+    # Convert to DataFrame if needed, preserving categoricals
+    if isinstance(X_context, pd.DataFrame):
+        df_context = X_context.copy()
+        df_query = X_query.copy() if isinstance(X_query, pd.DataFrame) else pd.DataFrame(X_query, columns=X_context.columns)
+        # Ensure category dtype → object for CARTE
+        for col in df_context.select_dtypes(include=["category"]).columns:
+            df_context[col] = df_context[col].astype("object")
+            df_query[col] = df_query[col].astype("object")
+    else:
+        X_ctx_np = np.nan_to_num(
+            np.asarray(X_context, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
+        )
+        X_q_np = np.nan_to_num(
+            np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
+        )
+        feature_names = [f"f{i}" for i in range(X_ctx_np.shape[1])]
+        df_context = pd.DataFrame(X_ctx_np, columns=feature_names)
+        df_query = pd.DataFrame(X_q_np, columns=feature_names)
+
+    # Robust preprocessing for numeric columns to prevent PowerTransformer errors
     from sklearn.preprocessing import RobustScaler
-    X_context = np.nan_to_num(
-        np.asarray(X_context, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
-    )
-    X_query = np.nan_to_num(
-        np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
-    )
-    # Drop constant columns (Yeo-Johnson can't optimize on zero-variance)
-    col_std = X_context.std(axis=0)
-    nonconstant = col_std > 0
-    if not nonconstant.all():
-        X_context = X_context[:, nonconstant]
-        X_query = X_query[:, nonconstant]
-    # RobustScaler to tame extreme ranges before Yeo-Johnson
-    scaler = RobustScaler()
-    X_context = scaler.fit_transform(X_context)
-    X_query = scaler.transform(X_query)
-    # Clip remaining outliers to ±10 IQR
-    X_context = np.clip(X_context, -10, 10)
-    X_query = np.clip(X_query, -10, 10)
+    num_cols = df_context.select_dtypes(include=["number"]).columns.tolist()
+    if num_cols:
+        # Drop constant numeric columns (Yeo-Johnson can't optimize)
+        col_std = df_context[num_cols].std()
+        constant_cols = col_std[col_std == 0].index.tolist()
+        if constant_cols:
+            df_context = df_context.drop(columns=constant_cols)
+            df_query = df_query.drop(columns=constant_cols)
+            num_cols = [c for c in num_cols if c not in constant_cols]
+
+        # RobustScaler to tame extreme ranges before Yeo-Johnson
+        if num_cols:
+            scaler = RobustScaler()
+            df_context[num_cols] = scaler.fit_transform(df_context[num_cols].values)
+            df_query[num_cols] = scaler.transform(df_query[num_cols].values)
+            # Clip remaining outliers to ±10 IQR
+            df_context[num_cols] = df_context[num_cols].clip(-10, 10)
+            df_query[num_cols] = df_query[num_cols].clip(-10, 10)
+
+    # CARTE needs at least one object-dtype column for graph construction
+    has_object_cols = len(df_context.select_dtypes(include=["object"]).columns) > 0
+    if not has_object_cols:
+        n_bins = min(5, max(2, len(df_context.columns)))
+        first_num_col = df_context.select_dtypes(include=["number"]).columns[0]
+        df_context["_cat"] = pd.cut(df_context[first_num_col], bins=n_bins,
+                                     labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
+        df_query["_cat"] = pd.cut(df_query[first_num_col], bins=n_bins,
+                                   labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
 
     # For regression, discretize targets for CARTE's classifier interface
     if task == "regression":
@@ -504,18 +575,6 @@ def extract_carte_all_layers(
         if y_context.dtype == np.float64:
             y_context = y_context.astype(np.int64)
         y_for_fit = y_context
-
-    # Prepare data
-    feature_names = [f"f{i}" for i in range(X_context.shape[1])]
-    df_context = pd.DataFrame(X_context, columns=feature_names)
-    df_query = pd.DataFrame(X_query, columns=feature_names)
-
-    # Add synthetic categorical column
-    n_bins = min(5, X_context.shape[1])
-    df_context["_cat"] = pd.cut(df_context["f0"], bins=n_bins,
-                                 labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
-    df_query["_cat"] = pd.cut(df_query["f0"], bins=n_bins,
-                               labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
 
     # Transform to graphs
     t2g.fit(df_context)
@@ -647,14 +706,15 @@ def _get_tabula8b_model(device: str = "cuda"):
 
 
 def extract_tabula8b_all_layers(
-    X_context: np.ndarray,
+    X_context,
     y_context: np.ndarray,
-    X_query: np.ndarray,
+    X_query,
     device: str = "cuda",
     task: str = "classification",
     col_names: Optional[List[str]] = None,
     target_name: str = "target",
     max_context_rows: int = 16,
+    cat_feature_indices: list = None,
 ) -> Dict[str, np.ndarray]:
     """
     Extract embeddings from all Tabula-8B (Llama-3 8B) transformer layers.
@@ -664,17 +724,25 @@ def extract_tabula8b_all_layers(
     We extract the hidden state at the LAST token position for each query row,
     which captures the model's representation of that row given the few-shot context.
 
-    This requires one forward pass per query row (causal LM limitation), so it's
-    slower than ICL models that process all queries in one pass.
+    Accepts DataFrames with proper dtypes. Uses real column names and original
+    categorical string values for text serialization — the model leverages
+    semantic content in both column names and values.
     """
     model, tokenizer = _get_tabula8b_model(device)
 
-    n_query = len(X_query)
-    n_features = X_context.shape[1]
+    # Handle DataFrame input — preserve column names and string categoricals
+    use_df = isinstance(X_context, pd.DataFrame)
+    if use_df:
+        if col_names is None:
+            col_names = list(X_context.columns)
+        df_context = X_context
+        df_query = X_query if isinstance(X_query, pd.DataFrame) else pd.DataFrame(X_query, columns=col_names)
+    else:
+        n_features = X_context.shape[1]
+        if col_names is None:
+            col_names = [f"feature_{i}" for i in range(n_features)]
 
-    # Generate column names if not provided
-    if col_names is None:
-        col_names = [f"feature_{i}" for i in range(n_features)]
+    n_query = len(X_query)
 
     # Find transformer layers
     # Llama-3 architecture: model.model.layers[0..31]
@@ -684,14 +752,30 @@ def extract_tabula8b_all_layers(
     print(f"Tabula-8B has {n_layers} transformer layers (dim={llama_model.config.hidden_size})")
 
     # Serialize a single row to text
+    def serialize_row_from_series(row, y_val=None):
+        """Serialize a DataFrame row using real column names and string values."""
+        parts = []
+        for col_name, val in row.items():
+            if pd.isna(val):
+                continue
+            parts.append(f"The {col_name} is {val}.")
+        text = " ".join(parts)
+        if y_val is not None:
+            text += f" The {target_name} is {y_val}."
+        return text
+
     def serialize_row(X_row, y_val=None):
+        """Serialize a numpy row (legacy fallback)."""
         parts = []
         for j, col in enumerate(col_names):
             val = X_row[j]
-            if float(val) == int(val):
-                parts.append(f"The {col} is {int(val)}.")
-            else:
-                parts.append(f"The {col} is {val:.4g}.")
+            try:
+                if float(val) == int(val):
+                    parts.append(f"The {col} is {int(val)}.")
+                else:
+                    parts.append(f"The {col} is {val:.4g}.")
+            except (ValueError, TypeError):
+                parts.append(f"The {col} is {val}.")
         text = " ".join(parts)
         if y_val is not None:
             text += f" The {target_name} is {y_val}."
@@ -707,7 +791,10 @@ def extract_tabula8b_all_layers(
 
     context_parts = []
     for i in ctx_idx:
-        context_parts.append(serialize_row(X_context[i], y_context[i]))
+        if use_df:
+            context_parts.append(serialize_row_from_series(df_context.iloc[i], y_context[i]))
+        else:
+            context_parts.append(serialize_row(X_context[i], y_context[i]))
     context_text = "\n".join(context_parts) + "\n"
 
     # Tokenize context once (shared prefix), respecting model's context window
@@ -718,7 +805,10 @@ def extract_tabula8b_all_layers(
     while len(context_tokens) > max_len - 200 and n_ctx > 2:
         n_ctx = n_ctx // 2
         ctx_idx = ctx_idx[:n_ctx]
-        context_parts = [serialize_row(X_context[i], y_context[i]) for i in ctx_idx]
+        if use_df:
+            context_parts = [serialize_row_from_series(df_context.iloc[i], y_context[i]) for i in ctx_idx]
+        else:
+            context_parts = [serialize_row(X_context[i], y_context[i]) for i in ctx_idx]
         context_text = "\n".join(context_parts) + "\n"
         context_tokens = tokenizer.encode(context_text, add_special_tokens=True)
 
@@ -754,7 +844,10 @@ def extract_tabula8b_all_layers(
                     print(f"  Query {qi+1}/{n_query}")
 
                 # Serialize query row (no label)
-                query_text = serialize_row(X_query[qi])
+                if use_df:
+                    query_text = serialize_row_from_series(df_query.iloc[qi])
+                else:
+                    query_text = serialize_row(X_query[qi])
                 query_tokens = tokenizer.encode(
                     query_text, add_special_tokens=False,
                 )
@@ -795,10 +888,11 @@ def extract_tabula8b_all_layers(
 
 
 def extract_hyperfast_all_layers(
-    X_context: np.ndarray,
+    X_context,
     y_context: np.ndarray,
-    X_query: np.ndarray,
+    X_query,
     device: str = "cuda",
+    cat_feature_indices: list = None,
 ) -> Dict[str, np.ndarray]:
     """
     Extract embeddings from all layers of HyperFast's GENERATED network.
@@ -806,18 +900,37 @@ def extract_hyperfast_all_layers(
     HyperFast generates a task-specific MLP from context data. The generated
     network is a list of (weight, bias) tuples representing linear layers.
     We manually forward through each layer and capture activations.
+
+    Passes cat_features to HyperFast so it applies proper one-hot encoding
+    and StandardScaler. Uses _preprocess_test_data() for query preprocessing.
     """
     from hyperfast import HyperFastClassifier
     from hyperfast.hyperfast import transform_data_for_main_network
     import os
+
+    # Convert DataFrame to numpy, preserving categorical info
+    if isinstance(X_context, pd.DataFrame):
+        cat_indices = [X_context.columns.get_loc(c)
+                       for c in X_context.select_dtypes(include=["object", "category"]).columns]
+        X_context = X_context.values
+        X_query = X_query.values if isinstance(X_query, pd.DataFrame) else X_query
+    else:
+        cat_indices = cat_feature_indices or []
+
+    X_context = np.asarray(X_context, dtype=np.float32)
+    X_query = np.asarray(X_query, dtype=np.float32)
 
     # Load model
     worker_path = "/data/models/tabular_fm/hyperfast/hyperfast.ckpt"
     custom_path = worker_path if os.path.exists(worker_path) else None
 
     clf = HyperFastClassifier(device=device, n_ensemble=16, custom_path=custom_path)
+    if cat_indices:
+        clf.cat_features = cat_indices
     clf.fit(X_context, y_context)
 
+    # Use HyperFast's preprocessing for query data (fixes StandardScaler bypass)
+    X_query_preprocessed = clf._preprocess_test_data(X_query)
     n_query = len(X_query)
 
     # Get generated network structure - it's a list of (weight, bias) tuples
@@ -826,7 +939,7 @@ def extract_hyperfast_all_layers(
     print(f"HyperFast generated network has {n_layers} layers (including output)")
 
     # Custom forward pass through generated network, capturing each layer
-    X_tensor = torch.from_numpy(X_query.astype(np.float32)).to(device)
+    X_tensor = X_query_preprocessed.to(device)
 
     # Initialize storage for each layer (input + all hidden layers, skip output)
     all_layer_activations = {f"layer_{i}": [] for i in range(n_layers)}

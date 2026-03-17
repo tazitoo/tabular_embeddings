@@ -2,14 +2,20 @@
 Tabula-8B embedding extraction.
 
 Tabula-8B is a Llama-3 8B model fine-tuned for tabular prediction via text
-serialization. Each row is converted to text like "the <col> is <val>".
+serialization. Each row is converted to text like "The <col> is <val>."
+
+The model leverages semantic information in both column names AND values.
+Column names and categorical string values carry meaning the LLM can exploit.
+Using generic names (f0, f1) or integer-coded categoricals (3 instead of
+"Sales") strips this semantic signal.
 
 We extract embeddings from the final hidden state of the LLM.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
+import pandas as pd
 import torch
 
 from .base import EmbeddingExtractor, EmbeddingResult
@@ -49,14 +55,43 @@ class TabulaEmbeddingExtractor(EmbeddingExtractor):
         )
         self._model.eval()
 
+    def _serialize_row_from_series(self, row: pd.Series) -> str:
+        """Convert a DataFrame row to Tabula-8B text format.
+
+        Uses the actual column names and values (including string categoricals).
+        Format: "The <column_name> is <value>." per the RTFM/Tabula paper.
+        """
+        parts = []
+        for col_name, val in row.items():
+            if pd.isna(val):
+                continue
+            parts.append(f"The {col_name} is {val}.")
+        return " ".join(parts)
+
     def _serialize_row(self, row: np.ndarray, feature_names: List[str]) -> str:
-        """Convert a row to Tabula-8B text format."""
+        """Convert a numpy row to Tabula-8B text format (legacy fallback)."""
         parts = []
         for name, val in zip(feature_names, row):
-            if np.isnan(val) if isinstance(val, float) else False:
-                continue
-            parts.append(f"the {name} is {val}")
-        return ", ".join(parts)
+            try:
+                if np.isnan(float(val)):
+                    continue
+            except (ValueError, TypeError):
+                pass
+            parts.append(f"The {name} is {val}.")
+        return " ".join(parts)
+
+    def _serialize_context_df(
+        self,
+        X_context: pd.DataFrame,
+        y_context: np.ndarray,
+        target_name: str = "target",
+    ) -> str:
+        """Serialize context examples for ICL from DataFrame."""
+        lines = []
+        for (_, row), label in zip(X_context.iterrows(), y_context):
+            row_text = self._serialize_row_from_series(row)
+            lines.append(f"{row_text} The {target_name} is {label}.")
+        return "\n".join(lines)
 
     def _serialize_context(
         self,
@@ -65,40 +100,58 @@ class TabulaEmbeddingExtractor(EmbeddingExtractor):
         feature_names: List[str],
         target_name: str = "target",
     ) -> str:
-        """Serialize context examples for ICL."""
+        """Serialize context examples for ICL (legacy fallback)."""
         lines = []
         for row, label in zip(X_context, y_context):
             row_text = self._serialize_row(row, feature_names)
-            lines.append(f"{row_text}, the {target_name} is {label}")
+            lines.append(f"{row_text} The {target_name} is {label}.")
         return "\n".join(lines)
 
     def extract_embeddings(
         self,
-        X_context: np.ndarray,
+        X_context: Union[np.ndarray, pd.DataFrame],
         y_context: np.ndarray,
-        X_query: np.ndarray,
+        X_query: Union[np.ndarray, pd.DataFrame],
         layers: Optional[List[str]] = None,
         task: str = "classification",
+        cat_feature_indices: Optional[List[int]] = None,
     ) -> EmbeddingResult:
-        """Extract embeddings from Tabula-8B."""
+        """Extract embeddings from Tabula-8B.
+
+        Accepts DataFrames with proper dtypes. Uses real column names and
+        original categorical string values for text serialization, which
+        provides semantic signal the LLM can leverage.
+        """
         if self._model is None:
             self.load_model()
 
-        X_context = np.asarray(X_context, dtype=np.float32)
         y_context = np.asarray(y_context)
-        X_query = np.asarray(X_query, dtype=np.float32)
-
-        feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+        use_df = isinstance(X_context, pd.DataFrame)
 
         # Limit context to avoid exceeding 8k token limit
         max_ctx = min(32, len(X_context))
-        ctx_text = self._serialize_context(
-            X_context[:max_ctx], y_context[:max_ctx], feature_names
-        )
+
+        if use_df:
+            ctx_text = self._serialize_context_df(
+                X_context.iloc[:max_ctx], y_context[:max_ctx]
+            )
+        else:
+            X_context = np.asarray(X_context, dtype=np.float32)
+            X_query_np = np.asarray(X_query, dtype=np.float32)
+            feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+            ctx_text = self._serialize_context(
+                X_context[:max_ctx], y_context[:max_ctx], feature_names
+            )
 
         embeddings = []
-        for row in X_query:
-            query_text = self._serialize_row(row, feature_names)
+        n_query = len(X_query)
+
+        for i in range(n_query):
+            if use_df:
+                query_text = self._serialize_row_from_series(X_query.iloc[i])
+            else:
+                query_text = self._serialize_row(X_query_np[i], feature_names)
+
             full_text = f"{ctx_text}\n{query_text}"
 
             inputs = self._tokenizer(
@@ -125,7 +178,7 @@ class TabulaEmbeddingExtractor(EmbeddingExtractor):
             model_name=self.model_name,
             extraction_point="last_hidden_state",
             embedding_dim=embeddings.shape[1],
-            n_samples=len(X_query),
+            n_samples=n_query,
             layer_embeddings={"last_hidden_state": embeddings},
         )
 
