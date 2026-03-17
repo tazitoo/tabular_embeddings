@@ -538,9 +538,11 @@ def extract_carte_all_layers(
     from sklearn.preprocessing import RobustScaler
     num_cols = df_context.select_dtypes(include=["number"]).columns.tolist()
     if num_cols:
-        # Drop constant numeric columns (Yeo-Johnson can't optimize)
+        # Drop near-constant numeric columns (Yeo-Johnson optimization fails
+        # when variance is too low, even after clipping). Use 1e-6 threshold
+        # to catch columns that round to zero after scaling (e.g. kddcup09).
         col_std = df_context[num_cols].std()
-        constant_cols = col_std[col_std == 0].index.tolist()
+        constant_cols = col_std[col_std < 1e-6].index.tolist()
         if constant_cols:
             df_context = df_context.drop(columns=constant_cols)
             df_query = df_query.drop(columns=constant_cols)
@@ -554,6 +556,13 @@ def extract_carte_all_layers(
             # Clip remaining outliers to ±10 IQR
             df_context[num_cols] = df_context[num_cols].clip(-10, 10)
             df_query[num_cols] = df_query[num_cols].clip(-10, 10)
+            # Drop columns where RobustScaler produced NaN (IQR=0) or post-scale
+            # variance is still too low — these crash Yeo-Johnson inside t2g.fit()
+            post_std = df_context[num_cols].std()
+            bad_post = post_std[post_std.isna() | (post_std < 1e-6)].index.tolist()
+            if bad_post:
+                df_context = df_context.drop(columns=bad_post)
+                df_query = df_query.drop(columns=bad_post)
 
     # CARTE needs at least one object-dtype column for graph construction
     has_object_cols = len(df_context.select_dtypes(include=["object"]).columns) > 0
@@ -908,12 +917,17 @@ def extract_hyperfast_all_layers(
     from hyperfast.hyperfast import transform_data_for_main_network
     import os
 
-    # Convert DataFrame to numpy with label-encoded categoricals
+    # Convert DataFrame to numpy with label-encoded categoricals.
+    # IMPORTANT: encode X_context and X_query TOGETHER so category codes are
+    # consistent across both sets. Independent encoding assigns different codes
+    # to the same string value, causing HyperFast's one-hot lookup to go
+    # out-of-bounds on categories not seen in the context (CUDA assertion).
     if isinstance(X_context, pd.DataFrame):
-        X_context_np, cat_indices = _ensure_numpy(X_context)
-        X_query_np, _ = _ensure_numpy(X_query)
-        X_context = X_context_np
-        X_query = X_query_np
+        n_ctx = len(X_context)
+        X_combined = pd.concat([X_context, X_query], axis=0, ignore_index=True)
+        X_combined_np, cat_indices = _ensure_numpy(X_combined)
+        X_context = X_combined_np[:n_ctx]
+        X_query = X_combined_np[n_ctx:]
     else:
         cat_indices = cat_feature_indices or []
         X_context = np.asarray(X_context, dtype=np.float32)
