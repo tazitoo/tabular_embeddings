@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Run TabArena's TabPFNv2 pipeline on 5 validation datasets and save per-row OOF predictions.
+Run TabArena's RealTabPFN-v2.5 pipeline on 5 validation datasets and save per-row OOF predictions.
 
 Uses TabArena's exact preprocessing and inference pipeline (AutoGluon wrapper around
-TabPFNv2), fold=0/repeat=0 (TabArena-Lite), producing the ground-truth per-row OOF
-predictions we compare against in 01_validate_inference.py.
+TabPFN v2.5), fold=0/repeat=0 (TabArena-Lite), producing the ground-truth per-row OOF
+predictions we compare directly against our own TabPFN 2.5 inference pipeline.
+
+Note: TabArena's NeurIPS 2025 paper used TabPFNv2 (older). RealTabPFN-v2.5 was added
+in November 2025. Since our corpus pipeline uses v2.5, we validate against v2.5.
 
 Output:
     output/sae_training_round9/tabarena_oof_predictions/{dataset_name}.json
@@ -44,8 +47,8 @@ def main():
     from tabarena.benchmark.experiment import run_experiments_new
     from tabarena.models.utils import get_configs_generator_from_name
 
-    config_gen = get_configs_generator_from_name("TabPFNv2")
-    # generate_all_bag_experiments returns the same refit=True config TabArena uses
+    # RealTabPFN-v2.5: TabArena's wrapper around TabPFN 2.5 — same version as our pipeline
+    config_gen = get_configs_generator_from_name("RealTabPFN-v2.5")
     model_experiments = config_gen.generate_all_bag_experiments(
         num_random_configs=0,
         fold_fitting_strategy="sequential_local",
