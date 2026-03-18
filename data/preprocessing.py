@@ -19,6 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
 
 from scripts._project_root import PROJECT_ROOT
 
@@ -98,3 +101,164 @@ def load_preprocessed(model_name: str, dataset_name: str, cache_dir: Path) -> Pr
         dataset_name=meta["dataset_name"],
         task_type=meta["task_type"],
     )
+
+
+def preprocess_for_model(
+    model_name: str,
+    dataset_name: str,
+    X_train: pd.DataFrame,
+    y_train: np.ndarray,
+    X_test: pd.DataFrame,
+    y_test: np.ndarray,
+    task_type: str,
+) -> PreprocessedDataset:
+    """Preprocess features and labels for the given model.
+
+    Args:
+        model_name: One of "tabpfn", "tabicl", "tabdpt", "mitra", "hyperfast".
+        dataset_name: Used to populate PreprocessedDataset.dataset_name.
+        X_train: Raw training features as a DataFrame.
+        y_train: Training labels (any dtype — will be encoded).
+        X_test: Raw test features as a DataFrame.
+        y_test: Test labels.
+        task_type: "classification" or "regression".
+
+    Returns:
+        PreprocessedDataset with float32 numpy arrays ready for model input.
+
+    Raises:
+        NotImplementedError: For "carte" and "tabula-8b".
+        ValueError: For unknown model names.
+    """
+    model_key = model_name.lower()
+
+    if model_key in AUTOGLUON_MODELS:
+        nan_safe = model_key in NAN_SAFE_MODELS
+        X_train_np, X_test_np, cat_indices = _preprocess_autogluon(
+            X_train, X_test, nan_safe=nan_safe
+        )
+    elif model_key == "hyperfast":
+        X_train_np, X_test_np, cat_indices = _preprocess_hyperfast(X_train, X_test)
+    elif model_key in ("carte", "tabula-8b"):
+        raise NotImplementedError(f"Bespoke preprocessing for {model_name} not yet implemented")
+    else:
+        raise ValueError(f"Unknown model: {model_name!r}")
+
+    y_train_enc, y_test_enc = _encode_y(y_train, y_test, task_type)
+
+    return PreprocessedDataset(
+        X_train=X_train_np,
+        X_test=X_test_np,
+        y_train=y_train_enc,
+        y_test=y_test_enc,
+        cat_indices=cat_indices,
+        model_name=model_name,
+        dataset_name=dataset_name,
+        task_type=task_type,
+    )
+
+
+def _df_to_float32(df: pd.DataFrame) -> tuple[np.ndarray, list[int]]:
+    """Convert AutoMLPipelineFeatureGenerator output DataFrame to float32 numpy.
+
+    Category columns (.cat.codes): code -1 (NaN) → np.nan. Numeric columns
+    cast directly. Column order is preserved.
+
+    Returns:
+        (array float32, cat_indices) — indices of columns that were categorical.
+    """
+    out = np.empty((len(df), len(df.columns)), dtype=np.float32)
+    cat_indices = []
+    for i, col in enumerate(df.columns):
+        s = df[col]
+        if hasattr(s, "cat"):
+            codes = s.cat.codes.astype(np.float32)
+            codes[codes == -1] = np.nan
+            out[:, i] = codes
+            cat_indices.append(i)
+        else:
+            out[:, i] = s.values.astype(np.float32)
+    return out, cat_indices
+
+
+def _preprocess_autogluon(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    nan_safe: bool,
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    """Apply AutoMLPipelineFeatureGenerator (fit on train, transform both).
+
+    Preserves NaN when nan_safe=True (TabPFN, TabDPT).
+    Applies median imputation when nan_safe=False (TabICL, Mitra).
+    Returns empty cat_indices after imputation — category codes are gone.
+    """
+    from autogluon.features.generators import AutoMLPipelineFeatureGenerator
+
+    fg = AutoMLPipelineFeatureGenerator(verbosity=0)
+    X_train_proc = fg.fit_transform(X_train)
+    X_test_proc = fg.transform(X_test)
+
+    X_train_np, cat_indices = _df_to_float32(X_train_proc)
+    X_test_np, _ = _df_to_float32(X_test_proc)
+
+    if not nan_safe:
+        imp = SimpleImputer(strategy="median")
+        X_train_np = imp.fit_transform(X_train_np)
+        X_test_np = imp.transform(X_test_np)
+        cat_indices = []  # imputed values are no longer meaningful category codes
+
+    return X_train_np, X_test_np, cat_indices
+
+
+def _preprocess_hyperfast(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    """Ordinal-encode categoricals for HyperFast, preserving NaN.
+
+    HyperFast applies its own imputation, one-hot encoding, and StandardScaler
+    internally during fit() via _preprocess_test_data(). We only need to:
+      - Convert categorical columns to integer codes so the array is numeric.
+      - Leave NaN as NaN — HyperFast imputes internally, including for categoricals.
+      - Record cat_indices (in original column order) for the model.
+
+    OrdinalEncoder(encoded_missing_value=np.nan) maps None/NaN in object-dtype
+    columns to np.nan rather than a spurious integer code.
+    """
+    X_train = X_train.copy()
+    X_test = X_test.copy()
+
+    cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
+    cat_indices = [X_train.columns.get_loc(c) for c in cat_cols]  # original-order positions
+
+    if cat_cols:
+        enc = OrdinalEncoder(
+            handle_unknown="use_encoded_value",
+            unknown_value=np.nan,
+            encoded_missing_value=np.nan,  # None/NaN → np.nan, not a spurious code
+        )
+        X_train[cat_cols] = enc.fit_transform(X_train[cat_cols])
+        X_test[cat_cols] = enc.transform(X_test[cat_cols])
+
+    X_train_np = X_train.values.astype(np.float32)
+    X_test_np = X_test.values.astype(np.float32)
+
+    return X_train_np, X_test_np, cat_indices
+
+
+def _encode_y(
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+    task_type: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Encode labels: LabelEncoder for classification, float32 for regression.
+
+    Note: LabelEncoder.transform raises ValueError if y_test contains a class
+    not seen in y_train. This is intentional — fail loudly on data issues.
+    """
+    if task_type == "regression":
+        return y_train.astype(np.float32), y_test.astype(np.float32)
+    le = LabelEncoder()
+    y_train_enc = le.fit_transform(y_train).astype(np.int32)
+    y_test_enc = le.transform(y_test).astype(np.int32)
+    return y_train_enc, y_test_enc

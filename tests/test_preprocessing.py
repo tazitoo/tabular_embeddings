@@ -36,3 +36,67 @@ def test_is_cached_requires_both_files(tmp_path):
     # Remove .npz — should be treated as not cached
     (tmp_path / "tabpfn" / "test_ds.npz").unlink()
     assert not is_cached("tabpfn", "test_ds", tmp_path)
+
+
+import pandas as pd
+from data.preprocessing import preprocess_for_model
+
+
+def _make_df_with_nan():
+    """DataFrame with numeric NaN and categorical NaN."""
+    X_train = pd.DataFrame({
+        "num": [1.0, 2.0, np.nan, 4.0],
+        "cat": pd.Categorical(["a", "b", None, "b"]),
+    })
+    X_test = pd.DataFrame({
+        "num": [5.0, np.nan],
+        "cat": pd.Categorical(["a", None]),
+    })
+    y_train = np.array([0, 1, 0, 1])
+    y_test = np.array([0, 1])
+    return X_train, y_train, X_test, y_test
+
+
+def test_tabpfn_nan_preserved():
+    X_train, y_train, X_test, y_test = _make_df_with_nan()
+    data = preprocess_for_model("tabpfn", "ds", X_train, y_train, X_test, y_test, "classification")
+    assert np.isnan(data.X_train).any(), "tabpfn: NaN must be preserved"
+    assert data.X_train.dtype == np.float32
+    assert len(data.cat_indices) > 0
+
+
+def test_tabicl_nan_filled():
+    X_train, y_train, X_test, y_test = _make_df_with_nan()
+    data = preprocess_for_model("tabicl", "ds", X_train, y_train, X_test, y_test, "classification")
+    assert not np.isnan(data.X_train).any(), "tabicl: NaN must be filled"
+    assert not np.isnan(data.X_test).any()
+    assert data.cat_indices == [], "tabicl: cat_indices empty after imputation"
+    assert data.X_train.dtype == np.float32
+
+
+def test_all_numeric_no_cats():
+    """All-numeric dataset — no categoricals, cat_indices must be empty."""
+    X_train = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, np.nan, 6.0]})
+    X_test = pd.DataFrame({"a": [7.0], "b": [8.0]})
+    y = np.array([0, 1, 0])
+    data = preprocess_for_model("tabpfn", "ds", X_train, y, X_test, y[:1], "classification")
+    assert data.cat_indices == []
+    assert np.isnan(data.X_train).any()  # NaN preserved
+
+
+def test_y_label_encoded_classification():
+    X_train = pd.DataFrame({"a": [1.0, 2.0, 3.0]})
+    X_test = pd.DataFrame({"a": [4.0]})
+    y_str = np.array(["neg", "pos", "neg"])
+    data = preprocess_for_model("tabpfn", "ds", X_train, y_str, X_test, y_str[:1], "classification")
+    assert set(data.y_train.tolist()).issubset({0, 1})
+    assert data.y_train.dtype == np.int32
+
+
+def test_y_regression_float32():
+    X_train = pd.DataFrame({"a": [1.0, 2.0, 3.0]})
+    X_test = pd.DataFrame({"a": [4.0]})
+    y = np.array([1.5, 2.5, 3.5])
+    data = preprocess_for_model("tabpfn", "ds", X_train, y, X_test, y[:1], "regression")
+    assert data.y_train.dtype == np.float32
+    np.testing.assert_array_almost_equal(data.y_train, y.astype(np.float32))
