@@ -123,8 +123,8 @@ def run_inference_validation(
 
     Loads TabArena's published per-fold metrics from df_results.csv if available.
     """
-    from models.tabpfn_utils import load_tabpfn
-    from sklearn.metrics import accuracy_score, mean_absolute_error
+    from models.tabpfn_utils import load_tabpfn, CHECKPOINT_PATHS_V2
+    from sklearn.metrics import accuracy_score
 
     # Load TabArena published metrics (best-effort)
     tabarena_metrics = {}
@@ -141,8 +141,11 @@ def run_inference_validation(
                 # metric_error: lower = better (error rate for classification)
                 tabarena_metrics[ds_name] = df_ds.sort_values("metric_error").iloc[0]
 
-    print(f"\n  Loading TabPFN 2.5 on {device}...")
-    model = load_tabpfn(task="classification", device=device, n_estimators=4)
+    # Use TabPFN v2 checkpoint — same version as TabArena benchmark for apples-to-apples comparison
+    v2_ckpt = CHECKPOINT_PATHS_V2["classification"]
+    print(f"\n  Loading TabPFN v2 on {device} (checkpoint: {v2_ckpt})...")
+    model = load_tabpfn(task="classification", device=device, n_estimators=4,
+                        model_path=v2_ckpt)
 
     results = []
     for name in datasets:

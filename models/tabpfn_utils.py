@@ -24,6 +24,12 @@ CHECKPOINT_PATHS = {
     "regression": "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-regressor-v2.5_default.ckpt",
 }
 
+# TabPFN v2 checkpoints — used for TabArena validation only (same version as benchmark)
+CHECKPOINT_PATHS_V2 = {
+    "classification": "/data/models/tabular_fm/tabpfn/tabpfn-v2-classifier.ckpt",
+    "regression": "/data/models/tabular_fm/tabpfn/tabpfn-v2-regressor.ckpt",
+}
+
 
 def load_tabpfn(
     task: str = "classification",
