@@ -131,15 +131,15 @@ def run_inference_validation(
     results_csv = Path("/tmp/benchmark_results/df_results.csv")
     if results_csv.exists():
         df_results = pd.read_csv(results_csv)
-        # TABPFNV2 or TABDPT published metrics per dataset, fold=0
+        # TABPFNV2 (default) published metrics per dataset, fold=0
         for ds_name in datasets:
             df_ds = df_results[
                 (df_results["dataset"] == ds_name) &
+                (df_results["method"] == "TABPFNV2 (default)") &
                 (df_results["fold"] == 0)
             ]
             if not df_ds.empty:
-                # metric_error: lower = better (error rate for classification)
-                tabarena_metrics[ds_name] = df_ds.sort_values("metric_error").iloc[0]
+                tabarena_metrics[ds_name] = df_ds.iloc[0]
 
     # Use TabPFN v2 checkpoint — same version as TabArena benchmark for apples-to-apples comparison
     v2_ckpt = CHECKPOINT_PATHS_V2["classification"]
