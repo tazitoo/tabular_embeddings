@@ -114,117 +114,104 @@ def check_data_alignment(splits: dict) -> list[dict]:
     return results
 
 
+OOF_DIR = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_oof_predictions"
+# Tolerance for mean absolute error in predicted probabilities (per-row comparison)
+PROBA_MAE_TOLERANCE = 0.05
+
+
 def run_inference_validation(
     datasets: list[str],
     splits: dict,
     device: str = "cuda",
 ) -> list[dict]:
-    """Run TabPFN 2.5 on small classification datasets and compare to TabArena.
+    """Compare our TabPFN 2.5 predictions against TabArena's ground-truth OOF predictions.
 
-    Loads TabArena's published per-fold metrics from df_results.csv if available.
+    TabArena ran RealTabPFN-v2.5 with 8-fold CV bagging on the outer train fold,
+    producing per-row OOF probabilities saved in output/sae_training_round9/tabarena_oof_predictions/.
+
+    We run our pipeline (full train fold → predict same rows) and compare predicted
+    probabilities row-by-row. Mean absolute error < PROBA_MAE_TOLERANCE confirms
+    our preprocessing and inference match TabArena's pipeline.
+
+    Note: Our pipeline uses the full train fold as context (no CV), while TabArena
+    uses 8-fold CV bagging. This means predictions will differ — but the MAE should
+    be small if preprocessing is correct.
     """
-    from models.tabpfn_utils import load_tabpfn, CHECKPOINT_PATHS_V2
-    from sklearn.metrics import accuracy_score
+    from models.tabpfn_utils import load_tabpfn
+    from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
 
-    # Load TabArena published metrics (best-effort)
-    tabarena_metrics = {}
-    results_csv = Path("/tmp/benchmark_results/df_results.csv")
-    if results_csv.exists():
-        df_results = pd.read_csv(results_csv)
-        # TABPFNV2 (default) published metrics per dataset, fold=0
-        for ds_name in datasets:
-            df_ds = df_results[
-                (df_results["dataset"] == ds_name) &
-                (df_results["method"] == "TABPFNV2 (default)") &
-                (df_results["fold"] == 0)
-            ]
-            if not df_ds.empty:
-                tabarena_metrics[ds_name] = df_ds.iloc[0]
-
-    # Use TabPFN v2 checkpoint — same version as TabArena benchmark for apples-to-apples comparison
-    v2_ckpt = CHECKPOINT_PATHS_V2["classification"]
-    print(f"\n  Loading TabPFN v2 on {device} (checkpoint: {v2_ckpt})...")
-    model = load_tabpfn(task="classification", device=device, n_estimators=4,
-                        model_path=v2_ckpt)
+    print(f"\n  Loading TabPFN 2.5 on {device}...")
+    model = load_tabpfn(task="classification", device=device, n_estimators=4)
 
     results = []
     for name in datasets:
         split_info = splits.get(name)
+        oof_path = OOF_DIR / f"{name}.json"
+
         if split_info is None:
             print(f"  SKIP {name}: not in splits")
             continue
         if split_info["task_type"] != "classification":
-            print(f"  SKIP {name}: regression (inference check for classification only)")
+            print(f"  SKIP {name}: regression")
+            continue
+        if not oof_path.exists():
+            print(f"  SKIP {name}: no OOF file (run run_tabarena_tabpfnv2.py first)")
             continue
 
         try:
+            oof = json.loads(oof_path.read_text())
+            tabarena_idx = np.array(oof["train_indices"])       # rows TabArena predicted on
+            tabarena_proba = np.array(oof["y_pred_proba_val"])  # (n_val, n_classes)
+
             X_df, y = load_full_dataset(name)
             train_idx = np.array(split_info["train_indices"])
-            test_idx = np.array(split_info["test_indices"])
 
             X_train = X_df.iloc[train_idx]
-            X_test = X_df.iloc[test_idx]
             y_train = y[train_idx]
-            y_test = y[test_idx]
 
-            # Use label-encoded int targets (already done by loader)
-            from sklearn.preprocessing import LabelEncoder
+            # Rows TabArena predicted on — query our model on the same rows
+            X_query = X_df.iloc[tabarena_idx]
+
             le = LabelEncoder()
             y_train_enc = le.fit_transform(y_train)
-            y_test_enc = le.transform(y_test)
 
-            # Convert to numpy: label-encode categoricals, keep numerics as float
-            # (matches TabPFNEmbeddingExtractor._to_numpy_with_label_encoding)
-            from sklearn.preprocessing import OrdinalEncoder
             cat_cols = X_train.select_dtypes(include=["object", "category"]).columns
             num_cols = X_train.select_dtypes(include="number").columns
 
-            parts_train, parts_test = [], []
-            if len(num_cols):
-                parts_train.append(X_train[num_cols].values.astype(np.float32))
-                parts_test.append(X_test[num_cols].values.astype(np.float32))
-            if len(cat_cols):
-                enc = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
-                parts_train.append(enc.fit_transform(X_train[cat_cols]).astype(np.float32))
-                parts_test.append(enc.transform(X_test[cat_cols]).astype(np.float32))
+            def to_numpy(df):
+                parts = []
+                if len(num_cols):
+                    parts.append(df[num_cols].values.astype(np.float32))
+                if len(cat_cols):
+                    parts.append(enc.transform(df[cat_cols]).astype(np.float32))
+                return np.nan_to_num(np.concatenate(parts, axis=1))
 
-            X_train_np = np.nan_to_num(np.concatenate(parts_train, axis=1))
-            X_test_np = np.nan_to_num(np.concatenate(parts_test, axis=1))
+            enc = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+            if len(cat_cols):
+                enc.fit(X_train[cat_cols])
+
+            X_train_np = to_numpy(X_train)
+            X_query_np = to_numpy(X_query)
 
             model.fit(X_train_np, y_train_enc)
-            preds = model.predict(X_test_np)
-            acc = float(accuracy_score(y_test_enc, preds))
-            error_rate = 1.0 - acc
+            our_proba = model.predict_proba(X_query_np)  # (n_val, n_classes)
 
-            # Compare to TabArena published metric
-            published_error = None
-            within_tolerance = None
-            if name in tabarena_metrics:
-                row = tabarena_metrics[name]
-                published_error = float(row["metric_error"])
-                within_tolerance = abs(error_rate - published_error) <= METRIC_TOLERANCE
+            # Per-row mean absolute error in predicted probabilities
+            mae = float(np.abs(our_proba - tabarena_proba).mean())
+            within_tolerance = mae <= PROBA_MAE_TOLERANCE
 
-            status = "ok"
-            if within_tolerance is False:
-                status = "outside_tolerance"
-
+            status = "ok" if within_tolerance else "outside_tolerance"
             results.append({
                 "dataset": name,
-                "n_train": len(y_train),
-                "n_test": len(y_test),
-                "our_error_rate": error_rate,
-                "our_accuracy": acc,
-                "published_error": published_error,
+                "n_query": len(tabarena_idx),
+                "proba_mae": mae,
                 "within_tolerance": within_tolerance,
                 "status": status,
             })
 
-            tol_str = ""
-            if published_error is not None:
-                diff = error_rate - published_error
-                tol_str = f" (TabArena: {published_error:.4f}, diff={diff:+.4f})"
-            sym = "✓" if status == "ok" else "⚠"
-            print(f"  {sym} {name}: acc={acc:.4f} err={error_rate:.4f}{tol_str}")
+            sym = "✓" if within_tolerance else "⚠"
+            print(f"  {sym} {name}: {len(tabarena_idx)} rows, proba MAE={mae:.4f} "
+                  f"(tol={PROBA_MAE_TOLERANCE})")
 
         except Exception as e:
             import traceback
@@ -273,7 +260,7 @@ def main():
 
         n_inf_ok = sum(1 for r in inference_results if r["status"] == "ok")
         n_inf_warn = sum(1 for r in inference_results if r["status"] == "outside_tolerance")
-        print(f"\n  {n_inf_ok} OK, {n_inf_warn} outside ±{METRIC_TOLERANCE:.0%} tolerance")
+        print(f"\n  {n_inf_ok} OK, {n_inf_warn} outside MAE≤{PROBA_MAE_TOLERANCE} tolerance")
 
     report = {
         "alignment": alignment_results,
