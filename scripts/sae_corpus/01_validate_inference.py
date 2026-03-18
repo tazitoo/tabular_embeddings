@@ -196,6 +196,10 @@ def run_inference_validation(
             model.fit(X_train_np, y_train_enc)
             our_proba = model.predict_proba(X_query_np)  # (n_val, n_classes)
 
+            # Align shapes: TabArena stores only positive-class prob for binary tasks
+            if tabarena_proba.ndim == 1:
+                our_proba = our_proba[:, 1]
+
             # Per-row mean absolute error in predicted probabilities
             mae = float(np.abs(our_proba - tabarena_proba).mean())
             within_tolerance = mae <= PROBA_MAE_TOLERANCE
