@@ -48,12 +48,13 @@ def main():
     from tabarena.models.utils import get_configs_generator_from_name
 
     # RealTabPFN-v2.5: TabArena's wrapper around TabPFN 2.5 — same version as our pipeline.
-    # Inject custom_model_dir into the default config so it uses local checkpoints
-    # instead of attempting a HuggingFace download.
+    # custom_model_dir is a class attribute (not a hyperparameter), so patch it directly
+    # to use local checkpoints instead of attempting a HuggingFace download.
     LOCAL_CHECKPOINT_DIR = "/data/models/tabular_fm/tabpfn"
+    from tabarena.benchmark.models.ag.tabpfnv2_5.tabpfnv2_5_model import RealTabPFNv25Model
+    RealTabPFNv25Model.custom_model_dir = LOCAL_CHECKPOINT_DIR
+
     config_gen = get_configs_generator_from_name("RealTabPFN-v2.5")
-    # Patch the default manual config to include the local checkpoint dir
-    config_gen.manual_configs = [{"custom_model_dir": LOCAL_CHECKPOINT_DIR}]
     model_experiments = config_gen.generate_all_bag_experiments(
         num_random_configs=0,
         fold_fitting_strategy="sequential_local",
