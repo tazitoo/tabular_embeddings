@@ -100,20 +100,24 @@ def main():
         sym = "✓" if abs(diff) <= 0.10 else "⚠"
         print(f"  {sym} our={our_ll_agg:.4f}  tabarena={tab_ll_agg:.4f}  diff={diff:+.4f}")
 
-    # --- Plot 1: aggregate scatter ---
-    fig1, ax = plt.subplots(figsize=(5, 5))
-    xs = [v["tabarena_logloss"] for v in agg_results.values()]
-    ys = [v["our_logloss"] for v in agg_results.values()]
-    lo, hi = min(xs + ys) * 0.95, max(xs + ys) * 1.05
-    ax.plot([lo, hi], [lo, hi], "k--", linewidth=1.2, label="y = x")
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    for i, (name, vals) in enumerate(agg_results.items()):
+
+    # --- Plot 1: per-row scatter, all datasets combined, colored by dataset ---
+    fig1, ax = plt.subplots(figsize=(6, 6))
+    all_tab = np.concatenate([np.array(v["tabarena_ll"]) for v in perrow_data.values()])
+    all_our = np.concatenate([np.array(v["our_ll"]) for v in perrow_data.values()])
+    lo = min(all_tab.min(), all_our.min()) * 0.9
+    hi = max(all_tab.max(), all_our.max()) * 1.05
+    ax.plot([lo, hi], [lo, hi], "k--", linewidth=1.2, label="y = x", zorder=3)
+    for i, (name, rows) in enumerate(perrow_data.items()):
+        our = np.array(rows["our_ll"])
+        tab = np.array(rows["tabarena_ll"])
         short = name.replace("-service-center", "").replace("_", " ")
-        ax.scatter(vals["tabarena_logloss"], vals["our_logloss"],
-                   color=colors[i % len(colors)], s=80, zorder=5, label=short)
-    ax.set_xlabel("TabArena log-loss", fontsize=11)
-    ax.set_ylabel("Our log-loss (cache preprocessing)", fontsize=11)
-    ax.set_title("TabPFN 2.5 — aggregate log-loss per dataset\nour pipeline vs TabArena's",
+        ax.scatter(tab, our, alpha=0.35, s=12, color=colors[i % len(colors)],
+                   label=f"{short} (n={len(our)})", zorder=2)
+    ax.set_xlabel("TabArena per-row log-loss", fontsize=11)
+    ax.set_ylabel("Our per-row log-loss (cache preprocessing)", fontsize=11)
+    ax.set_title("TabPFN 2.5 — per-row log-loss, all test samples\nour pipeline vs TabArena's",
                  fontsize=10)
     ax.legend(fontsize=8, framealpha=0.8)
     ax.set_xlim(lo, hi)
@@ -122,9 +126,9 @@ def main():
     plt.tight_layout()
     out1 = OUTPUT_DIR / "validation_scatter_aggregate.png"
     fig1.savefig(out1, dpi=150, bbox_inches="tight")
-    print(f"\nAggregate scatter → {out1}")
+    print(f"\nPer-row scatter (combined) → {out1}")
 
-    # --- Plot 2: per-dataset per-row scatter ---
+    # --- Plot 2: per-dataset per-row scatter (one panel each) ---
     n = len(perrow_data)
     fig2, axes = plt.subplots(1, n, figsize=(3.5 * n, 3.5))
     if n == 1:
@@ -135,22 +139,21 @@ def main():
         lo = min(our.min(), tab.min()) * 0.9
         hi = max(our.max(), tab.max()) * 1.1
         ax.scatter(tab, our, alpha=0.25, s=8, color="#4C72B0")
-        ax.plot([lo, hi], [lo, hi], "r--", linewidth=1.2, label="y = x")
+        ax.plot([lo, hi], [lo, hi], "r--", linewidth=1.2)
         short = name.replace("-service-center", "").replace("_", " ")
-        ax.set_title(short, fontsize=9, pad=4)
+        ax.set_title(f"{short}\n(n={len(our)})", fontsize=9, pad=4)
         ax.set_xlabel("TabArena per-row log-loss", fontsize=8)
         ax.set_ylabel("Our per-row log-loss" if ax is axes[0] else "", fontsize=8)
         ax.tick_params(labelsize=7)
         ax.set_xlim(lo, hi)
         ax.set_ylim(lo, hi)
         ax.set_aspect("equal")
-    fig2.suptitle("Per-row log-loss: our pipeline (cache) vs TabArena's\n"
-                  "Points on y=x line = identical predictions",
+    fig2.suptitle("Per-row log-loss: our pipeline (cache) vs TabArena's  |  y=x = identical predictions",
                   fontsize=10, y=1.02)
     plt.tight_layout()
     out2 = OUTPUT_DIR / "validation_scatter_perrow.png"
     fig2.savefig(out2, dpi=150, bbox_inches="tight")
-    print(f"Per-row scatter   → {out2}")
+    print(f"Per-row scatter (panels)   → {out2}")
 
     # --- Save JSON report ---
     report = {ds: agg_results[ds] for ds in agg_results}
