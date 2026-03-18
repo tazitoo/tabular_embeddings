@@ -1,23 +1,213 @@
 {
+  "APSFailure": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9969746456710517,
+    "l0_cka_profile": [
+      1.0,
+      0.9994718722699616,
+      0.9969746456710517
+    ],
+    "dataset": "APSFailure",
+    "model": "hyperfast"
+  },
   "Amazon_employee_access": {
     "n_layers": 3,
     "critical_layer": 2,
     "critical_depth_frac": 0.6666666666666666,
     "half_cka_layer": 2,
     "half_cka_depth_frac": 0.6666666666666666,
-    "final_cka": 0.9845249112252958,
+    "final_cka": 0.9881671806883732,
     "l0_cka_profile": [
       1.0,
-      0.9977927023279894,
-      0.9845249112252958
+      0.998532301801141,
+      0.9881671806883732
     ],
     "dataset": "Amazon_employee_access",
-    "model": "hyperfast",
-    "layer_names": [
-      "layer_0",
-      "layer_1",
-      "layer_2"
-    ]
+    "model": "hyperfast"
+  },
+  "Bank_Customer_Churn": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.7947098341451337,
+    "l0_cka_profile": [
+      1.0,
+      0.9764650146973631,
+      0.7947098341451337
+    ],
+    "dataset": "Bank_Customer_Churn",
+    "model": "hyperfast"
+  },
+  "Bioresponse": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9811083567283758,
+    "l0_cka_profile": [
+      1.0,
+      0.9883046778651601,
+      0.9811083567283758
+    ],
+    "dataset": "Bioresponse",
+    "model": "hyperfast"
+  },
+  "Diabetes130US": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.871432317184663,
+    "l0_cka_profile": [
+      1.0,
+      0.9891047345173757,
+      0.871432317184663
+    ],
+    "dataset": "Diabetes130US",
+    "model": "hyperfast"
+  },
+  "E-CommereShippingData": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.7619534069241696,
+    "l0_cka_profile": [
+      1.0,
+      0.9800044461923311,
+      0.7619534069241696
+    ],
+    "dataset": "E-CommereShippingData",
+    "model": "hyperfast"
+  },
+  "Fitness_Club": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.6990780268246287,
+    "l0_cka_profile": [
+      1.0,
+      0.9452620885463773,
+      0.6990780268246287
+    ],
+    "dataset": "Fitness_Club",
+    "model": "hyperfast"
+  },
+  "GiveMeSomeCredit": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9997857369825609,
+    "l0_cka_profile": [
+      1.0,
+      0.9999384265426919,
+      0.9997857369825609
+    ],
+    "dataset": "GiveMeSomeCredit",
+    "model": "hyperfast"
+  },
+  "HR_Analytics_Job_Change_of_Data_Scientists": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.7886719815831702,
+    "l0_cka_profile": [
+      1.0,
+      0.9723938383252735,
+      0.7886719815831702
+    ],
+    "dataset": "HR_Analytics_Job_Change_of_Data_Scientists",
+    "model": "hyperfast"
+  },
+  "Is-this-a-good-customer": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9001363560076836,
+    "l0_cka_profile": [
+      1.0,
+      0.9765200343078175,
+      0.9001363560076836
+    ],
+    "dataset": "Is-this-a-good-customer",
+    "model": "hyperfast"
+  },
+  "MIC": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9892338696745997,
+    "l0_cka_profile": [
+      1.0,
+      0.9992064787631123,
+      0.9892338696745997
+    ],
+    "dataset": "MIC",
+    "model": "hyperfast"
+  },
+  "Marketing_Campaign": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.8776987250236995,
+    "l0_cka_profile": [
+      1.0,
+      0.9801809991385214,
+      0.8776987250236995
+    ],
+    "dataset": "Marketing_Campaign",
+    "model": "hyperfast"
+  },
+  "NATICUSdroid": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9920057365382219,
+    "l0_cka_profile": [
+      1.0,
+      0.9995645133043297,
+      0.9920057365382219
+    ],
+    "dataset": "NATICUSdroid",
+    "model": "hyperfast"
+  },
+  "SDSS17": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9989241787197033,
+    "l0_cka_profile": [
+      1.0,
+      0.9997538903399436,
+      0.9989241787197033
+    ],
+    "dataset": "SDSS17",
+    "model": "hyperfast"
   },
   "anneal": {
     "n_layers": 3,
@@ -25,18 +215,358 @@
     "critical_depth_frac": 0.6666666666666666,
     "half_cka_layer": 2,
     "half_cka_depth_frac": 0.6666666666666666,
-    "final_cka": 0.9245828948661785,
+    "final_cka": 0.9494768124586902,
     "l0_cka_profile": [
       1.0,
-      0.9953393452671035,
-      0.9245828948661785
+      0.9964934432160089,
+      0.9494768124586902
     ],
     "dataset": "anneal",
-    "model": "hyperfast",
-    "layer_names": [
-      "layer_0",
-      "layer_1",
-      "layer_2"
-    ]
+    "model": "hyperfast"
+  },
+  "bank-marketing": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.855056147747844,
+    "l0_cka_profile": [
+      1.0,
+      0.9760521519675133,
+      0.855056147747844
+    ],
+    "dataset": "bank-marketing",
+    "model": "hyperfast"
+  },
+  "blood-transfusion-service-center": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.8499338253693827,
+    "l0_cka_profile": [
+      1.0,
+      0.930552844099318,
+      0.8499338253693827
+    ],
+    "dataset": "blood-transfusion-service-center",
+    "model": "hyperfast"
+  },
+  "churn": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.8348878821159255,
+    "l0_cka_profile": [
+      1.0,
+      0.9965254964203694,
+      0.8348878821159255
+    ],
+    "dataset": "churn",
+    "model": "hyperfast"
+  },
+  "coil2000_insurance_policies": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9369944268694814,
+    "l0_cka_profile": [
+      1.0,
+      0.9961048264196267,
+      0.9369944268694814
+    ],
+    "dataset": "coil2000_insurance_policies",
+    "model": "hyperfast"
+  },
+  "credit-g": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.7981928898185288,
+    "l0_cka_profile": [
+      1.0,
+      0.9883323086860835,
+      0.7981928898185288
+    ],
+    "dataset": "credit-g",
+    "model": "hyperfast"
+  },
+  "credit_card_clients_default": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.851938266620465,
+    "l0_cka_profile": [
+      1.0,
+      0.9795795538361116,
+      0.851938266620465
+    ],
+    "dataset": "credit_card_clients_default",
+    "model": "hyperfast"
+  },
+  "customer_satisfaction_in_airline": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.845635235404598,
+    "l0_cka_profile": [
+      1.0,
+      0.9903793814177371,
+      0.845635235404598
+    ],
+    "dataset": "customer_satisfaction_in_airline",
+    "model": "hyperfast"
+  },
+  "diabetes": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.7704756772674789,
+    "l0_cka_profile": [
+      1.0,
+      0.957964601928171,
+      0.7704756772674789
+    ],
+    "dataset": "diabetes",
+    "model": "hyperfast"
+  },
+  "hazelnut-spread-contaminant-detection": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.989372258015785,
+    "l0_cka_profile": [
+      1.0,
+      0.9980913697553515,
+      0.989372258015785
+    ],
+    "dataset": "hazelnut-spread-contaminant-detection",
+    "model": "hyperfast"
+  },
+  "heloc": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9429726309321195,
+    "l0_cka_profile": [
+      1.0,
+      0.9960571633501217,
+      0.9429726309321195
+    ],
+    "dataset": "heloc",
+    "model": "hyperfast"
+  },
+  "hiva_agnostic": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9870196729208802,
+    "l0_cka_profile": [
+      1.0,
+      0.9887230360065729,
+      0.9870196729208802
+    ],
+    "dataset": "hiva_agnostic",
+    "model": "hyperfast"
+  },
+  "in_vehicle_coupon_recommendation": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.7531707206247238,
+    "l0_cka_profile": [
+      1.0,
+      0.9896426630583246,
+      0.7531707206247238
+    ],
+    "dataset": "in_vehicle_coupon_recommendation",
+    "model": "hyperfast"
+  },
+  "jm1": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9439858350560929,
+    "l0_cka_profile": [
+      1.0,
+      0.9827962787146756,
+      0.9439858350560929
+    ],
+    "dataset": "jm1",
+    "model": "hyperfast"
+  },
+  "kddcup09_appetency": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9994612709422206,
+    "l0_cka_profile": [
+      1.0,
+      0.9999473290901831,
+      0.9994612709422206
+    ],
+    "dataset": "kddcup09_appetency",
+    "model": "hyperfast"
+  },
+  "maternal_health_risk": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.7168955628705628,
+    "l0_cka_profile": [
+      1.0,
+      0.9805806327724697,
+      0.7168955628705628
+    ],
+    "dataset": "maternal_health_risk",
+    "model": "hyperfast"
+  },
+  "online_shoppers_intention": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.8609288319413951,
+    "l0_cka_profile": [
+      1.0,
+      0.9613971789254819,
+      0.8609288319413951
+    ],
+    "dataset": "online_shoppers_intention",
+    "model": "hyperfast"
+  },
+  "polish_companies_bankruptcy": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9914296969461495,
+    "l0_cka_profile": [
+      1.0,
+      0.9981951435594096,
+      0.9914296969461495
+    ],
+    "dataset": "polish_companies_bankruptcy",
+    "model": "hyperfast"
+  },
+  "qsar-biodeg": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.8774525267472303,
+    "l0_cka_profile": [
+      1.0,
+      0.9880612170066684,
+      0.8774525267472303
+    ],
+    "dataset": "qsar-biodeg",
+    "model": "hyperfast"
+  },
+  "seismic-bumps": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.8768602461477624,
+    "l0_cka_profile": [
+      1.0,
+      0.9560466596744585,
+      0.8768602461477624
+    ],
+    "dataset": "seismic-bumps",
+    "model": "hyperfast"
+  },
+  "splice": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.8813786671756941,
+    "l0_cka_profile": [
+      1.0,
+      0.9969293623433096,
+      0.8813786671756941
+    ],
+    "dataset": "splice",
+    "model": "hyperfast"
+  },
+  "students_dropout_and_academic_success": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.8383543891788505,
+    "l0_cka_profile": [
+      1.0,
+      0.9956429224696118,
+      0.8383543891788505
+    ],
+    "dataset": "students_dropout_and_academic_success",
+    "model": "hyperfast"
+  },
+  "taiwanese_bankruptcy_prediction": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.9986642838492502,
+    "l0_cka_profile": [
+      1.0,
+      0.9999421457053908,
+      0.9986642838492502
+    ],
+    "dataset": "taiwanese_bankruptcy_prediction",
+    "model": "hyperfast"
+  },
+  "website_phishing": {
+    "n_layers": 3,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.6666666666666666,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.6666666666666666,
+    "final_cka": 0.7060526337092906,
+    "l0_cka_profile": [
+      1.0,
+      0.9753777450246786,
+      0.7060526337092906
+    ],
+    "dataset": "website_phishing",
+    "model": "hyperfast"
   }
 }

@@ -1,27 +1,326 @@
 {
+  "APSFailure": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.20533061211640294,
+    "l0_cka_profile": [
+      1.0,
+      0.17244463949964242,
+      0.1865304833580201,
+      0.19378311584289973,
+      0.20533061211640294
+    ],
+    "dataset": "APSFailure",
+    "model": "carte"
+  },
   "Amazon_employee_access": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.0002664480013689256,
+    "l0_cka_profile": [
+      1.0,
+      0.24219947884978993,
+      0.24186712335253158,
+      0.25609177076857415,
+      0.0002664480013689256
+    ],
+    "dataset": "Amazon_employee_access",
+    "model": "carte"
+  },
+  "Another-Dataset-on-used-Fiat-500": {
     "n_layers": 5,
     "critical_layer": 4,
     "critical_depth_frac": 0.8,
     "half_cka_layer": 4,
     "half_cka_depth_frac": 0.8,
-    "final_cka": 0.5452355348891461,
+    "final_cka": 0.4551934311724532,
     "l0_cka_profile": [
-      0.9999999604127642,
-      0.5045793110441497,
-      0.5019050386723561,
-      0.5014051330343912,
-      0.5452355348891461
+      1.0,
+      0.7414635525526224,
+      0.7394293372808506,
+      0.724267344769871,
+      0.4551934311724532
     ],
-    "dataset": "Amazon_employee_access",
-    "model": "carte",
-    "layer_names": [
-      "layer_0_initial",
-      "layer_2_readout",
-      "layer_3_classifier",
-      "layer_6_classifier",
-      "layer_9_classifier"
-    ]
+    "dataset": "Another-Dataset-on-used-Fiat-500",
+    "model": "carte"
+  },
+  "Bank_Customer_Churn": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.11254068453053795,
+    "l0_cka_profile": [
+      1.0,
+      0.1262770205388535,
+      0.11086575991029379,
+      0.1299142855473011,
+      0.11254068453053795
+    ],
+    "dataset": "Bank_Customer_Churn",
+    "model": "carte"
+  },
+  "Bioresponse": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 3,
+    "half_cka_depth_frac": 0.6,
+    "final_cka": 0.016917145837264704,
+    "l0_cka_profile": [
+      1.0,
+      0.03727449799122726,
+      0.025877286343132543,
+      0.017203343890542053,
+      0.016917145837264704
+    ],
+    "dataset": "Bioresponse",
+    "model": "carte"
+  },
+  "Diabetes130US": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.4,
+    "final_cka": 0.009589524872230935,
+    "l0_cka_profile": [
+      1.0,
+      0.08976531645251648,
+      0.02563345754569899,
+      0.028659763043541033,
+      0.009589524872230935
+    ],
+    "dataset": "Diabetes130US",
+    "model": "carte"
+  },
+  "E-CommereShippingData": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.18893864025021542,
+    "l0_cka_profile": [
+      1.0,
+      0.1948787778188159,
+      0.19416475385698034,
+      0.1893244979564215,
+      0.18893864025021542
+    ],
+    "dataset": "E-CommereShippingData",
+    "model": "carte"
+  },
+  "Fitness_Club": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.3241625243187182,
+    "l0_cka_profile": [
+      1.0,
+      0.37845201933132133,
+      0.3533183223037315,
+      0.2959297920655761,
+      0.3241625243187182
+    ],
+    "dataset": "Fitness_Club",
+    "model": "carte"
+  },
+  "Food_Delivery_Time": {
+    "n_layers": 5,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.4,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.012766751514892793,
+    "l0_cka_profile": [
+      1.0,
+      0.5516837435531575,
+      0.4991400087643177,
+      0.5420141786692748,
+      0.012766751514892793
+    ],
+    "dataset": "Food_Delivery_Time",
+    "model": "carte"
+  },
+  "GiveMeSomeCredit": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.2117130329621908,
+    "l0_cka_profile": [
+      1.0,
+      0.19483352963231915,
+      0.19526999796258154,
+      0.19425452162122994,
+      0.2117130329621908
+    ],
+    "dataset": "GiveMeSomeCredit",
+    "model": "carte"
+  },
+  "HR_Analytics_Job_Change_of_Data_Scientists": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.16813516542666995,
+    "l0_cka_profile": [
+      1.0,
+      0.1864365251798928,
+      0.18316506691436768,
+      0.17822846716250143,
+      0.16813516542666995
+    ],
+    "dataset": "HR_Analytics_Job_Change_of_Data_Scientists",
+    "model": "carte"
+  },
+  "Is-this-a-good-customer": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.016289238055989207,
+    "l0_cka_profile": [
+      1.0,
+      0.028464765444189584,
+      0.021667180396468616,
+      0.019004533284934722,
+      0.016289238055989207
+    ],
+    "dataset": "Is-this-a-good-customer",
+    "model": "carte"
+  },
+  "MIC": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.06306835459796158,
+    "l0_cka_profile": [
+      1.0,
+      0.0737771530780026,
+      0.07569950494265333,
+      0.07704606883148396,
+      0.06306835459796158
+    ],
+    "dataset": "MIC",
+    "model": "carte"
+  },
+  "Marketing_Campaign": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.09366218440135554,
+    "l0_cka_profile": [
+      1.0,
+      0.1589686675731914,
+      0.1965983111191717,
+      0.2006467194531746,
+      0.09366218440135554
+    ],
+    "dataset": "Marketing_Campaign",
+    "model": "carte"
+  },
+  "NATICUSdroid": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.006080771932642364,
+    "l0_cka_profile": [
+      1.0,
+      0.09607899419320398,
+      0.048583125731583916,
+      0.11221245718128828,
+      0.006080771932642364
+    ],
+    "dataset": "NATICUSdroid",
+    "model": "carte"
+  },
+  "QSAR-TID-11": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.024946440088403604,
+    "l0_cka_profile": [
+      1.0,
+      0.835286137794083,
+      0.8380770235118435,
+      0.8433688412570673,
+      0.024946440088403604
+    ],
+    "dataset": "QSAR-TID-11",
+    "model": "carte"
+  },
+  "QSAR_fish_toxicity": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.059593176750305746,
+    "l0_cka_profile": [
+      1.0,
+      0.20465691864544142,
+      0.20626061715657187,
+      0.26462987955221046,
+      0.059593176750305746
+    ],
+    "dataset": "QSAR_fish_toxicity",
+    "model": "carte"
+  },
+  "SDSS17": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 3,
+    "half_cka_depth_frac": 0.6,
+    "final_cka": 0.02238116880828565,
+    "l0_cka_profile": [
+      1.0,
+      0.061566382210561675,
+      0.04151600296953487,
+      0.023310250626518356,
+      0.02238116880828565
+    ],
+    "dataset": "SDSS17",
+    "model": "carte"
+  },
+  "airfoil_self_noise": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.04709092198638281,
+    "l0_cka_profile": [
+      1.0,
+      0.572618752236982,
+      0.5687727441599317,
+      0.6305272099786368,
+      0.04709092198638281
+    ],
+    "dataset": "airfoil_self_noise",
+    "model": "carte"
   },
   "anneal": {
     "n_layers": 5,
@@ -29,23 +328,16 @@
     "critical_depth_frac": 0.2,
     "half_cka_layer": 4,
     "half_cka_depth_frac": 0.8,
-    "final_cka": 0.0008380577315941399,
+    "final_cka": 0.00032386066442419983,
     "l0_cka_profile": [
-      0.9999896803555823,
-      0.24821659956313927,
-      0.2797548772326254,
-      0.2697823488233867,
-      0.0008380577315941399
+      1.0,
+      0.25662421014000986,
+      0.23276959916846315,
+      0.24604342241061192,
+      0.00032386066442419983
     ],
     "dataset": "anneal",
-    "model": "carte",
-    "layer_names": [
-      "layer_0_initial",
-      "layer_2_readout",
-      "layer_3_classifier",
-      "layer_6_classifier",
-      "layer_9_classifier"
-    ]
+    "model": "carte"
   },
   "bank-marketing": {
     "n_layers": 5,
@@ -53,47 +345,33 @@
     "critical_depth_frac": 0.2,
     "half_cka_layer": 4,
     "half_cka_depth_frac": 0.8,
-    "final_cka": 0.05260046846777354,
+    "final_cka": 0.15388892898671058,
     "l0_cka_profile": [
-      0.9999994439595962,
-      0.06223289310616807,
-      0.05599063877729803,
-      0.051930861249135,
-      0.05260046846777354
+      1.0,
+      0.1324640532983851,
+      0.14083628308658297,
+      0.14374182263279578,
+      0.15388892898671058
     ],
     "dataset": "bank-marketing",
-    "model": "carte",
-    "layer_names": [
-      "layer_0_initial",
-      "layer_2_readout",
-      "layer_3_classifier",
-      "layer_6_classifier",
-      "layer_9_classifier"
-    ]
+    "model": "carte"
   },
   "blood-transfusion-service-center": {
     "n_layers": 5,
-    "critical_layer": 4,
-    "critical_depth_frac": 0.8,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
     "half_cka_layer": 4,
     "half_cka_depth_frac": 0.8,
-    "final_cka": 0.10299501585908996,
+    "final_cka": 0.11581978468947352,
     "l0_cka_profile": [
-      0.9999999936921536,
-      0.5598803582652869,
-      0.5658694891636638,
-      0.539118738549663,
-      0.10299501585908996
+      1.0,
+      0.15220450836120455,
+      0.12837830843164377,
+      0.1216010545579321,
+      0.11581978468947352
     ],
     "dataset": "blood-transfusion-service-center",
-    "model": "carte",
-    "layer_names": [
-      "layer_0_initial",
-      "layer_2_readout",
-      "layer_3_classifier",
-      "layer_6_classifier",
-      "layer_9_classifier"
-    ]
+    "model": "carte"
   },
   "churn": {
     "n_layers": 5,
@@ -101,23 +379,16 @@
     "critical_depth_frac": 0.2,
     "half_cka_layer": 4,
     "half_cka_depth_frac": 0.8,
-    "final_cka": 0.01917085319195085,
+    "final_cka": 0.08958981406953835,
     "l0_cka_profile": [
-      0.9999998175462563,
-      0.027251584523654976,
-      0.026725784150813028,
-      0.02253732087941002,
-      0.01917085319195085
+      1.0,
+      0.08395327754148868,
+      0.06513421892774396,
+      0.07271555218391036,
+      0.08958981406953835
     ],
     "dataset": "churn",
-    "model": "carte",
-    "layer_names": [
-      "layer_0_initial",
-      "layer_2_readout",
-      "layer_3_classifier",
-      "layer_6_classifier",
-      "layer_9_classifier"
-    ]
+    "model": "carte"
   },
   "coil2000_insurance_policies": {
     "n_layers": 5,
@@ -125,23 +396,33 @@
     "critical_depth_frac": 0.2,
     "half_cka_layer": 4,
     "half_cka_depth_frac": 0.8,
-    "final_cka": 0.09190204245997065,
+    "final_cka": 0.060060484642509425,
     "l0_cka_profile": [
-      0.9999980461814554,
-      0.06479504689575011,
-      0.060677048876717224,
-      0.045336824052999394,
-      0.09190204245997065
+      1.0,
+      0.10817422616217907,
+      0.0876433092661919,
+      0.09805958364871709,
+      0.060060484642509425
     ],
     "dataset": "coil2000_insurance_policies",
-    "model": "carte",
-    "layer_names": [
-      "layer_0_initial",
-      "layer_2_readout",
-      "layer_3_classifier",
-      "layer_6_classifier",
-      "layer_9_classifier"
-    ]
+    "model": "carte"
+  },
+  "concrete_compressive_strength": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.01573874282514135,
+    "l0_cka_profile": [
+      1.0,
+      0.2924027482106678,
+      0.21380458917577658,
+      0.20538401989998226,
+      0.01573874282514135
+    ],
+    "dataset": "concrete_compressive_strength",
+    "model": "carte"
   },
   "credit-g": {
     "n_layers": 5,
@@ -149,23 +430,33 @@
     "critical_depth_frac": 0.2,
     "half_cka_layer": 4,
     "half_cka_depth_frac": 0.8,
-    "final_cka": 0.08731103021343554,
+    "final_cka": 0.04342397922262844,
     "l0_cka_profile": [
-      0.9999997809356398,
-      0.09543506405957987,
-      0.09908741141839587,
-      0.09711101971297365,
-      0.08731103021343554
+      1.0,
+      0.09070362172639532,
+      0.076582646379891,
+      0.0684636812254476,
+      0.04342397922262844
     ],
     "dataset": "credit-g",
-    "model": "carte",
-    "layer_names": [
-      "layer_0_initial",
-      "layer_2_readout",
-      "layer_3_classifier",
-      "layer_6_classifier",
-      "layer_9_classifier"
-    ]
+    "model": "carte"
+  },
+  "credit_card_clients_default": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.016254035761592633,
+    "l0_cka_profile": [
+      1.0,
+      0.19905296161227506,
+      0.16390223294612177,
+      0.1605091558488465,
+      0.016254035761592633
+    ],
+    "dataset": "credit_card_clients_default",
+    "model": "carte"
   },
   "customer_satisfaction_in_airline": {
     "n_layers": 5,
@@ -173,22 +464,406 @@
     "critical_depth_frac": 0.2,
     "half_cka_layer": 4,
     "half_cka_depth_frac": 0.8,
-    "final_cka": 0.21912070505753356,
+    "final_cka": 0.05304096637187284,
     "l0_cka_profile": [
-      0.999999977654389,
-      0.20991819151699995,
-      0.21004557445112096,
-      0.21760339737234974,
-      0.21912070505753356
+      1.0,
+      0.06477173446900762,
+      0.05435299403122457,
+      0.05366001401288079,
+      0.05304096637187284
     ],
     "dataset": "customer_satisfaction_in_airline",
-    "model": "carte",
-    "layer_names": [
-      "layer_0_initial",
-      "layer_2_readout",
-      "layer_3_classifier",
-      "layer_6_classifier",
-      "layer_9_classifier"
-    ]
+    "model": "carte"
+  },
+  "diabetes": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.561307325424744,
+    "l0_cka_profile": [
+      1.0,
+      0.5751082027874811,
+      0.5744119311010699,
+      0.5699346272674607,
+      0.561307325424744
+    ],
+    "dataset": "diabetes",
+    "model": "carte"
+  },
+  "diamonds": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.7127730869447674,
+    "l0_cka_profile": [
+      1.0,
+      0.7264662338433336,
+      0.7273776655942066,
+      0.7247472445291084,
+      0.7127730869447674
+    ],
+    "dataset": "diamonds",
+    "model": "carte"
+  },
+  "hazelnut-spread-contaminant-detection": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.1983113514391105,
+    "l0_cka_profile": [
+      1.0,
+      0.20492874307090672,
+      0.18868101655807723,
+      0.2029009710155394,
+      0.1983113514391105
+    ],
+    "dataset": "hazelnut-spread-contaminant-detection",
+    "model": "carte"
+  },
+  "healthcare_insurance_expenses": {
+    "n_layers": 5,
+    "critical_layer": 3,
+    "critical_depth_frac": 0.6,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.01135804022894642,
+    "l0_cka_profile": [
+      1.0,
+      0.5717660721631203,
+      0.5074411027650012,
+      0.2894957925665623,
+      0.01135804022894642
+    ],
+    "dataset": "healthcare_insurance_expenses",
+    "model": "carte"
+  },
+  "heloc": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 2,
+    "half_cka_depth_frac": 0.4,
+    "final_cka": 0.022064475406576217,
+    "l0_cka_profile": [
+      1.0,
+      0.054325408036928625,
+      0.02319207841416938,
+      0.036444923723408795,
+      0.022064475406576217
+    ],
+    "dataset": "heloc",
+    "model": "carte"
+  },
+  "hiva_agnostic": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 2.60753483999026e-05,
+    "l0_cka_profile": [
+      1.0,
+      0.9808060724966637,
+      0.9015277059440153,
+      0.5934778999757188,
+      2.60753483999026e-05
+    ],
+    "dataset": "hiva_agnostic",
+    "model": "carte"
+  },
+  "houses": {
+    "n_layers": 5,
+    "critical_layer": 2,
+    "critical_depth_frac": 0.4,
+    "half_cka_layer": 3,
+    "half_cka_depth_frac": 0.6,
+    "final_cka": 0.021542042672738286,
+    "l0_cka_profile": [
+      1.0,
+      0.5961904120664018,
+      0.4803803736740119,
+      0.26384797522547765,
+      0.021542042672738286
+    ],
+    "dataset": "houses",
+    "model": "carte"
+  },
+  "in_vehicle_coupon_recommendation": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.00962208304866362,
+    "l0_cka_profile": [
+      1.0,
+      0.015634040484142818,
+      0.011763982312871906,
+      0.009842934330359425,
+      0.00962208304866362
+    ],
+    "dataset": "in_vehicle_coupon_recommendation",
+    "model": "carte"
+  },
+  "jm1": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.3126903040942464,
+    "l0_cka_profile": [
+      1.0,
+      0.617287788067516,
+      0.6563186795165781,
+      0.5298654773972581,
+      0.3126903040942464
+    ],
+    "dataset": "jm1",
+    "model": "carte"
+  },
+  "kddcup09_appetency": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.02335739905528255,
+    "l0_cka_profile": [
+      1.0,
+      0.19239953188249298,
+      0.1675360310396689,
+      0.11321415497293916,
+      0.02335739905528255
+    ],
+    "dataset": "kddcup09_appetency",
+    "model": "carte"
+  },
+  "maternal_health_risk": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.30614133114188924,
+    "l0_cka_profile": [
+      1.0,
+      0.2809811362035564,
+      0.3089219542959647,
+      0.31700633823437985,
+      0.30614133114188924
+    ],
+    "dataset": "maternal_health_risk",
+    "model": "carte"
+  },
+  "miami_housing": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.03634677538715245,
+    "l0_cka_profile": [
+      1.0,
+      0.3092001211297931,
+      0.3068625462736564,
+      0.2820378627860835,
+      0.03634677538715245
+    ],
+    "dataset": "miami_housing",
+    "model": "carte"
+  },
+  "online_shoppers_intention": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.1765867809936924,
+    "l0_cka_profile": [
+      1.0,
+      0.22579523282913838,
+      0.25664781960098665,
+      0.2953712820632335,
+      0.1765867809936924
+    ],
+    "dataset": "online_shoppers_intention",
+    "model": "carte"
+  },
+  "physiochemical_protein": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.06351345310993933,
+    "l0_cka_profile": [
+      1.0,
+      0.6482001652402386,
+      0.5469186520866643,
+      0.6797186910699453,
+      0.06351345310993933
+    ],
+    "dataset": "physiochemical_protein",
+    "model": "carte"
+  },
+  "polish_companies_bankruptcy": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.03605521625725578,
+    "l0_cka_profile": [
+      1.0,
+      0.1370270804974367,
+      0.07888769539647286,
+      0.08013074988034534,
+      0.03605521625725578
+    ],
+    "dataset": "polish_companies_bankruptcy",
+    "model": "carte"
+  },
+  "qsar-biodeg": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.5470259540992928,
+    "l0_cka_profile": [
+      1.0,
+      0.5294762400957795,
+      0.543574987748165,
+      0.557637567979408,
+      0.5470259540992928
+    ],
+    "dataset": "qsar-biodeg",
+    "model": "carte"
+  },
+  "seismic-bumps": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.39156212994724104,
+    "l0_cka_profile": [
+      1.0,
+      0.2856852999835842,
+      0.30977120456723467,
+      0.3333271268295318,
+      0.39156212994724104
+    ],
+    "dataset": "seismic-bumps",
+    "model": "carte"
+  },
+  "splice": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.00026129630338697933,
+    "l0_cka_profile": [
+      1.0,
+      0.5076413565387208,
+      0.5202515705752482,
+      0.570234162227108,
+      0.00026129630338697933
+    ],
+    "dataset": "splice",
+    "model": "carte"
+  },
+  "students_dropout_and_academic_success": {
+    "n_layers": 5,
+    "critical_layer": 3,
+    "critical_depth_frac": 0.6,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.49479323962259636,
+    "l0_cka_profile": [
+      1.0,
+      0.5281776174199395,
+      0.5031791402730058,
+      0.49313403983361936,
+      0.49479323962259636
+    ],
+    "dataset": "students_dropout_and_academic_success",
+    "model": "carte"
+  },
+  "superconductivity": {
+    "n_layers": 5,
+    "critical_layer": 3,
+    "critical_depth_frac": 0.6,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.006552232038027154,
+    "l0_cka_profile": [
+      1.0,
+      0.6226768915045258,
+      0.5543197475421368,
+      0.38125993693933213,
+      0.006552232038027154
+    ],
+    "dataset": "superconductivity",
+    "model": "carte"
+  },
+  "taiwanese_bankruptcy_prediction": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.20101534930620182,
+    "l0_cka_profile": [
+      1.0,
+      0.20637062834965503,
+      0.2236430823983549,
+      0.21459671453132043,
+      0.20101534930620182
+    ],
+    "dataset": "taiwanese_bankruptcy_prediction",
+    "model": "carte"
+  },
+  "website_phishing": {
+    "n_layers": 5,
+    "critical_layer": 4,
+    "critical_depth_frac": 0.8,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.5544692354569185,
+    "l0_cka_profile": [
+      1.0,
+      0.5767577971575331,
+      0.5434100649962954,
+      0.5610581683061978,
+      0.5544692354569185
+    ],
+    "dataset": "website_phishing",
+    "model": "carte"
+  },
+  "wine_quality": {
+    "n_layers": 5,
+    "critical_layer": 1,
+    "critical_depth_frac": 0.2,
+    "half_cka_layer": 4,
+    "half_cka_depth_frac": 0.8,
+    "final_cka": 0.14603356390201808,
+    "l0_cka_profile": [
+      1.0,
+      0.15598845366059508,
+      0.13758896434914802,
+      0.15440462582254813,
+      0.14603356390201808
+    ],
+    "dataset": "wine_quality",
+    "model": "carte"
   }
 }

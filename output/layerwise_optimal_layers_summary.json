@@ -1,0 +1,74 @@
+[
+  {
+    "model": "tabpfn",
+    "n_datasets": 51,
+    "n_layers": 24,
+    "optimal_layer": 18,
+    "mean_critical_depth": 0.7696078431372549,
+    "std_critical_depth": 0.16438563594408223,
+    "mean_final_cka": 0.3368155520256968
+  },
+  {
+    "model": "mitra",
+    "n_datasets": 51,
+    "n_layers": 13,
+    "optimal_layer": 11,
+    "mean_critical_depth": 0.8989441930618401,
+    "std_critical_depth": 0.09693073311046535,
+    "mean_final_cka": 0.0037237271922697
+  },
+  {
+    "model": "tabdpt",
+    "n_datasets": 51,
+    "n_layers": 17,
+    "optimal_layer": 13,
+    "mean_critical_depth": 0.8350634371395615,
+    "std_critical_depth": 0.10740896633746541,
+    "mean_final_cka": 0.8932845008805952
+  },
+  {
+    "model": "carte",
+    "n_datasets": 51,
+    "n_layers": 5,
+    "optimal_layer": 1,
+    "mean_critical_depth": 0.36078431372549025,
+    "std_critical_depth": 0.25055110345040454,
+    "mean_final_cka": 0.14549442266837748
+  },
+  {
+    "model": "tabicl",
+    "n_datasets": 38,
+    "n_layers": 13,
+    "optimal_layer": 9,
+    "mean_critical_depth": 0.7611336032388666,
+    "std_critical_depth": 0.1375922709956796,
+    "mean_final_cka": 0.35639622631436596
+  },
+  {
+    "model": "tabicl_v2",
+    "n_datasets": 51,
+    "n_layers": 13,
+    "optimal_layer": 11,
+    "mean_critical_depth": 0.8883861236802412,
+    "std_critical_depth": 0.07195692574284504,
+    "mean_final_cka": 0.5155977462135157
+  },
+  {
+    "model": "hyperfast",
+    "n_datasets": 38,
+    "n_layers": 3,
+    "optimal_layer": 1,
+    "mean_critical_depth": 0.6666666666666669,
+    "std_critical_depth": 2.220446049250313e-16,
+    "mean_final_cka": 0.8867492300901693
+  },
+  {
+    "model": "tabula8b",
+    "n_datasets": 51,
+    "n_layers": 33,
+    "optimal_layer": 13,
+    "mean_critical_depth": 0.4135472370766488,
+    "std_critical_depth": 0.4009308534304822,
+    "mean_final_cka": 0.46481414018693756
+  }
+]
