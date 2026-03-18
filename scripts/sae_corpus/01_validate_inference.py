@@ -170,11 +170,23 @@ def run_inference_validation(
             y_train_enc = le.fit_transform(y_train)
             y_test_enc = le.transform(y_test)
 
-            # Convert to numpy (TabPFN expects arrays)
-            X_train_np = X_train.select_dtypes(include="number").values.astype(np.float32)
-            X_test_np = X_test.select_dtypes(include="number").values.astype(np.float32)
-            X_train_np = np.nan_to_num(X_train_np)
-            X_test_np = np.nan_to_num(X_test_np)
+            # Convert to numpy: label-encode categoricals, keep numerics as float
+            # (matches TabPFNEmbeddingExtractor._to_numpy_with_label_encoding)
+            from sklearn.preprocessing import OrdinalEncoder
+            cat_cols = X_train.select_dtypes(include=["object", "category"]).columns
+            num_cols = X_train.select_dtypes(include="number").columns
+
+            parts_train, parts_test = [], []
+            if len(num_cols):
+                parts_train.append(X_train[num_cols].values.astype(np.float32))
+                parts_test.append(X_test[num_cols].values.astype(np.float32))
+            if len(cat_cols):
+                enc = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+                parts_train.append(enc.fit_transform(X_train[cat_cols]).astype(np.float32))
+                parts_test.append(enc.transform(X_test[cat_cols]).astype(np.float32))
+
+            X_train_np = np.nan_to_num(np.concatenate(parts_train, axis=1))
+            X_test_np = np.nan_to_num(np.concatenate(parts_test, axis=1))
 
             model.fit(X_train_np, y_train_enc)
             preds = model.predict(X_test_np)
