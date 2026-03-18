@@ -42,6 +42,9 @@ def main():
                         help="Overwrite existing cache files")
     args = parser.parse_args()
 
+    # Normalize model names to lowercase
+    args.models = [m.lower() for m in args.models]
+
     # Validate model names before touching any data
     unsupported = [m for m in args.models if m.lower() not in SUPPORTED_MODELS]
     if unsupported:
