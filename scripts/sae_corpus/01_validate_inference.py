@@ -263,7 +263,7 @@ def main():
 
         n_inf_ok = sum(1 for r in inference_results if r["status"] == "ok")
         n_inf_warn = sum(1 for r in inference_results if r["status"] == "outside_tolerance")
-        print(f"\n  {n_inf_ok} OK, {n_inf_warn} outside MAE≤{PROBA_MAE_TOLERANCE} tolerance")
+        print(f"\n  {n_inf_ok} OK, {n_inf_warn} outside log-loss tolerance ±{LOGLOSS_TOLERANCE}")
 
     report = {
         "alignment": alignment_results,
