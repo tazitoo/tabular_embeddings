@@ -8,21 +8,14 @@ model internals and save the activations at the chosen layer.
 Output format matches extract_embeddings.py so the SAE sweep can consume them
 directly via the {model}_layer{N} directory convention.
 
-Usage:
-    # Extract TabPFN layer 16 at default context size (600)
-    python scripts/extract_layer_embeddings.py --model tabpfn --layer 16 --device cuda
+By default, --layer is read from config/optimal_extraction_layers.json so the
+canonical invocation requires only --model:
 
-    # Extract with custom context/query sizes
-    python scripts/extract_layer_embeddings.py --model tabpfn --layer 16 \
-        --context-size 200 --query-size 100 --device cuda
+    python scripts/embeddings/extract_layer_embeddings.py --model tabpfn --device cuda
 
-    # Extract for a single dataset (smoke test)
-    python scripts/extract_layer_embeddings.py --model tabpfn --layer 16 \
-        --device cuda --datasets adult
+Override the layer explicitly if needed (e.g. for ablations):
 
-    # TabICL layer 5, Mitra layer 60
-    python scripts/extract_layer_embeddings.py --model tabicl --layer 5 --device cuda
-    python scripts/extract_layer_embeddings.py --model mitra --layer 60 --device cuda
+    python scripts/embeddings/extract_layer_embeddings.py --model tabpfn --layer 12 --device cuda
 """
 
 import argparse
@@ -36,10 +29,11 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
-from scripts._project_root import PROJECT_ROOT
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "figures" / "4_results"))
 
 from data.extended_loader import TABARENA_DATASETS, DatasetMetadata, load_tabarena_dataset
-sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "figures" / "4_results"))
 from layerwise_cka_analysis import (
     extract_tabpfn_all_layers,
     extract_mitra_all_layers,
@@ -180,8 +174,8 @@ def main():
     parser.add_argument("--model", type=str, required=True,
                         choices=list(EXTRACT_FN.keys()),
                         help="Model to extract from")
-    parser.add_argument("--layer", type=int, required=True,
-                        help="Layer index to extract (e.g. 16 for TabPFN)")
+    parser.add_argument("--layer", type=int, default=None,
+                        help="Layer index to extract (default: read from config/optimal_extraction_layers.json)")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device (default: cuda)")
     parser.add_argument("--context-size", type=int, default=600,
@@ -191,6 +185,15 @@ def main():
     parser.add_argument("--datasets", nargs="+", default=None,
                         help="Specific dataset names (default: all TabArena)")
     args = parser.parse_args()
+
+    if args.layer is None:
+        from config import load_optimal_layers
+        config = load_optimal_layers()
+        if args.model not in config:
+            raise ValueError(f"No optimal layer configured for {args.model}. "
+                             f"Pass --layer explicitly or update config/optimal_extraction_layers.json.")
+        args.layer = config[args.model]["optimal_layer"]
+        print(f"Using optimal layer from config: {args.model} -> L{args.layer}")
 
     datasets = args.datasets or get_tabarena_dataset_names()
     output_dir = (
