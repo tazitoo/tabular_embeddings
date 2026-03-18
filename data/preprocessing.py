@@ -232,6 +232,11 @@ def _preprocess_hyperfast(
     cat_indices = [X_train.columns.get_loc(c) for c in cat_cols]  # original-order positions
 
     if cat_cols:
+        # OrdinalEncoder only treats np.nan (not None) as a missing value.
+        # Replace None with np.nan in object-dtype columns before encoding so
+        # that encoded_missing_value=np.nan maps them to np.nan, not a code.
+        X_train[cat_cols] = X_train[cat_cols].where(X_train[cat_cols].notna(), other=np.nan)
+        X_test[cat_cols] = X_test[cat_cols].where(X_test[cat_cols].notna(), other=np.nan)
         enc = OrdinalEncoder(
             handle_unknown="use_encoded_value",
             unknown_value=np.nan,

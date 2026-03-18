@@ -100,3 +100,48 @@ def test_y_regression_float32():
     data = preprocess_for_model("tabpfn", "ds", X_train, y, X_test, y[:1], "regression")
     assert data.y_train.dtype == np.float32
     np.testing.assert_array_almost_equal(data.y_train, y.astype(np.float32))
+
+
+def _make_df_hyperfast():
+    """Object-dtype categoricals to exercise the OrdinalEncoder path."""
+    X_train = pd.DataFrame({
+        "num": [1.0, 2.0, np.nan, 4.0],
+        "cat": ["a", "b", None, "b"],       # object dtype, not Categorical
+    })
+    X_test = pd.DataFrame({
+        "num": [5.0, np.nan],
+        "cat": ["a", None],
+    })
+    y_train = np.array([0, 1, 0, 1])
+    y_test = np.array([0, 1])
+    return X_train, y_train, X_test, y_test
+
+
+def test_hyperfast_numeric_nan_preserved():
+    X_train, y_train, X_test, y_test = _make_df_hyperfast()
+    data = preprocess_for_model("hyperfast", "ds", X_train, y_train, X_test, y_test, "classification")
+    # NaN in numeric column must survive (HyperFast imputes internally)
+    assert np.isnan(data.X_train[:, 0]).any(), "hyperfast: numeric NaN must be preserved"
+
+
+def test_hyperfast_categorical_nan_preserved():
+    X_train, y_train, X_test, y_test = _make_df_hyperfast()
+    data = preprocess_for_model("hyperfast", "ds", X_train, y_train, X_test, y_test, "classification")
+    # NaN in categorical column must survive as np.nan (not a spurious integer code)
+    assert np.isnan(data.X_train[:, 1]).any(), "hyperfast: categorical NaN must be np.nan, not a spurious code"
+
+
+def test_hyperfast_cat_indices_original_order():
+    X_train, y_train, X_test, y_test = _make_df_hyperfast()
+    data = preprocess_for_model("hyperfast", "ds", X_train, y_train, X_test, y_test, "classification")
+    # 'cat' is column 1 in the original DataFrame
+    assert data.cat_indices == [1], f"Expected [1], got {data.cat_indices}"
+
+
+def test_hyperfast_all_numeric():
+    X_train = pd.DataFrame({"a": [1.0, 2.0], "b": [np.nan, 4.0]})
+    X_test = pd.DataFrame({"a": [5.0], "b": [6.0]})
+    y = np.array([0, 1])
+    data = preprocess_for_model("hyperfast", "ds", X_train, y, X_test, y[:1], "classification")
+    assert data.cat_indices == []
+    assert np.isnan(data.X_train).any()
