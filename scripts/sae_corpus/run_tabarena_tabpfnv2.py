@@ -77,30 +77,41 @@ def main():
     # task_id -> dataset name reverse map
     tid_to_name = {v: k for k, v in VALIDATION_TASKS.items()}
 
-    saved = []
-    for result in results_lst:
-        task_id = result.task_id
-        ds_name = tid_to_name.get(task_id, str(task_id))
+    # run_experiments_new returns dicts; per-row predictions are in the cached pkl files
+    import pickle
+    from pathlib import Path as _Path
 
+    method_key = "TA-RealTabPFN-v2.5_c1_BAG_L1"
+    saved = []
+    for task_id, ds_name in tid_to_name.items():
+        pkl_path = _Path(EXPERIMENT_DIR) / "data" / method_key / str(task_id) / "0_0" / "results.pkl"
+        if not pkl_path.exists():
+            print(f"  ✗ {ds_name}: pkl not found at {pkl_path}")
+            continue
         try:
-            # y_pred_proba_val_as_pd: DataFrame with row indices as index, class cols
-            val_preds = result.y_pred_proba_val_as_pd
-            if val_preds is None:
-                print(f"  WARNING: {ds_name} — no val predictions")
-                continue
+            result = pickle.load(open(pkl_path, "rb"))
+            sa = result["simulation_artifacts"]
+
+            y_val_idx = sa["y_val_idx"].tolist()          # row indices in original dataset
+            pred_dict = sa["pred_proba_dict_val"]          # {model_key: (n_val, n_classes) array}
+            classes = sa["ordered_class_labels_transformed"]
+
+            # Average across ensemble members (same as AutoGluon's OOF scoring)
+            import numpy as np
+            preds_arr = np.mean(list(pred_dict.values()), axis=0)
 
             out = {
                 "task_id": task_id,
-                "fold": result.fold,
-                "repeat": result.repeat,
-                "train_indices": val_preds.index.tolist(),
-                "classes": [str(c) for c in val_preds.columns.tolist()],
-                "y_pred_proba_val": val_preds.values.tolist(),
+                "fold": 0,
+                "repeat": 0,
+                "train_indices": y_val_idx,
+                "classes": [str(c) for c in classes],
+                "y_pred_proba_val": preds_arr.tolist(),
             }
 
             out_path = OUTPUT_DIR / f"{ds_name}.json"
             out_path.write_text(json.dumps(out, indent=2))
-            print(f"  ✓ {ds_name}: {len(val_preds)} rows → {out_path.name}")
+            print(f"  ✓ {ds_name}: {len(y_val_idx)} rows → {out_path.name}")
             saved.append(ds_name)
 
         except Exception as e:
