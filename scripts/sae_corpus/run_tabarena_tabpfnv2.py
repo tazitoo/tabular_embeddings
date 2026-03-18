@@ -67,15 +67,16 @@ def main():
         try:
             # Load full dataset via OpenML task (TabArena's data path)
             task = OpenMLTaskWrapper.from_task_id(task_id)
-            X, y, _, _ = task.get_dataset().get_data(target=task.target_name)
-
             train_idx = np.array(split_info["train_indices"])
             test_idx = np.array(split_info["test_indices"])
 
-            X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
-            X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
+            # get_train_test_split accepts explicit indices, returns (X_train, y_train, X_test, y_test)
+            X_train, y_train, X_test, y_test = task.get_train_test_split(
+                train_indices=train_idx,
+                test_indices=test_idx,
+            )
 
-            problem_type = "binary" if y.nunique() == 2 else "multiclass"
+            problem_type = "binary" if y_train.nunique() == 2 else "multiclass"
             print(f"  problem_type={problem_type}, n_train={len(X_train)}, n_test={len(X_test)}")
 
             # TabArena's preprocessing pipeline (exact same as benchmark runs)
