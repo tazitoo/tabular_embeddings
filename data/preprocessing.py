@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-from sklearn.preprocessing import LabelEncoder
 
 from scripts._project_root import PROJECT_ROOT
 
