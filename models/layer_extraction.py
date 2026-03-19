@@ -379,6 +379,8 @@ def _extract_hyperfast(clf, X_query: np.ndarray) -> dict[str, np.ndarray]:
     from hyperfast.hyperfast import transform_data_for_main_network
 
     X_query_preprocessed = clf._preprocess_test_data(X_query)
+    device = clf.device if hasattr(clf, 'device') else 'cuda'
+    X_query_preprocessed = X_query_preprocessed.to(device)
 
     n_layers = len(clf._main_networks[0])
     all_layer_acts = {f"layer_{i}": [] for i in range(n_layers)}
