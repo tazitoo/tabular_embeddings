@@ -166,11 +166,13 @@ def main():
             np.savez_compressed(str(out_path), **save_dict)
 
             dt = time.time() - t0
+            n_total = len(data.X_train) + len(data.X_test)
             sample_layer = layer_names[0]
             dim = layer_embs[sample_layer].shape[1] if sample_layer in layer_embs else "?"
             print(f"[{i+1}/{len(dataset_names)}] {ds_name}: "
-                  f"{len(layer_names)} layers, {len(test_indices)} queries, "
-                  f"dim={dim}, ctx={len(X_ctx)} ({dt:.1f}s)")
+                  f"{len(layer_names)} layers, "
+                  f"holdout={len(test_indices)}/{n_total} rows, "
+                  f"dim={dim}, ctx={len(X_ctx)}/{len(data.X_train)} ({dt:.1f}s)")
             success += 1
 
         except Exception as e:
