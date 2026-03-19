@@ -27,6 +27,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from data.extended_loader import _load_tabarena_cached_v2
 from data.preprocessing import CACHE_DIR, load_preprocessed
 from models.layer_extraction import extract_all_layers, load_and_fit, sort_layer_names
 from scripts._project_root import PROJECT_ROOT
@@ -34,7 +35,7 @@ from scripts._project_root import PROJECT_ROOT
 SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training_round9" / "embeddings"
 
-SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "tabdpt", "mitra", "hyperfast"]
+SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "tabdpt", "mitra", "hyperfast", "tabula8b"]
 
 
 def sample_context(
@@ -123,41 +124,70 @@ def main():
 
         t0 = time.time()
         try:
-            # Resolve preprocessing cache model name:
-            # tabicl_v2 extraction uses tabicl_v2 preprocessing cache
-            # tabicl extraction uses tabicl preprocessing cache
-            cache_model = args.model
-            data = load_preprocessed(cache_model, ds_name, CACHE_DIR)
-            task_type = data.task_type
-            test_indices = np.array(splits[ds_name]["test_indices"], dtype=np.int32)
+            split_info = splits[ds_name]
+            task_type = split_info["task_type"]
+            train_idx = np.array(split_info["train_indices"])
+            test_indices = np.array(split_info["test_indices"], dtype=np.int32)
 
-            # Sample context from train split
-            X_ctx, y_ctx = sample_context(
-                data.X_train, data.y_train, args.max_context, task_type
-            )
+            if model_key == "tabula8b":
+                # Tabula-8B: load raw DataFrame, serialize to text
+                cached = _load_tabarena_cached_v2(ds_name)
+                if cached is None:
+                    print(f"[{i+1}/{len(dataset_names)}] {ds_name}: SKIP — no raw cache")
+                    skipped += 1
+                    continue
+                X_df, y = cached
+                X_ctx_df = X_df.iloc[train_idx].reset_index(drop=True)
+                X_test_df = X_df.iloc[test_indices].reset_index(drop=True)
+                y_ctx = y[train_idx]
 
-            # Load model and fit on context
-            fit_kwargs = {}
-            if model_key == "tabpfn" and data.cat_indices:
-                fit_kwargs["cat_indices"] = data.cat_indices
+                # Subsample context rows (token budget is the real limit,
+                # but pre-cap to max_context to avoid serializing thousands)
+                if len(X_ctx_df) > args.max_context:
+                    rng = np.random.RandomState(42)
+                    idx = rng.choice(len(X_ctx_df), args.max_context, replace=False)
+                    X_ctx_df = X_ctx_df.iloc[idx].reset_index(drop=True)
+                    y_ctx = y_ctx[idx]
 
-            clf = load_and_fit(
-                args.model, X_ctx, y_ctx,
-                task=task_type, device=args.device, **fit_kwargs
-            )
+                clf = load_and_fit(
+                    args.model, X_ctx_df, y_ctx,
+                    task=task_type, device=args.device,
+                    target_name=split_info.get("target", "target"),
+                )
+                layer_embs = extract_all_layers(
+                    args.model, clf, X_test_df, task=task_type
+                )
+                n_ctx_used = len(X_ctx_df)
+                n_train_total = len(train_idx)
+            else:
+                # Standard path: load from preprocessing cache
+                data = load_preprocessed(args.model, ds_name, CACHE_DIR)
 
-            # Extract all layers
-            layer_embs = extract_all_layers(
-                args.model, clf, data.X_test,
-                task=task_type, batch_size=args.batch_size
-            )
+                X_ctx, y_ctx = sample_context(
+                    data.X_train, data.y_train, args.max_context, task_type
+                )
+
+                fit_kwargs = {}
+                if model_key == "tabpfn" and data.cat_indices:
+                    fit_kwargs["cat_indices"] = data.cat_indices
+
+                clf = load_and_fit(
+                    args.model, X_ctx, y_ctx,
+                    task=task_type, device=args.device, **fit_kwargs
+                )
+                layer_embs = extract_all_layers(
+                    args.model, clf, data.X_test,
+                    task=task_type, batch_size=args.batch_size
+                )
+                n_ctx_used = len(X_ctx)
+                n_train_total = len(data.X_train)
 
             # Save
             layer_names = sort_layer_names(list(layer_embs.keys()))
             save_dict = {
                 "layer_names": np.array(layer_names, dtype=str),
                 "row_indices": test_indices,
-                "n_context": np.array(len(X_ctx)),
+                "n_context": np.array(n_ctx_used),
                 "task_type": np.array(task_type),
             }
             for name, emb in layer_embs.items():
@@ -166,13 +196,13 @@ def main():
             np.savez_compressed(str(out_path), **save_dict)
 
             dt = time.time() - t0
-            n_total = len(data.X_train) + len(data.X_test)
+            n_total = n_train_total + len(test_indices)
             sample_layer = layer_names[0]
             dim = layer_embs[sample_layer].shape[1] if sample_layer in layer_embs else "?"
             print(f"[{i+1}/{len(dataset_names)}] {ds_name}: "
                   f"{len(layer_names)} layers, "
                   f"holdout={len(test_indices)}/{n_total} rows, "
-                  f"dim={dim}, ctx={len(X_ctx)}/{len(data.X_train)} ({dt:.1f}s)")
+                  f"dim={dim}, ctx={n_ctx_used}/{n_train_total} ({dt:.1f}s)")
             success += 1
 
         except Exception as e:

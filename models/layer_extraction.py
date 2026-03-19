@@ -1,11 +1,11 @@
 """Reusable model loading, hook registration, and layer extraction.
 
 Centralizes the model-specific logic for interacting with tabular foundation
-model internals. All functions accept preprocessed float32 numpy arrays —
-no DataFrame conversion, no nan_to_num, no preprocessing of any kind.
+model internals. Most models accept preprocessed float32 numpy arrays.
+Tabula-8B is the exception — it takes raw DataFrames and serializes to text.
 
 Three levels of abstraction:
-    load_and_fit     — load model, fit on context data
+    load_and_fit     — load model, fit on context data (or load LLM)
     get_layer_modules — return hookable nn.Modules keyed by layer name
     predict          — run forward pass (predict / predict_proba)
     extract_all_layers — convenience: hook all layers, forward, return embeddings
@@ -16,6 +16,12 @@ Usage (extraction):
     clf = load_and_fit("tabpfn", X_ctx, y_ctx, task="classification", device="cuda")
     layer_embs = extract_all_layers("tabpfn", clf, X_query, task="classification")
     # layer_embs["layer_18"] → (n_query, hidden_dim)
+
+Usage (tabula-8b — DataFrames, not numpy):
+    from models.layer_extraction import load_and_fit, extract_all_layers
+
+    handle = load_and_fit("tabula8b", X_ctx_df, y_ctx, task="classification", device="cuda")
+    layer_embs = extract_all_layers("tabula8b", handle, X_query_df, task="classification")
 
 Usage (intervention — custom hooks):
     from models.layer_extraction import load_and_fit, get_layer_modules, predict
@@ -28,9 +34,10 @@ Usage (intervention — custom hooks):
 """
 
 from collections import OrderedDict, defaultdict
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
+import pandas as pd
 import torch
 
 
@@ -109,6 +116,12 @@ def load_and_fit(
         clf = HyperFastClassifier(device=device, n_ensemble=16, custom_path=custom_path)
         clf.fit(X_context, y_context)
 
+    elif key == "tabula8b":
+        clf = _load_tabula8b(device)
+        # Store context for later serialization during extraction
+        clf._tabula8b_context = (X_context, y_context)
+        clf._tabula8b_target_name = kwargs.get("target_name", "target")
+
     else:
         raise ValueError(f"Unknown model: {model_name!r}")
 
@@ -169,6 +182,14 @@ def get_layer_modules(model_name: str, clf: Any) -> OrderedDict:
             "Use extract_all_layers() which handles the manual forward pass."
         )
 
+    elif key == "tabula8b":
+        llama_model = clf.model
+        modules = OrderedDict()
+        for i, layer in enumerate(llama_model.layers):
+            modules[f"layer_{i}"] = layer
+        modules["final_norm"] = llama_model.norm
+        return modules
+
     else:
         raise ValueError(f"Unknown model: {model_name!r}")
 
@@ -219,6 +240,9 @@ def extract_all_layers(
 
     if key == "hyperfast":
         return _extract_hyperfast(clf, X_query, batch_size=batch_size)
+
+    if key == "tabula8b":
+        return _extract_tabula8b(clf, X_query)
 
     # Generic path: hook all layers, forward pass, process activations
     modules = get_layer_modules(model_name, clf)
@@ -437,6 +461,161 @@ def _extract_hyperfast(clf, X_query: np.ndarray, batch_size: int = 512) -> dict[
     result = {}
     for key, emb_list in batch_results.items():
         result[key] = np.concatenate(emb_list, axis=0)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Tabula-8B (LLM — text serialization, not numpy)
+# ---------------------------------------------------------------------------
+
+# Global cache for Tabula-8B model (expensive to load, ~16GB)
+_tabula8b_cache: dict[str, object] = {}
+
+
+def _load_tabula8b(device: str = "cuda"):
+    """Load and cache the Tabula-8B model. Returns the underlying LlamaModel."""
+    if "model" not in _tabula8b_cache:
+        import os
+        import transformers
+
+        LOCAL_PATH = "/data/models/tabula-8b"
+        MODEL_ID = LOCAL_PATH if os.path.isdir(LOCAL_PATH) else "mlfoundations/tabula-8b"
+        print(f"Loading Tabula-8B from {MODEL_ID} (fp16)...")
+        tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID)
+        model = transformers.AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            low_cpu_mem_usage=True,
+        )
+        model.eval()
+
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        _tabula8b_cache["model"] = model
+        _tabula8b_cache["tokenizer"] = tokenizer
+
+    return _tabula8b_cache["model"]
+
+
+def _serialize_row(row: pd.Series, target_name: str = "target",
+                   y_val=None) -> str:
+    """Serialize a DataFrame row to text: 'The col_name is value.' per column."""
+    parts = []
+    for col_name, val in row.items():
+        if pd.isna(val):
+            continue
+        parts.append(f"The {col_name} is {val}.")
+    text = " ".join(parts)
+    if y_val is not None:
+        text += f" The {target_name} is {y_val}."
+    return text
+
+
+def _extract_tabula8b(clf, X_query, max_context_rows: int = 16) -> dict[str, np.ndarray]:
+    """Extract all-layer embeddings from Tabula-8B.
+
+    Serializes each query row to text, prepends few-shot context, and extracts
+    the last-token hidden state at every transformer layer. Processes one query
+    row at a time to stay within token budget.
+
+    Args:
+        clf: The loaded CausalLM model (from load_and_fit).
+        X_query: Raw DataFrame with real column names and string categoricals.
+        max_context_rows: Max few-shot examples (reduced if token budget exceeded).
+    """
+    model = clf
+    tokenizer = _tabula8b_cache["tokenizer"]
+    llama_model = model.model
+
+    X_context, y_context = model._tabula8b_context
+    target_name = getattr(model, '_tabula8b_target_name', 'target')
+
+    # X_query and X_context must be DataFrames
+    if not isinstance(X_query, pd.DataFrame):
+        raise TypeError("Tabula-8B requires DataFrame input with real column names")
+    if not isinstance(X_context, pd.DataFrame):
+        raise TypeError("Tabula-8B context must be a DataFrame")
+
+    n_query = len(X_query)
+    layers = llama_model.layers
+    n_layers = len(layers)
+
+    max_len = min(getattr(model.config, "max_position_embeddings", 4096), 4096)
+
+    # Build context text — subsample if needed
+    n_ctx = min(len(X_context), max_context_rows)
+    rng = np.random.RandomState(42)
+    ctx_idx = rng.choice(len(X_context), n_ctx, replace=False) if n_ctx < len(X_context) else np.arange(n_ctx)
+
+    context_parts = [_serialize_row(X_context.iloc[i], target_name, y_context[i]) for i in ctx_idx]
+    context_text = "\n".join(context_parts) + "\n"
+    context_tokens = tokenizer.encode(context_text, add_special_tokens=True)
+
+    # Iteratively reduce context if token budget exceeded (leave 200 for query)
+    while len(context_tokens) > max_len - 200 and n_ctx > 2:
+        n_ctx = n_ctx // 2
+        ctx_idx = ctx_idx[:n_ctx]
+        context_parts = [_serialize_row(X_context.iloc[i], target_name, y_context[i]) for i in ctx_idx]
+        context_text = "\n".join(context_parts) + "\n"
+        context_tokens = tokenizer.encode(context_text, add_special_tokens=True)
+
+    print(f"  Tabula-8B context: {n_ctx} rows, {len(context_tokens)} tokens (max {max_len})")
+
+    # Register hooks — capture only last-token hidden state to save VRAM
+    captured = {}
+    handles = []
+
+    for i, layer in enumerate(layers):
+        def make_hook(layer_idx):
+            def hook_fn(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                captured[f"layer_{layer_idx}"] = out[0, -1, :].float().cpu()
+            return hook_fn
+        handles.append(layer.register_forward_hook(make_hook(i)))
+
+    def final_norm_hook(module, input, output):
+        captured["final_norm"] = output[0, -1, :].float().cpu()
+    handles.append(llama_model.norm.register_forward_hook(final_norm_hook))
+
+    # Extract one query row at a time
+    all_layer_embs = defaultdict(list)
+
+    try:
+        with torch.no_grad():
+            for qi in range(n_query):
+                if qi % 50 == 0 or qi == n_query - 1:
+                    print(f"  Query {qi+1}/{n_query}")
+
+                query_text = _serialize_row(X_query.iloc[qi])
+                query_tokens = tokenizer.encode(query_text, add_special_tokens=False)
+
+                input_ids = context_tokens + query_tokens
+                if len(input_ids) > max_len:
+                    input_ids = input_ids[-max_len:]
+
+                input_device = next(model.parameters()).device
+                input_tensor = torch.tensor([input_ids], device=input_device)
+
+                # Forward through base LlamaModel (skip lm_head to save VRAM)
+                _ = llama_model(input_ids=input_tensor)
+
+                for key, vec in captured.items():
+                    all_layer_embs[key].append(vec.numpy())
+                captured.clear()
+
+                if qi % 10 == 0:
+                    torch.cuda.empty_cache()
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    result = {}
+    for key, emb_list in all_layer_embs.items():
+        if emb_list:
+            result[key] = np.stack(emb_list, axis=0)  # (n_query, hidden_dim)
 
     return result
 
