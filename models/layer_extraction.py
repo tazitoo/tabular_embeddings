@@ -229,32 +229,47 @@ def extract_all_layers(
         max_total = max(n_context + 50, 150_000 // max(n_features, 1))
         batch_size = min(batch_size, max(50, max_total - n_context))
 
-    captured = defaultdict(list)
-    handles = []
+    # Process each batch independently — raw hook outputs have different
+    # sequence lengths per batch (context + query_batch + thinking tokens),
+    # so they can't be concatenated before processing.
+    batch_results = defaultdict(list)  # layer_name → list of (n_batch_query, dim)
 
-    # Register hooks
-    for name, module in modules.items():
-        def make_hook(layer_name):
-            def hook_fn(module, input, output):
-                if isinstance(output, tuple):
-                    out = output[0]
-                else:
-                    out = output
-                if isinstance(out, torch.Tensor):
-                    captured[layer_name].append(out.detach().float().cpu().numpy())
-            return hook_fn
-        handles.append(module.register_forward_hook(make_hook(name)))
+    for start in range(0, n_query, batch_size):
+        X_batch = X_query[start:start + batch_size]
+        n_batch = len(X_batch)
 
-    # Batched forward pass
-    try:
-        for start in range(0, n_query, batch_size):
-            X_batch = X_query[start:start + batch_size]
+        captured = defaultdict(list)
+        handles = []
+
+        for name, module in modules.items():
+            def make_hook(layer_name):
+                def hook_fn(module, input, output):
+                    if isinstance(output, tuple):
+                        out = output[0]
+                    else:
+                        out = output
+                    if isinstance(out, torch.Tensor):
+                        captured[layer_name].append(out.detach().float().cpu().numpy())
+                return hook_fn
+            handles.append(module.register_forward_hook(make_hook(name)))
+
+        try:
             predict(clf, X_batch, task)
-    finally:
-        for handle in handles:
-            handle.remove()
+        finally:
+            for handle in handles:
+                handle.remove()
 
-    return _process_activations(model_name, captured, n_query)
+        # Process this batch's activations to (n_batch_query, dim)
+        batch_embs = _process_activations(model_name, captured, n_batch)
+        for layer_name, emb in batch_embs.items():
+            batch_results[layer_name].append(emb)
+
+    # Concatenate processed embeddings across batches
+    result = {}
+    for layer_name, emb_list in batch_results.items():
+        result[layer_name] = np.concatenate(emb_list, axis=0)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
