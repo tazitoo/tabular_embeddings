@@ -95,20 +95,48 @@ def sample_difficulty_stratified(losses, n_sample, seed=42):
 
 
 def sample_target_x_difficulty(y, losses, n_sample, seed=42):
-    """Stratify on target class × difficulty tercile."""
+    """Doubly stratified sampling: target × difficulty with redistribution.
+
+    Equal allocation across strata (class × tercile). When a stratum is smaller
+    than its share, take all of it and redistribute the surplus to remaining
+    strata. Repeats until budget is spent — no wasted budget, no oversampling.
+    """
     rng = np.random.RandomState(seed)
     terciles = tercile_labels(losses)
     classes = np.unique(y)
-    n_strata = len(classes) * 3
-    per_stratum = max(1, n_sample // n_strata)
-    indices = []
+
+    # Build strata: (class, tercile) → row indices
+    strata = {}
     for cls in classes:
         for t in range(3):
-            mask = (y == cls) & (terciles == t)
-            stratum_idx = np.where(mask)[0]
-            n_take = min(per_stratum, len(stratum_idx))
-            if n_take > 0:
-                indices.append(rng.choice(stratum_idx, size=n_take, replace=False))
+            key = (cls, t)
+            strata[key] = np.where((y == cls) & (terciles == t))[0]
+
+    # Allocate budget with redistribution from exhausted strata
+    allocation = {k: 0 for k in strata}
+    remaining_budget = n_sample
+    active_keys = [k for k in strata if len(strata[k]) > 0]
+
+    while remaining_budget > 0 and active_keys:
+        per_stratum = max(1, remaining_budget // len(active_keys))
+        exhausted = []
+        for k in active_keys:
+            available = len(strata[k]) - allocation[k]
+            take = min(per_stratum, available, remaining_budget)
+            allocation[k] += take
+            remaining_budget -= take
+            if allocation[k] >= len(strata[k]):
+                exhausted.append(k)
+            if remaining_budget <= 0:
+                break
+        for k in exhausted:
+            active_keys.remove(k)
+
+    # Sample from each stratum
+    indices = []
+    for k, n_take in allocation.items():
+        if n_take > 0:
+            indices.append(rng.choice(strata[k], size=n_take, replace=False))
     return np.concatenate(indices) if indices else np.array([], dtype=int)
 
 
