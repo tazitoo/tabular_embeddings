@@ -5,6 +5,10 @@ For each (model, dataset), loads preprocessed data from cache, samples up to
 --max-context train rows as ICL context, and extracts embeddings from ALL
 layers for the holdout (test) rows.
 
+Large datasets are processed in chunks with per-layer memmap files to avoid
+OOM.  This is critical for tabula8b (33 layers × 4096 dim) where a 50K-row
+dataset would need ~27GB of float32 in memory.
+
 Output:
     output/sae_training_round9/embeddings/{model}/{dataset}.npz
         layer_0, layer_1, ...:  (n_query, hidden_dim) float32
@@ -20,7 +24,9 @@ Usage:
 """
 import argparse
 import json
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -39,6 +45,11 @@ SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "tabdpt", "mitra", "hyperfa
 
 # Models that need raw DataFrames (not preprocessed numpy cache)
 DATAFRAME_MODELS = {"tabula8b", "carte"}
+
+# Threshold: datasets with more rows than this use chunked/memmap extraction
+# to avoid accumulating all layers × all rows in RAM.
+# 33 layers × 4096 dim × 4 bytes × 5000 rows ≈ 2.5 GB — safe headroom.
+CHUNK_ROW_THRESHOLD = 5000
 
 
 def sample_context(
@@ -79,6 +90,103 @@ def sample_context(
     return X_train[indices], y_train[indices]
 
 
+def extract_chunked(
+    model_name: str,
+    clf,
+    X_query,
+    task: str,
+    chunk_size: int,
+    out_path: Path,
+    test_indices: np.ndarray,
+    n_ctx_used: int,
+    n_train_total: int,
+    batch_size: int = 1024,
+) -> tuple[int, int, int]:
+    """Extract all layers in chunks, flushing to memmap files on disk.
+
+    Returns (n_layers, n_query, hidden_dim).
+    """
+    import pandas as pd
+
+    n_query = len(X_query)
+    is_df = isinstance(X_query, pd.DataFrame)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="emb_chunk_"))
+
+    try:
+        memmaps = {}  # layer_name → memmap
+        layer_names = None
+
+        for start in range(0, n_query, chunk_size):
+            end = min(start + chunk_size, n_query)
+            if is_df:
+                X_chunk = X_query.iloc[start:end].reset_index(drop=True)
+            else:
+                X_chunk = X_query[start:end]
+
+            chunk_embs = extract_all_layers(
+                model_name, clf, X_chunk, task=task, batch_size=batch_size
+            )
+
+            # First chunk: discover layer names and dims, create memmaps
+            if layer_names is None:
+                layer_names = sort_layer_names(list(chunk_embs.keys()))
+                for lname in layer_names:
+                    dim = chunk_embs[lname].shape[1]
+                    mm = np.memmap(
+                        tmp_dir / f"{lname}.dat",
+                        dtype=np.float32, mode="w+",
+                        shape=(n_query, dim),
+                    )
+                    memmaps[lname] = mm
+
+            # Write chunk to memmaps
+            for lname in layer_names:
+                memmaps[lname][start:end] = chunk_embs[lname].astype(np.float32)
+
+            # Free chunk memory
+            del chunk_embs
+            import torch
+            torch.cuda.empty_cache()
+
+            print(f"    chunk {start}-{end}/{n_query} flushed to disk")
+
+        # Flush all memmaps
+        for mm in memmaps.values():
+            mm.flush()
+
+        hidden_dim = memmaps[layer_names[0]].shape[1]
+
+        # Write .npz incrementally — one layer at a time to avoid holding
+        # all 34 layers × n_query × dim in RAM simultaneously.
+        import io
+        import zipfile
+
+        with zipfile.ZipFile(str(out_path), "w", zipfile.ZIP_DEFLATED) as zf:
+            # Metadata arrays (small)
+            for key, arr in [
+                ("layer_names", np.array(layer_names, dtype=str)),
+                ("row_indices", test_indices),
+                ("n_context", np.array(n_ctx_used)),
+                ("task_type", np.array(task)),
+            ]:
+                buf = io.BytesIO()
+                np.save(buf, arr)
+                zf.writestr(f"{key}.npy", buf.getvalue())
+
+            # Layer embeddings — one at a time from memmap
+            for lname in layer_names:
+                buf = io.BytesIO()
+                np.save(buf, np.array(memmaps[lname]))
+                zf.writestr(f"{lname}.npy", buf.getvalue())
+                del buf  # free compressed buffer immediately
+
+        return len(layer_names), n_query, hidden_dim
+
+    finally:
+        # Clean up memmap temp dir
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract all-layer embeddings")
     parser.add_argument("--model", required=True, choices=SUPPORTED_MODELS)
@@ -89,6 +197,10 @@ def main():
                         help="Max query rows per forward pass (default: 1024)")
     parser.add_argument("--datasets", nargs="+", default=None,
                         help="Specific datasets (default: all in splits)")
+    parser.add_argument("--save-chunk-size", type=int, default=None,
+                        help="Process this many query rows per chunk, flushing "
+                             "to disk between chunks to limit RAM usage. "
+                             "Auto-enabled for datasets > 5000 rows (default: 2000).")
     parser.add_argument("--force", action="store_true",
                         help="Overwrite existing embeddings")
     args = parser.parse_args()
@@ -159,11 +271,9 @@ def main():
                     args.model, X_ctx_df, y_ctx,
                     task=task_type, device=args.device, **fit_kwargs,
                 )
-                layer_embs = extract_all_layers(
-                    args.model, clf, X_test_df, task=task_type
-                )
                 n_ctx_used = len(X_ctx_df)
                 n_train_total = len(train_idx)
+                X_test = X_test_df
             else:
                 # Standard path: load from preprocessing cache
                 data = load_preprocessed(args.model, ds_name, CACHE_DIR)
@@ -180,32 +290,52 @@ def main():
                     args.model, X_ctx, y_ctx,
                     task=task_type, device=args.device, **fit_kwargs
                 )
-                layer_embs = extract_all_layers(
-                    args.model, clf, data.X_test,
-                    task=task_type, batch_size=args.batch_size
-                )
                 n_ctx_used = len(X_ctx)
                 n_train_total = len(data.X_train)
+                X_test = data.X_test
 
-            # Save
-            layer_names = sort_layer_names(list(layer_embs.keys()))
-            save_dict = {
-                "layer_names": np.array(layer_names, dtype=str),
-                "row_indices": test_indices,
-                "n_context": np.array(n_ctx_used),
-                "task_type": np.array(task_type),
-            }
-            for name, emb in layer_embs.items():
-                save_dict[name] = emb.astype(np.float32)
+            # Decide: chunked (memmap) vs in-memory extraction
+            n_test = len(X_test)
+            chunk_size = args.save_chunk_size
+            use_chunked = chunk_size is not None or n_test > CHUNK_ROW_THRESHOLD
+            if use_chunked:
+                chunk_size = chunk_size or 2000
+                print(f"  using chunked extraction: {n_test} rows, "
+                      f"chunk_size={chunk_size}")
+                n_layers, _, dim = extract_chunked(
+                    args.model, clf, X_test, task=task_type,
+                    chunk_size=chunk_size, out_path=out_path,
+                    test_indices=test_indices,
+                    n_ctx_used=n_ctx_used, n_train_total=n_train_total,
+                    batch_size=args.batch_size,
+                )
+                layer_names_count = n_layers
+            else:
+                layer_embs = extract_all_layers(
+                    args.model, clf, X_test,
+                    task=task_type, batch_size=args.batch_size
+                )
 
-            np.savez_compressed(str(out_path), **save_dict)
+                # Save
+                layer_names = sort_layer_names(list(layer_embs.keys()))
+                layer_names_count = len(layer_names)
+                dim = layer_embs[layer_names[0]].shape[1] if layer_names else "?"
+                save_dict = {
+                    "layer_names": np.array(layer_names, dtype=str),
+                    "row_indices": test_indices,
+                    "n_context": np.array(n_ctx_used),
+                    "task_type": np.array(task_type),
+                }
+                for name, emb in layer_embs.items():
+                    save_dict[name] = emb.astype(np.float32)
+
+                np.savez_compressed(str(out_path), **save_dict)
+                del layer_embs
 
             dt = time.time() - t0
             n_total = n_train_total + len(test_indices)
-            sample_layer = layer_names[0]
-            dim = layer_embs[sample_layer].shape[1] if sample_layer in layer_embs else "?"
             print(f"[{i+1}/{len(dataset_names)}] {ds_name}: "
-                  f"{len(layer_names)} layers, "
+                  f"{layer_names_count} layers, "
                   f"holdout={len(test_indices)}/{n_total} rows, "
                   f"dim={dim}, ctx={n_ctx_used}/{n_train_total} ({dt:.1f}s)")
             success += 1
