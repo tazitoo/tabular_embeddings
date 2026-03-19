@@ -117,25 +117,20 @@ def _make_df_hyperfast():
     return X_train, y_train, X_test, y_test
 
 
-def test_hyperfast_numeric_nan_preserved():
+def test_hyperfast_nan_imputed():
+    """HyperFast paper: mean impute numeric, mode impute categorical."""
     X_train, y_train, X_test, y_test = _make_df_hyperfast()
     data = preprocess_for_model("hyperfast", "ds", X_train, y_train, X_test, y_test, "classification")
-    # NaN in numeric column must survive (HyperFast imputes internally)
-    assert np.isnan(data.X_train[:, 0]).any(), "hyperfast: numeric NaN must be preserved"
+    assert not np.isnan(data.X_train).any(), "hyperfast: NaN must be imputed"
+    assert not np.isnan(data.X_test).any()
+    assert data.X_train.dtype == np.float32
 
 
-def test_hyperfast_categorical_nan_preserved():
+def test_hyperfast_cat_indices_empty_after_imputation():
+    """After imputation, category codes are fractional means — not meaningful."""
     X_train, y_train, X_test, y_test = _make_df_hyperfast()
     data = preprocess_for_model("hyperfast", "ds", X_train, y_train, X_test, y_test, "classification")
-    # NaN in categorical column must survive as np.nan (not a spurious integer code)
-    assert np.isnan(data.X_train[:, 1]).any(), "hyperfast: categorical NaN must be np.nan, not a spurious code"
-
-
-def test_hyperfast_cat_indices_original_order():
-    X_train, y_train, X_test, y_test = _make_df_hyperfast()
-    data = preprocess_for_model("hyperfast", "ds", X_train, y_train, X_test, y_test, "classification")
-    # 'cat' is column 1 in the original DataFrame
-    assert data.cat_indices == [1], f"Expected [1], got {data.cat_indices}"
+    assert data.cat_indices == [], f"Expected [], got {data.cat_indices}"
 
 
 def test_hyperfast_all_numeric():
@@ -144,4 +139,4 @@ def test_hyperfast_all_numeric():
     y = np.array([0, 1])
     data = preprocess_for_model("hyperfast", "ds", X_train, y, X_test, y[:1], "classification")
     assert data.cat_indices == []
-    assert np.isnan(data.X_train).any()
+    assert not np.isnan(data.X_train).any(), "hyperfast: NaN must be imputed"

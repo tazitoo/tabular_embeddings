@@ -215,33 +215,36 @@ def _preprocess_hyperfast(
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
 ) -> tuple[np.ndarray, np.ndarray, list[int]]:
-    """Ordinal-encode categoricals for HyperFast, preserving NaN.
+    """Ordinal-encode categoricals and impute NaN for HyperFast.
 
-    HyperFast applies its own imputation, one-hot encoding, and StandardScaler
-    internally during fit() via _preprocess_test_data(). We only need to:
-      - Convert categorical columns to integer codes so the array is numeric.
-      - Leave NaN as NaN — HyperFast imputes internally, including for categoricals.
-      - Record cat_indices (in original column order) for the model.
+    Per the HyperFast paper (Bonet et al. 2024, §Initial Transformation Layers):
+    "We first perform a general data standardization stage by one-hot encoding
+    categorical features, mean imputing missing numerical features, mode
+    imputing missing categorical features, and feature-wise transforming to
+    zero mean and unit variance."
 
-    OrdinalEncoder(encoded_missing_value=np.nan) maps None/NaN in object-dtype
-    columns to np.nan rather than a spurious integer code.
+    We handle: ordinal encoding of categoricals, then mean imputation for all
+    columns (after encoding, category codes are numeric so mean imputation is
+    appropriate). HyperFast's internal _preprocess_test_data() handles the
+    StandardScaler and one-hot encoding.
+
+    cat_indices are returned empty after imputation — category codes are
+    fractional medians with no categorical meaning (same rationale as
+    tabicl/mitra).
     """
     X_train = X_train.copy()
     X_test = X_test.copy()
 
     cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
-    cat_indices = [X_train.columns.get_loc(c) for c in cat_cols]  # original-order positions
 
     if cat_cols:
         # OrdinalEncoder only treats np.nan (not None) as a missing value.
-        # Replace None with np.nan in object-dtype columns before encoding so
-        # that encoded_missing_value=np.nan maps them to np.nan, not a code.
         X_train[cat_cols] = X_train[cat_cols].where(X_train[cat_cols].notna(), other=np.nan)
         X_test[cat_cols] = X_test[cat_cols].where(X_test[cat_cols].notna(), other=np.nan)
         enc = OrdinalEncoder(
             handle_unknown="use_encoded_value",
             unknown_value=np.nan,
-            encoded_missing_value=np.nan,  # None/NaN → np.nan, not a spurious code
+            encoded_missing_value=np.nan,
         )
         X_train[cat_cols] = enc.fit_transform(X_train[cat_cols])
         X_test[cat_cols] = enc.transform(X_test[cat_cols])
@@ -249,7 +252,12 @@ def _preprocess_hyperfast(
     X_train_np = X_train.values.astype(np.float32)
     X_test_np = X_test.values.astype(np.float32)
 
-    return X_train_np, X_test_np, cat_indices
+    # Impute NaN — HyperFast expects no missing values at input
+    imp = SimpleImputer(strategy="mean")
+    X_train_np = imp.fit_transform(X_train_np)
+    X_test_np = imp.transform(X_test_np)
+
+    return X_train_np, X_test_np, []  # empty cat_indices after imputation
 
 
 def _encode_y(
