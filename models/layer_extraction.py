@@ -224,12 +224,13 @@ def extract_all_layers(
     modules = get_layer_modules(model_name, clf)
     n_query = len(X_query)
 
-    # Model-specific batch size adjustment
+    # Model-specific batch size adjustment — Mitra's 2D attention is
+    # O(n_obs * n_features * dim) per layer.  After fit() (which has its own
+    # OOM retry loop that shrinks max_samples_support), the query forward pass
+    # shares VRAM with the fitted model.  Scale query batch by feature count.
     if key == "mitra":
         n_features = X_query.shape[1]
-        n_context = len(clf.trainers[0].X_train) if hasattr(clf.trainers[0], 'X_train') else 0
-        max_total = max(n_context + 50, 150_000 // max(n_features, 1))
-        batch_size = min(batch_size, max(50, max_total - n_context))
+        batch_size = min(batch_size, max(32, 100_000 // max(n_features, 1)))
 
     # Process each batch independently — raw hook outputs have different
     # sequence lengths per batch (context + query_batch + thinking tokens),
