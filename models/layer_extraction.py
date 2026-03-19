@@ -94,7 +94,9 @@ def load_and_fit(
         else:
             from autogluon.tabular.models.mitra.sklearn_interface import MitraClassifier
             clf = MitraClassifier(device=device, n_estimators=1, fine_tune=False)
-        clf.fit(X_context, y_context)
+        # Mitra expects int64 (Long) labels, not int32
+        y_ctx = y_context.astype(np.int64) if task == "classification" else y_context
+        clf.fit(X_context, y_ctx)
         torch.cuda.empty_cache()
 
     elif key == "hyperfast":
@@ -216,7 +218,7 @@ def extract_all_layers(
     key = model_name.lower()
 
     if key == "hyperfast":
-        return _extract_hyperfast(clf, X_query)
+        return _extract_hyperfast(clf, X_query, batch_size=batch_size)
 
     # Generic path: hook all layers, forward pass, process activations
     modules = get_layer_modules(model_name, clf)
@@ -370,58 +372,70 @@ def _process_mitra(captured, n_query):
 # HyperFast (manual forward — no standard hooks)
 # ---------------------------------------------------------------------------
 
-def _extract_hyperfast(clf, X_query: np.ndarray) -> dict[str, np.ndarray]:
+def _extract_hyperfast(clf, X_query: np.ndarray, batch_size: int = 512) -> dict[str, np.ndarray]:
     """Extract all layers from HyperFast's generated network.
 
     HyperFast generates a task-specific MLP from context. We manually forward
     through each layer and capture activations, averaged across the ensemble.
+    Batches queries to avoid OOM on large holdout sets.
     """
     from hyperfast.hyperfast import transform_data_for_main_network
 
-    X_query_preprocessed = clf._preprocess_test_data(X_query)
     device = clf.device if hasattr(clf, 'device') else 'cuda'
-    X_query_preprocessed = X_query_preprocessed.to(device)
-
     n_layers = len(clf._main_networks[0])
-    all_layer_acts = {f"layer_{i}": [] for i in range(n_layers)}
+    n_query = len(X_query)
 
-    with torch.no_grad():
-        for jj in range(len(clf._main_networks)):
-            main_net = clf._main_networks[jj]
-            rf = clf._move_to_device(clf._rfs[jj])
-            pca = clf._move_to_device(clf._pcas[jj])
+    batch_results = defaultdict(list)  # layer_name → list of (n_batch, dim)
 
-            if clf.feature_bagging:
-                X_b = X_query_preprocessed[:, clf.selected_features[jj]]
-            else:
-                X_b = X_query_preprocessed
+    for start in range(0, n_query, batch_size):
+        X_batch = X_query[start:start + batch_size]
+        X_batch_preprocessed = clf._preprocess_test_data(X_batch).to(device)
 
-            X_transformed = transform_data_for_main_network(
-                X=X_b, cfg=clf._cfg, rf=rf, pca=pca
-            )
+        all_layer_acts = {f"layer_{i}": [] for i in range(n_layers)}
 
-            x = X_transformed
-            all_layer_acts["layer_0"].append(x.cpu().numpy())
+        with torch.no_grad():
+            for jj in range(len(clf._main_networks)):
+                main_net = clf._main_networks[jj]
+                rf = clf._move_to_device(clf._rfs[jj])
+                pca = clf._move_to_device(clf._pcas[jj])
 
-            for layer_idx, (weight, bias) in enumerate(main_net[:-1]):
-                weight = clf._move_to_device(weight)
-                bias = clf._move_to_device(bias)
-                x_new = torch.nn.functional.linear(x, weight, bias)
-                x_new = torch.nn.functional.relu(x_new)
-
-                if x_new.shape[-1] == x.shape[-1]:
-                    x = x + x_new
+                if clf.feature_bagging:
+                    X_b = X_batch_preprocessed[:, clf.selected_features[jj]]
                 else:
-                    x = x_new
+                    X_b = X_batch_preprocessed
 
-                all_layer_acts[f"layer_{layer_idx + 1}"].append(x.cpu().numpy())
+                X_transformed = transform_data_for_main_network(
+                    X=X_b, cfg=clf._cfg, rf=rf, pca=pca
+                )
 
-    # Average across ensemble
+                x = X_transformed
+                all_layer_acts["layer_0"].append(x.cpu().numpy())
+
+                for layer_idx, (weight, bias) in enumerate(main_net[:-1]):
+                    weight = clf._move_to_device(weight)
+                    bias = clf._move_to_device(bias)
+                    x_new = torch.nn.functional.linear(x, weight, bias)
+                    x_new = torch.nn.functional.relu(x_new)
+
+                    if x_new.shape[-1] == x.shape[-1]:
+                        x = x + x_new
+                    else:
+                        x = x_new
+
+                    all_layer_acts[f"layer_{layer_idx + 1}"].append(x.cpu().numpy())
+
+        # Average across ensemble for this batch
+        for key, acts in all_layer_acts.items():
+            if acts:
+                stacked = np.stack(acts, axis=0)  # (n_ensemble, n_batch, dim)
+                batch_results[key].append(stacked.mean(axis=0))  # (n_batch, dim)
+
+        torch.cuda.empty_cache()
+
+    # Concatenate batches
     result = {}
-    for key, acts in all_layer_acts.items():
-        if acts:
-            stacked = np.stack(acts, axis=0)  # (n_ensemble, n_query, dim)
-            result[key] = stacked.mean(axis=0)  # (n_query, dim)
+    for key, emb_list in batch_results.items():
+        result[key] = np.concatenate(emb_list, axis=0)
 
     return result
 

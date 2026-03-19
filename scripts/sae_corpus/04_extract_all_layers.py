@@ -181,6 +181,10 @@ def main():
             import traceback
             traceback.print_exc()
             errors += 1
+        finally:
+            # Free GPU memory between datasets to prevent OOM cascade
+            import torch
+            torch.cuda.empty_cache()
 
     print(f"\nDone: {success} extracted, {skipped} skipped, {errors} failed")
     if errors:
