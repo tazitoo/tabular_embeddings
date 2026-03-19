@@ -122,6 +122,9 @@ def load_and_fit(
         clf._tabula8b_context = (X_context, y_context)
         clf._tabula8b_target_name = kwargs.get("target_name", "target")
 
+    elif key == "carte":
+        clf = _load_and_fit_carte(X_context, y_context, task, device)
+
     else:
         raise ValueError(f"Unknown model: {model_name!r}")
 
@@ -190,6 +193,13 @@ def get_layer_modules(model_name: str, clf: Any) -> OrderedDict:
         modules["final_norm"] = llama_model.norm
         return modules
 
+    elif key == "carte":
+        # CARTE has custom graph-based hooks — use extract_all_layers()
+        raise NotImplementedError(
+            "CARTE uses graph-based hooks with per-node extraction. "
+            "Use extract_all_layers() which handles the graph batching."
+        )
+
     else:
         raise ValueError(f"Unknown model: {model_name!r}")
 
@@ -243,6 +253,9 @@ def extract_all_layers(
 
     if key == "tabula8b":
         return _extract_tabula8b(clf, X_query)
+
+    if key == "carte":
+        return _extract_carte(clf, X_query)
 
     # Generic path: hook all layers, forward pass, process activations
     modules = get_layer_modules(model_name, clf)
@@ -461,6 +474,205 @@ def _extract_hyperfast(clf, X_query: np.ndarray, batch_size: int = 512) -> dict[
     result = {}
     for key, emb_list in batch_results.items():
         result[key] = np.concatenate(emb_list, axis=0)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CARTE (GNN — graph construction from DataFrames)
+# ---------------------------------------------------------------------------
+
+def _load_and_fit_carte(X_context: pd.DataFrame, y_context: np.ndarray,
+                        task: str, device: str) -> Any:
+    """Load CARTE, build graphs from DataFrame, and fit.
+
+    CARTE embeds column names and categorical values via FastText, so the
+    raw DataFrame with real column names is required (not numpy).
+
+    Returns a dict with the fitted classifier, graph transformer, and
+    query-ready metadata.
+    """
+    from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
+    _patch_carte_amp()
+    from carte_ai import CARTEClassifier, Table2GraphTransformer
+    from sklearn.preprocessing import RobustScaler
+
+    ft_path = _find_fasttext_model()
+    if not ft_path:
+        raise ValueError("FastText model not found — see models/carte_embeddings.py")
+
+    if not isinstance(X_context, pd.DataFrame):
+        raise TypeError("CARTE requires DataFrame input with real column names")
+
+    df_context = X_context.copy()
+    # Category dtype → object for CARTE
+    for col in df_context.select_dtypes(include=["category"]).columns:
+        df_context[col] = df_context[col].astype("object")
+
+    # Robust preprocessing for numeric columns (prevents PowerTransformer errors)
+    num_cols = df_context.select_dtypes(include=["number"]).columns.tolist()
+    scaler = None
+    dropped_cols = []
+    if num_cols:
+        col_std = df_context[num_cols].std()
+        constant_cols = col_std[col_std < 1e-6].index.tolist()
+        if constant_cols:
+            df_context = df_context.drop(columns=constant_cols)
+            dropped_cols.extend(constant_cols)
+            num_cols = [c for c in num_cols if c not in constant_cols]
+
+        if num_cols:
+            scaler = RobustScaler()
+            df_context[num_cols] = scaler.fit_transform(df_context[num_cols].values)
+            df_context[num_cols] = df_context[num_cols].clip(-10, 10)
+            post_std = df_context[num_cols].std()
+            bad_post = post_std[post_std.isna() | (post_std < 1e-6)].index.tolist()
+            if bad_post:
+                df_context = df_context.drop(columns=bad_post)
+                dropped_cols.extend(bad_post)
+
+    # CARTE needs at least one object-dtype column for graph construction
+    if len(df_context.select_dtypes(include=["object"]).columns) == 0:
+        n_bins = min(5, max(2, len(df_context.columns)))
+        first_num = df_context.select_dtypes(include=["number"]).columns[0]
+        df_context["_cat"] = pd.cut(df_context[first_num], bins=n_bins,
+                                     labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
+
+    # For regression, discretize targets for CARTE's classifier interface
+    if task == "regression":
+        y_ctx = np.asarray(y_context, dtype=np.float32)
+        n_bins = min(10, len(np.unique(y_ctx)))
+        y_for_fit = pd.qcut(y_ctx, q=n_bins, labels=False, duplicates='drop').astype(np.int64)
+    else:
+        y_ctx = np.asarray(y_context)
+        if y_ctx.dtype == np.float64:
+            y_ctx = y_ctx.astype(np.int64)
+        y_for_fit = y_ctx
+
+    t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
+    t2g.fit(df_context)
+    X_context_graph = t2g.transform(df_context)
+
+    for i, g in enumerate(X_context_graph):
+        g.y = torch.tensor([y_for_fit[i]], dtype=torch.float32)
+
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+    clf.fit(X_context_graph, y_for_fit)
+    torch.cuda.empty_cache()
+
+    # Bundle everything needed for extraction
+    clf._carte_t2g = t2g
+    clf._carte_scaler = scaler
+    clf._carte_dropped_cols = dropped_cols
+    clf._carte_num_cols = [c for c in num_cols if c not in dropped_cols]
+    clf._carte_had_cat = "_cat" not in df_context.columns  # original had object cols
+
+    return clf
+
+
+def _extract_carte(clf, X_query: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Extract all-layer embeddings from CARTE GNN.
+
+    CARTE is shallow (5 layers): initial_x → attention → readout → classifier.
+    Hooks capture per-node and per-graph representations. Central node is
+    extracted from per-node outputs.
+    """
+    if not isinstance(X_query, pd.DataFrame):
+        raise TypeError("CARTE requires DataFrame input")
+
+    t2g = clf._carte_t2g
+    scaler = clf._carte_scaler
+    dropped_cols = clf._carte_dropped_cols
+    num_cols = clf._carte_num_cols
+
+    df_query = X_query.copy()
+    for col in df_query.select_dtypes(include=["category"]).columns:
+        df_query[col] = df_query[col].astype("object")
+
+    if dropped_cols:
+        df_query = df_query.drop(columns=[c for c in dropped_cols if c in df_query.columns])
+    if scaler is not None and num_cols:
+        valid_cols = [c for c in num_cols if c in df_query.columns]
+        if valid_cols:
+            df_query[valid_cols] = scaler.transform(df_query[valid_cols].values)
+            df_query[valid_cols] = df_query[valid_cols].clip(-10, 10)
+
+    if not clf._carte_had_cat and "_cat" not in df_query.columns:
+        first_num = df_query.select_dtypes(include=["number"]).columns[0]
+        n_bins = min(5, max(2, len(df_query.columns)))
+        df_query["_cat"] = pd.cut(df_query[first_num], bins=n_bins,
+                                   labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
+
+    X_query_graph = t2g.transform(df_query)
+    n_query = len(X_query)
+
+    model = clf.model_list_[0]
+    model.eval()
+    base = model.ft_base
+
+    # Register hooks
+    captured = defaultdict(list)
+    handles = []
+
+    def init_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["layer_0"].append(output.detach().cpu().numpy())
+    handles.append(base.initial_x.register_forward_hook(init_hook))
+
+    def attn_hook(module, input, output):
+        if isinstance(output, torch.Tensor):
+            captured["layer_1"].append(output.detach().cpu().numpy())
+    handles.append(base.read_out_block.g_attn.register_forward_hook(attn_hook))
+
+    def block_hook(module, input, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if isinstance(out, torch.Tensor):
+            captured["layer_2"].append(out.detach().cpu().numpy())
+    handles.append(base.read_out_block.register_forward_hook(block_hook))
+
+    for i, layer in enumerate(model.ft_classifier):
+        if isinstance(layer, torch.nn.Linear):
+            def make_clf_hook(idx):
+                def hook_fn(module, input, output):
+                    if isinstance(output, torch.Tensor):
+                        captured[f"layer_{3+idx}"].append(output.detach().cpu().numpy())
+                return hook_fn
+            handles.append(layer.register_forward_hook(make_clf_hook(i)))
+
+    # Forward pass in batches
+    from torch_geometric.data import Batch
+    batch_size = 100
+    all_ptrs = []
+    try:
+        for start in range(0, n_query, batch_size):
+            end = min(start + batch_size, n_query)
+            batch = Batch.from_data_list(X_query_graph[start:end])
+            batch.to(clf.device_)
+            all_ptrs.append(batch.ptr.cpu().numpy())
+            with torch.no_grad():
+                _ = model(batch)
+            del batch
+            torch.cuda.empty_cache()
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    # Process: extract central node for per-node outputs
+    result = {}
+    for key, act_list in captured.items():
+        act = np.concatenate(act_list, axis=0)
+        if act.shape[0] == n_query:
+            result[key] = act
+        elif act.shape[0] > n_query:
+            central_emb = []
+            node_offset = 0
+            for ptr in all_ptrs:
+                for i in range(len(ptr) - 1):
+                    central_emb.append(act[node_offset + ptr[i]])
+                node_offset += ptr[-1]
+            result[key] = np.stack(central_emb)
+        elif act.ndim >= 2:
+            result[key] = act[:n_query]
 
     return result
 

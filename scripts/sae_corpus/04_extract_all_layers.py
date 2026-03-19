@@ -35,7 +35,10 @@ from scripts._project_root import PROJECT_ROOT
 SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training_round9" / "embeddings"
 
-SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "tabdpt", "mitra", "hyperfast", "tabula8b"]
+SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "tabdpt", "mitra", "hyperfast", "tabula8b", "carte"]
+
+# Models that need raw DataFrames (not preprocessed numpy cache)
+DATAFRAME_MODELS = {"tabula8b", "carte"}
 
 
 def sample_context(
@@ -129,8 +132,8 @@ def main():
             train_idx = np.array(split_info["train_indices"])
             test_indices = np.array(split_info["test_indices"], dtype=np.int32)
 
-            if model_key == "tabula8b":
-                # Tabula-8B: load raw DataFrame, serialize to text
+            if model_key in DATAFRAME_MODELS:
+                # DataFrame models: load raw data, model handles serialization
                 cached = _load_tabarena_cached_v2(ds_name)
                 if cached is None:
                     print(f"[{i+1}/{len(dataset_names)}] {ds_name}: SKIP — no raw cache")
@@ -141,18 +144,20 @@ def main():
                 X_test_df = X_df.iloc[test_indices].reset_index(drop=True)
                 y_ctx = y[train_idx]
 
-                # Subsample context rows (token budget is the real limit,
-                # but pre-cap to max_context to avoid serializing thousands)
+                # Subsample context rows
                 if len(X_ctx_df) > args.max_context:
                     rng = np.random.RandomState(42)
                     idx = rng.choice(len(X_ctx_df), args.max_context, replace=False)
                     X_ctx_df = X_ctx_df.iloc[idx].reset_index(drop=True)
                     y_ctx = y_ctx[idx]
 
+                fit_kwargs = {}
+                if model_key == "tabula8b":
+                    fit_kwargs["target_name"] = split_info.get("target", "target")
+
                 clf = load_and_fit(
                     args.model, X_ctx_df, y_ctx,
-                    task=task_type, device=args.device,
-                    target_name=split_info.get("target", "target"),
+                    task=task_type, device=args.device, **fit_kwargs,
                 )
                 layer_embs = extract_all_layers(
                     args.model, clf, X_test_df, task=task_type
