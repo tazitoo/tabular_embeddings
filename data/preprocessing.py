@@ -32,7 +32,8 @@ CACHE_DIR = PROJECT_ROOT / "output" / "sae_training_round9" / "preprocessed"
 NAN_SAFE_MODELS = {"tabpfn", "tabdpt"}
 
 # Models using AutoMLPipelineFeatureGenerator for outer preprocessing.
-AUTOGLUON_MODELS = {"tabpfn", "tabicl", "tabdpt", "mitra"}
+# tabicl_v2 is the regression-capable successor to tabicl; same NaN-unsafe pipeline.
+AUTOGLUON_MODELS = {"tabpfn", "tabicl", "tabicl_v2", "tabdpt", "mitra"}
 
 
 @dataclass
