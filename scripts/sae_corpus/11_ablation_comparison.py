@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Compare task-aware vs per-dataset SAEs via per-row cumulative ablation.
 
-For each query row individually:
-  1. Get TabPFN baseline prediction
-  2. Cumulatively ablate SAE features in per-row importance order
-  3. Stop when prediction matches Mitra's prediction
+Uses causal per-row importance from 09_perrow_importance.py.
+For each query row:
+  1. Rank features by per-row importance
+  2. Build K copies where copy k has top-k features ablated
+  3. One forward pass → K predictions
+  4. Scan to find where prediction matches weak model
 
-One query row per forward pass — no masks, no approximations.
+Output:
+    output/sae_training_round10/ablation_comparison_results.json
+    output/sae_training_round10/ablation_comparison_scatter.png
 
 Usage:
     python scripts/sae_corpus/11_ablation_comparison.py --device cuda
@@ -29,7 +33,7 @@ from analysis.sparse_autoencoder import SAEConfig, SparseAutoencoder
 from data.preprocessing import CACHE_DIR, load_preprocessed
 from models.layer_extraction import load_and_fit, predict
 from scripts._project_root import PROJECT_ROOT
-from scripts.intervention.intervene_sae import compute_ablation_delta
+from scripts.intervention.intervene_sae import TabPFNTail
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -45,12 +49,10 @@ VARIANTS = {
     "task_aware": {
         "sae_path": OUTPUT_DIR / "tabpfn_taskaware_sae.pt",
         "stats_path": OUTPUT_DIR / "tabpfn_taskaware_norm_stats.npz",
-        "importance_prefix": "layer_comparison_eval_task_aware",
     },
     "per_dataset": {
         "sae_path": OUTPUT_DIR / "tabpfn_perds_sae.pt",
         "stats_path": OUTPUT_DIR / "tabpfn_perds_norm_stats.npz",
-        "importance_prefix": "layer_comparison_eval_per_dataset",
     },
 }
 
@@ -82,141 +84,121 @@ def load_norm_stats(stats_path, dataset, device):
     return mean, std, layer
 
 
-def load_importance(prefix, dataset):
-    """Load per-row importance from 09."""
-    path = OUTPUT_DIR / f"{prefix}_{dataset}.npz"
-    data = np.load(str(path), allow_pickle=True)
-    return data["row_feature_drops"], data["feature_indices"]
-
-
-def build_row_ranking(row_drops, feat_indices, row_idx):
-    """Build ranking for one row: features sorted by importance descending.
-
-    Only includes features with positive importance (ablation hurts this row).
-    """
-    drops = row_drops[row_idx]
-    candidates = [(int(feat_indices[i]), drops[i]) for i in range(len(drops)) if drops[i] > 0]
-    candidates.sort(key=lambda x: -x[1])
-    return [fi for fi, _ in candidates]
-
-
 def pred_scalar(preds):
-    if isinstance(preds, np.ndarray) and preds.ndim == 2:
-        return float(preds[0, 1]) if preds.shape[1] == 2 else float(preds[0, 0])
-    return float(np.asarray(preds).ravel()[0])
+    """Extract scalar prediction array."""
+    preds = np.asarray(preds)
+    if preds.ndim == 2:
+        return preds[:, 1] if preds.shape[1] == 2 else preds[:, 0]
+    return preds.ravel()
 
 
 def run_ablation(
     sae, data_mean, data_std, extraction_layer,
-    row_drops, feat_indices,
-    X_ctx, y_ctx, X_q, y_q,
-    weak_p1_all, task, device,
+    importance_path, X_ctx, y_ctx, X_q, y_q,
+    weak_p1, task, device,
 ):
-    """Per-row ablation: fit once, single query row per forward pass."""
-    from models.tabpfn_utils import load_tabpfn
+    """Per-row cumulative ablation with batched tail prediction.
 
+    For each row:
+      1. Load per-row importance, rank firing features
+      2. SAE encode → make K copies with cumulative ablation → decode
+      3. Build tail with K query copies, inject K deltas, one predict
+      4. Scan K predictions to find convergence point
+    """
     n_query = len(X_q)
     converge_threshold = 1e-3
 
-    final_p1 = np.zeros(n_query)
-    strong_p1 = np.zeros(n_query)
+    # Load importance
+    imp = np.load(str(importance_path), allow_pickle=True)
+    row_drops = imp["row_feature_drops"]
+    feat_indices = imp["feature_indices"]
+
+    # Baseline predictions (from importance file)
+    baseline_preds = imp["baseline_preds"]
+    sp1 = pred_scalar(baseline_preds)
+
+    final_p1 = sp1.copy()
     n_concepts = np.zeros(n_query, dtype=int)
 
-    # Fit TabPFN once
-    clf = load_tabpfn(task=task, device=device, n_estimators=1)
-    clf.fit(X_ctx, y_ctx)
-    layers = clf.model_.transformer_encoder.layers
-
     t0 = time.time()
-
     for row_idx in range(n_query):
-        x_row = X_q[row_idx:row_idx + 1]
-        target = weak_p1_all[row_idx]
-
-        # Capture hidden state + baseline prediction for this single row
-        captured = {}
-
-        def capture_hook(module, input, output):
-            out = output[0] if isinstance(output, tuple) else output
-            if isinstance(out, torch.Tensor):
-                captured["hidden"] = out.detach()
-
-        handle = layers[extraction_layer].register_forward_hook(capture_hook)
-        try:
-            with torch.no_grad():
-                if task == "regression":
-                    baseline = clf.predict(x_row)
-                else:
-                    baseline = clf.predict_proba(x_row)
-        finally:
-            handle.remove()
-
-        all_emb = captured["hidden"]
-        if all_emb.ndim == 4:
-            all_emb = all_emb[0].mean(dim=1)
-        elif all_emb.ndim == 3:
-            all_emb = all_emb[0] if all_emb.shape[0] == 1 else all_emb.mean(dim=0)
-
-        baseline_p1 = pred_scalar(baseline)
-        strong_p1[row_idx] = baseline_p1
-        final_p1[row_idx] = baseline_p1
-        best_dist = abs(baseline_p1 - target)
+        target = weak_p1[row_idx]
+        best_dist = abs(sp1[row_idx] - target)
 
         if best_dist < converge_threshold:
             continue
 
-        # Get ranking for this row
-        ranking = build_row_ranking(row_drops, feat_indices, row_idx)
-        if not ranking:
+        # Build per-row ranking: firing features sorted by importance
+        drops = row_drops[row_idx]
+        candidates = [(int(feat_indices[i]), drops[i])
+                      for i in range(len(drops)) if drops[i] > 0]
+        candidates.sort(key=lambda x: -x[1])
+        if not candidates:
             continue
 
-        # Cumulatively ablate features
-        ablated_so_far = []
-        for feat_idx in ranking:
-            ablated_so_far.append(feat_idx)
+        ranking = [fi for fi, _ in candidates]
+        K = len(ranking)
 
-            delta = compute_ablation_delta(
-                sae, all_emb, ablated_so_far,
-                data_mean=data_mean, data_std=data_std,
+        # Build tail with K query copies
+        x_row = X_q[row_idx:row_idx + 1]
+        X_batch = np.tile(x_row, (K, 1))
+        tail = TabPFNTail.from_data(
+            X_ctx, y_ctx, X_batch, extraction_layer, task, device,
+        )
+        ctx_len = tail.single_eval_pos
+
+        # Get hidden state for this row (from tail's captured state)
+        # tail.hidden_state is (1, ctx+K, n_structure, H)
+        # Mean-pool over structure dim to get (ctx+K, H)
+        full_state = tail.hidden_state[0].mean(dim=1)  # (ctx+K, H)
+        # Context portion + first query copy (they're all identical)
+        h_single = torch.cat([full_state[:ctx_len], full_state[ctx_len:ctx_len+1]])  # (ctx+1, H)
+
+        # SAE encode
+        with torch.no_grad():
+            x_norm = (h_single - data_mean) / data_std
+            h_full = sae.encode(x_norm)
+            recon_full = sae.decode(h_full)
+
+            # Build K cumulative ablation deltas
+            # Copy k has features ranking[0..k] zeroed
+            ctx_delta = None
+            query_deltas = []
+
+            for k in range(K):
+                h_abl = h_full.clone()
+                for j in range(k + 1):
+                    h_abl[:, ranking[j]] = 0.0
+                recon_abl = sae.decode(h_abl)
+                delta = (recon_abl - recon_full) * data_std  # (ctx+1, H)
+
+                if ctx_delta is None:
+                    ctx_delta = delta[:ctx_len]  # context delta from first ablation
+                query_deltas.append(delta[-1])  # (H,) query portion
+
+            # Combined: (ctx + K, H)
+            combined_delta = torch.cat(
+                [ctx_delta, torch.stack(query_deltas)], dim=0
             )
-            if delta.ndim == 2:
-                delta = delta.unsqueeze(1)
 
-            def make_hook(d):
-                def hook(module, input, output):
-                    out = output[0] if isinstance(output, tuple) else output
-                    if isinstance(out, torch.Tensor):
-                        out = out.clone()
-                        if out.ndim == 4:
-                            out[0] += d
-                        elif out.ndim == 3:
-                            out[0] += d.squeeze(1)
-                        if isinstance(output, tuple):
-                            return (out,) + output[1:]
-                        return out
-                    return output
-                return hook
+        # Inject and predict
+        state = tail.hidden_state.clone()
+        state[0] += combined_delta.unsqueeze(1)
+        preds = tail._predict_with_modified_state(state)
 
-            handle = layers[extraction_layer].register_forward_hook(make_hook(delta))
-            try:
-                with torch.no_grad():
-                    if task == "regression":
-                        preds = clf.predict(x_row)
-                    else:
-                        preds = clf.predict_proba(x_row)
-            finally:
-                handle.remove()
-
-            new_p1 = pred_scalar(preds)
-            new_dist = abs(new_p1 - target)
-
-            if new_dist < best_dist:
-                best_dist = new_dist
-                final_p1[row_idx] = new_p1
-                n_concepts[row_idx] = len(ablated_so_far)
-
+        # Scan predictions to find convergence
+        preds_p1 = pred_scalar(preds)
+        for k in range(K):
+            dist = abs(preds_p1[k] - target)
+            if dist < best_dist:
+                best_dist = dist
+                final_p1[row_idx] = preds_p1[k]
+                n_concepts[row_idx] = k + 1
             if best_dist < converge_threshold:
                 break
+
+        del tail
+        torch.cuda.empty_cache()
 
         if (row_idx + 1) % 50 == 0 or row_idx == n_query - 1:
             elapsed = time.time() - t0
@@ -225,38 +207,35 @@ def run_ablation(
             logger.info("    row %d/%d: %d concepts, dist %.4f → %.4f "
                         "(%.1f rows/s, ETA %.0fs)",
                         row_idx + 1, n_query,
-                        n_concepts[row_idx], abs(strong_p1[row_idx] - target),
-                        best_dist, rate, eta)
-
-    del clf
-    torch.cuda.empty_cache()
+                        n_concepts[row_idx],
+                        abs(sp1[row_idx] - target), best_dist,
+                        rate, eta)
 
     active = n_concepts > 0
-    logger.info("  Done: mean %.1f, median %.0f, max %d concepts/row",
+    logger.info("  Done: mean %.1f, median %.0f, max %d concepts/row (%.1fs)",
                 n_concepts[active].mean() if active.any() else 0,
                 np.median(n_concepts[active]) if active.any() else 0,
-                n_concepts.max())
+                n_concepts.max(), time.time() - t0)
 
-    return final_p1, n_concepts, strong_p1
+    return final_p1, n_concepts, sp1
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--datasets", nargs="+", default=None)
     args = parser.parse_args()
+
+    datasets = {k: v for k, v in EVAL_DATASETS.items()
+                if args.datasets is None or k in args.datasets}
 
     all_results = {}
 
-    for ds_name, ds_info in EVAL_DATASETS.items():
+    for ds_name, ds_info in datasets.items():
         task = ds_info["task"]
         print(f"\n{'=' * 70}")
         print(f"  {ds_name} ({task})")
         print("=" * 70)
-
-        # Load data
-        tabpfn_data = load_preprocessed("tabpfn", ds_name, CACHE_DIR)
-        X_ctx, y_ctx = tabpfn_data.X_train[:600], tabpfn_data.y_train[:600]
-        X_q, y_q = tabpfn_data.X_test[:500], tabpfn_data.y_test[:500]
 
         # Mitra predictions (weak model)
         logger.info("  Getting Mitra predictions...")
@@ -264,14 +243,13 @@ def main():
         mitra_clf = load_and_fit("mitra", mitra_data.X_train[:600], mitra_data.y_train[:600],
                                   task=task, device=args.device)
         weak_preds = predict(mitra_clf, mitra_data.X_test[:500], task=task)
+        wp1 = pred_scalar(weak_preds)
         del mitra_clf
         torch.cuda.empty_cache()
 
-        # Weak model p1
-        if isinstance(weak_preds, np.ndarray) and weak_preds.ndim == 2:
-            wp1 = weak_preds[:, 1] if weak_preds.shape[1] == 2 else weak_preds[:, 0]
-        else:
-            wp1 = np.asarray(weak_preds).ravel()
+        tabpfn_data = load_preprocessed("tabpfn", ds_name, CACHE_DIR)
+        X_ctx, y_ctx = tabpfn_data.X_train[:600], tabpfn_data.y_train[:600]
+        X_q, y_q = tabpfn_data.X_test[:500], tabpfn_data.y_test[:500]
 
         ds_results = {}
 
@@ -281,19 +259,18 @@ def main():
             sae, config = load_sae(var_info["sae_path"], args.device)
             data_mean, data_std, layer = load_norm_stats(
                 var_info["stats_path"], ds_name, args.device)
-            row_drops, feat_indices = load_importance(
-                var_info["importance_prefix"], ds_name)
+
+            imp_path = OUTPUT_DIR / f"perrow_importance_{var_name}_{ds_name}.npz"
+            if not imp_path.exists():
+                logger.info("  SKIP: no importance file")
+                continue
 
             logger.info("  Layer: L%d", layer)
 
-            t0 = time.time()
             final_p1, n_concepts, sp1 = run_ablation(
-                sae, data_mean, data_std, layer,
-                row_drops, feat_indices,
-                X_ctx, y_ctx, X_q, y_q,
-                wp1, task, args.device,
+                sae, data_mean, data_std, layer, imp_path,
+                X_ctx, y_ctx, X_q, y_q, wp1, task, args.device,
             )
-            elapsed = time.time() - t0
 
             gap_before = float(np.sqrt(np.mean((sp1 - wp1) ** 2)))
             gap_after = float(np.sqrt(np.mean((final_p1 - wp1) ** 2)))
@@ -303,7 +280,6 @@ def main():
             print(f"  Gap after:  {gap_after:.4f}")
             print(f"  Closed:     {(1 - gap_after/gap_before)*100:.1f}%")
             print(f"  Corr:       {corr:.4f}")
-            print(f"  Time:       {elapsed:.1f}s")
 
             ds_results[var_name] = {
                 "gap_before": gap_before, "gap_after": gap_after,
@@ -311,7 +287,7 @@ def main():
                 "correlation": corr,
                 "concepts_mean": float(n_concepts[n_concepts > 0].mean()) if (n_concepts > 0).any() else 0,
                 "concepts_max": int(n_concepts.max()),
-                "extraction_layer": layer, "elapsed_s": elapsed,
+                "extraction_layer": layer,
                 "strong_p1": sp1.tolist(), "weak_p1": wp1.tolist(),
                 "ablated_p1": final_p1.tolist(),
             }
@@ -334,6 +310,7 @@ def main():
             ax = axes[row, col]
             r = ds_results.get(var_name, {})
             if not r:
+                ax.set_visible(False)
                 continue
             weak = np.array(r["weak_p1"])
             ablated = np.array(r["ablated_p1"])
@@ -345,9 +322,13 @@ def main():
             ax.set_ylabel("Ablated TabPFN")
             ax.set_title(f"{ds_name} — {var_name} (L{r['extraction_layer']})\n"
                          f"gap closed: {r['gap_closed_pct']:.1f}%, "
-                         f"r={r['correlation']:.3f}", fontsize=10)
+                         f"r={r['correlation']:.3f}, "
+                         f"mean concepts: {r['concepts_mean']:.1f}",
+                         fontsize=10)
 
-    fig.suptitle("Per-row ablation: TabPFN → Mitra", fontsize=13, fontweight="bold", y=1.02)
+    fig.suptitle("Per-row cumulative ablation: TabPFN → Mitra\n"
+                 "(causal single-row importance, batched tail prediction)",
+                 fontsize=13, fontweight="bold", y=1.02)
     plt.tight_layout()
     fig.savefig(OUTPUT_DIR / "ablation_comparison_scatter.png", dpi=150, bbox_inches="tight")
     print(f"→ {OUTPUT_DIR / 'ablation_comparison_scatter.png'}")
