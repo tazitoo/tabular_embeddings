@@ -83,17 +83,30 @@ def load_norm_stats(stats_path, dataset, device):
 
 
 def load_importance(prefix, dataset):
-    """Load pre-computed per-row importance from 09. Returns global ranking."""
+    """Load pre-computed per-row importance from 09.
+
+    Returns per-row rankings: list of lists, where rankings[row] is a list
+    of feature indices sorted by importance for that row (most important first),
+    filtered to features with positive importance on that row.
+    """
     path = OUTPUT_DIR / f"{prefix}_{dataset}.npz"
     data = np.load(str(path), allow_pickle=True)
     row_drops = data["row_feature_drops"]  # (n_query, n_features)
     feat_indices = data["feature_indices"]  # (n_features,)
-    # Global ranking by mean importance, positive only
-    mean_drops = row_drops.mean(axis=0)
-    order = np.argsort(-mean_drops)
-    ranked = [(int(feat_indices[i]), float(mean_drops[i]))
-              for i in order if mean_drops[i] > 0]
-    return ranked
+
+    n_query = row_drops.shape[0]
+    per_row_rankings = []
+    for row_idx in range(n_query):
+        row = row_drops[row_idx]
+        order = np.argsort(-row)
+        ranked = [int(feat_indices[i]) for i in order if row[i] > 0]
+        per_row_rankings.append(ranked)
+
+    total_features = sum(len(r) for r in per_row_rankings)
+    logger.info("  Per-row rankings: mean %.1f, max %d features/row",
+                total_features / max(n_query, 1),
+                max(len(r) for r in per_row_rankings))
+    return per_row_rankings
 
 
 def pred_scalar(preds):
@@ -133,10 +146,10 @@ def capture_hidden(clf, X_q, extraction_layer, task):
 
 def run_ablation(
     sae, data_mean, data_std, extraction_layer,
-    ranked_features, X_ctx, y_ctx, X_q, y_q,
+    per_row_rankings, X_ctx, y_ctx, X_q, y_q,
     strong_preds, weak_preds, task, device,
 ):
-    """Per-row cumulative ablation: zero features in rank order until gap closes."""
+    """Per-row cumulative ablation: zero features in per-row rank order until gap closes."""
     n_query = len(X_q)
     sp1 = pred_scalar(strong_preds)
     wp1 = pred_scalar(weak_preds)
@@ -149,8 +162,6 @@ def run_ablation(
     # Capture hidden state and encode through SAE
     from models.tabpfn_utils import load_tabpfn
     clf = load_tabpfn(task=task, device=device, n_estimators=1)
-    fit_kwargs = {}
-    data = load_preprocessed("tabpfn", X_ctx, CACHE_DIR) if False else None
     clf.fit(X_ctx, y_ctx)
 
     all_emb = capture_hidden(clf, X_q, extraction_layer, task)
@@ -180,17 +191,18 @@ def run_ablation(
     n_fixable = int(fixable.sum())
     logger.info("  Fixable rows: %d / %d", n_fixable, n_query)
 
-    feat_only = [f for f, _ in ranked_features]
-
     # Per-row cumulative ablation
     final_p1 = sp1.copy()
     accepted_counts = np.zeros(n_query, dtype=int)
 
-    logger.info("  Ablating %d ranked features per row...", len(feat_only))
     t0 = time.time()
 
     for row_idx in range(n_query):
         if not fixable[row_idx]:
+            continue
+
+        ranking = per_row_rankings[row_idx]
+        if not ranking:
             continue
 
         target_p1 = float(wp1[row_idx])
@@ -199,26 +211,18 @@ def run_ablation(
         if best_dist < converge_threshold:
             continue
 
-        # Start with full encoding for this row, cumulatively zero features
+        # Start with full encoding, cumulatively zero features in this row's rank order
         h_row = h_full[row_idx].clone()
-        ablated_features = []
 
-        for feat_idx in feat_only:
-            if h_row[feat_idx] == 0:
-                continue  # feature not firing on this row
-
-            # Zero this feature
+        for k, feat_idx in enumerate(ranking):
             h_row[feat_idx] = 0.0
-            ablated_features.append(feat_idx)
 
-            # Decode and compute delta
+            # Decode and compute delta vs original
             with torch.no_grad():
                 ablated_recon = sae.decode(h_row.unsqueeze(0))
                 delta_norm = ablated_recon - original_recon[row_idx:row_idx+1]
                 delta_raw = delta_norm * data_std
 
-            # Get prediction via tail
-            # delta_raw is (1, d_model), but tail.predict_row expects (d_model,)
             preds = tail.predict_row(row_idx, delta_raw.squeeze(0))
             new_p1 = float(pred_scalar(preds)[row_idx])
 
@@ -226,16 +230,16 @@ def run_ablation(
             if new_dist < best_dist:
                 best_dist = new_dist
                 final_p1[row_idx] = new_p1
-                accepted_counts[row_idx] = len(ablated_features)
+                accepted_counts[row_idx] = k + 1
 
             if best_dist < converge_threshold:
                 break
 
         if (row_idx + 1) % 100 == 0 or row_idx == n_query - 1:
             elapsed = time.time() - t0
-            logger.info("    row %d/%d: %d concepts, dist %.4f → %.4f (%.1fs)",
+            logger.info("    row %d/%d: %d/%d concepts, dist %.4f → %.4f (%.1fs)",
                         row_idx + 1, n_query,
-                        int(accepted_counts[row_idx]),
+                        int(accepted_counts[row_idx]), len(ranking),
                         abs(float(sp1[row_idx]) - float(wp1[row_idx])),
                         best_dist, elapsed)
 
@@ -292,13 +296,13 @@ def main():
             sae, config = load_sae(var_info["sae_path"], args.device)
             data_mean, data_std, layer = load_norm_stats(
                 var_info["stats_path"], ds_name, args.device)
-            ranked = load_importance(var_info["importance_prefix"], ds_name)
+            per_row_rankings = load_importance(var_info["importance_prefix"], ds_name)
 
-            logger.info("  Layer: L%d, %d ranked features", layer, len(ranked))
+            logger.info("  Layer: L%d", layer)
 
             t0 = time.time()
             final_p1, accepted, sp1, wp1 = run_ablation(
-                sae, data_mean, data_std, layer, ranked,
+                sae, data_mean, data_std, layer, per_row_rankings,
                 X_ctx, y_ctx, X_q, y_q,
                 strong_preds, weak_preds, task, args.device,
             )
