@@ -64,7 +64,20 @@ def load_sae(path: Path, device: str) -> SparseAutoencoder:
     ckpt = torch.load(str(path), map_location=device, weights_only=False)
     config = SAEConfig(**ckpt["config"])
     sae = SparseAutoencoder(config)
-    sae.load_state_dict(ckpt["state_dict"], strict=False)
+
+    # Archetypal SAEs have buffers (reference_data, archetype_logits,
+    # archetype_deviation) that must be registered before loading state_dict.
+    state = ckpt["state_dict"]
+    if "reference_data" in state and state["reference_data"] is not None:
+        # Initialize buffer shapes so load_state_dict can fill them
+        ref = state["reference_data"]
+        sae.reference_data = ref.clone()
+        if "archetype_logits" in state:
+            sae.archetype_logits = torch.nn.Parameter(state["archetype_logits"].clone())
+        if "archetype_deviation" in state:
+            sae.archetype_deviation = torch.nn.Parameter(state["archetype_deviation"].clone())
+
+    sae.load_state_dict(state, strict=False)
     sae.to(device)
     sae.eval()
     return sae
@@ -209,9 +222,13 @@ def main():
             # Load norm stats
             mean, std, stats_layer = load_norm_stats(var_info["stats_path"], ds_name)
             if mean is None:
-                print(f"  SKIP: no norm stats for {ds_name}")
-                ds_results[var_name] = {"error": "no norm stats"}
-                continue
+                # Dataset wasn't in this variant's training set (e.g. fixed
+                # skipped regression datasets). Compute stats from embeddings.
+                print(f"  norm stats missing — computing from embeddings")
+                mean = emb.mean(axis=0)
+                std = emb.std(axis=0)
+                std[std < 1e-8] = 1.0
+                stats_layer = layer
 
             # Load SAE
             sae = load_sae(var_info["sae_path"], args.device)
