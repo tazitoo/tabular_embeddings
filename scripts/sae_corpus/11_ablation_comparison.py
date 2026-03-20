@@ -112,7 +112,7 @@ def run_ablation(
     X_ctx, y_ctx, X_q, y_q,
     weak_p1_all, task, device,
 ):
-    """Per-row ablation: one query row at a time, cumulative feature zeroing."""
+    """Per-row ablation: fit once, single query row per forward pass."""
     from models.tabpfn_utils import load_tabpfn
 
     n_query = len(X_q)
@@ -122,22 +122,18 @@ def run_ablation(
     strong_p1 = np.zeros(n_query)
     n_concepts = np.zeros(n_query, dtype=int)
 
+    # Fit TabPFN once
+    clf = load_tabpfn(task=task, device=device, n_estimators=1)
+    clf.fit(X_ctx, y_ctx)
+    layers = clf.model_.transformer_encoder.layers
+
     t0 = time.time()
 
     for row_idx in range(n_query):
         x_row = X_q[row_idx:row_idx + 1]
         target = weak_p1_all[row_idx]
 
-        # Fit TabPFN with this single query row
-        clf = load_tabpfn(task=task, device=device, n_estimators=1)
-        if task == "classification":
-            clf.fit(X_ctx, y_ctx)
-        else:
-            clf.fit(X_ctx, y_ctx)
-
-        layers = clf.model_.transformer_encoder.layers
-
-        # Capture hidden state + baseline prediction
+        # Capture hidden state + baseline prediction for this single row
         captured = {}
 
         def capture_hook(module, input, output):
@@ -167,15 +163,11 @@ def run_ablation(
         best_dist = abs(baseline_p1 - target)
 
         if best_dist < converge_threshold:
-            if (row_idx + 1) % 50 == 0:
-                logger.info("    row %d/%d: already converged", row_idx + 1, n_query)
-            del clf
             continue
 
         # Get ranking for this row
         ranking = build_row_ranking(row_drops, feat_indices, row_idx)
         if not ranking:
-            del clf
             continue
 
         # Cumulatively ablate features
@@ -183,7 +175,6 @@ def run_ablation(
         for feat_idx in ranking:
             ablated_so_far.append(feat_idx)
 
-            # Compute delta for all ablated features so far
             delta = compute_ablation_delta(
                 sae, all_emb, ablated_so_far,
                 data_mean=data_mean, data_std=data_std,
@@ -227,9 +218,6 @@ def run_ablation(
             if best_dist < converge_threshold:
                 break
 
-        del clf
-        torch.cuda.empty_cache()
-
         if (row_idx + 1) % 50 == 0 or row_idx == n_query - 1:
             elapsed = time.time() - t0
             rate = (row_idx + 1) / elapsed
@@ -239,6 +227,9 @@ def run_ablation(
                         row_idx + 1, n_query,
                         n_concepts[row_idx], abs(strong_p1[row_idx] - target),
                         best_dist, rate, eta)
+
+    del clf
+    torch.cuda.empty_cache()
 
     active = n_concepts > 0
     logger.info("  Done: mean %.1f, median %.0f, max %d concepts/row",
