@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """Compute per-row, per-feature importance via batched single-row ablation.
 
-For each query row, creates K copies (one per firing feature), each with
-one feature ablated, and runs a single forward pass to get all K ablated
-predictions at once.  This is causal: each row sees only its own context,
-not other query rows.
+For each query row:
+  1. Build tail model with K copies of that row as query (K = firing features)
+  2. Compute K deltas (one feature zeroed each)
+  3. Inject all K deltas into the cached hidden state
+  4. One tail.predict call → K ablated predictions
 
 Output:
     output/sae_training_round10/perrow_importance_{variant}_{dataset}.npz
-        row_feature_drops:  (n_query, n_alive) per-row loss change
-        feature_indices:    (n_alive,) SAE feature indices
-        feature_n_firing:   (n_alive,) count of rows where feature fires
-        baseline_preds:     (n_query,) or (n_query, n_classes)
-        y_query:            (n_query,)
-        extraction_layer:   int
 
 Usage:
     python scripts/sae_corpus/09_perrow_importance.py --device cuda
@@ -33,6 +28,7 @@ from analysis.sparse_autoencoder import SAEConfig, SparseAutoencoder
 from data.preprocessing import CACHE_DIR, load_preprocessed
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.concept_importance import compute_per_row_loss
+from scripts.intervention.intervene_sae import compute_ablation_delta
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -87,40 +83,36 @@ def compute_perrow_importance(
     sae, data_mean, data_std, extraction_layer,
     X_ctx, y_ctx, X_q, y_q, task, device,
 ):
-    """Batched single-row LOO importance.
+    """Batched per-row LOO importance.
 
     For each query row:
-      1. Forward pass with 1 query row → baseline prediction + hidden state
-      2. SAE-encode hidden → find K firing features
-      3. Create K copies of the query, each with 1 feature ablated
-      4. Single batched forward pass → K ablated predictions
-      5. Per-row loss change = ablated_loss - baseline_loss
+      1. Build TabPFN tail with K copies as query (K = firing features)
+      2. SAE encode → K copies with one feature zeroed each → decode → K deltas
+      3. Inject into cached hidden state → one predict → K ablated predictions
+      4. Loss change = ablated - baseline
     """
     from models.tabpfn_utils import load_tabpfn
+    from scripts.intervention.intervene_sae import TabPFNTail
 
     n_query = len(X_q)
 
-    # Fit once
+    # Fit once to get baseline predictions and determine alive features
     clf = load_tabpfn(task=task, device=device, n_estimators=1)
     clf.fit(X_ctx, y_ctx)
-    model = clf.model_ if hasattr(clf, "model_") else clf.transformer_
-    layers = model.transformer_encoder.layers
+    layers = clf.model_.transformer_encoder.layers
 
-    # First pass: get all baseline predictions + hidden states per row
-    # We do this one row at a time to get the correct single-row hidden state
-    logger.info("  Phase 1: baseline predictions (1 row at a time)...")
+    # Get baseline predictions one row at a time (causal)
+    logger.info("  Phase 1: baseline predictions...")
     baseline_preds_list = []
-    hidden_states = []  # (n_query,) list of (seq, H) tensors
+    baseline_hidden = []  # store mean-pooled hidden per row
 
-    t0 = time.time()
     for row_idx in range(n_query):
         x_row = X_q[row_idx:row_idx + 1]
         captured = {}
 
         def capture_hook(module, input, output):
-            out = output[0] if isinstance(output, tuple) else output
-            if isinstance(out, torch.Tensor):
-                captured["hidden"] = out.detach()
+            if isinstance(output, torch.Tensor):
+                captured["hidden"] = output.detach()
 
         handle = layers[extraction_layer].register_forward_hook(capture_hook)
         try:
@@ -134,134 +126,112 @@ def compute_perrow_importance(
 
         baseline_preds_list.append(np.asarray(preds))
 
+        # Mean-pool for SAE encoding
         h = captured["hidden"]
         if h.ndim == 4:
-            h = h[0].mean(dim=1)
+            h_pooled = h[0].mean(dim=1)  # (seq, H)
         elif h.ndim == 3:
-            h = h[0] if h.shape[0] == 1 else h.mean(dim=0)
-        hidden_states.append(h)
+            h_pooled = h[0] if h.shape[0] == 1 else h.mean(dim=0)
+        else:
+            h_pooled = h
+        baseline_hidden.append(h_pooled)
 
-    baseline_time = time.time() - t0
-    logger.info("    %d rows in %.1fs (%.1f rows/s)",
-                n_query, baseline_time, n_query / baseline_time)
-
-    # Stack baseline predictions
     baseline_preds = np.concatenate(baseline_preds_list, axis=0)
     baseline_row_loss = compute_per_row_loss(y_q, baseline_preds, task)
+    logger.info("    %d rows done", n_query)
 
-    # Determine alive features across all rows
-    logger.info("  Phase 2: SAE encode + find alive features...")
-    # Encode each row's hidden state through SAE
+    # SAE encode each row's query position to find alive features
+    logger.info("  Phase 2: SAE encode → alive features...")
     all_h_encoded = []
     for row_idx in range(n_query):
-        h = hidden_states[row_idx]
-        query_h = h[-1:]  # last position = query row
+        query_emb = baseline_hidden[row_idx][-1:]  # last position = query
         with torch.no_grad():
-            x_norm = (query_h - data_mean) / data_std
+            x_norm = (query_emb - data_mean) / data_std
             encoded = sae.encode(x_norm)
-        all_h_encoded.append(encoded[0])  # (hidden_dim,)
+        all_h_encoded.append(encoded[0])
 
     h_encoded = torch.stack(all_h_encoded)  # (n_query, hidden_dim)
-    firing_mask = (h_encoded > 0).cpu().numpy()  # (n_query, hidden_dim)
-
-    # Alive features: fire on at least one row
+    firing_mask = (h_encoded > 0).cpu().numpy()
     alive_mask = firing_mask.any(axis=0)
     alive_features = np.where(alive_mask)[0].tolist()
     n_alive = len(alive_features)
-    logger.info("    %d alive features (of %d)", n_alive, sae.config.hidden_dim)
-
-    # Per-row firing counts
     feature_n_firing = np.array([firing_mask[:, fi].sum() for fi in alive_features])
+    logger.info("    %d alive features", n_alive)
 
-    # Phase 3: batched LOO ablation — one forward pass per row
-    # For each row: K copies (one per firing feature), each with a different
-    # single-feature ablation delta. One forward pass returns K predictions.
-    logger.info("  Phase 3: batched LOO ablation (%d rows, 1 fwd pass each)...",
-                n_query)
+    # Phase 3: batched LOO per row
+    # For each row, build a tail with K query copies, inject K deltas at once
+    logger.info("  Phase 3: batched LOO ablation...")
     row_feature_drops = np.zeros((n_query, n_alive))
+
+    del clf  # free memory, we'll reload per row with K copies
+    torch.cuda.empty_cache()
 
     t0 = time.time()
     for row_idx in range(n_query):
-        h = hidden_states[row_idx]  # (seq, H) — context + 1 query
         x_row = X_q[row_idx:row_idx + 1]
 
-        # Which features fire on this row?
+        # Which features fire?
         row_firing = [i for i, fi in enumerate(alive_features) if firing_mask[row_idx, fi]]
         if not row_firing:
             continue
 
         K = len(row_firing)
+        h = baseline_hidden[row_idx]  # (seq, H) mean-pooled
 
-        # SAE encode full sequence, compute K deltas
+        # Compute K deltas in SAE space
         with torch.no_grad():
             x_norm = (h - data_mean) / data_std
-            h_full = sae.encode(x_norm)   # (seq, hidden_dim)
-            recon_full = sae.decode(h_full)  # (seq, emb_dim)
+            h_full = sae.encode(x_norm)
+            recon_full = sae.decode(h_full)
 
-            # Context delta is identical for all features (context encoding
-            # doesn't change), so use the first feature's context portion
-            # and only vary the query portion per feature.
-            ctx_len = h.shape[0] - 1  # seq - 1 query row
+        # Build tail with K copies of this query row
+        X_batch = np.tile(x_row, (K, 1))
+        tail = TabPFNTail.from_data(
+            X_ctx, y_ctx, X_batch, extraction_layer, task, device,
+        )
 
-            # Compute context delta once (from first feature)
+        # Compute combined delta: for each of K copies, ablate one feature
+        # tail.hidden_state is (1, ctx+K, n_structure, H)
+        # We need delta of shape (ctx+K, H) — same context delta, different per-query
+        with torch.no_grad():
+            # Context portion: use first feature's delta (context is same for all)
             fi0 = alive_features[row_firing[0]]
             h_abl0 = h_full.clone()
             h_abl0[:, fi0] = 0.0
             recon_abl0 = sae.decode(h_abl0)
-            ctx_delta = ((recon_abl0 - recon_full) * data_std)[:ctx_len]  # (ctx, H)
+            full_delta0 = (recon_abl0 - recon_full) * data_std  # (seq, H)
 
-            # Compute per-feature query delta
-            query_deltas = []  # K × (1, H)
+            ctx_len = tail.single_eval_pos
+            ctx_delta = full_delta0[:ctx_len]  # (ctx, H)
+
+            # Per-query deltas
+            query_deltas = []
             for col_idx in row_firing:
                 fi = alive_features[col_idx]
                 h_abl = h_full.clone()
                 h_abl[:, fi] = 0.0
                 recon_abl = sae.decode(h_abl)
-                delta_q = ((recon_abl - recon_full) * data_std)[-1:]  # (1, H)
-                query_deltas.append(delta_q)
+                d = ((recon_abl - recon_full) * data_std)[-1]  # (H,) query position
+                query_deltas.append(d)
 
-            # Combined delta: (ctx + K, H)
-            # Context portion repeated, each query position gets its own delta
-            combined_delta = torch.cat(
-                [ctx_delta] + query_deltas, dim=0
-            )  # (ctx + K, H)
+            query_delta_stack = torch.stack(query_deltas)  # (K, H)
+            combined_delta = torch.cat([ctx_delta, query_delta_stack], dim=0)  # (ctx+K, H)
 
-        # Batch: K copies of query row
-        X_batch = np.tile(x_row, (K, 1))
+        # Inject into tail's cached state and predict
+        state = tail.hidden_state.clone()
+        state[0] += combined_delta.unsqueeze(1)  # broadcast across n_structure
+        preds = tail._predict_with_modified_state(state)
 
-        def make_hook(d):
-            def hook(module, input, output):
-                out = output[0] if isinstance(output, tuple) else output
-                if isinstance(out, torch.Tensor):
-                    out = out.clone()
-                    if out.ndim == 4:
-                        # (1, ctx+K, n_feat+1, H) — broadcast delta across n_feat+1
-                        out[0] += d.unsqueeze(1)
-                    elif out.ndim == 3:
-                        out[0] += d
-                    if isinstance(output, tuple):
-                        return (out,) + output[1:]
-                    return out
-                return output
-            return hook
-
-        handle = layers[extraction_layer].register_forward_hook(make_hook(combined_delta))
-        try:
-            with torch.no_grad():
-                if task == "regression":
-                    preds = clf.predict(X_batch)
-                else:
-                    preds = clf.predict_proba(X_batch)
-        finally:
-            handle.remove()
-
-        preds_np = np.asarray(preds)
+        # Compute per-ablation loss
         baseline_loss = baseline_row_loss[row_idx]
         y_tiled = np.full(K, y_q[row_idx])
-        ablated_losses = compute_per_row_loss(y_tiled, preds_np, task)
+        ablated_losses = compute_per_row_loss(y_tiled, preds, task)
 
         for j, col_idx in enumerate(row_firing):
             row_feature_drops[row_idx, col_idx] = ablated_losses[j] - baseline_loss
+
+        del tail
+        torch.cuda.empty_cache()
 
         if (row_idx + 1) % 50 == 0 or row_idx == n_query - 1:
             elapsed = time.time() - t0
@@ -308,7 +278,6 @@ def main():
             sae, config = load_sae(var_info["sae_path"], args.device)
             data_mean, data_std, layer = load_norm_stats(
                 var_info["stats_path"], ds_name, args.device)
-
             logger.info("  Layer: L%d", layer)
 
             result = compute_perrow_importance(
@@ -316,7 +285,6 @@ def main():
                 X_ctx, y_ctx, X_q, y_q, task, args.device,
             )
 
-            # Save
             out_path = OUTPUT_DIR / f"perrow_importance_{var_name}_{ds_name}.npz"
             np.savez_compressed(
                 str(out_path),
@@ -329,7 +297,6 @@ def main():
             )
             print(f"  → {out_path.name}")
 
-            # Summary
             rd = result["row_feature_drops"]
             mean_drops = rd.mean(axis=0)
             n_helpful = (mean_drops > 0).sum()
