@@ -154,32 +154,30 @@ def run_ablation(
         # Context portion + first query copy (they're all identical)
         h_single = torch.cat([full_state[:ctx_len], full_state[ctx_len:ctx_len+1]])  # (ctx+1, H)
 
-        # SAE encode
+        # SAE encode the query row only (last position)
         with torch.no_grad():
-            x_norm = (h_single - data_mean) / data_std
-            h_full = sae.encode(x_norm)
-            recon_full = sae.decode(h_full)
+            query_emb = h_single[-1:]  # (1, H)
+            x_norm = (query_emb - data_mean) / data_std
+            h_q = sae.encode(x_norm)  # (1, hidden_dim)
+            recon_q = sae.decode(h_q)  # (1, H)
 
-            # Build K cumulative ablation deltas
+            # Build K cumulative ablation deltas for query only
             # Copy k has features ranking[0..k] zeroed
-            ctx_delta = None
             query_deltas = []
-
             for k in range(K):
-                h_abl = h_full.clone()
+                h_abl = h_q.clone()
                 for j in range(k + 1):
                     h_abl[:, ranking[j]] = 0.0
                 recon_abl = sae.decode(h_abl)
-                delta = (recon_abl - recon_full) * data_std  # (ctx+1, H)
+                delta_q = ((recon_abl - recon_q) * data_std)[0]  # (H,)
+                query_deltas.append(delta_q)
 
-                if ctx_delta is None:
-                    ctx_delta = delta[:ctx_len]  # context delta from first ablation
-                query_deltas.append(delta[-1])  # (H,) query portion
-
-            # Combined: (ctx + K, H)
+            # Combined: zero delta for context, per-k delta for each query copy
+            ctx_zeros = torch.zeros(ctx_len, query_deltas[0].shape[0],
+                                    device=query_deltas[0].device)
             combined_delta = torch.cat(
-                [ctx_delta, torch.stack(query_deltas)], dim=0
-            )
+                [ctx_zeros, torch.stack(query_deltas)], dim=0
+            )  # (ctx + K, H)
 
         # Inject and predict
         state = tail.hidden_state.clone()
@@ -212,10 +210,19 @@ def run_ablation(
                         rate, eta)
 
     active = n_concepts > 0
-    logger.info("  Done: mean %.1f, median %.0f, max %d concepts/row (%.1fs)",
-                n_concepts[active].mean() if active.any() else 0,
-                np.median(n_concepts[active]) if active.any() else 0,
-                n_concepts.max(), time.time() - t0)
+    fixable = np.array([abs(sp1[i] - weak_p1[i]) > converge_threshold
+                        for i in range(n_query)])
+    n_fixable = fixable.sum()
+    n_fixed = (active & fixable).sum()
+    n_unfixed = (fixable & ~active).sum()
+    logger.info("  Done in %.1fs", time.time() - t0)
+    logger.info("  Fixable: %d, Fixed: %d (%.0f%%), Unfixed: %d",
+                n_fixable, n_fixed, 100 * n_fixed / max(n_fixable, 1), n_unfixed)
+    if active.any():
+        logger.info("  Concepts: mean %.1f, median %.0f, max %d",
+                    n_concepts[active].mean(),
+                    np.median(n_concepts[active]),
+                    n_concepts.max())
 
     return final_p1, n_concepts, sp1
 
