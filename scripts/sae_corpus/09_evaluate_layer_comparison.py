@@ -35,7 +35,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from analysis.sparse_autoencoder import SAEConfig, SparseAutoencoder
 from data.preprocessing import CACHE_DIR, load_preprocessed
 from scripts._project_root import PROJECT_ROOT
-from scripts.intervention.concept_importance import sweep_tabpfn, compute_importance_metric
+import scripts.intervention.concept_importance as _ci
+from scripts.intervention.concept_importance import sweep_tabpfn, compute_per_row_loss
+
+# Patch compute_importance_metric to handle single-class edge case
+_orig_compute_importance_metric = _ci.compute_importance_metric
+
+def _safe_compute_importance_metric(y_true, preds, task):
+    if task != "regression" and len(np.unique(y_true)) < 2:
+        return 0.0, "skipped_single_class"
+    return _orig_compute_importance_metric(y_true, preds, task)
+
+_ci.compute_importance_metric = _safe_compute_importance_metric
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
