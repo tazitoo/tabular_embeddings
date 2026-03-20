@@ -64,7 +64,7 @@ def load_sae(path: Path, device: str) -> SparseAutoencoder:
     ckpt = torch.load(str(path), map_location=device, weights_only=False)
     config = SAEConfig(**ckpt["config"])
     sae = SparseAutoencoder(config)
-    sae.load_state_dict(ckpt["state_dict"])
+    sae.load_state_dict(ckpt["state_dict"], strict=False)
     sae.to(device)
     sae.eval()
     return sae
@@ -190,9 +190,21 @@ def main():
             # Load embeddings at the appropriate layer
             emb = load_embeddings("tabpfn", ds_name, layer)
             if emb is None:
-                print(f"  SKIP: no embeddings at layer {layer}")
-                ds_results[var_name] = {"error": f"no embeddings at L{layer}"}
-                continue
+                # Fixed variant: regression datasets have 18 layers (0-17),
+                # so L18 doesn't exist. Fall back to highest available.
+                npz_path = EMBEDDINGS_DIR / "tabpfn" / f"{ds_name}.npz"
+                if npz_path.exists():
+                    data = np.load(npz_path, allow_pickle=True)
+                    n_layers = len(data["layer_names"])
+                    fallback = n_layers - 1
+                    print(f"  L{layer} unavailable ({n_layers} layers), "
+                          f"falling back to L{fallback}")
+                    layer = fallback
+                    emb = load_embeddings("tabpfn", ds_name, layer)
+                if emb is None:
+                    print(f"  SKIP: no embeddings at layer {layer}")
+                    ds_results[var_name] = {"error": f"no embeddings at L{layer}"}
+                    continue
 
             # Load norm stats
             mean, std, stats_layer = load_norm_stats(var_info["stats_path"], ds_name)
