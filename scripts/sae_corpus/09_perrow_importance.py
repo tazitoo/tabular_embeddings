@@ -173,91 +173,69 @@ def compute_perrow_importance(
     # Per-row firing counts
     feature_n_firing = np.array([firing_mask[:, fi].sum() for fi in alive_features])
 
-    # Phase 3: batched LOO ablation per row
-    logger.info("  Phase 3: batched LOO ablation (%d rows × up to %d features)...",
+    # Phase 3: LOO ablation — one forward pass per feature per row
+    logger.info("  Phase 3: LOO ablation (%d rows × up to %d features)...",
                 n_query, n_alive)
     row_feature_drops = np.zeros((n_query, n_alive))
 
     t0 = time.time()
     for row_idx in range(n_query):
         h = hidden_states[row_idx]  # (seq, H) — context + 1 query
-        seq_len = h.shape[0]
+        x_row = X_q[row_idx:row_idx + 1]
 
         # Which features fire on this row?
         row_firing = [i for i, fi in enumerate(alive_features) if firing_mask[row_idx, fi]]
         if not row_firing:
             continue
 
-        K = len(row_firing)
-
-        # Compute K deltas: one per firing feature
-        # Each delta zeroes one feature in the SAE encoding of the full sequence
+        # SAE encode full sequence for this row
         with torch.no_grad():
             x_norm = (h - data_mean) / data_std
-            h_full = sae.encode(x_norm)  # (seq, hidden_dim)
-            recon_full = sae.decode(h_full)  # (seq, emb_dim)
+            h_full = sae.encode(x_norm)
+            recon_full = sae.decode(h_full)
 
-            # Stack K deltas
-            deltas = []
-            for col_idx in row_firing:
-                fi = alive_features[col_idx]
+        baseline_loss = baseline_row_loss[row_idx]
+
+        for col_idx in row_firing:
+            fi = alive_features[col_idx]
+
+            # Compute delta for this single feature
+            with torch.no_grad():
                 h_abl = h_full.clone()
                 h_abl[:, fi] = 0.0
                 recon_abl = sae.decode(h_abl)
-                delta = (recon_abl - recon_full) * data_std  # (seq, emb_dim)
-                deltas.append(delta)
+                delta = (recon_abl - recon_full) * data_std
 
-        # Batch forward pass: K copies of this query row, each with different delta
-        # Stack query rows
-        x_row = X_q[row_idx:row_idx + 1]
-        X_batch = np.tile(x_row, (K, 1))
+            def make_hook(d):
+                def hook(module, input, output):
+                    out = output[0] if isinstance(output, tuple) else output
+                    if isinstance(out, torch.Tensor):
+                        out = out.clone()
+                        if out.ndim == 4:
+                            out[0] += d.unsqueeze(1)
+                        elif out.ndim == 3:
+                            out[0] += d
+                        if isinstance(output, tuple):
+                            return (out,) + output[1:]
+                        return out
+                    return output
+                return hook
 
-        # The hook needs to add a different delta per batch element
-        # But TabPFN processes all queries together with shared context
-        # So we pass K query rows and add per-row deltas
-        delta_stack = torch.stack(deltas)  # (K, seq, emb_dim)
+            handle = layers[extraction_layer].register_forward_hook(make_hook(delta))
+            try:
+                with torch.no_grad():
+                    if task == "regression":
+                        preds = clf.predict(x_row)
+                    else:
+                        preds = clf.predict_proba(x_row)
+            finally:
+                handle.remove()
 
-        def make_hook(d_stack, seq_l):
-            def hook(module, input, output):
-                out = output[0] if isinstance(output, tuple) else output
-                if isinstance(out, torch.Tensor):
-                    out = out.clone()
-                    if out.ndim == 4:
-                        # (1, ctx+K, n_feat+1, H) — context is shared, K query rows
-                        # delta_stack is (K, ctx+1, H) — we need to map to (K, H)
-                        # Context delta: use first delta (they're nearly identical for context)
-                        ctx_len = out.shape[1] - d_stack.shape[0]
-                        # Add context delta from first ablation
-                        out[0, :ctx_len] += d_stack[0, :ctx_len].unsqueeze(1)
-                        # Add per-query deltas (last position of each delta)
-                        for k in range(d_stack.shape[0]):
-                            out[0, ctx_len + k] += d_stack[k, -1:].unsqueeze(0)
-                    if isinstance(output, tuple):
-                        return (out,) + output[1:]
-                    return out
-                return output
-            return hook
-
-        handle = layers[extraction_layer].register_forward_hook(
-            make_hook(delta_stack, seq_len))
-        try:
-            with torch.no_grad():
-                if task == "regression":
-                    preds = clf.predict(X_batch)
-                else:
-                    preds = clf.predict_proba(X_batch)
-        finally:
-            handle.remove()
-
-        preds_np = np.asarray(preds)
-
-        # Compute per-ablation loss
-        y_tiled = np.tile(y_q[row_idx], K)
-        ablated_losses = compute_per_row_loss(y_tiled, preds_np, task)
-        baseline_loss = baseline_row_loss[row_idx]
-
-        for j, col_idx in enumerate(row_firing):
-            row_feature_drops[row_idx, col_idx] = ablated_losses[j] - baseline_loss
+            preds_np = np.asarray(preds)
+            ablated_loss = compute_per_row_loss(
+                y_q[row_idx:row_idx + 1], preds_np, task
+            )[0]
+            row_feature_drops[row_idx, col_idx] = ablated_loss - baseline_loss
 
         if (row_idx + 1) % 50 == 0 or row_idx == n_query - 1:
             elapsed = time.time() - t0
@@ -265,7 +243,7 @@ def compute_perrow_importance(
             eta = (n_query - row_idx - 1) / rate
             n_pos = (row_feature_drops[row_idx] > 0).sum()
             logger.info("    row %d/%d: %d firing, %d helpful (%.1f rows/s, ETA %.0fs)",
-                        row_idx + 1, n_query, K, n_pos, rate, eta)
+                        row_idx + 1, n_query, len(row_firing), n_pos, rate, eta)
 
     logger.info("  Done in %.1fs", time.time() - t0)
 
