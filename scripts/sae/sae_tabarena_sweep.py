@@ -492,8 +492,8 @@ def validate_and_save(
         # Compare on composite objective (matches objective function)
         hidden_dim = expansion * embeddings.shape[1]
         alive_frac = metrics["alive_features"] / hidden_dim
-        dead_penalty = 0.5 * (1.0 - alive_frac)
-        val_loss = metrics["reconstruction_loss"] + metrics["aux_loss"] + dead_penalty
+        l0 = metrics["l0_sparsity"]
+        val_loss = metrics["reconstruction_loss"] * np.sqrt(hidden_dim) * np.sqrt(l0) / alive_frac
 
         print(f"    Actual:   loss={val_loss:.6f}")
 
@@ -690,15 +690,13 @@ def create_optuna_objective(
                     trial.set_user_attr(key, val)
             trial.set_user_attr("context_size", context_size)
 
-            # Objective: minimize total loss + dead neuron penalty.
-            # Calibrated so that at 85% alive (target), the dead penalty
-            # roughly equals recon_loss (~0.08), creating balanced pressure.
-            # Below target alive%, the penalty dominates and rejects the config;
-            # above target, recon quality drives the search.
+            # Objective: recon_loss * sqrt(hidden_dim) * sqrt(L0) / alive_frac
+            # Three-way balance: reconstruction quality, dictionary capacity,
+            # and sparsity, penalized by wasted (dead) capacity.
             hidden_dim = expansion * embeddings.shape[1]
             alive_frac = metrics["alive_features"] / hidden_dim
-            dead_penalty = 0.5 * (1.0 - alive_frac)
-            obj = metrics["reconstruction_loss"] + metrics["aux_loss"] + dead_penalty
+            l0 = metrics["l0_sparsity"]
+            obj = metrics["reconstruction_loss"] * np.sqrt(hidden_dim) * np.sqrt(l0) / alive_frac
 
             # Finish wandb run
             if wandb_active:
@@ -730,11 +728,13 @@ def _load_prebuilt_embeddings(model_name: str) -> Optional[Tuple[np.ndarray, np.
     Returns:
         (train_embeddings, test_embeddings, source_datasets, optimal_layer) or None
     """
-    prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round6"
+    prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round10"
 
-    # Find train file
+    # Find train file: prefer taskaware, fall back to layer-specific
     base = model_name.split("_layer")[0] if "_layer" in model_name else model_name
-    train_candidates = sorted(prebuilt_dir.glob(f"{base}_layer*_sae_training.npz"))
+    train_candidates = sorted(prebuilt_dir.glob(f"{base}_taskaware_sae_training.npz"))
+    if not train_candidates:
+        train_candidates = sorted(prebuilt_dir.glob(f"{base}_layer*_sae_training.npz"))
     if not train_candidates:
         return None
 
@@ -799,11 +799,11 @@ def run_sweep(
     # Load prebuilt training data (required)
     prebuilt = _load_prebuilt_embeddings(model_name)
     if prebuilt is None:
-        prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round6"
+        prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round10"
         raise FileNotFoundError(
             f"No prebuilt SAE training data found for '{model_name}'. "
-            f"Expected: {prebuilt_dir}/{model_name}_layer*_sae_training.npz\n"
-            f"Run: python scripts/build_sae_training_data.py --model {model_name}"
+            f"Expected: {prebuilt_dir}/{model_name}_taskaware_sae_training.npz\n"
+            f"Run: python scripts/sae_corpus/06_build_sae_training_data.py --model {model_name}"
         )
 
     train_embeddings, test_embeddings, source_datasets, optimal_layer = prebuilt

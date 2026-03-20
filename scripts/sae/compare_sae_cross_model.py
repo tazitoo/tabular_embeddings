@@ -50,7 +50,8 @@ from data.extended_loader import load_tabarena_dataset
 #           TopK on pre_act then ReLU, no L1 on TopK types, fixed AuxK
 # Round 7: Gao et al. recipe (AuxK, step counter dead detection, weight EMA, geometric median b_dec)
 # Round 8: Detach AuxK residual, normalize by residual variance, grad clipping, dead_steps=200
-DEFAULT_SAE_ROUND = 8
+# Round 10: Task-aware layers, efficiency objective (recon*sqrt(hidden)*sqrt(L0)/alive)
+DEFAULT_SAE_ROUND = 10
 SAE_FILENAME = "sae_matryoshka_archetypal_efficiency.pt"
 
 
