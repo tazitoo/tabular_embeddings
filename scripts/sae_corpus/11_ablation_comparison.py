@@ -137,10 +137,20 @@ def run_ablation(
     del clf
     torch.cuda.empty_cache()
 
-    # Identify fixable rows
-    fixable = np.abs(sp1 - weak_p1) > converge_threshold
+    # Identify fixable rows: TabPFN is better (lower loss) than Mitra
+    eps = 1e-7
+    if task == "regression":
+        strong_loss = (sp1 - y_q.astype(float)) ** 2
+        weak_loss = (weak_p1 - y_q.astype(float)) ** 2
+    else:
+        y = y_q.astype(float)
+        sp_clip = np.clip(sp1, eps, 1 - eps)
+        wp_clip = np.clip(weak_p1, eps, 1 - eps)
+        strong_loss = -(y * np.log(sp_clip) + (1 - y) * np.log(1 - sp_clip))
+        weak_loss = -(y * np.log(wp_clip) + (1 - y) * np.log(1 - wp_clip))
+    fixable = strong_loss < weak_loss  # TabPFN has lower loss on this row
     n_fixable = fixable.sum()
-    logger.info("  Fixable rows: %d / %d", n_fixable, n_query)
+    logger.info("  Fixable rows: %d / %d (TabPFN better on these)", n_fixable, n_query)
 
     final_p1 = sp1.copy()
     n_concepts = np.zeros(n_query, dtype=int)
