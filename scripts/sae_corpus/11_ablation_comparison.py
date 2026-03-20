@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Compare task-aware vs per-dataset SAEs via per-row cumulative ablation.
 
-Uses causal per-row importance from 09_perrow_importance.py.
-Fits TabPFN once, builds tail once.  For each query row, cumulatively
-ablates SAE features (query only, context untouched) until TabPFN's
-prediction matches Mitra's.
+Same pattern as 09_perrow_importance: fit once, then for each query row
+build a tail with K copies where copy k has features 1..k ablated.
+One predict call returns K predictions; scan to find convergence.
 
 Output:
     output/sae_training_round10/ablation_comparison_results.json
@@ -95,33 +94,56 @@ def run_ablation(
     importance_path, X_ctx, y_ctx, X_q, y_q,
     weak_p1, task, device,
 ):
-    """Per-row cumulative ablation. One fit, one tail, query-only deltas."""
+    """Per-row cumulative ablation. Same architecture as 09_perrow_importance."""
+    from models.tabpfn_utils import load_tabpfn
+
     n_query = len(X_q)
     converge_threshold = 1e-3
 
-    # Load importance
+    # Load importance for ranking
     imp = np.load(str(importance_path), allow_pickle=True)
     row_drops = imp["row_feature_drops"]
     feat_indices = imp["feature_indices"]
-    baseline_preds = imp["baseline_preds"]
-    sp1 = pred_scalar(baseline_preds)
 
-    # Build tail once — all query rows
-    logger.info("  Building tail at L%d with %d query rows...", extraction_layer, n_query)
-    tail = TabPFNTail.from_data(X_ctx, y_ctx, X_q, extraction_layer, task, device)
+    # Fit once
+    clf = load_tabpfn(task=task, device=device, n_estimators=1)
+    clf.fit(X_ctx, y_ctx)
+    layers = clf.model_.transformer_encoder.layers
 
-    # Get mean-pooled hidden state for SAE encoding
-    # tail.hidden_state is (1, seq, n_structure, H)
-    full_state = tail.hidden_state[0].mean(dim=1)  # (seq, H)
-    ctx_len = tail.single_eval_pos
+    # Get baseline predictions one row at a time (causal, matches importance)
+    logger.info("  Baseline predictions (1 row at a time)...")
+    baseline_list = []
+    hidden_states = []
 
-    final_p1 = sp1.copy()
-    n_concepts = np.zeros(n_query, dtype=int)
+    for row_idx in range(n_query):
+        x_row = X_q[row_idx:row_idx + 1]
+        captured = {}
 
-    # Identify fixable rows up front
+        def capture_hook(module, input, output):
+            if isinstance(output, torch.Tensor):
+                captured["hidden"] = output.detach()
+
+        handle = layers[extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                preds = clf.predict(x_row) if task == "regression" \
+                    else clf.predict_proba(x_row)
+        finally:
+            handle.remove()
+        baseline_list.append(np.asarray(preds))
+        hidden_states.append(captured["hidden"])  # raw 4D tensor
+
+    sp1 = pred_scalar(np.concatenate(baseline_list, axis=0))
+    del clf
+    torch.cuda.empty_cache()
+
+    # Identify fixable rows
     fixable = np.abs(sp1 - weak_p1) > converge_threshold
     n_fixable = fixable.sum()
     logger.info("  Fixable rows: %d / %d", n_fixable, n_query)
+
+    final_p1 = sp1.copy()
+    n_concepts = np.zeros(n_query, dtype=int)
 
     t0 = time.time()
     for row_idx in range(n_query):
@@ -131,7 +153,7 @@ def run_ablation(
         target = weak_p1[row_idx]
         best_dist = abs(sp1[row_idx] - target)
 
-        # Per-row ranking: firing features sorted by importance
+        # Per-row ranking from importance
         drops = row_drops[row_idx]
         candidates = [(int(feat_indices[i]), drops[i])
                       for i in range(len(drops)) if drops[i] > 0]
@@ -142,42 +164,69 @@ def run_ablation(
         ranking = [fi for fi, _ in candidates]
         K = len(ranking)
 
-        # SAE encode this row's query embedding only
-        query_emb = full_state[ctx_len + row_idx:ctx_len + row_idx + 1]  # (1, H)
+        # Mean-pool hidden state for SAE
+        h_raw = hidden_states[row_idx]  # (1, seq, n_structure, H)
+        h_pooled = h_raw[0].mean(dim=1)  # (seq, H)
+        ctx_len = h_pooled.shape[0] - 1  # 1 query row
+
+        # SAE encode query position
+        query_emb = h_pooled[-1:]  # (1, H)
         with torch.no_grad():
             x_norm = (query_emb - data_mean) / data_std
-            h_q = sae.encode(x_norm)   # (1, hidden_dim)
-            recon_q = sae.decode(h_q)  # (1, H)
+            h_q = sae.encode(x_norm)
+            recon_q = sae.decode(h_q)
 
-            # K cumulative ablations → K deltas
+            # K cumulative deltas: copy k has features 0..k zeroed
+            query_deltas = []
             for k in range(K):
                 h_abl = h_q.clone()
                 for j in range(k + 1):
                     h_abl[:, ranking[j]] = 0.0
                 recon_abl = sae.decode(h_abl)
-                delta_row = ((recon_abl - recon_q) * data_std)[0]  # (H,)
+                delta = ((recon_abl - recon_q) * data_std)[0]  # (H,)
+                query_deltas.append(delta)
 
-                # predict_row modifies only this query position
-                preds = tail.predict_row(row_idx, delta_row)
-                new_p1 = pred_scalar(preds)[row_idx]
-                new_dist = abs(new_p1 - target)
+        # Build tail with K query copies, inject deltas, predict once
+        x_row = X_q[row_idx:row_idx + 1]
+        X_batch = np.tile(x_row, (K, 1))
+        tail = TabPFNTail.from_data(
+            X_ctx, y_ctx, X_batch, extraction_layer, task, device,
+        )
 
-                if new_dist < best_dist:
-                    best_dist = new_dist
-                    final_p1[row_idx] = new_p1
-                    n_concepts[row_idx] = k + 1
+        # Inject: zero delta for context, per-k delta for each query copy
+        ctx_zeros = torch.zeros(
+            tail.single_eval_pos, query_deltas[0].shape[0],
+            device=query_deltas[0].device,
+        )
+        combined_delta = torch.cat(
+            [ctx_zeros, torch.stack(query_deltas)], dim=0,
+        )
+        state = tail.hidden_state.clone()
+        state[0] += combined_delta.unsqueeze(1)  # broadcast across n_structure
+        preds = tail._predict_with_modified_state(state)
 
-                if best_dist < converge_threshold:
-                    break
+        # Scan K predictions
+        preds_p1 = pred_scalar(preds)
+        for k in range(K):
+            dist = abs(preds_p1[k] - target)
+            if dist < best_dist:
+                best_dist = dist
+                final_p1[row_idx] = preds_p1[k]
+                n_concepts[row_idx] = k + 1
+            if best_dist < converge_threshold:
+                break
+
+        del tail
+        torch.cuda.empty_cache()
 
         if (row_idx + 1) % 50 == 0 or row_idx == n_query - 1:
             elapsed = time.time() - t0
             rate = (row_idx + 1) / elapsed
             eta = (n_query - row_idx - 1) / rate
-            logger.info("    row %d/%d: %d concepts, dist %.4f → %.4f "
+            logger.info("    row %d/%d: %d/%d concepts, dist %.4f → %.4f "
                         "(%.1f rows/s, ETA %.0fs)",
                         row_idx + 1, n_query,
-                        n_concepts[row_idx],
+                        n_concepts[row_idx], K,
                         abs(sp1[row_idx] - target), best_dist,
                         rate, eta)
 
@@ -194,8 +243,6 @@ def run_ablation(
                     np.median(n_concepts[active]),
                     n_concepts.max())
 
-    del tail
-    torch.cuda.empty_cache()
     return final_p1, n_concepts, sp1
 
 
@@ -216,7 +263,6 @@ def main():
         print(f"  {ds_name} ({task})")
         print("=" * 70)
 
-        # Mitra predictions (weak model)
         logger.info("  Getting Mitra predictions...")
         mitra_data = load_preprocessed("mitra", ds_name, CACHE_DIR)
         mitra_clf = load_and_fit("mitra", mitra_data.X_train[:600], mitra_data.y_train[:600],
@@ -307,7 +353,7 @@ def main():
                          fontsize=10)
 
     fig.suptitle("Per-row cumulative ablation: TabPFN → Mitra\n"
-                 "(query-only, context untouched)",
+                 "(causal single-row, query-only, context untouched)",
                  fontsize=13, fontweight="bold", y=1.02)
     plt.tight_layout()
     fig.savefig(OUTPUT_DIR / "ablation_comparison_scatter.png", dpi=150, bbox_inches="tight")
