@@ -42,9 +42,12 @@ from scripts.intervention.concept_importance import sweep_tabpfn, compute_per_ro
 _orig_compute_importance_metric = _ci.compute_importance_metric
 
 def _safe_compute_importance_metric(y_true, preds, task):
-    if task != "regression" and len(np.unique(y_true)) < 2:
-        return 0.0, "skipped_single_class"
-    return _orig_compute_importance_metric(y_true, preds, task)
+    try:
+        return _orig_compute_importance_metric(y_true, preds, task)
+    except (ValueError, IndexError):
+        # Fallback: neg mean per-row loss (works for any class distribution)
+        row_loss = compute_per_row_loss(y_true, preds, task)
+        return float(-row_loss.mean()), "neg_mean_loss"
 
 _ci.compute_importance_metric = _safe_compute_importance_metric
 
