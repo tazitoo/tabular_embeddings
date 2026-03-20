@@ -413,6 +413,7 @@ def validate_and_save(
     sae_type: str,
     study,
     output_dir: Path,
+    test_embeddings: np.ndarray,
     tolerance: float = 0.05,
     max_retries: int = 5,
     extra_trials_per_retry: int = 3,
@@ -440,7 +441,7 @@ def validate_and_save(
     import optuna
 
     ctx_keys = sorted(embeddings_by_ctx.keys())
-    objective = create_optuna_objective(embeddings_by_ctx, sae_type, device=device, use_wandb=use_wandb)
+    objective = create_optuna_objective(embeddings_by_ctx, sae_type, test_embeddings=test_embeddings, device=device, use_wandb=use_wandb)
     # On first attempt, validate the best from the initial sweep.
     # On subsequent attempts, validate the best from the latest surrogate-guided batch.
     candidate_trial = study.best_trial
@@ -490,11 +491,16 @@ def validate_and_save(
             device=device,
         )
 
-        # Compare on composite objective (matches objective function)
+        # Compare on composite objective (matches objective function) using test set
+        test_tensor = torch.tensor(test_embeddings, dtype=torch.float32, device=device)
+        model.eval()
+        with torch.no_grad():
+            recon, _ = model(test_tensor)
+            test_recon_loss = torch.nn.functional.mse_loss(recon, test_tensor).item()
         hidden_dim = expansion * embeddings.shape[1]
         alive_frac = metrics["alive_features"] / hidden_dim
         l0 = metrics["l0_sparsity"]
-        val_loss = metrics["reconstruction_loss"] * np.sqrt(hidden_dim) * np.sqrt(l0) / alive_frac
+        val_loss = test_recon_loss * np.sqrt(hidden_dim) * np.sqrt(l0) / alive_frac
 
         print(f"    Actual:   loss={val_loss:.6f}")
 
@@ -578,6 +584,7 @@ def validate_and_save(
 def create_optuna_objective(
     embeddings_by_ctx: Dict[int, np.ndarray],
     sae_type: str,
+    test_embeddings: np.ndarray,
     device: str = "cpu",
     use_wandb: bool = False,
 ):
@@ -588,6 +595,7 @@ def create_optuna_objective(
             When the dict has a single entry, no context_size HP is added.
             When multiple entries, context_size becomes a categorical HP.
         sae_type: SAE architecture type
+        test_embeddings: Held-out data for model selection (avoids overfitting).
     """
     import optuna
 
@@ -668,7 +676,7 @@ def create_optuna_objective(
                 print("Warning: wandb not available, skipping logging")
 
         try:
-            metrics = run_sae_trial(
+            metrics, model, config, _, _ = run_sae_trial(
                 embeddings,
                 sae_type=sae_type,
                 expansion=expansion,
@@ -681,6 +689,7 @@ def create_optuna_objective(
                 n_epochs=100,
                 # aux/resample use hardcoded defaults from run_sae_trial
                 measure_stability=True,
+                return_model=True,
                 device=device,
                 use_wandb=use_wandb,
             )
@@ -691,13 +700,21 @@ def create_optuna_objective(
                     trial.set_user_attr(key, val)
             trial.set_user_attr("context_size", context_size)
 
-            # Objective: recon_loss * sqrt(hidden_dim) * sqrt(L0) / alive_frac
+            # Evaluate on held-out test set for model selection
+            test_tensor = torch.tensor(test_embeddings, dtype=torch.float32, device=device)
+            model.eval()
+            with torch.no_grad():
+                recon, _ = model(test_tensor)
+                test_recon_loss = torch.nn.functional.mse_loss(recon, test_tensor).item()
+            trial.set_user_attr("test_reconstruction_loss", test_recon_loss)
+
+            # Objective: test_recon * sqrt(hidden_dim) * sqrt(L0) / alive_frac
             # Three-way balance: reconstruction quality, dictionary capacity,
             # and sparsity, penalized by wasted (dead) capacity.
             hidden_dim = expansion * embeddings.shape[1]
             alive_frac = metrics["alive_features"] / hidden_dim
             l0 = metrics["l0_sparsity"]
-            obj = metrics["reconstruction_loss"] * np.sqrt(hidden_dim) * np.sqrt(l0) / alive_frac
+            obj = test_recon_loss * np.sqrt(hidden_dim) * np.sqrt(l0) / alive_frac
 
             # Finish wandb run
             if wandb_active:
@@ -849,7 +866,7 @@ def run_sweep(
             sampler=optuna.samplers.TPESampler(seed=42),
         )
 
-        objective = create_optuna_objective(embeddings_by_ctx, sae_type, device=device, use_wandb=use_wandb)
+        objective = create_optuna_objective(embeddings_by_ctx, sae_type, test_embeddings=test_embeddings, device=device, use_wandb=use_wandb)
 
         study.optimize(
             objective,
@@ -868,6 +885,7 @@ def run_sweep(
             sae_type=sae_type,
             study=study,
             output_dir=output_dir,
+            test_embeddings=test_embeddings,
             tolerance=0.05,  # 5% relative tolerance
             max_retries=5,
             extra_trials_per_retry=3,
