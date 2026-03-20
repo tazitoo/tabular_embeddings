@@ -60,7 +60,7 @@ SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits
 # Test datasets: chosen for maximum contrast with the task-aware fixed layers
 EVAL_DATASETS = {
     "airfoil_self_noise": {"critical_layer": 6, "task": "regression"},
-    "polish_companies_bankruptcy": {"critical_layer": 23, "task": "classification"},
+    "diabetes": {"critical_layer": 23, "task": "classification"},
 }
 
 VARIANTS = {
