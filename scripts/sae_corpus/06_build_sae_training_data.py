@@ -55,6 +55,8 @@ from scripts._project_root import PROJECT_ROOT
 SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
 EMBEDDINGS_DIR = PROJECT_ROOT / "output" / "sae_training_round9" / "embeddings"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training_round10"
+CKA_DIR = PROJECT_ROOT / "output" / "layerwise_cka_v2"
+DEPTH_ANALYSIS_DIR = PROJECT_ROOT / "output"
 
 SAMPLE_CAP = 700
 TRAIN_FRAC = 500 / 700  # ≈ 71.4%
@@ -62,6 +64,21 @@ MIN_STD = 1e-8
 
 # Models that have preprocessed cache for TabPFN difficulty scoring
 DIFFICULTY_MODELS = {"tabpfn"}
+
+
+def load_per_dataset_layers(model: str) -> dict[str, int]:
+    """Load per-dataset critical layers from CKA depth analysis.
+
+    Returns {dataset_name: critical_layer_index}.
+    """
+    analysis_path = DEPTH_ANALYSIS_DIR / f"layerwise_depth_analysis_{model}.json"
+    if not analysis_path.exists():
+        raise FileNotFoundError(
+            f"No depth analysis for {model}: {analysis_path}\n"
+            f"Run 07_compute_layerwise_cka.py + analyze_layerwise_cka.py first."
+        )
+    data = json.loads(analysis_path.read_text())
+    return {info["dataset"]: info["critical_layer"] for info in data.values()}
 
 
 # ---------------------------------------------------------------------------
@@ -266,18 +283,23 @@ def select_sample(
 
 
 def build_training_data(
-    model: str, device: str = "cuda",
+    model: str, device: str = "cuda", layer_mode: str = "fixed",
 ) -> dict:
     """Build pooled SAE train+test data for a model.
 
     Pipeline per dataset:
-      1. Load full holdout embeddings at optimal layer
+      1. Load full holdout embeddings at the chosen layer
       2. Compute norm stats (mean, std) from FULL fold
       3. Normalize all rows with full-fold stats
       4. Stratified subsample → 500 train + 200 test (or all if < 700)
       5. Pool across datasets
+
+    Args:
+        layer_mode: "fixed" uses config/optimal_extraction_layers.json (one
+            layer for all datasets). "per_dataset" uses the per-dataset
+            critical layer from CKA depth analysis.
     """
-    optimal_layer = get_optimal_layer(model)
+    global_optimal = get_optimal_layer(model)
     splits = json.loads(SPLITS_PATH.read_text())
     dataset_names = sorted(splits.keys())
 
@@ -286,7 +308,15 @@ def build_training_data(
     if model_key in ("hyperfast", "tabicl"):
         dataset_names = [d for d in dataset_names if splits[d]["task_type"] == "classification"]
 
-    print(f"  Optimal layer: {optimal_layer}")
+    # Resolve layer selection strategy
+    if layer_mode == "per_dataset":
+        per_ds_layers = load_per_dataset_layers(model)
+        print(f"  Layer mode: per-dataset (from CKA depth analysis)")
+        print(f"  Layer range: [{min(per_ds_layers.values())}, {max(per_ds_layers.values())}]")
+    else:
+        per_ds_layers = None
+        print(f"  Layer mode: fixed (L{global_optimal})")
+
     print(f"  Datasets: {len(dataset_names)}")
     print(f"  Sample cap: {SAMPLE_CAP} (train={int(SAMPLE_CAP * TRAIN_FRAC)}, "
           f"test={SAMPLE_CAP - int(SAMPLE_CAP * TRAIN_FRAC)})")
@@ -306,8 +336,14 @@ def build_training_data(
         task_type = split_info["task_type"]
         test_indices = np.array(split_info["test_indices"], dtype=np.int32)
 
-        # Load embeddings at optimal layer
-        emb = load_embeddings_at_layer(model, ds_name, optimal_layer)
+        # Resolve layer for this dataset
+        if per_ds_layers is not None and ds_name in per_ds_layers:
+            ds_layer = per_ds_layers[ds_name]
+        else:
+            ds_layer = global_optimal
+
+        # Load embeddings at chosen layer
+        emb = load_embeddings_at_layer(model, ds_name, ds_layer)
         if emb is None:
             print(f"  [{i+1}/{len(dataset_names)}] {ds_name}: SKIP (no embeddings)")
             skipped += 1
@@ -375,9 +411,10 @@ def build_training_data(
         sampling = "all" if n_holdout <= SAMPLE_CAP else "stratified"
         diff_str = "T×D" if losses is not None and task_type == "classification" else (
             "diff" if losses is not None else "rnd")
+        layer_str = f"L{ds_layer}" if per_ds_layers else ""
         print(f"  [{i+1}/{len(dataset_names)}] {ds_name}: "
               f"{len(train_emb)}+{len(test_emb)} ({sampling}/{diff_str}) "
-              f"dim={emb.shape[1]}")
+              f"dim={emb.shape[1]} {layer_str}")
 
     if not train_embeddings:
         raise ValueError(f"No embeddings loaded for {model}")
@@ -385,13 +422,22 @@ def build_training_data(
     # Pool across datasets
     train_pooled = np.concatenate(train_embeddings, axis=0)
     test_pooled = np.concatenate(test_embeddings, axis=0)
-    layer_name = f"layer_{optimal_layer}"
+
+    # Output naming: "perds" suffix for per-dataset mode
+    if layer_mode == "per_dataset":
+        tag = f"{model}_perds"
+        layer_name = "per_dataset"
+        reported_layer = -1  # sentinel
+    else:
+        tag = f"{model}_layer{global_optimal}"
+        layer_name = f"layer_{global_optimal}"
+        reported_layer = global_optimal
 
     # Save
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    train_path = OUTPUT_DIR / f"{model}_layer{optimal_layer}_sae_training.npz"
-    test_path = OUTPUT_DIR / f"{model}_layer{optimal_layer}_sae_test.npz"
-    stats_path = OUTPUT_DIR / f"{model}_layer{optimal_layer}_norm_stats.npz"
+    train_path = OUTPUT_DIR / f"{tag}_sae_training.npz"
+    test_path = OUTPUT_DIR / f"{tag}_sae_test.npz"
+    stats_path = OUTPUT_DIR / f"{tag}_norm_stats.npz"
 
     config = load_optimal_layers()[model]
 
@@ -399,7 +445,7 @@ def build_training_data(
         np.savez_compressed(
             str(path),
             embeddings=embeddings,
-            optimal_layer=np.array(optimal_layer),
+            optimal_layer=np.array(reported_layer),
             layer_name=np.array(layer_name),
             source_datasets=np.array(list(samples_dict.keys())),
             samples_per_dataset=np.array(
@@ -408,19 +454,27 @@ def build_training_data(
             ),
             split=np.array(split_name),
             config=np.array(json.dumps(config)),
+            layer_mode=np.array(layer_mode),
         )
 
     _save(train_path, train_pooled, train_samples, "train")
     _save(test_path, test_pooled, test_samples, "test")
 
     # Save per-dataset normalization stats (from full fold)
+    # Include per-dataset extraction layers for downstream consumers
     ds_names = sorted(norm_stats.keys())
-    np.savez_compressed(
-        str(stats_path),
-        datasets=np.array(ds_names),
-        means=np.stack([norm_stats[d]["mean"] for d in ds_names]),
-        stds=np.stack([norm_stats[d]["std"] for d in ds_names]),
-    )
+    stats_save = {
+        "datasets": np.array(ds_names),
+        "means": np.stack([norm_stats[d]["mean"] for d in ds_names]),
+        "stds": np.stack([norm_stats[d]["std"] for d in ds_names]),
+        "layer_mode": np.array(layer_mode),
+    }
+    if per_ds_layers is not None:
+        stats_save["layers"] = np.array([per_ds_layers.get(d, global_optimal) for d in ds_names])
+    else:
+        stats_save["layers"] = np.array([global_optimal] * len(ds_names))
+
+    np.savez_compressed(str(stats_path), **stats_save)
 
     n_datasets = len(train_samples)
     print(f"\n  Train: {train_pooled.shape} from {n_datasets} datasets → {train_path.name}")
@@ -431,8 +485,7 @@ def build_training_data(
 
     return {
         "model": model,
-        "optimal_layer": optimal_layer,
-        "layer_name": layer_name,
+        "layer_mode": layer_mode,
         "train_shape": train_pooled.shape,
         "test_shape": test_pooled.shape,
         "n_datasets": n_datasets,
@@ -449,6 +502,9 @@ def main():
     parser.add_argument("--model", required=True,
                         help="Model name or 'all' for all available models")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--layer-mode", choices=["fixed", "per_dataset"], default="fixed",
+                        help="Layer selection: 'fixed' uses global optimal layer, "
+                             "'per_dataset' uses CKA-derived critical layer per dataset")
     args = parser.parse_args()
 
     config = load_optimal_layers()
@@ -471,6 +527,7 @@ def main():
 
     print(f"Building SAE training data (round 10)")
     print(f"  Output: {OUTPUT_DIR}")
+    print(f"  Layer mode: {args.layer_mode}")
     print(f"  Models: {models}")
 
     results = []
@@ -480,7 +537,7 @@ def main():
         print("=" * 60)
 
         try:
-            result = build_training_data(model, device=args.device)
+            result = build_training_data(model, device=args.device, layer_mode=args.layer_mode)
             results.append(result)
         except Exception as e:
             print(f"  ERROR: {e}")
@@ -492,11 +549,11 @@ def main():
         print(f"\n{'=' * 60}")
         print("SUMMARY")
         print("=" * 60)
-        print(f"{'Model':<12} {'Layer':>6} {'Train':>20} {'Test':>20} {'Datasets':>10}")
-        print("-" * 70)
+        print(f"{'Model':<12} {'Mode':>12} {'Train':>20} {'Test':>20} {'Datasets':>10}")
+        print("-" * 76)
         for r in results:
             print(
-                f"{r['model']:<12} {r['optimal_layer']:>6} "
+                f"{r['model']:<12} {r['layer_mode']:>12} "
                 f"{str(r['train_shape']):>20} {str(r['test_shape']):>20} "
                 f"{r['n_datasets']:>10}"
             )
