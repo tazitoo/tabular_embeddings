@@ -277,7 +277,13 @@ def select_sample(
     n_train = 500
     n_test = 200
 
-    if losses is not None and task_type == "classification":
+    if losses is None:
+        raise ValueError(
+            f"Difficulty scores are required for stratified sampling but were None. "
+            f"Ensure TabPFN preprocessing cache exists for this dataset."
+        )
+
+    if task_type == "classification":
         # Doubly stratified: target × difficulty
         train_idx = sample_target_x_difficulty(y_test, losses, n_train)
         # For test: sample from rows NOT in train
@@ -286,7 +292,7 @@ def select_sample(
         remaining_y = y_test[remaining]
         test_idx = sample_target_x_difficulty(remaining_y, remaining_losses, n_test)
         test_idx = remaining[test_idx]  # Map back to original indices
-    elif losses is not None:
+    else:
         # Regression: difficulty-stratified (no class axis)
         rng = np.random.RandomState(42)
         terciles = tercile_labels(losses)
@@ -301,24 +307,12 @@ def select_sample(
             test_idx.append(remaining_t[:min(per_tercile_test, len(remaining_t))])
         train_idx = np.concatenate(train_idx)
         test_idx = np.concatenate(test_idx)
-    else:
-        # Fallback: target-stratified for classification, random for regression
-        if task_type == "classification":
-            train_idx = sample_target_stratified(y_test, n_train)
-            remaining = np.setdiff1d(np.arange(n_holdout), train_idx)
-            rng = np.random.RandomState(43)
-            test_idx = rng.choice(remaining, size=min(n_test, len(remaining)), replace=False)
-        else:
-            rng = np.random.RandomState(42)
-            perm = rng.permutation(n_holdout)
-            train_idx = perm[:n_train]
-            test_idx = perm[n_train:n_train + n_test]
 
     return train_idx, test_idx
 
 
 def build_training_data(
-    model: str, device: str = "cuda", layer_mode: str = "fixed",
+    model: str, device: str = "cuda", layer_mode: str = "fixed_task_aware",
 ) -> dict:
     """Build pooled SAE train+test data for a model.
 
@@ -416,27 +410,18 @@ def build_training_data(
                         except FileNotFoundError:
                             continue
 
-            if len(y_test) == n_holdout:
-                losses = compute_difficulty(ds_name, task_type, y_test, device)
-                difficulty_cache[ds_name] = (y_test, losses)
-            else:
-                difficulty_cache[ds_name] = (None, None)
+            if len(y_test) != n_holdout:
+                raise ValueError(
+                    f"{ds_name}: y_test length ({len(y_test)}) != n_holdout ({n_holdout}). "
+                    f"Preprocessing cache may be out of sync with embeddings."
+                )
+            losses = compute_difficulty(ds_name, task_type, y_test, device)
+            difficulty_cache[ds_name] = (y_test, losses)
 
         y_test, losses = difficulty_cache[ds_name]
 
         # 4. Stratified subsample
-        if y_test is not None and len(y_test) == n_holdout:
-            train_idx, test_idx = select_sample(n_holdout, y_test, losses, task_type)
-        else:
-            # No labels available: random split
-            rng = np.random.RandomState(42)
-            if n_holdout <= SAMPLE_CAP:
-                perm = rng.permutation(n_holdout)
-                n_train = round(n_holdout * TRAIN_FRAC)
-                train_idx, test_idx = perm[:n_train], perm[n_train:]
-            else:
-                perm = rng.permutation(n_holdout)
-                train_idx, test_idx = perm[:500], perm[500:700]
+        train_idx, test_idx = select_sample(n_holdout, y_test, losses, task_type)
 
         train_emb = emb_norm[train_idx]
         test_emb = emb_norm[test_idx]
@@ -545,7 +530,7 @@ def main():
                         help="Model name or 'all' for all available models")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--layer-mode", choices=["fixed", "fixed_task_aware", "per_dataset"],
-                        default="fixed",
+                        default="fixed_task_aware",
                         help="Layer selection: 'fixed' uses one global layer, "
                              "'fixed_task_aware' uses one layer per architecture variant "
                              "(e.g. TabPFN classifier L19 + regressor L11), "
