@@ -81,6 +81,41 @@ def load_per_dataset_layers(model: str) -> dict[str, int]:
     return {info["dataset"]: info["critical_layer"] for info in data.values()}
 
 
+def load_task_aware_fixed_layers(model: str) -> dict[str, int]:
+    """Compute per-architecture fixed layers from CKA depth analysis.
+
+    Groups datasets by number of layers (e.g. TabPFN classifier=24,
+    regressor=18), computes the mean critical layer within each group,
+    and returns a per-dataset lookup mapping to the group's optimal layer.
+    """
+    import math
+    analysis_path = DEPTH_ANALYSIS_DIR / f"layerwise_depth_analysis_{model}.json"
+    if not analysis_path.exists():
+        raise FileNotFoundError(
+            f"No depth analysis for {model}: {analysis_path}\n"
+            f"Run 07_compute_layerwise_cka.py + analyze_layerwise_cka.py first."
+        )
+    data = json.loads(analysis_path.read_text())
+
+    # Group by n_layers (architecture variant)
+    groups: dict[int, list] = {}
+    for info in data.values():
+        nl = info["n_layers"]
+        groups.setdefault(nl, []).append(info)
+
+    # Compute optimal fixed layer per group
+    lookup = {}
+    for nl, infos in sorted(groups.items()):
+        crit_layers = [i["critical_layer"] for i in infos]
+        optimal = int(round(np.mean(crit_layers)))
+        for info in infos:
+            lookup[info["dataset"]] = optimal
+        print(f"    {nl}-layer variant: {len(infos)} datasets → L{optimal} "
+              f"(mean={np.mean(crit_layers):.1f}±{np.std(crit_layers):.1f})")
+
+    return lookup
+
+
 # ---------------------------------------------------------------------------
 # Difficulty scoring (from 05_sampling_analysis.py)
 # ---------------------------------------------------------------------------
@@ -313,6 +348,9 @@ def build_training_data(
         per_ds_layers = load_per_dataset_layers(model)
         print(f"  Layer mode: per-dataset (from CKA depth analysis)")
         print(f"  Layer range: [{min(per_ds_layers.values())}, {max(per_ds_layers.values())}]")
+    elif layer_mode == "fixed_task_aware":
+        per_ds_layers = load_task_aware_fixed_layers(model)
+        print(f"  Layer mode: fixed-task-aware")
     else:
         per_ds_layers = None
         print(f"  Layer mode: fixed (L{global_optimal})")
@@ -423,11 +461,15 @@ def build_training_data(
     train_pooled = np.concatenate(train_embeddings, axis=0)
     test_pooled = np.concatenate(test_embeddings, axis=0)
 
-    # Output naming: "perds" suffix for per-dataset mode
+    # Output naming
     if layer_mode == "per_dataset":
         tag = f"{model}_perds"
         layer_name = "per_dataset"
         reported_layer = -1  # sentinel
+    elif layer_mode == "fixed_task_aware":
+        tag = f"{model}_taskaware"
+        layer_name = "fixed_task_aware"
+        reported_layer = -1
     else:
         tag = f"{model}_layer{global_optimal}"
         layer_name = f"layer_{global_optimal}"
@@ -502,9 +544,12 @@ def main():
     parser.add_argument("--model", required=True,
                         help="Model name or 'all' for all available models")
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--layer-mode", choices=["fixed", "per_dataset"], default="fixed",
-                        help="Layer selection: 'fixed' uses global optimal layer, "
-                             "'per_dataset' uses CKA-derived critical layer per dataset")
+    parser.add_argument("--layer-mode", choices=["fixed", "fixed_task_aware", "per_dataset"],
+                        default="fixed",
+                        help="Layer selection: 'fixed' uses one global layer, "
+                             "'fixed_task_aware' uses one layer per architecture variant "
+                             "(e.g. TabPFN classifier L19 + regressor L11), "
+                             "'per_dataset' uses CKA critical layer per dataset")
     args = parser.parse_args()
 
     config = load_optimal_layers()

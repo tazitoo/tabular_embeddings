@@ -45,11 +45,10 @@ EVAL_DATASETS = {
 }
 
 VARIANTS = {
-    "fixed": {
-        "sae_path": OUTPUT_DIR / "tabpfn_layer18_sae.pt",
-        "stats_path": OUTPUT_DIR / "tabpfn_layer18_norm_stats.npz",
-        "layer_mode": "fixed",
-        "global_layer": 18,
+    "task_aware": {
+        "sae_path": OUTPUT_DIR / "tabpfn_taskaware_sae.pt",
+        "stats_path": OUTPUT_DIR / "tabpfn_taskaware_norm_stats.npz",
+        "layer_mode": "fixed_task_aware",
     },
     "per_dataset": {
         "sae_path": OUTPUT_DIR / "tabpfn_perds_sae.pt",
@@ -193,31 +192,20 @@ def main():
         for var_name, var_info in VARIANTS.items():
             print(f"\n  --- {var_name} ---")
 
-            # Determine which layer to use
-            if var_name == "fixed":
-                layer = var_info["global_layer"]
+            # Determine which layer to use — read from norm_stats
+            _, _, stats_layer = load_norm_stats(var_info["stats_path"], ds_name)
+            if stats_layer is not None:
+                layer = stats_layer
             else:
-                # Per-dataset: use the critical layer
+                # Fallback: per_dataset uses critical layer, task_aware guesses
                 layer = critical_layer
 
             # Load embeddings at the appropriate layer
             emb = load_embeddings("tabpfn", ds_name, layer)
             if emb is None:
-                # Fixed variant: regression datasets have 18 layers (0-17),
-                # so L18 doesn't exist. Fall back to highest available.
-                npz_path = EMBEDDINGS_DIR / "tabpfn" / f"{ds_name}.npz"
-                if npz_path.exists():
-                    data = np.load(npz_path, allow_pickle=True)
-                    n_layers = len(data["layer_names"])
-                    fallback = n_layers - 1
-                    print(f"  L{layer} unavailable ({n_layers} layers), "
-                          f"falling back to L{fallback}")
-                    layer = fallback
-                    emb = load_embeddings("tabpfn", ds_name, layer)
-                if emb is None:
-                    print(f"  SKIP: no embeddings at layer {layer}")
-                    ds_results[var_name] = {"error": f"no embeddings at L{layer}"}
-                    continue
+                print(f"  SKIP: no embeddings at layer {layer}")
+                ds_results[var_name] = {"error": f"no embeddings at L{layer}"}
+                continue
 
             # Load norm stats
             mean, std, stats_layer = load_norm_stats(var_info["stats_path"], ds_name)

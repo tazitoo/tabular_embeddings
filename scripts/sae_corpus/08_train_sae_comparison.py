@@ -60,11 +60,11 @@ BEST_CONFIG = dict(
 )
 
 VARIANTS = {
-    "fixed": {
-        "train_path": OUTPUT_DIR / "tabpfn_layer18_sae_training.npz",
-        "test_path": OUTPUT_DIR / "tabpfn_layer18_sae_test.npz",
-        "stats_path": OUTPUT_DIR / "tabpfn_layer18_norm_stats.npz",
-        "sae_path": OUTPUT_DIR / "tabpfn_layer18_sae.pt",
+    "task_aware": {
+        "train_path": OUTPUT_DIR / "tabpfn_taskaware_sae_training.npz",
+        "test_path": OUTPUT_DIR / "tabpfn_taskaware_sae_test.npz",
+        "stats_path": OUTPUT_DIR / "tabpfn_taskaware_norm_stats.npz",
+        "sae_path": OUTPUT_DIR / "tabpfn_taskaware_sae.pt",
     },
     "per_dataset": {
         "train_path": OUTPUT_DIR / "tabpfn_perds_sae_training.npz",
