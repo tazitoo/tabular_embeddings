@@ -173,9 +173,11 @@ def compute_perrow_importance(
     # Per-row firing counts
     feature_n_firing = np.array([firing_mask[:, fi].sum() for fi in alive_features])
 
-    # Phase 3: LOO ablation — one forward pass per feature per row
-    logger.info("  Phase 3: LOO ablation (%d rows × up to %d features)...",
-                n_query, n_alive)
+    # Phase 3: batched LOO ablation — one forward pass per row
+    # For each row: K copies (one per firing feature), each with a different
+    # single-feature ablation delta. One forward pass returns K predictions.
+    logger.info("  Phase 3: batched LOO ablation (%d rows, 1 fwd pass each)...",
+                n_query)
     row_feature_drops = np.zeros((n_query, n_alive))
 
     t0 = time.time()
@@ -188,54 +190,78 @@ def compute_perrow_importance(
         if not row_firing:
             continue
 
-        # SAE encode full sequence for this row
+        K = len(row_firing)
+
+        # SAE encode full sequence, compute K deltas
         with torch.no_grad():
             x_norm = (h - data_mean) / data_std
-            h_full = sae.encode(x_norm)
-            recon_full = sae.decode(h_full)
+            h_full = sae.encode(x_norm)   # (seq, hidden_dim)
+            recon_full = sae.decode(h_full)  # (seq, emb_dim)
 
-        baseline_loss = baseline_row_loss[row_idx]
+            # Context delta is identical for all features (context encoding
+            # doesn't change), so use the first feature's context portion
+            # and only vary the query portion per feature.
+            ctx_len = h.shape[0] - 1  # seq - 1 query row
 
-        for col_idx in row_firing:
-            fi = alive_features[col_idx]
+            # Compute context delta once (from first feature)
+            fi0 = alive_features[row_firing[0]]
+            h_abl0 = h_full.clone()
+            h_abl0[:, fi0] = 0.0
+            recon_abl0 = sae.decode(h_abl0)
+            ctx_delta = ((recon_abl0 - recon_full) * data_std)[:ctx_len]  # (ctx, H)
 
-            # Compute delta for this single feature
-            with torch.no_grad():
+            # Compute per-feature query delta
+            query_deltas = []  # K × (1, H)
+            for col_idx in row_firing:
+                fi = alive_features[col_idx]
                 h_abl = h_full.clone()
                 h_abl[:, fi] = 0.0
                 recon_abl = sae.decode(h_abl)
-                delta = (recon_abl - recon_full) * data_std
+                delta_q = ((recon_abl - recon_full) * data_std)[-1:]  # (1, H)
+                query_deltas.append(delta_q)
 
-            def make_hook(d):
-                def hook(module, input, output):
-                    out = output[0] if isinstance(output, tuple) else output
-                    if isinstance(out, torch.Tensor):
-                        out = out.clone()
-                        if out.ndim == 4:
-                            out[0] += d.unsqueeze(1)
-                        elif out.ndim == 3:
-                            out[0] += d
-                        if isinstance(output, tuple):
-                            return (out,) + output[1:]
-                        return out
-                    return output
-                return hook
+            # Combined delta: (ctx + K, H)
+            # Context portion repeated, each query position gets its own delta
+            combined_delta = torch.cat(
+                [ctx_delta] + query_deltas, dim=0
+            )  # (ctx + K, H)
 
-            handle = layers[extraction_layer].register_forward_hook(make_hook(delta))
-            try:
-                with torch.no_grad():
-                    if task == "regression":
-                        preds = clf.predict(x_row)
-                    else:
-                        preds = clf.predict_proba(x_row)
-            finally:
-                handle.remove()
+        # Batch: K copies of query row
+        X_batch = np.tile(x_row, (K, 1))
 
-            preds_np = np.asarray(preds)
-            ablated_loss = compute_per_row_loss(
-                y_q[row_idx:row_idx + 1], preds_np, task
-            )[0]
-            row_feature_drops[row_idx, col_idx] = ablated_loss - baseline_loss
+        def make_hook(d):
+            def hook(module, input, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    out = out.clone()
+                    if out.ndim == 4:
+                        # (1, ctx+K, n_feat+1, H) — broadcast delta across n_feat+1
+                        out[0] += d.unsqueeze(1)
+                    elif out.ndim == 3:
+                        out[0] += d
+                    if isinstance(output, tuple):
+                        return (out,) + output[1:]
+                    return out
+                return output
+            return hook
+
+        handle = layers[extraction_layer].register_forward_hook(make_hook(combined_delta))
+        try:
+            with torch.no_grad():
+                if task == "regression":
+                    preds = clf.predict(X_batch)
+                else:
+                    preds = clf.predict_proba(X_batch)
+        finally:
+            handle.remove()
+
+        preds_np = np.asarray(preds)
+        baseline_loss = baseline_row_loss[row_idx]
+        y_tiled = np.full(K, y_q[row_idx])
+        ablated_losses = compute_per_row_loss(y_tiled, preds_np, task)
+
+        for j, col_idx in enumerate(row_firing):
+            row_feature_drops[row_idx, col_idx] = ablated_losses[j] - baseline_loss
 
         if (row_idx + 1) % 50 == 0 or row_idx == n_query - 1:
             elapsed = time.time() - t0
@@ -243,7 +269,7 @@ def compute_perrow_importance(
             eta = (n_query - row_idx - 1) / rate
             n_pos = (row_feature_drops[row_idx] > 0).sum()
             logger.info("    row %d/%d: %d firing, %d helpful (%.1f rows/s, ETA %.0fs)",
-                        row_idx + 1, n_query, len(row_firing), n_pos, rate, eta)
+                        row_idx + 1, n_query, K, n_pos, rate, eta)
 
     logger.info("  Done in %.1fs", time.time() - t0)
 
