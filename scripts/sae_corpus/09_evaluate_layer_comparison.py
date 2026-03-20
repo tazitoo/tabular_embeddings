@@ -95,10 +95,34 @@ def load_norm_stats(stats_path: Path, dataset: str, device: str):
 
 
 def load_context_query(dataset: str, task: str, max_context: int = 600, max_query: int = 500):
-    """Load context/query splits from preprocessed cache."""
+    """Load context/query splits from preprocessed cache.
+
+    Uses stratified subsampling for classification to ensure both classes
+    are represented in the query set.
+    """
     data = load_preprocessed("tabpfn", dataset, CACHE_DIR)
-    X_ctx, y_ctx = data.X_train[:max_context], data.y_train[:max_context]
-    X_q, y_q = data.X_test[:max_query], data.y_test[:max_query]
+
+    # Context: first max_context rows
+    X_ctx = data.X_train[:max_context]
+    y_ctx = data.y_train[:max_context]
+
+    # Query: stratified subsample for classification
+    if task == "classification" and len(data.X_test) > max_query:
+        rng = np.random.RandomState(42)
+        classes, counts = np.unique(data.y_test, return_counts=True)
+        indices = []
+        for cls, count in zip(classes, counts):
+            cls_idx = np.where(data.y_test == cls)[0]
+            n_take = max(1, int(max_query * count / len(data.y_test)))
+            indices.append(rng.choice(cls_idx, size=min(n_take, len(cls_idx)), replace=False))
+        indices = np.concatenate(indices)
+        if len(indices) > max_query:
+            indices = rng.choice(indices, size=max_query, replace=False)
+        X_q, y_q = data.X_test[indices], data.y_test[indices]
+    else:
+        X_q = data.X_test[:max_query]
+        y_q = data.y_test[:max_query]
+
     return X_ctx, y_ctx, X_q, y_q
 
 
