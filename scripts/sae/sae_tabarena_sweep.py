@@ -823,7 +823,7 @@ def run_sweep(
         json.dump(split_info, f, indent=2)
 
     # Run sweep for each SAE type
-    all_sae_types = ["l1", "topk", "matryoshka", "archetypal", "matryoshka_archetypal", "matryoshka_batchtopk_archetypal"]
+    all_sae_types = ["matryoshka_archetypal"]
     sae_types = sae_type_filter if sae_type_filter else all_sae_types
     best_configs = {}
 
