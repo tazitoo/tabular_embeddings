@@ -675,55 +675,54 @@ def create_optuna_objective(
             except ImportError:
                 print("Warning: wandb not available, skipping logging")
 
-            metrics, model, config, _, _ = run_sae_trial(
-                embeddings,
-                sae_type=sae_type,
-                expansion=expansion,
-                sparsity_penalty=sparsity_penalty,
-                learning_rate=learning_rate,
-                topk=topk,
-                archetypal_n_archetypes=archetypal_n,
-                archetypal_temp=archetypal_temp,
-                archetypal_relaxation=archetypal_relax,
-                n_epochs=100,
-                # aux/resample use hardcoded defaults from run_sae_trial
-                measure_stability=True,
-                return_model=True,
-                device=device,
-                use_wandb=use_wandb,
-            )
+        metrics, model, config, _, _ = run_sae_trial(
+            embeddings,
+            sae_type=sae_type,
+            expansion=expansion,
+            sparsity_penalty=sparsity_penalty,
+            learning_rate=learning_rate,
+            topk=topk,
+            archetypal_n_archetypes=archetypal_n,
+            archetypal_temp=archetypal_temp,
+            archetypal_relaxation=archetypal_relax,
+            n_epochs=100,
+            measure_stability=True,
+            return_model=True,
+            device=device,
+            use_wandb=use_wandb,
+        )
 
-            # Store metrics (including context_size for retrieval)
-            for key, val in metrics.items():
-                if isinstance(val, (int, float)):
-                    trial.set_user_attr(key, val)
-            trial.set_user_attr("context_size", context_size)
+        # Store metrics (including context_size for retrieval)
+        for key, val in metrics.items():
+            if isinstance(val, (int, float)):
+                trial.set_user_attr(key, val)
+        trial.set_user_attr("context_size", context_size)
 
-            # Evaluate on held-out test set for model selection
-            test_tensor = torch.tensor(test_embeddings, dtype=torch.float32, device=device)
-            model.eval()
-            with torch.no_grad():
-                recon, _ = model(test_tensor)
-                test_recon_loss = torch.nn.functional.mse_loss(recon, test_tensor).item()
-            trial.set_user_attr("test_reconstruction_loss", test_recon_loss)
+        # Evaluate on held-out test set for model selection
+        test_tensor = torch.tensor(test_embeddings, dtype=torch.float32, device=device)
+        model.eval()
+        with torch.no_grad():
+            recon, _ = model(test_tensor)
+            test_recon_loss = torch.nn.functional.mse_loss(recon, test_tensor).item()
+        trial.set_user_attr("test_reconstruction_loss", test_recon_loss)
 
-            # Objective: test_recon * sqrt(hidden_dim) * sqrt(L0) / alive_frac
-            # Three-way balance: reconstruction quality, dictionary capacity,
-            # and sparsity, penalized by wasted (dead) capacity.
-            hidden_dim = expansion * embeddings.shape[1]
-            alive_frac = metrics["alive_features"] / hidden_dim
-            l0 = metrics["l0_sparsity"]
-            obj = test_recon_loss * np.sqrt(hidden_dim) * np.sqrt(l0) / alive_frac
+        # Objective: test_recon * sqrt(hidden_dim) * sqrt(L0) / alive_frac
+        # Three-way balance: reconstruction quality, dictionary capacity,
+        # and sparsity, penalized by wasted (dead) capacity.
+        hidden_dim = expansion * embeddings.shape[1]
+        alive_frac = metrics["alive_features"] / hidden_dim
+        l0 = metrics["l0_sparsity"]
+        obj = test_recon_loss * np.sqrt(hidden_dim) * np.sqrt(l0) / alive_frac
 
-            # Finish wandb run
-            if wandb_active:
-                try:
-                    import wandb
-                    wandb.finish()
-                except:
-                    pass
+        # Finish wandb run
+        if wandb_active:
+            try:
+                import wandb
+                wandb.finish()
+            except:
+                pass
 
-            return obj
+        return obj
 
     return objective
 
