@@ -675,7 +675,6 @@ def create_optuna_objective(
             except ImportError:
                 print("Warning: wandb not available, skipping logging")
 
-        try:
             metrics, model, config, _, _ = run_sae_trial(
                 embeddings,
                 sae_type=sae_type,
@@ -725,17 +724,6 @@ def create_optuna_objective(
                     pass
 
             return obj
-
-        except Exception as e:
-            print(f"Trial failed: {e}")
-            # Finish wandb run on failure
-            if wandb_active:
-                try:
-                    import wandb
-                    wandb.finish()
-                except:
-                    pass
-            return 0.0
 
     return objective
 
