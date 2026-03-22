@@ -39,7 +39,7 @@ from scripts.sae.compare_sae_cross_model import (
     find_common_datasets,
     sae_sweep_dir,
 )
-from scripts.matching.match_sae_features import (
+from scripts.matching.01_match_sae_concepts_mnn import (
     EMB_DIR,
     compute_sae_activations,
     get_alive_mask,

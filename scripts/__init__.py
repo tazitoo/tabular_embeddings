@@ -40,7 +40,7 @@ _REDIRECTS: dict[str, str] = {
     "tabicl_metrics_complete": "sae.tabicl_metrics_complete",
     # concepts/
     "label_concepts": "concepts.label_concepts",
-    "label_cross_model_concepts": "concepts.label_cross_model_concepts",
+    "label_cross_model_concepts": "matching.06_label_cross_model_concepts",
     "label_selective_features": "concepts.label_selective_features",
     "analyze_concept_hierarchy": "concepts.analyze_concept_hierarchy",
     "analyze_concept_regression": "concepts.analyze_concept_regression",
@@ -55,12 +55,13 @@ _REDIRECTS: dict[str, str] = {
     "validate_concept_embeddings": "concepts.validate_concept_embeddings",
     "row_level_probes": "concepts.row_level_probes",
     "compute_pymfe_cache": "concepts.compute_pymfe_cache",
-    # matching/
-    "match_sae_features": "matching.match_sae_features",
-    "match_cross_model_features": "matching.match_cross_model_features",
-    "annotate_feature_matches": "matching.annotate_feature_matches",
-    "build_feature_match_graph": "matching.build_feature_match_graph",
-    "extend_sae_matches": "matching.extend_sae_matches",
+    # matching/ (renamed: features → concepts, numbered for execution order)
+    "match_sae_features": "matching.01_match_sae_concepts_mnn",
+    "match_cross_model_features": "matching.02_compute_cross_correlations",
+    "build_feature_match_graph": "matching.03_build_concept_graph",
+    "extend_sae_matches": "matching.04_extend_concept_matches",
+    "annotate_feature_matches": "matching.05_annotate_concept_matches",
+    "label_cross_model_concepts": "matching.06_label_cross_model_concepts",
     # intervention/
     "intervene_sae": "intervention.intervene_sae",
     "concept_causal_intervention": "intervention.concept_causal_intervention",

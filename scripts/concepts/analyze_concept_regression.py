@@ -47,7 +47,7 @@ from scripts.sae.analyze_sae_concepts_deep import (
     convert_keys_to_native,
     load_sae_checkpoint,
 )
-from scripts.matching.match_sae_features import (
+from scripts.matching.01_match_sae_concepts_mnn import (
     compute_alive_mask,
     load_test_embeddings,
     load_train_embeddings,
