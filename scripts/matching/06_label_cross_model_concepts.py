@@ -1343,11 +1343,16 @@ def main():
     with open(PROJECT_ROOT / args.matching) as f:
         matching = json.load(f)
 
-    print(f"Loading concept regression: {args.concepts}")
-    with open(PROJECT_ROOT / args.concepts) as f:
-        concepts = json.load(f)
-    probe_lookup, dataset_context = load_concept_data(concepts, top_k=5)
-    print(f"  {len(probe_lookup)} models, {len(dataset_context)} datasets with context")
+    concepts_path = PROJECT_ROOT / args.concepts
+    if concepts_path.exists():
+        print(f"Loading concept regression: {args.concepts}")
+        with open(concepts_path) as f:
+            concepts = json.load(f)
+        probe_lookup, dataset_context = load_concept_data(concepts, top_k=5)
+        print(f"  {len(probe_lookup)} models, {len(dataset_context)} datasets with context")
+    else:
+        print(f"No concept regression found at {args.concepts} — running without probes")
+        probe_lookup, dataset_context = {}, {}
 
     # Load dataset-to-domain mapping for prompt context
     domain_path = PROJECT_ROOT / "data" / "tabarena_domains.json"
