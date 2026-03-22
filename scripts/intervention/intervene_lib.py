@@ -272,7 +272,7 @@ from scripts.intervention.intervene_sae import (  # noqa: E402
 )
 
 # Models that must use sequential fallback (no batched K-copy trick)
-SEQUENTIAL_MODELS = (MitraTail, HyperFastTail, CARTETail, Tabula8BTail)
+SEQUENTIAL_MODELS = (HyperFastTail, CARTETail, Tabula8BTail)
 
 
 # ── Row alignment ───────────────────────────────────────────────────────────
@@ -488,9 +488,18 @@ def batched_ablation(
         X_batch = np.tile(X_row, (chunk_K, 1))
         tail.recapture(X_batch)
 
-        state = tail.hidden_state.clone()
-        _inject_query_deltas(tail, state, chunk_deltas)
-        preds = tail._predict_with_modified_state(state)
+        if isinstance(tail, MitraTail):
+            # Mitra: hook-based injection with separate support/query deltas.
+            # Zero support delta, per-query deltas in query portion.
+            n_sup = sum(s.shape[1] for s in tail.captured_support)
+            delta_sup = torch.zeros(n_sup, chunk_deltas.shape[1],
+                                    device=tail.device, dtype=chunk_deltas.dtype)
+            preds = tail._predict_with_delta(delta_sup, chunk_deltas)
+        else:
+            state = tail.hidden_state.clone()
+            _inject_query_deltas(tail, state, chunk_deltas)
+            preds = tail._predict_with_modified_state(state)
+
         all_preds.append(preds)
 
     return np.concatenate(all_preds, axis=0) if len(all_preds) > 1 else all_preds[0]
@@ -518,7 +527,11 @@ def _inject_query_deltas(tail, state: torch.Tensor, deltas: torch.Tensor):
             else:
                 state[ctx + k] += deltas[k]
 
-    elif isinstance(tail, SEQUENTIAL_MODELS):
+    elif isinstance(tail, MitraTail):
+        # Mitra handled in batched_ablation() directly — not via state injection
+        raise NotImplementedError("Mitra: handled in batched_ablation()")
+
+    elif isinstance(tail, (HyperFastTail, CARTETail, Tabula8BTail)):
         raise NotImplementedError(
             f"{type(tail).__name__}: use batched_ablation_sequential() instead"
         )
