@@ -738,12 +738,13 @@ def analyze_model_regression(
 
 def collect_test_meta_features(
     datasets: List[str],
-    emb_dir: Path,
+    test_embs: Dict[str, np.ndarray],
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, 'pd.DataFrame'], List[str]]:
-    """Compute row-level meta-features on test-split rows only.
+    """Compute row-level meta-features on test-split rows.
 
-    Uses the same split logic as build_sae_training_data.py (seed=42, 70/30)
-    to select the held-out rows from the original tabular data.
+    Uses row_indices saved in the SAE corpus NPZ files to select the exact
+    same rows from the original dataset. This ensures meta-features align
+    with SAE activations for Ridge regression.
 
     Returns:
         per_ds_meta: {dataset_name: (n_test_rows, n_meta_features)}
@@ -756,27 +757,55 @@ def collect_test_meta_features(
         compute_column_stats,
         compute_row_meta_features,
     )
+    from scripts.matching.utils import SAE_DATA_DIR
+
+    # Load row indices from the test NPZ
+    test_npz_candidates = sorted(SAE_DATA_DIR.glob("*_sae_test.npz"))
+    if not test_npz_candidates:
+        raise FileNotFoundError(f"No test NPZ in {SAE_DATA_DIR}")
+
+    # Use first model's test file to get row indices (same rows for all models
+    # that share the dataset — indices come from the shared splits)
+    test_data = np.load(test_npz_candidates[0], allow_pickle=True)
+    if "row_indices" not in test_data:
+        raise ValueError(
+            "Test NPZ missing row_indices. Rebuild corpus with updated "
+            "06_build_sae_training_data.py"
+        )
+    all_row_indices = test_data["row_indices"]
+    samples = test_data["samples_per_dataset"]
+
+    # Unpool row indices per dataset
+    ds_row_indices = {}
+    offset = 0
+    for ds_name, count in samples:
+        ds_name = str(ds_name)
+        count = int(count)
+        ds_row_indices[ds_name] = all_row_indices[offset:offset + count]
+        offset += count
 
     per_ds_meta = {}
     per_ds_raw = {}
     loaded = []
 
     for ds_name in datasets:
-        emb_path = emb_dir / f"tabarena_{ds_name}.npz"
-        if not emb_path.exists():
+        if ds_name not in ds_row_indices:
+            continue
+        if ds_name not in test_embs:
             continue
 
-        emb_data = np.load(emb_path, allow_pickle=True)
-        n_emb = len(emb_data['embeddings'])
-
-        # Get test-split indices (same logic as build_sae_training_data.py)
-        test_indices = get_test_split_indices(n_emb, seed=42)
+        row_idx = ds_row_indices[ds_name]
+        n_test = len(test_embs[ds_name])
+        if len(row_idx) != n_test:
+            print(f"    Skipping {ds_name}: row_indices ({len(row_idx)}) != "
+                  f"test embs ({n_test})")
+            continue
 
         try:
             X, y, _ = load_tabarena_dataset(ds_name)
             df = X if hasattr(X, 'iloc') else pd.DataFrame(X)
-            df = df.iloc[test_indices].reset_index(drop=True)
-            y_sub = y[test_indices] if y is not None else None
+            df = df.iloc[row_idx].reset_index(drop=True)
+            y_sub = y[row_idx] if y is not None else None
 
             numeric_cols, categorical_cols, col_stats, dataset_stats = compute_column_stats(df)
             meta_features = compute_row_meta_features(
@@ -869,11 +898,10 @@ def main():
     meta_array = None
     boundaries = None
     if args.use_test_split:
-        # Per-dataset meta-features (no pooling — per-dataset StandardScaler)
-        first_emb_key = models[0][2]
-        first_emb_dir = PROJECT_ROOT / "output" / "embeddings" / "tabarena" / first_emb_key
+        # Per-dataset meta-features using saved row indices from corpus
+        first_model_embs = list(model_test_embs.values())[0]
         per_ds_meta, per_ds_raw, loaded = collect_test_meta_features(
-            datasets, first_emb_dir
+            datasets, first_model_embs
         )
         total_rows = sum(v.shape[0] for v in per_ds_meta.values())
         print(f"Test meta-features: {len(loaded)} datasets, {total_rows} rows, "
