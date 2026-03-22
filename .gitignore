@@ -214,9 +214,7 @@ data/*.npy
 data/*.pkl
 data/embeddings/
 data/cache/
-output/*.png
-output/*.pdf
-output/*.csv
+output/
 wandb/
 *.ckpt
 .DS_Store
