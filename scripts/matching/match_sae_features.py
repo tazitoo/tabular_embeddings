@@ -34,7 +34,7 @@ from scripts.sae.compare_sae_cross_model import (
 )
 
 EMB_DIR = PROJECT_ROOT / "output" / "embeddings" / "tabarena"
-SAE_DATA_DIR = PROJECT_ROOT / "output" / "sae_training_round6"
+SAE_DATA_DIR = PROJECT_ROOT / "output" / f"sae_training_round{DEFAULT_SAE_ROUND}"
 RANDOM_BASELINE_FILENAME = SAE_FILENAME.replace(".pt", "_random_baseline.pt")
 
 
@@ -47,7 +47,7 @@ def load_norm_stats(model_key: str) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     Returns:
         Dict mapping dataset name → (mean, std), each shape (emb_dim,).
     """
-    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_layer*_norm_stats.npz"))
+    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_norm_stats.npz"))
     if not candidates:
         raise FileNotFoundError(
             f"No norm stats for '{model_key}' in {SAE_DATA_DIR}"
@@ -85,7 +85,7 @@ def load_test_embeddings(model_key: str) -> Dict[str, np.ndarray]:
     Returns:
         Dict mapping dataset name → embeddings array (n_test_rows, emb_dim).
     """
-    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_layer*_sae_test.npz"))
+    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_sae_test.npz"))
     if not candidates:
         raise FileNotFoundError(
             f"No test data for '{model_key}' in {SAE_DATA_DIR}"
@@ -102,7 +102,7 @@ def load_train_embeddings(model_key: str) -> Dict[str, np.ndarray]:
     Returns:
         Dict mapping dataset name → embeddings array (n_train_rows, emb_dim).
     """
-    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_layer*_sae_training.npz"))
+    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_sae_training.npz"))
     if not candidates:
         raise FileNotFoundError(
             f"No training data for '{model_key}' in {SAE_DATA_DIR}"

@@ -32,7 +32,7 @@ import torch
 
 from scripts._project_root import PROJECT_ROOT
 
-from scripts.intervention.intervene_sae import load_sae, load_training_mean, get_extraction_layer
+from scripts.intervention.intervene_sae import load_sae, load_norm_stats, get_extraction_layer
 from scripts.intervention.concept_importance import (
     get_alive_features,
     get_feature_labels,
@@ -44,7 +44,8 @@ from scripts.intervention.concept_importance import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / "sae_training_round6"
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
+DEFAULT_TRAINING_DIR = PROJECT_ROOT / "output" / f"sae_training_round{DEFAULT_SAE_ROUND}"
 
 
 def load_per_dataset_embeddings(
@@ -59,10 +60,11 @@ def load_per_dataset_embeddings(
     Returns:
         Dict mapping dataset_name -> (n_samples, emb_dim) array
     """
-    layer = get_extraction_layer(model_key)
-    training_path = training_dir / f"{model_key}_layer{layer}_sae_training.npz"
-    if not training_path.exists():
-        raise FileNotFoundError(f"Training data not found: {training_path}")
+    # Find training file: taskaware (round 10+) or layer-specific (round 6-8)
+    candidates = sorted(training_dir.glob(f"{model_key}_*_sae_training.npz"))
+    if not candidates:
+        raise FileNotFoundError(f"No training data for '{model_key}' in {training_dir}")
+    training_path = candidates[0]
 
     data = np.load(training_path, allow_pickle=True)
     embeddings = data["embeddings"]
@@ -96,7 +98,6 @@ def compute_fingerprints(
         bands: Matryoshka band boundaries
     """
     sae, config = load_sae(model_key, device=device)
-    data_mean = load_training_mean(model_key, device=device)
     per_dataset = load_per_dataset_embeddings(model_key, training_dir)
     alive = get_alive_features(model_key)
     labels = get_feature_labels(model_key)
@@ -111,8 +112,9 @@ def compute_fingerprints(
     with torch.no_grad():
         for ds_name, emb in sorted(per_dataset.items()):
             x = torch.tensor(emb, dtype=torch.float32, device=device)
-            x_centered = x - data_mean
-            h = sae.encode(x_centered)  # (n_samples, hidden_dim)
+            data_mean, data_std = load_norm_stats(model_key, ds_name, device=device)
+            x_norm = (x - data_mean) / data_std
+            h = sae.encode(x_norm)  # (n_samples, hidden_dim)
             mean_act = h.mean(dim=0).cpu().numpy()  # (hidden_dim,)
             dataset_means[ds_name] = mean_act
             all_activations.append(h.cpu().numpy())

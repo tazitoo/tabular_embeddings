@@ -121,7 +121,7 @@ def load_norm_stats(
     SAEs were trained on per-dataset StandardScaler normalized embeddings:
         x_norm = (x_raw - mean_d) / std_d
 
-    The stats are stored in {model}_layer{N}_norm_stats.npz with keys:
+    The stats are stored in {model}_*_norm_stats.npz with keys:
         datasets: (n_datasets,) sorted dataset names
         means: (n_datasets, hidden_dim)
         stds: (n_datasets, hidden_dim)
@@ -129,13 +129,13 @@ def load_norm_stats(
     Returns:
         (mean, std) tensors, each (hidden_dim,) on device
     """
-    layer = get_extraction_layer(model_key, layers_path)
-    stats_path = training_dir / f"{model_key}_layer{layer}_norm_stats.npz"
-    if not stats_path.exists():
+    candidates = sorted(training_dir.glob(f"{model_key}_*_norm_stats.npz"))
+    if not candidates:
         raise FileNotFoundError(
-            f"Norm stats not found: {stats_path}. "
+            f"No norm stats for '{model_key}' in {training_dir}. "
             f"Run build_sae_training_data.py first."
         )
+    stats_path = candidates[0]
     stats = np.load(stats_path)
     datasets = list(stats["datasets"])
     if dataset_name not in datasets:
@@ -166,13 +166,13 @@ def load_training_mean(
         "Use load_norm_stats(model_key, dataset_name) instead.",
         DeprecationWarning, stacklevel=2,
     )
-    layer = get_extraction_layer(model_key, layers_path)
-    training_path = training_dir / f"{model_key}_layer{layer}_sae_training.npz"
-    if not training_path.exists():
+    candidates = sorted(training_dir.glob(f"{model_key}_*_sae_training.npz"))
+    if not candidates:
         raise FileNotFoundError(
-            f"SAE training data not found: {training_path}. "
+            f"No training data for '{model_key}' in {training_dir}. "
             f"Cannot compute centering mean for intervention."
         )
+    training_path = candidates[0]
     data = np.load(training_path)
     mean = data["embeddings"].mean(axis=0)
     return torch.tensor(mean, dtype=torch.float32, device=device)
