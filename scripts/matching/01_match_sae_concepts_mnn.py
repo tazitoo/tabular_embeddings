@@ -35,7 +35,7 @@ from scripts.sae.compare_sae_cross_model import (
 
 EMB_DIR = PROJECT_ROOT / "output" / "embeddings" / "tabarena"
 SAE_DATA_DIR = PROJECT_ROOT / "output" / f"sae_training_round{DEFAULT_SAE_ROUND}"
-RANDOM_BASELINE_FILENAME = SAE_FILENAME.replace(".pt", "_random_baseline.pt")
+RANDOM_BASELINE_FILENAME = "sae_matryoshka_archetypal_random_baseline.pt"
 
 
 # ── Embedding & activation helpers ─────────────────────────────────────────
