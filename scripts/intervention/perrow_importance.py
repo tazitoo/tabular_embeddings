@@ -31,7 +31,7 @@ from scripts.intervention.intervene_lib import (
     load_dataset_context, load_test_embeddings,
     compute_per_row_loss, compute_feature_deltas,
     batched_ablation, batched_ablation_sequential,
-    MitraTail, HyperFastTail,
+    SEQUENTIAL_MODELS, DATAFRAME_MODELS,
 )
 from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 
@@ -40,8 +40,7 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = PROJECT_ROOT / "output" / "perrow_importance"
 
-# Models with preprocessing cache (CARTE and Tabula-8B deferred)
-SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast"]
+SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
 
 
 def run_dataset(
@@ -96,7 +95,7 @@ def run_dataset(
                 f"mean baseline loss: {baseline_loss.mean():.4f}")
 
     # Choose ablation strategy
-    use_sequential = isinstance(tail, (MitraTail, HyperFastTail))
+    use_sequential = isinstance(tail, SEQUENTIAL_MODELS)
 
     # Per-row importance loop
     row_feature_drops = np.zeros((n_query, n_alive), dtype=np.float32)

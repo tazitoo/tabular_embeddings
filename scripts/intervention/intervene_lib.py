@@ -232,8 +232,12 @@ def get_matryoshka_bands(model_key: str, sae_dir: Path = None) -> Dict[str, int]
 from scripts.intervention.intervene_sae import (  # noqa: E402
     TabPFNTail, TabICLTail, TabICLV2Tail,
     TabDPTTail, MitraTail, HyperFastTail,
+    CARTETail, Tabula8BTail,
     build_tail,
 )
+
+# Models that must use sequential fallback (no batched K-copy trick)
+SEQUENTIAL_MODELS = (MitraTail, HyperFastTail, CARTETail, Tabula8BTail)
 
 
 # ── Row alignment ───────────────────────────────────────────────────────────
@@ -271,28 +275,34 @@ def _unpool_dataset(npz_data, dataset: str):
     return None, None
 
 
+# Models that need raw DataFrames (not preprocessed numpy cache)
+DATAFRAME_MODELS = {"tabula8b", "carte"}
+
+
 def load_dataset_context(
     model_key: str,
     dataset: str,
     splits: Optional[dict] = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
+    max_context: int = 1024,
+) -> Tuple:
     """Load preprocessed data and resolve row alignment for one dataset.
+
+    For most models, loads from the preprocessing cache (numpy arrays).
+    For CARTE and Tabula-8B, loads raw DataFrames from the TabArena cache.
 
     Returns:
         X_train, y_train, X_query, y_query, row_indices, task
+        (X_train/X_query are DataFrames for CARTE/Tabula-8B, numpy otherwise)
     """
-    from data.preprocessing import load_preprocessed, CACHE_DIR
-
     if splits is None:
         splits = json.loads(SPLITS_PATH.read_text())
 
     split_info = splits[dataset]
     task = split_info["task_type"]
+    train_idx = np.array(split_info["train_indices"])
     holdout_indices = np.array(split_info["test_indices"])
 
-    data = load_preprocessed(model_key, dataset, CACHE_DIR)
-
-    # Load row_indices from test NPZ (prefer taskaware, the canonical round 10 output)
+    # Load row_indices from test NPZ
     test_npz = sorted(SAE_DATA_DIR.glob(f"{model_key}_taskaware_sae_test.npz"))
     if not test_npz:
         test_npz = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_sae_test.npz"))
@@ -303,14 +313,45 @@ def load_dataset_context(
     offset, count = _unpool_dataset(npz_data, dataset)
     if offset is None:
         raise ValueError(f"Dataset {dataset} not in test embeddings")
-
     row_indices = npz_data["row_indices"][offset:offset + count]
-    positions = align_test_rows(holdout_indices, row_indices)
 
-    X_query = data.X_test[positions]
-    y_query = data.y_test[positions]
+    if model_key in DATAFRAME_MODELS:
+        # DataFrame models: load raw data, split by absolute indices
+        from data.extended_loader import _load_tabarena_cached_v2
 
-    return data.X_train, data.y_train, X_query, y_query, row_indices, task
+        cached = _load_tabarena_cached_v2(dataset)
+        if cached is None:
+            raise FileNotFoundError(
+                f"No raw TabArena cache for {dataset}. "
+                f"Run load_tabarena_dataset('{dataset}') first to populate cache."
+            )
+        X_df, y = cached
+
+        X_train = X_df.iloc[train_idx].reset_index(drop=True)
+        y_train = y[train_idx]
+
+        # Subsample context if needed (matches 04_extract_all_layers.py)
+        if len(X_train) > max_context:
+            rng = np.random.RandomState(42)
+            idx = rng.choice(len(X_train), max_context, replace=False)
+            X_train = X_train.iloc[idx].reset_index(drop=True)
+            y_train = y_train[idx]
+
+        # Query rows: absolute row_indices into original DataFrame
+        X_query = X_df.iloc[row_indices].reset_index(drop=True)
+        y_query = y[row_indices]
+    else:
+        # Standard path: load from preprocessing cache
+        from data.preprocessing import load_preprocessed, CACHE_DIR
+
+        data = load_preprocessed(model_key, dataset, CACHE_DIR)
+        positions = align_test_rows(holdout_indices, row_indices)
+        X_train = data.X_train
+        y_train = data.y_train
+        X_query = data.X_test[positions]
+        y_query = data.y_test[positions]
+
+    return X_train, y_train, X_query, y_query, row_indices, task
 
 
 def load_test_embeddings(model_key: str) -> Dict[str, np.ndarray]:
@@ -442,7 +483,7 @@ def _inject_query_deltas(tail, state: torch.Tensor, deltas: torch.Tensor):
             else:
                 state[ctx + k] += deltas[k]
 
-    elif isinstance(tail, (MitraTail, HyperFastTail)):
+    elif isinstance(tail, SEQUENTIAL_MODELS):
         raise NotImplementedError(
             f"{type(tail).__name__}: use batched_ablation_sequential() instead"
         )
