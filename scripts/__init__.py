@@ -58,9 +58,9 @@ _REDIRECTS: dict[str, str] = {
     "match_sae_features": "matching.01_match_sae_concepts_mnn",
     "match_cross_model_features": "matching.archived.compute_cross_correlations",
     "build_feature_match_graph": "matching.02_build_concept_graph",
-    "extend_sae_matches": "matching.05_extend_concept_matches",
-    "annotate_feature_matches": "matching.06_annotate_concept_matches",
-    "label_cross_model_concepts": "matching.07_label_cross_model_concepts",
+    "extend_sae_matches": "matching.archived.extend_concept_matches",
+    "annotate_feature_matches": "matching.archived.annotate_concept_matches",
+    "label_cross_model_concepts": "matching.05_label_cross_model_concepts",
     # intervention/
     "intervene_sae": "intervention.intervene_sae",
     "concept_causal_intervention": "intervention.concept_causal_intervention",
