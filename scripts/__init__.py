@@ -40,10 +40,8 @@ _REDIRECTS: dict[str, str] = {
     "tabicl_metrics_complete": "sae.tabicl_metrics_complete",
     # concepts/
     "label_concepts": "concepts.label_concepts",
-    "label_cross_model_concepts": "matching.06_label_cross_model_concepts",
     "label_selective_features": "concepts.label_selective_features",
     "analyze_concept_hierarchy": "concepts.analyze_concept_hierarchy",
-    "analyze_concept_regression": "concepts.analyze_concept_regression",
     "analyze_concept_variance": "concepts.analyze_concept_variance",
     "build_concept_hierarchy": "concepts.build_concept_hierarchy",
     "concept_description_utils": "concepts.concept_description_utils",
@@ -54,14 +52,15 @@ _REDIRECTS: dict[str, str] = {
     "generate_concept_dictionary": "concepts.generate_concept_dictionary",
     "validate_concept_embeddings": "concepts.validate_concept_embeddings",
     "row_level_probes": "concepts.row_level_probes",
-    "compute_pymfe_cache": "concepts.compute_pymfe_cache",
-    # matching/ (renamed: features → concepts, numbered for execution order)
+    "compute_pymfe_cache": "matching.03_compute_pymfe_cache",
+    "analyze_concept_regression": "matching.04_analyze_concept_regression",
+    # matching/ (numbered for execution order)
     "match_sae_features": "matching.01_match_sae_concepts_mnn",
-    "match_cross_model_features": "matching.02_compute_cross_correlations",
-    "build_feature_match_graph": "matching.03_build_concept_graph",
-    "extend_sae_matches": "matching.04_extend_concept_matches",
-    "annotate_feature_matches": "matching.05_annotate_concept_matches",
-    "label_cross_model_concepts": "matching.06_label_cross_model_concepts",
+    "match_cross_model_features": "matching.archived.compute_cross_correlations",
+    "build_feature_match_graph": "matching.02_build_concept_graph",
+    "extend_sae_matches": "matching.05_extend_concept_matches",
+    "annotate_feature_matches": "matching.06_annotate_concept_matches",
+    "label_cross_model_concepts": "matching.07_label_cross_model_concepts",
     # intervention/
     "intervene_sae": "intervention.intervene_sae",
     "concept_causal_intervention": "intervention.concept_causal_intervention",
