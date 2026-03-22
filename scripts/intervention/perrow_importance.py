@@ -82,6 +82,10 @@ def run_dataset(
     logger.info(f"  Context: {X_train.shape}, Query: {n_query}, "
                 f"Alive: {n_alive}, Task: {task}")
 
+    # Mitra cross_entropy expects int64 labels
+    if y_train.dtype == np.int32:
+        y_train = y_train.astype(np.int64)
+
     # Build tail ONCE
     t0 = time.time()
     tail = build_tail(model_key, X_train, y_train, X_query,
