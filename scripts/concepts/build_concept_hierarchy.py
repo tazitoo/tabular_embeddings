@@ -12,74 +12,126 @@ Hierarchy levels:
                  └─ L4: Individual Feature (model, feat_idx)
 
 Usage:
-    python scripts/build_concept_hierarchy.py
-    python scripts/build_concept_hierarchy.py --output output/concept_hierarchy_full.json
+    python scripts/concepts/build_concept_hierarchy.py
+    python scripts/concepts/build_concept_hierarchy.py --verbose
 """
 
 import argparse
 import json
 import logging
+import re
 from collections import defaultdict
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import torch
-
 logger = logging.getLogger(__name__)
 
 from scripts._project_root import PROJECT_ROOT
 
-from scripts.sae.compare_sae_cross_model import SAE_FILENAME
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
 
 # Default paths
-DEFAULT_LABELS_PATH = PROJECT_ROOT / "output" / "cross_model_concept_labels.json"
+DEFAULT_LABELS_PATH = PROJECT_ROOT / "output" / f"cross_model_concept_labels_round{DEFAULT_SAE_ROUND}.json"
+DEFAULT_CONCEPTS_PATH = PROJECT_ROOT / "output" / f"sae_concept_analysis_round{DEFAULT_SAE_ROUND}.json"
 DEFAULT_TAXONOMY_PATH = PROJECT_ROOT / "config" / "pymfe_taxonomy.json"
-DEFAULT_LAYERS_PATH = PROJECT_ROOT / "config" / "optimal_extraction_layers.json"
-DEFAULT_SAE_DIR = PROJECT_ROOT / "output" / "sae_tabarena_sweep_round5"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "output" / "concept_hierarchy_full.json"
 
 # Band names
 BAND_NAMES = ["S1", "S2", "S3", "S4", "S5"]
 
-# Category for probes not in PyMFE taxonomy (row-level meta-features)
-ROW_LEVEL_CATEGORY = "Row-Level"
-
 # Category for features with no meaningful probes
 UNEXPLAINED_CATEGORY = "Unexplained"
 
+# Row-level probe categories (used when probes aren't in PyMFE taxonomy)
+ROW_LEVEL_CATEGORIES = {
+    "Numeric-Distribution": [
+        "numeric_mean_zscore", "numeric_std", "numeric_range", "numeric_iqr",
+        "numeric_kurtosis", "numeric_skewness", "numeric_max_zscore",
+        "numeric_min_zscore", "log_magnitude_mean", "log_magnitude_std",
+    ],
+    "Sparsity-Structure": [
+        "frac_zeros", "frac_integers", "frac_round_tens", "frac_very_large",
+        "frac_very_small", "frac_negative", "n_distinct_values",
+        "frac_negative_outliers", "frac_positive_outliers",
+    ],
+    "Categorical": [
+        "categorical_entropy", "categorical_modal_frac", "categorical_rarity",
+        "n_rare_categories",
+    ],
+    "Geometry-Neighborhood": [
+        "centroid_distance", "nearest_neighbor_dist", "local_density",
+        "local_intrinsic_dim", "local_clustering", "hub_score",
+        "pca_pc1", "pca_pc2",
+    ],
+    "Classification-Boundary": [
+        "borderline", "knn_class_ratio", "linear_boundary_dist",
+        "fisher_ratio", "target_is_minority",
+    ],
+    "Information-Content": [
+        "row_entropy", "row_surprise", "row_uniformity", "mi_contribution",
+    ],
+}
 
-def load_sae_configs(sae_dir: Path) -> Dict[str, Dict[str, Any]]:
-    """Load SAE configs from checkpoints to get hidden_dim and matryoshka_dims.
+# Fallback for probes not in any category
+UNCATEGORIZED = "Uncategorized"
+
+
+def load_sae_configs_from_concepts(concepts_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Extract SAE configs from concept analysis JSON (no .pt checkpoints needed).
+
+    Parses band_summary labels like 'S1 [0:48]' to recover matryoshka_dims.
 
     Returns:
-        Dict mapping model_key -> {input_dim, hidden_dim, matryoshka_dims, topk}
+        Dict mapping display_name -> {input_dim, hidden_dim, matryoshka_dims, topk}
     """
+    with open(concepts_path) as f:
+        concepts = json.load(f)
+
+    # TopK values per model (from round 10 sweep selection)
+    TOPK = {
+        "TabPFN": 256, "TabICL": 32, "TabICL-v2": 32, "Mitra": 32,
+        "CARTE": 16, "HyperFast": 16, "TabDPT": 16, "Tabula-8B": 64,
+    }
+
     configs = {}
-    for ckpt_path in sorted(sae_dir.glob(f"*/{SAE_FILENAME}")):
-        model_key = ckpt_path.parent.name
-        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        config = ckpt.get("config", {})
-        if hasattr(config, "__dict__"):
-            config = config.__dict__
-        configs[model_key] = {
-            "input_dim": config.get("input_dim"),
-            "hidden_dim": config.get("hidden_dim"),
-            "matryoshka_dims": config.get("matryoshka_dims", []),
-            "topk": config.get("topk"),
+    for model_name, model_data in concepts["models"].items():
+        band_summary = model_data.get("band_summary", {})
+        dims = []
+        for band_label in sorted(band_summary.keys()):
+            match = re.search(r"\[(\d+):(\d+)\]", band_label)
+            if match:
+                dims.append(int(match.group(2)))
+        if not dims:
+            logger.warning("No band boundaries for %s, skipping", model_name)
+            continue
+        hidden_dim = dims[-1]
+        # Input dim = hidden_dim / expansion (all round 10 are 4x except Tabula-8B 1x)
+        expansion = 1 if model_name == "Tabula-8B" else 4
+        configs[model_name] = {
+            "input_dim": hidden_dim // expansion,
+            "hidden_dim": hidden_dim,
+            "matryoshka_dims": dims,
+            "topk": TOPK.get(model_name),
         }
     return configs
 
 
 def build_probe_to_category(taxonomy: dict) -> Dict[str, str]:
-    """Build mapping from probe name to PyMFE super-category.
+    """Build mapping from probe name to category.
 
-    Probes not in any category are mapped to ROW_LEVEL_CATEGORY.
+    Covers both PyMFE dataset-level features and row-level probes.
+    Probes not in any category are mapped to UNCATEGORIZED.
     """
     probe_to_cat = {}
+    # PyMFE dataset-level features
     for cat_name, cat_info in taxonomy["categories"].items():
         for feat in cat_info["features"]:
             probe_to_cat[feat] = cat_name
+    # Row-level probes
+    for cat_name, probes in ROW_LEVEL_CATEGORIES.items():
+        for probe in probes:
+            probe_to_cat[probe] = cat_name
     return probe_to_cat
 
 
@@ -126,7 +178,7 @@ def assign_category(
         probe_name = probe_info[0]
         # Coefficient is last element (index 1 for unmatched, index 2 for groups)
         coeff = abs(probe_info[-1]) if len(probe_info) > 1 else 0.0
-        cat = probe_to_cat.get(probe_name, ROW_LEVEL_CATEGORY)
+        cat = probe_to_cat.get(probe_name, UNCATEGORIZED)
         category_votes[cat] += coeff
 
     if not category_votes:
@@ -141,6 +193,7 @@ def _normalize_model_name(name: str) -> str:
         "TabPFN": "tabpfn",
         "CARTE": "carte",
         "TabICL": "tabicl",
+        "TabICL-v2": "tabicl_v2",
         "TabDPT": "tabdpt",
         "Mitra": "mitra",
         "HyperFast": "hyperfast",
@@ -149,17 +202,102 @@ def _normalize_model_name(name: str) -> str:
     return mapping.get(name, name.lower().replace("-", ""))
 
 
+def _deduplicate_groups(labels: dict) -> Tuple[dict, Set[Tuple[str, int]]]:
+    """Deduplicate round 10 labels: mega-group 0 was split via Leiden into
+    sub-groups, but the labeling pipeline duplicated those sub-groups.
+
+    Returns:
+        (filtered_groups, orphaned_features) where filtered_groups excludes
+        the mega-group and its duplicates, and orphaned_features is a set of
+        (model_name, feat_idx) tuples from group 0 not covered by sub-groups.
+    """
+    concept_groups = labels.get("concept_groups", {})
+
+    # Detect mega-group (split_into > 0)
+    mega_id = None
+    n_splits = 0
+    for gid, g in concept_groups.items():
+        split_into = g.get("split_into", 0)
+        if isinstance(split_into, int) and split_into > 0:
+            mega_id = gid
+            n_splits = split_into
+            break
+
+    if mega_id is None:
+        # No mega-group deduplication needed
+        return concept_groups, set()
+
+    mega_group = concept_groups[mega_id]
+    mega_members = set(tuple(x) for x in mega_group["members"])
+
+    # Find the first contiguous run of Leiden sub-groups (members overlap mega_members)
+    first_split_start = int(mega_id) + 1
+    first_copy_ids = set()
+    covered = set()
+    for gid_int in range(first_split_start, first_split_start + n_splits * 3):
+        gid = str(gid_int)
+        if gid not in concept_groups:
+            continue
+        members = set(tuple(x) for x in concept_groups[gid]["members"])
+        if members & mega_members:
+            first_copy_ids.add(gid)
+            covered |= (members & mega_members)
+        if len(first_copy_ids) >= n_splits:
+            break
+
+    # Second copy starts right after the first
+    second_copy_start = max(int(x) for x in first_copy_ids) + 1 if first_copy_ids else len(concept_groups)
+    second_copy_ids = set()
+    for gid_int in range(second_copy_start, second_copy_start + n_splits * 3):
+        gid = str(gid_int)
+        if gid not in concept_groups:
+            continue
+        members = set(tuple(x) for x in concept_groups[gid]["members"])
+        if members & mega_members:
+            second_copy_ids.add(gid)
+        if len(second_copy_ids) >= n_splits:
+            break
+
+    # Prefer whichever copy has more labels; fall back to first copy
+    def _n_labeled(ids):
+        return sum(
+            1 for gid in ids
+            if concept_groups[gid].get("label", "unlabeled") != "unlabeled"
+        )
+
+    keep_ids = first_copy_ids
+    drop_ids = second_copy_ids
+    if second_copy_ids and _n_labeled(second_copy_ids) > _n_labeled(first_copy_ids):
+        keep_ids, drop_ids = drop_ids, first_copy_ids
+
+    # Orphaned = mega-group members not in any Leiden sub-group
+    orphaned = mega_members - covered
+
+    # Build filtered groups: skip mega-group and the duplicate copy
+    skip = {mega_id} | drop_ids
+    filtered = {gid: g for gid, g in concept_groups.items() if gid not in skip}
+
+    logger.info(
+        "Dedup: mega-group %s (%d members) -> %d sub-groups kept, "
+        "%d duplicates dropped, %d orphaned features",
+        mega_id, len(mega_members), len(keep_ids), len(drop_ids), len(orphaned),
+    )
+    return filtered, orphaned
+
+
 def build_hierarchy(
     labels: dict,
     taxonomy: dict,
     sae_configs: Dict[str, dict],
+    concepts_data: Optional[dict] = None,
 ) -> dict:
     """Build the full concept hierarchy from cross-model labels.
 
     Args:
-        labels: Loaded cross_model_concept_labels.json
+        labels: Loaded cross_model_concept_labels_round10.json
         taxonomy: Loaded pymfe_taxonomy.json
-        sae_configs: Per-model SAE config (hidden_dim, matryoshka_dims)
+        sae_configs: Per-model SAE config keyed by display name
+        concepts_data: Optional concept analysis JSON for orphaned feature probes
 
     Returns:
         Complete hierarchy dict with metadata, hierarchy, feature_index, model_comparison
@@ -168,20 +306,19 @@ def build_hierarchy(
 
     # Build model config metadata
     model_metadata = {}
-    for display_name in ["TabPFN", "CARTE", "TabICL", "TabDPT", "Mitra", "HyperFast", "Tabula-8B"]:
-        key = _normalize_model_name(display_name)
-        if key in sae_configs:
-            cfg = sae_configs[key]
-            model_metadata[display_name] = {
-                "hidden_dim": cfg["hidden_dim"],
-                "input_dim": cfg["input_dim"],
-                "bands": cfg["matryoshka_dims"],
-                "topk": cfg["topk"],
-            }
+    for display_name in sorted(sae_configs.keys()):
+        cfg = sae_configs[display_name]
+        model_metadata[display_name] = {
+            "hidden_dim": cfg["hidden_dim"],
+            "input_dim": cfg["input_dim"],
+            "bands": cfg["matryoshka_dims"],
+            "topk": cfg["topk"],
+        }
 
     # Collect all categories that will appear
     all_categories = set(taxonomy["categories"].keys())
-    all_categories.add(ROW_LEVEL_CATEGORY)
+    all_categories.update(ROW_LEVEL_CATEGORIES.keys())
+    all_categories.add(UNCATEGORIZED)
     all_categories.add(UNEXPLAINED_CATEGORY)
 
     # Initialize hierarchy structure
@@ -195,10 +332,12 @@ def build_hierarchy(
     feature_index: Dict[str, Dict[str, dict]] = defaultdict(dict)
 
     # Track which groups each model participates in (for model_comparison)
-    model_groups: Dict[str, Set[str]] = defaultdict(set)  # model -> set of group_ids
+    model_groups: Dict[str, Set[str]] = defaultdict(set)
 
-    # --- Process matched concept groups ---
-    concept_groups = labels.get("concept_groups", {})
+    # Deduplicate groups (handles mega-group split duplication)
+    concept_groups, orphaned_features = _deduplicate_groups(labels)
+
+    # --- Process concept groups ---
     for group_id, group in concept_groups.items():
         members = group.get("members", [])
         if not members:
@@ -219,16 +358,13 @@ def build_hierarchy(
 
         for model_name, feat_idx in members:
             features_by_model[model_name].append(feat_idx)
-            model_key = _normalize_model_name(model_name)
-            if model_key in sae_configs:
-                mat_dims = sae_configs[model_key]["matryoshka_dims"]
+            if model_name in sae_configs:
+                mat_dims = sae_configs[model_name]["matryoshka_dims"]
                 band = assign_band(feat_idx, mat_dims)
                 band_votes[band] += 1
 
-        # Use majority vote for band assignment (cross-model groups span models)
         consensus_band = max(band_votes, key=band_votes.get) if band_votes else "S5"
 
-        # Build group entry
         group_entry = {
             "label": label,
             "n_models": n_models,
@@ -241,7 +377,6 @@ def build_hierarchy(
 
         hierarchy[consensus_band][category]["groups"][group_id] = group_entry
 
-        # Update feature index
         for model_name, feat_idx in members:
             feature_index[model_name][str(feat_idx)] = {
                 "band": consensus_band,
@@ -252,49 +387,54 @@ def build_hierarchy(
             }
             model_groups[model_name].add(group_id)
 
-    # --- Process unmatched features (explained + unexplained) ---
-    unmatched = labels.get("unmatched_features", {})
-    for match_status in ["explained", "unexplained"]:
-        model_features = unmatched.get(match_status, {})
-        if not isinstance(model_features, dict):
-            continue
-        for model_name, features in model_features.items():
-            if not isinstance(features, dict):
-                continue
-            model_key = _normalize_model_name(model_name)
-            mat_dims = sae_configs.get(model_key, {}).get("matryoshka_dims", [])
+    # --- Process orphaned features (from mega-group, not in any sub-group) ---
+    for model_name, feat_idx in orphaned_features:
+        mat_dims = sae_configs.get(model_name, {}).get("matryoshka_dims", [])
+        band = assign_band(feat_idx, mat_dims) if mat_dims else "S5"
 
-            for feat_id_str, feat_info in features.items():
-                feat_idx = int(feat_id_str)
-                band = assign_band(feat_idx, mat_dims) if mat_dims else "S5"
+        # Try to get probe data from concept analysis
+        top_probes = []
+        r2 = 0.0
+        if concepts_data:
+            per_feat = concepts_data.get("models", {}).get(
+                model_name, {}
+            ).get("per_feature", {}).get(str(feat_idx), {})
+            top_probes = per_feat.get("top_probes", [])
+            r2 = per_feat.get("r2", 0.0)
 
-                top_probes = feat_info.get("top_probes", [])
-                r2 = feat_info.get("r2", 0.0)
-                label = feat_info.get("label", "")
-
-                category = assign_category(top_probes, probe_to_cat, r2=r2)
-
-                unmatched_key = f"{model_name}:{feat_id_str}"
-                hierarchy[band][category]["unmatched"][unmatched_key] = {
-                    "label": label,
-                    "r2": r2,
-                    "top_probes": top_probes,
-                }
-
-                feature_index[model_name][feat_id_str] = {
-                    "band": band,
-                    "category": category,
-                    "group_id": None,
-                    "label": label,
-                    "matched": False,
-                }
+        category = assign_category(top_probes, probe_to_cat, r2=r2)
+        unmatched_key = f"{model_name}:{feat_idx}"
+        hierarchy[band][category]["unmatched"][unmatched_key] = {
+            "label": "",
+            "r2": r2,
+            "top_probes": top_probes,
+        }
+        feature_index[model_name][str(feat_idx)] = {
+            "band": band,
+            "category": category,
+            "group_id": None,
+            "label": "",
+            "matched": False,
+        }
 
     # --- Build model_comparison ---
     model_comparison = _build_model_comparison(concept_groups, model_groups)
 
+    # --- Prune empty categories ---
+    for band in BAND_NAMES:
+        empty = [
+            cat for cat, data in hierarchy[band].items()
+            if not data["groups"] and not data["unmatched"]
+        ]
+        for cat in empty:
+            del hierarchy[band][cat]
+
     # --- Count features ---
     n_features = sum(len(feats) for feats in feature_index.values())
     n_groups = len(concept_groups)
+    active_categories = set()
+    for band_data in hierarchy.values():
+        active_categories.update(band_data.keys())
 
     # --- Assemble final output ---
     result = {
@@ -309,7 +449,7 @@ def build_hierarchy(
                 "S4": "h/2",
                 "S5": "h",
             },
-            "pymfe_categories": sorted(all_categories),
+            "categories": sorted(active_categories),
             "models": model_metadata,
         },
         "hierarchy": hierarchy,
@@ -349,14 +489,11 @@ def _build_model_comparison(
 
             # Groups unique to A (A has it, B doesn't)
             unique_groups = groups_a - groups_b
-            # Count features in unique groups belonging to A
             n_features = 0
-            category_counts: Dict[str, int] = defaultdict(int)
             for gid in unique_groups:
                 group = concept_groups.get(gid, {})
                 members = group.get("members", [])
-                a_features = [f for m, f in members if m == model_a]
-                n_features += len(a_features)
+                n_features += sum(1 for m, f in members if m == model_a)
 
             unique_to[model_a][f"vs_{model_b}"] = {
                 "groups": sorted(unique_groups, key=lambda x: int(x)),
@@ -540,16 +677,12 @@ def main():
         help="Path to cross_model_concept_labels.json",
     )
     parser.add_argument(
+        "--concepts", type=Path, default=DEFAULT_CONCEPTS_PATH,
+        help="Path to sae_concept_analysis.json (for SAE configs and orphan probes)",
+    )
+    parser.add_argument(
         "--taxonomy", type=Path, default=DEFAULT_TAXONOMY_PATH,
         help="Path to pymfe_taxonomy.json",
-    )
-    parser.add_argument(
-        "--layers", type=Path, default=DEFAULT_LAYERS_PATH,
-        help="Path to optimal_extraction_layers.json",
-    )
-    parser.add_argument(
-        "--sae-dir", type=Path, default=DEFAULT_SAE_DIR,
-        help="Path to SAE checkpoint directory",
     )
     parser.add_argument(
         "--output", type=Path, default=DEFAULT_OUTPUT_PATH,
@@ -572,13 +705,17 @@ def main():
     with open(args.taxonomy) as f:
         taxonomy = json.load(f)
 
-    logger.info("Loading SAE configs from %s", args.sae_dir)
-    sae_configs = load_sae_configs(args.sae_dir)
+    logger.info("Loading SAE configs from %s", args.concepts)
+    sae_configs = load_sae_configs_from_concepts(args.concepts)
     logger.info("Found SAE configs for: %s", sorted(sae_configs.keys()))
+
+    # Load concept analysis for orphaned feature probes
+    with open(args.concepts) as f:
+        concepts_data = json.load(f)
 
     # Build hierarchy
     logger.info("Building hierarchy...")
-    result = build_hierarchy(labels, taxonomy, sae_configs)
+    result = build_hierarchy(labels, taxonomy, sae_configs, concepts_data)
 
     # Print summary
     print_summary(result)

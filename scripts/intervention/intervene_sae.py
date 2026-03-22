@@ -388,6 +388,38 @@ class TabPFNTail:
         state[0, seq_idx, :, :] += delta_row.unsqueeze(0)
         return self._predict_with_modified_state(state)
 
+    def recapture(self, X_query_new):
+        """Re-capture hidden state with new query data. Model stays fitted.
+
+        Use for batched ablation: pass K copies of a single row to get
+        K query slots, then inject different deltas at each slot.
+
+        Returns:
+            preds: (n_query_new, ...) baseline predictions for new query
+        """
+        captured = {}
+
+        def capture_hook(module, input, output):
+            if isinstance(output, torch.Tensor):
+                captured["hidden"] = output.detach()
+
+        handle = self.layers[self.extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                if self.task == "regression":
+                    preds = self.clf.predict(X_query_new)
+                else:
+                    preds = self.clf.predict_proba(X_query_new)
+        finally:
+            handle.remove()
+
+        self.hidden_state = captured["hidden"]
+        self.n_query = len(X_query_new)
+        self.X_query = X_query_new
+        self.single_eval_pos = captured["hidden"].shape[1] - self.n_query
+        self.baseline_preds = np.asarray(preds)
+        return self.baseline_preds
+
 
 class TabICLTail:
     """Cached TabICL tail: injects delta at block L via hook, runs predict.
@@ -489,6 +521,32 @@ class TabICLTail:
         seq_idx = self.train_size + row_idx
         state[:, seq_idx, :] += delta_row.unsqueeze(0)
         return self._predict_with_modified_state(state)
+
+    def recapture(self, X_query_new):
+        """Re-capture hidden state with new query data. Model stays fitted.
+
+        Returns:
+            preds: (n_query_new, ...) baseline predictions for new query
+        """
+        captured = {}
+
+        def capture_hook(module, input, output):
+            if isinstance(output, torch.Tensor):
+                captured["hidden"] = output.detach()
+
+        handle = self.blocks[self.extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                preds = self.clf.predict_proba(X_query_new)
+        finally:
+            handle.remove()
+
+        self.hidden_state = captured["hidden"]
+        self.n_query = len(X_query_new)
+        self.X_query = X_query_new
+        self.train_size = captured["hidden"].shape[1] - self.n_query
+        self.baseline_preds = np.asarray(preds)
+        return self.baseline_preds
 
 
 class TabICLV2Tail:
@@ -599,6 +657,35 @@ class TabICLV2Tail:
         seq_idx = self.train_size + row_idx
         state[:, seq_idx, :] += delta_row.unsqueeze(0)
         return self._predict_with_modified_state(state)
+
+    def recapture(self, X_query_new):
+        """Re-capture hidden state with new query data. Model stays fitted.
+
+        Returns:
+            preds: (n_query_new, ...) baseline predictions for new query
+        """
+        captured = {}
+
+        def capture_hook(module, input, output):
+            if isinstance(output, torch.Tensor):
+                captured["hidden"] = output.detach()
+
+        handle = self.blocks[self.extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                if self.task == "regression":
+                    preds = self.clf.predict(X_query_new)
+                else:
+                    preds = self.clf.predict_proba(X_query_new)
+        finally:
+            handle.remove()
+
+        self.hidden_state = captured["hidden"]
+        self.n_query = len(X_query_new)
+        self.X_query = X_query_new
+        self.train_size = captured["hidden"].shape[1] - self.n_query
+        self.baseline_preds = np.asarray(preds)
+        return self.baseline_preds
 
 
 class CARTETail:
@@ -1077,6 +1164,45 @@ class MitraTail:
         delta_qry[row_idx] = delta_row
         return self._predict_with_delta(delta_sup, delta_qry)
 
+    def recapture(self, X_query_new):
+        """Re-capture hidden state with new query data. Model stays fitted.
+
+        Saves and restores trainer RNG state for deterministic batching.
+
+        Returns:
+            preds: (n_query_new, ...) baseline predictions for new query
+        """
+        rng_state = self.trainer.rng.get_state()
+
+        captured_support = []
+        captured_query = []
+
+        def capture_hook(module, input, output):
+            if isinstance(output, tuple) and len(output) >= 2:
+                sup, qry = output[0], output[1]
+                if isinstance(sup, torch.Tensor):
+                    captured_support.append(sup.detach())
+                if isinstance(qry, torch.Tensor):
+                    captured_query.append(qry.detach())
+
+        handle = self.layers[self.extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                if self.task == "regression":
+                    preds = self.clf.predict(X_query_new)
+                else:
+                    preds = self.clf.predict_proba(X_query_new)
+        finally:
+            handle.remove()
+
+        self.captured_support = captured_support
+        self.captured_query = captured_query
+        self.rng_state = rng_state
+        self.n_query = len(X_query_new)
+        self.X_query = X_query_new
+        self.baseline_preds = np.asarray(preds)
+        return self.baseline_preds
+
 
 class TabDPTTail:
     """Cached TabDPT tail: injects delta at encoder layer L via hook, runs predict.
@@ -1194,6 +1320,36 @@ class TabDPTTail:
         else:
             state[seq_idx, :] += delta_row
         return self._predict_with_modified_state(state)
+
+    def recapture(self, X_query_new):
+        """Re-capture hidden state with new query data. Model stays fitted.
+
+        Returns:
+            preds: (n_query_new, ...) baseline predictions for new query
+        """
+        captured = {}
+
+        def capture_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                captured["hidden"] = out.detach()
+
+        handle = self.encoder_layers[self.extraction_layer].register_forward_hook(capture_hook)
+        try:
+            with torch.no_grad():
+                if self.task == "regression":
+                    preds = self.clf.predict(X_query_new)
+                else:
+                    preds = self.clf.predict_proba(X_query_new)
+        finally:
+            handle.remove()
+
+        self.hidden_state = captured["hidden"]
+        self.n_query = len(X_query_new)
+        self.n_ctx = captured["hidden"].shape[0] - self.n_query
+        self.X_query = X_query_new
+        self.baseline_preds = np.asarray(preds)
+        return self.baseline_preds
 
 
 class HyperFastTail:
@@ -1313,6 +1469,55 @@ class HyperFastTail:
             x[row_idx] += delta_row
             outputs.append(self._forward_tail(jj, x))
         return np.mean(outputs, axis=0)
+
+    def recapture(self, X_query_new):
+        """Re-capture intermediates with new query data. Model stays fitted.
+
+        Replays the generated MLP forward through layers 0..extraction_layer
+        for each ensemble member to get new intermediate activations.
+
+        Returns:
+            preds: (n_query_new, n_classes) baseline predictions for new query
+        """
+        from hyperfast.hyperfast import (
+            forward_main_network, transform_data_for_main_network,
+        )
+
+        n_query = len(X_query_new)
+        X_query_t = torch.tensor(
+            np.asarray(X_query_new, dtype=np.float32), dtype=torch.float32,
+        ).to(self.device)
+
+        intermediates = []
+        baseline_outputs = []
+
+        for jj in range(len(self.main_networks)):
+            main_network = self.main_networks[jj]
+            rf = self.clf._move_to_device(self.clf._rfs[jj])
+            pca = self.clf._move_to_device(self.clf._pcas[jj])
+
+            if self.clf.feature_bagging:
+                X_b = X_query_t[:, self.clf.selected_features[jj]]
+            else:
+                X_b = X_query_t
+
+            X_transformed = transform_data_for_main_network(
+                X=X_b, cfg=self.clf._cfg, rf=rf, pca=pca,
+            )
+
+            with torch.no_grad():
+                outputs, intermediate = forward_main_network(
+                    X_transformed, main_network,
+                )
+                baseline_outputs.append(F.softmax(outputs, dim=1).cpu().numpy())
+
+            intermediates.append(intermediate.detach().clone())
+
+        self.intermediates = intermediates
+        self.n_query = n_query
+        self.X_query_t = X_query_t
+        self.baseline_preds = np.mean(baseline_outputs, axis=0)
+        return self.baseline_preds
 
 
 def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
