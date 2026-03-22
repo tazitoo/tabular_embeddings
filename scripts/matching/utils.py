@@ -121,28 +121,30 @@ def compute_sae_activations(
     return h
 
 
-def get_alive_mask(activations: np.ndarray, threshold: float = 0.001) -> np.ndarray:
-    """Boolean mask of features whose max activation exceeds threshold."""
-    return activations.max(axis=0) > threshold
+def get_alive_mask(activations: np.ndarray) -> np.ndarray:
+    """Boolean mask of features that fire on at least one row.
+
+    With TopK SAEs, any activation > 0 means the feature won the top-k
+    competition — no arbitrary magnitude threshold needed.
+    """
+    return activations.max(axis=0) > 0
 
 
 def compute_alive_mask(
     sae: SparseAutoencoder,
-    train_embs: Dict[str, np.ndarray],
-    threshold: float = 0.001,
+    embs: Dict[str, np.ndarray],
 ) -> np.ndarray:
-    """Compute alive mask from training data (authoritative source).
+    """Compute alive mask: which features fire on at least one row.
 
-    A feature is alive if it activates above threshold on any training row.
-    Using training data (which the SAE was trained on) ensures we capture
-    all features the SAE learned, independent of test-set sampling.
+    Pass the same split (train or test) used for downstream analysis,
+    so every alive feature has signal in the data being analyzed.
 
     Returns:
         Boolean mask of shape (hidden_dim,).
     """
     all_acts = []
-    for ds in sorted(train_embs.keys()):
-        acts = compute_sae_activations(sae, train_embs[ds])
+    for ds in sorted(embs.keys()):
+        acts = compute_sae_activations(sae, embs[ds])
         all_acts.append(acts)
     pooled = np.concatenate(all_acts, axis=0)
-    return get_alive_mask(pooled, threshold)
+    return get_alive_mask(pooled)

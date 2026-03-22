@@ -50,7 +50,6 @@ from scripts.sae.analyze_sae_concepts_deep import (
 from scripts.matching.utils import (
     compute_alive_mask,
     load_test_embeddings,
-    load_train_embeddings,
 )
 
 from analysis.sparse_autoencoder import SparseAutoencoder
@@ -268,6 +267,16 @@ def regress_features_per_dataset(
             ds_coeffs.append(ridge.coef_)
 
         if not ds_r2s:
+            # Feature is alive (on training data) but has no test activation
+            # above 1e-6 in any dataset. Still emit it with R²=0 so it can
+            # receive contrastive examples and labels downstream.
+            results[feat_idx] = {
+                'r2': 0.0,
+                'r2_std': 0.0,
+                'n_datasets': 0,
+                'coefficients': {probe_names[i]: 0.0 for i in range(n_probes)},
+                'top_probes': [],
+            }
             continue
 
         mean_r2 = float(np.mean(ds_r2s))
@@ -411,6 +420,9 @@ def collect_contrastive_examples(
     for feat_idx in alive_indices:
         col = all_acts[:, feat_idx]
         if col.max() < 1e-6:
+            # Feature alive on train but not on test — emit empty examples
+            # so downstream scripts know the feature exists
+            results[feat_idx] = {'top': [], 'contrast': []}
             continue
 
         # Top-k activating rows
@@ -868,9 +880,10 @@ def main():
                 continue
             try:
                 test_embs = load_test_embeddings(model_key)
-                train_embs = load_train_embeddings(model_key)
                 sae_model, _, _ = load_sae_checkpoint(sae_path)
-                alive = compute_alive_mask(sae_model, train_embs, threshold=0.001)
+                # Alive mask from test data — consistent with matching (step 1).
+                # Every alive feature has signal in the data we analyze.
+                alive = compute_alive_mask(sae_model, test_embs)
                 model_test_embs[display_name] = test_embs
                 model_alive_masks[display_name] = alive
                 print(f"  {display_name}: {len(test_embs)} datasets, "

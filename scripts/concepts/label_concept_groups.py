@@ -246,7 +246,14 @@ Write your output to: {output_path}
 
 
 def _load_few_shot(n: int = 5) -> str:
-    """Load seed labels from batch 0 as few-shot examples."""
+    """Load seed labels from batch 0 as few-shot examples.
+
+    Bootstrapping: batch 0 is labeled first WITHOUT few-shot examples
+    (labels_batch_00.json doesn't exist yet, so this returns "").
+    Once batch 0 is labeled and combined, its labels become the few-shot
+    seed for all subsequent batches (1–N), ensuring style consistency
+    without leaking labels from prior SAE rounds.
+    """
     seed_path = LABELING_DIR / "labels_batch_00.json"
     if not seed_path.exists():
         return ""

@@ -38,7 +38,7 @@ RANDOM_BASELINE_FILENAME = "sae_matryoshka_archetypal_random_baseline.pt"
 # Re-export shared utilities for backward compatibility
 from scripts.matching.utils import (  # noqa: E402, F401
     EMB_DIR, SAE_DATA_DIR,
-    load_norm_stats, load_test_embeddings, load_train_embeddings,
+    load_norm_stats, load_test_embeddings,
     load_embeddings, compute_sae_activations, get_alive_mask,
     compute_alive_mask,
 )
@@ -288,18 +288,14 @@ def match_model_pair(
     alive_mask_A: np.ndarray = None,
     alive_mask_B: np.ndarray = None,
     method: str = "mnn",
-    alive_threshold: float = 0.001,
     return_corr_matrix: bool = False,
 ) -> dict:
     """
     Match SAE features between two models across shared datasets.
 
-    Alive masks are determined from training data (what the SAE learned).
-    Cross-correlations are computed on test data (generalization check).
-
     Args:
-        alive_mask_A/B: Pre-computed boolean masks from training data.
-            If None, falls back to computing from test data.
+        alive_mask_A/B: Pre-computed boolean masks (features that fire on
+            at least one row). If None, computed from pooled test activations.
 
     Returns:
         Dict with matches, unmatched features, and statistics.
@@ -323,9 +319,9 @@ def match_model_pair(
     pooled_A = np.concatenate(all_acts_A, axis=0)
     pooled_B = np.concatenate(all_acts_B, axis=0)
 
-    # Step 3: Alive mask (from training data if provided, else test data fallback)
-    alive_A = alive_mask_A if alive_mask_A is not None else get_alive_mask(pooled_A, alive_threshold)
-    alive_B = alive_mask_B if alive_mask_B is not None else get_alive_mask(pooled_B, alive_threshold)
+    # Step 3: Alive mask — features that fire on at least one test row
+    alive_A = alive_mask_A if alive_mask_A is not None else get_alive_mask(pooled_A)
+    alive_B = alive_mask_B if alive_mask_B is not None else get_alive_mask(pooled_B)
 
     indices_A = np.where(alive_A)[0]
     indices_B = np.where(alive_B)[0]
@@ -484,7 +480,6 @@ def main():
             continue
         try:
             test_embs = load_test_embeddings(model_key)
-            train_embs = load_train_embeddings(model_key)
         except FileNotFoundError as e:
             print(f"  Skipping {display_name}: {e}")
             continue
@@ -493,12 +488,9 @@ def main():
             "emb_key": emb_key,
             "ckpt": ckpt,
             "test_embs": test_embs,
-            "train_embs": train_embs,
         }
-        n_train = sum(len(v) for v in train_embs.values())
         n_test = sum(len(v) for v in test_embs.values())
-        print(f"  {display_name}: {len(test_embs)} datasets, "
-              f"{n_train} train / {n_test} test rows")
+        print(f"  {display_name}: {len(test_embs)} datasets, {n_test} test rows")
 
     model_names = sorted(models.keys())
     print(f"Models with checkpoints: {model_names}")
@@ -508,14 +500,17 @@ def main():
     datasets = sorted(set.intersection(*all_ds_sets)) if all_ds_sets else []
     print(f"Common datasets: {len(datasets)}")
 
-    # Load SAE checkpoints and compute alive masks from training data
+    # Load SAE checkpoints and compute alive masks from test data.
+    # Using test data (which is also used for matching and regression)
+    # ensures consistency: every alive feature has signal in the data
+    # we actually analyze downstream.
     saes = {}
     alive_masks = {}
     for name, info in models.items():
         print(f"Loading SAE: {name} from {info['ckpt']}")
         model, config, _ = load_sae_checkpoint(info["ckpt"])
         saes[name] = model
-        mask = compute_alive_mask(model, info["train_embs"], args.alive_threshold)
+        mask = compute_alive_mask(model, info["test_embs"])
         alive_masks[name] = mask
         print(f"  hidden_dim={config.hidden_dim}, topk={config.topk}, "
               f"alive={mask.sum()}/{len(mask)} ({mask.sum()/len(mask)*100:.1f}%)")
@@ -543,7 +538,7 @@ def main():
             # Use all datasets in this model's test split
             model_datasets = sorted(info["test_embs"].keys())
             rand_alive = compute_alive_mask(
-                rand_model, info["train_embs"], args.alive_threshold
+                rand_model, info["test_embs"]
             )
             result = match_model_pair(
                 model_A=saes[name],
@@ -554,7 +549,6 @@ def main():
                 alive_mask_A=alive_masks[name],
                 alive_mask_B=rand_alive,
                 method=args.method,
-                alive_threshold=args.alive_threshold,
             )
             pair_key = f"{name}__random"
             pairs[pair_key] = result
@@ -611,7 +605,7 @@ def main():
 
     # Cross-model random baseline: trained-A vs random-B for all directed pairs
     if args.cross_model_baseline:
-        # Load random SAEs and compute their alive masks from training data
+        # Load random SAEs and compute their alive masks from test data
         random_saes = {}
         random_alive = {}
         for name in model_names:
@@ -623,7 +617,7 @@ def main():
             rand_model, _, _ = load_sae_checkpoint(rand_ckpt)
             random_saes[name] = rand_model
             random_alive[name] = compute_alive_mask(
-                rand_model, info["train_embs"], args.alive_threshold
+                rand_model, info["test_embs"]
             )
         print(f"Random SAEs loaded: {sorted(random_saes.keys())}")
 
@@ -721,7 +715,6 @@ def main():
             alive_mask_A=alive_masks[name_a],
             alive_mask_B=alive_masks[name_b],
             method=args.method,
-            alive_threshold=args.alive_threshold,
             return_corr_matrix=args.save_correlations,
         )
 
