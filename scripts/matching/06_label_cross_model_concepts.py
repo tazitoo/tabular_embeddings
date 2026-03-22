@@ -1036,10 +1036,14 @@ def split_megagroup(
     with open(groups_path) as f:
         data = json.load(f)
 
-    print(f"Loading {concepts_path}...")
-    with open(concepts_path) as f:
-        concepts = json.load(f)
-    probe_lookup, dataset_context = load_concept_data(concepts, top_k=5)
+    if concepts_path.exists():
+        print(f"Loading {concepts_path}...")
+        with open(concepts_path) as f:
+            concepts = json.load(f)
+        probe_lookup, dataset_context = load_concept_data(concepts, top_k=5)
+    else:
+        print(f"No concept regression at {concepts_path} — running without probes")
+        probe_lookup, dataset_context = {}, {}
 
     # Load domain lookup for prompts
     domain_path = PROJECT_ROOT / "data" / "tabarena_domains.json"
