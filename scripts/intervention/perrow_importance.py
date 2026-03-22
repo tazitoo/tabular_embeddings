@@ -40,7 +40,10 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = PROJECT_ROOT / "output" / "perrow_importance"
 
-SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
+# CARTE and Tabula-8B deferred: CARTE has a dimension mismatch between GNN
+# internal state (300) and SAE embedding dim (150). Tabula-8B needs testing.
+# Both need per-model delta injection logic beyond the generic path.
+SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast"]
 
 
 def run_dataset(
