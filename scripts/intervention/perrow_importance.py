@@ -27,7 +27,7 @@ import torch
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
-    load_sae, get_extraction_layer, build_tail,
+    load_sae, get_extraction_layer_taskaware, build_tail,
     load_dataset_context, load_test_embeddings,
     compute_per_row_loss, compute_feature_deltas,
     batched_ablation, batched_ablation_sequential,
@@ -40,10 +40,7 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = PROJECT_ROOT / "output" / "perrow_importance"
 
-# CARTE and Tabula-8B deferred: CARTE has a dimension mismatch between GNN
-# internal state (300) and SAE embedding dim (150). Tabula-8B needs testing.
-# Both need per-model delta injection logic beyond the generic path.
-SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast"]
+SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
 
 
 def run_dataset(
@@ -166,7 +163,7 @@ def main():
     # Load SAE once
     sae, config = load_sae(args.model, device=args.device)
     sae.eval()
-    extraction_layer = get_extraction_layer(args.model)
+    extraction_layer = get_extraction_layer_taskaware(args.model)
     norm_stats = load_norm_stats_matching(args.model)
 
     # Datasets with test embeddings

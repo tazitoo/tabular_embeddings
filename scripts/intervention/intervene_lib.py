@@ -93,10 +93,45 @@ def load_sae(model_key: str, sae_dir: Path = DEFAULT_SAE_DIR, device: str = "cud
 
 
 def get_extraction_layer(model_key: str, layers_path: Path = DEFAULT_LAYERS_PATH) -> int:
-    """Get the optimal extraction layer index for a model."""
+    """Get the optimal extraction layer index for a model (fixed config)."""
     with open(layers_path, encoding="utf-8") as f:
         layers_config = json.load(f)
     return layers_config[model_key]["optimal_layer"]
+
+
+def get_extraction_layer_taskaware(model_key: str, dataset: str = None) -> int:
+    """Get the task-aware extraction layer from the SAE training norm stats.
+
+    Round 10 SAEs use task-aware layer selection (round(mean_critical_layer)
+    per architecture variant). This reads the actual layer used from the
+    norm stats NPZ, which is authoritative.
+
+    Args:
+        model_key: model name
+        dataset: if given, return the layer for this specific dataset
+
+    Returns:
+        extraction layer index
+    """
+    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_taskaware_norm_stats.npz"))
+    if not candidates:
+        candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_norm_stats.npz"))
+    if not candidates:
+        # Fall back to fixed config
+        return get_extraction_layer(model_key)
+
+    stats = np.load(candidates[0], allow_pickle=True)
+    if "layers" not in stats:
+        return get_extraction_layer(model_key)
+
+    layers = stats["layers"]
+    if dataset is not None:
+        datasets = list(stats["datasets"])
+        if dataset in datasets:
+            return int(layers[datasets.index(dataset)])
+
+    # All datasets use the same layer in task-aware fixed mode
+    return int(layers[0])
 
 
 def load_norm_stats(
