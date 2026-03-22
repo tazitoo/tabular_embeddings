@@ -496,20 +496,33 @@ def batched_ablation_sequential(
     tail,
     X_row: np.ndarray,
     deltas: torch.Tensor,
+    query_idx: int = 0,
 ) -> np.ndarray:
-    """Fallback for Mitra/HyperFast: K sequential predict_row() calls.
+    """Fallback for models without batched K-copy support.
 
-    Still benefits from fit-once — just no K-batching speedup.
+    K sequential predict_row() calls. Still benefits from fit-once.
+
+    Args:
+        tail: fitted tail model
+        X_row: (1, n_features) single query row (unused if tail already has it)
+        deltas: (K, emb_dim) per-feature deltas
+        query_idx: index of this row in the tail's query set
+
+    Returns:
+        preds: (K, ...) predictions, one per ablation
     """
     K = len(deltas)
     if K == 0:
         return np.array([])
 
-    tail.recapture(X_row)
+    # Recapture if available (Mitra/HyperFast), otherwise use existing state
+    if hasattr(tail, "recapture"):
+        tail.recapture(X_row)
+        query_idx = 0
 
     preds_list = []
     for k in range(K):
-        preds = tail.predict_row(0, deltas[k])
-        preds_list.append(preds[0:1])
+        preds = tail.predict_row(query_idx, deltas[k])
+        preds_list.append(preds[query_idx:query_idx + 1])
 
     return np.concatenate(preds_list, axis=0)

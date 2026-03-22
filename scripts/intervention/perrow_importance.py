@@ -118,7 +118,7 @@ def run_dataset(
 
         X_row = X_query[r:r + 1]
         if use_sequential:
-            preds = batched_ablation_sequential(tail, X_row, deltas)
+            preds = batched_ablation_sequential(tail, X_row, deltas, query_idx=r)
         else:
             preds = batched_ablation(tail, X_row, deltas, max_K=max_K)
 
