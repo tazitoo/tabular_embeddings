@@ -52,7 +52,7 @@ from data.extended_loader import load_tabarena_dataset
 # Round 8: Detach AuxK residual, normalize by residual variance, grad clipping, dead_steps=200
 # Round 10: Task-aware layers, efficiency objective (recon*sqrt(hidden)*sqrt(L0)/alive)
 DEFAULT_SAE_ROUND = 10
-SAE_FILENAME = "sae_matryoshka_archetypal_efficiency.pt"
+SAE_FILENAME = "sae_matryoshka_archetypal_validated.pt"
 
 
 def sae_sweep_dir(round: int = None) -> Path:
