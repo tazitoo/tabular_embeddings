@@ -48,6 +48,12 @@ sae = [
     "wandb",
 ]
 
+# Concept matching (Leiden community detection)
+matching = [
+    "igraph>=0.10",
+    "leidenalg>=0.10",
+]
+
 # Benchmark dataset loaders
 benchmarks = [
     "relbench",
