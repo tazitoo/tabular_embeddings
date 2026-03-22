@@ -215,6 +215,7 @@ data/*.pkl
 data/embeddings/
 data/cache/
 output/
+!output/cross_model_concept_labels_round10.json
 wandb/
 *.ckpt
 .DS_Store
