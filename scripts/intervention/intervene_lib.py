@@ -292,8 +292,10 @@ def load_dataset_context(
 
     data = load_preprocessed(model_key, dataset, CACHE_DIR)
 
-    # Load row_indices from test NPZ
-    test_npz = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_sae_test.npz"))
+    # Load row_indices from test NPZ (prefer taskaware, the canonical round 10 output)
+    test_npz = sorted(SAE_DATA_DIR.glob(f"{model_key}_taskaware_sae_test.npz"))
+    if not test_npz:
+        test_npz = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_sae_test.npz"))
     if not test_npz:
         raise FileNotFoundError(f"No test embeddings for {model_key} in {SAE_DATA_DIR}")
     npz_data = np.load(test_npz[0], allow_pickle=True)
@@ -309,6 +311,31 @@ def load_dataset_context(
     y_query = data.y_test[positions]
 
     return data.X_train, data.y_train, X_query, y_query, row_indices, task
+
+
+def load_test_embeddings(model_key: str) -> Dict[str, np.ndarray]:
+    """Load per-dataset test embeddings from the canonical taskaware NPZ.
+
+    Returns:
+        Dict mapping dataset name -> (n_rows, emb_dim) normalized embeddings.
+    """
+    candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_taskaware_sae_test.npz"))
+    if not candidates:
+        candidates = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_sae_test.npz"))
+    if not candidates:
+        raise FileNotFoundError(f"No test embeddings for {model_key} in {SAE_DATA_DIR}")
+
+    data = np.load(candidates[0], allow_pickle=True)
+    embeddings = data["embeddings"]
+    spd = data["samples_per_dataset"]
+
+    result = {}
+    offset = 0
+    for ds_name, count in spd:
+        ds_name, count = str(ds_name), int(count)
+        result[ds_name] = embeddings[offset:offset + count]
+        offset += count
+    return result
 
 
 # ── Delta computation ────────────────────────────────────────────────────────

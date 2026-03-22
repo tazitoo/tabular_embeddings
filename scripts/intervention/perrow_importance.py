@@ -28,15 +28,12 @@ from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
     load_sae, get_extraction_layer, build_tail,
-    load_dataset_context,
+    load_dataset_context, load_test_embeddings,
     compute_per_row_loss, compute_feature_deltas,
     batched_ablation, batched_ablation_sequential,
     MitraTail, HyperFastTail,
 )
-from scripts.matching.utils import (
-    load_test_embeddings,
-    load_norm_stats as load_norm_stats_matching,
-)
+from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
