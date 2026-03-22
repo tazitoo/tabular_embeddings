@@ -360,6 +360,8 @@ def build_training_data(
     test_embeddings = []
     train_samples = {}
     test_samples = {}
+    train_row_indices = {}
+    test_row_indices = {}
     norm_stats = {}
     skipped = 0
 
@@ -431,6 +433,11 @@ def build_training_data(
         train_samples[ds_name] = len(train_emb)
         test_samples[ds_name] = len(test_emb)
 
+        # Map subsample indices back to original dataset row indices
+        holdout_indices = np.array(split_info["test_indices"], dtype=np.int32)
+        train_row_indices[ds_name] = holdout_indices[train_idx]
+        test_row_indices[ds_name] = holdout_indices[test_idx]
+
         sampling = "all" if n_holdout <= SAMPLE_CAP else "stratified"
         diff_str = "T×D" if losses is not None and task_type == "classification" else (
             "diff" if losses is not None else "rnd")
@@ -468,24 +475,28 @@ def build_training_data(
 
     config = load_optimal_layers()[model]
 
-    def _save(path, embeddings, samples_dict, split_name):
+    def _save(path, embeddings, samples_dict, row_indices_dict, split_name):
+        # Concatenate per-dataset row indices in dataset order
+        ds_order = list(samples_dict.keys())
+        all_indices = np.concatenate([row_indices_dict[ds] for ds in ds_order])
         np.savez_compressed(
             str(path),
             embeddings=embeddings,
             optimal_layer=np.array(reported_layer),
             layer_name=np.array(layer_name),
-            source_datasets=np.array(list(samples_dict.keys())),
+            source_datasets=np.array(ds_order),
             samples_per_dataset=np.array(
                 [(k, v) for k, v in samples_dict.items()],
                 dtype=[("dataset", "U100"), ("count", "i4")],
             ),
+            row_indices=all_indices,
             split=np.array(split_name),
             config=np.array(json.dumps(config)),
             layer_mode=np.array(layer_mode),
         )
 
-    _save(train_path, train_pooled, train_samples, "train")
-    _save(test_path, test_pooled, test_samples, "test")
+    _save(train_path, train_pooled, train_samples, train_row_indices, "train")
+    _save(test_path, test_pooled, test_samples, test_row_indices, "test")
 
     # Save per-dataset normalization stats (from full fold)
     # Include per-dataset extraction layers for downstream consumers
