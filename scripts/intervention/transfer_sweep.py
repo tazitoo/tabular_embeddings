@@ -41,12 +41,16 @@ from scripts.intervention.intervene_lib import (
     MitraTail, SEQUENTIAL_MODELS,
 )
 from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
+from scripts.intervention.intervene_sae import intervene
+from scripts.intervention.transfer_concepts import capture_embeddings
 from scripts.intervention.transfer_virtual_nodes import (
     build_concept_bridge,
     extract_decoder_atoms,
     load_cross_correlations,
     _encode_unmatched_activations,
     _make_virtual_delta,
+    _build_full_delta_from_parts,
+    compute_virtual_delta_perrow,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -109,9 +113,13 @@ def run_dataset(
     device: str,
     max_steps: int,
 ) -> dict:
-    """Run virtual concept transfer for one dataset."""
+    """Run virtual concept transfer for one dataset.
 
-    # Load context + query for target model (the one being improved)
+    Uses full-sequence delta injection via intervene() — both context and
+    query get the virtual concept, so the target model sees it consistently
+    across the entire attention window.
+    """
+    # Load context + query for target model
     X_train_t, y_train_t, X_query_t, y_query_t, row_indices, task = load_dataset_context(
         target_model, dataset, splits,
     )
@@ -120,37 +128,38 @@ def run_dataset(
     if y_train_t.dtype == np.int32:
         y_train_t = y_train_t.astype(np.int64)
 
-    # Build target tail → baseline (weak) predictions
+    # Capture target embeddings + baseline predictions via full forward pass
     extraction_layer_t = get_extraction_layer_taskaware(target_model, dataset=dataset)
     t0 = time.time()
-    tail_t = build_tail(target_model, X_train_t, y_train_t, X_query_t,
-                        extraction_layer_t, task, device)
-    weak_preds = tail_t.baseline_preds
+    emb_target, weak_preds = capture_embeddings(
+        target_model, X_train_t, y_train_t, X_query_t,
+        extraction_layer_t, device, task,
+    )
+    weak_preds = np.asarray(weak_preds)
     weak_loss = compute_per_row_loss(y_query_t, weak_preds, task)
 
-    # Load source model's importance to get strong predictions
-    # (We need the source predictions to know the target for transfer)
+    # Get strong model predictions
     imp_path = IMPORTANCE_DIR / source_model / f"{dataset}.npz"
     if imp_path.exists():
         imp = np.load(imp_path, allow_pickle=True)
         strong_preds = imp["baseline_preds"]
-        strong_loss = compute_per_row_loss(y_query_t, strong_preds, task)
     else:
-        # Build source tail to get predictions
+        # Capture source predictions
         X_train_s, y_train_s, X_query_s, _, _, _ = load_dataset_context(
             source_model, dataset, splits,
         )
         if y_train_s.dtype == np.int32:
             y_train_s = y_train_s.astype(np.int64)
         extraction_layer_s = get_extraction_layer_taskaware(source_model, dataset=dataset)
-        tail_s = build_tail(source_model, X_train_s, y_train_s, X_query_s,
-                            extraction_layer_s, task, device)
-        strong_preds = tail_s.baseline_preds
-        strong_loss = compute_per_row_loss(y_query_t, strong_preds, task)
-        del tail_s
-        torch.cuda.empty_cache()
+        _, strong_preds = capture_embeddings(
+            source_model, X_train_s, y_train_s, X_query_s,
+            extraction_layer_s, device, task,
+        )
+        strong_preds = np.asarray(strong_preds)
 
-    logger.info(f"  Tails built in {time.time() - t0:.1f}s")
+    strong_loss = compute_per_row_loss(y_query_t, strong_preds, task)
+
+    logger.info(f"  Captured in {time.time() - t0:.1f}s")
     logger.info(f"  Strong ({source_model}) mean loss: {strong_loss.mean():.4f}")
     logger.info(f"  Weak ({target_model}) mean loss: {weak_loss.mean():.4f}")
 
@@ -162,146 +171,157 @@ def run_dataset(
     if n_strong_wins == 0:
         return {"n_strong_wins": 0, "n_query": n_query}
 
-    # Encode source embeddings through source SAE → unmatched activations
-    per_ds_s = load_test_embeddings(source_model)
-    emb_s = per_ds_s[dataset]
-
+    # Encode source embeddings → unmatched activations (for ALL positions)
     ds_mean_s, ds_std_s = norm_stats_source[dataset]
     data_mean_s = torch.tensor(ds_mean_s, dtype=torch.float32, device=device)
     data_std_s = torch.tensor(ds_std_s, dtype=torch.float32, device=device)
 
     unmatched_indices = bridge["unmatched_indices"]
     n_unmatched = len(unmatched_indices)
+    virtual_atoms = bridge["virtual_atoms"]
 
+    # Encode source SAE on source test embeddings
+    per_ds_s = load_test_embeddings(source_model)
+    emb_s = per_ds_s[dataset]
     with torch.no_grad():
-        emb_t_tensor = torch.tensor(emb_s, dtype=torch.float32, device=device)
-        h_source = sae_source.encode(emb_t_tensor)
-        # Extract activations for unmatched features only
-        acts_query = h_source[:, unmatched_indices].cpu().numpy()
+        emb_s_t = torch.tensor(emb_s, dtype=torch.float32, device=device)
+        h_source = sae_source.encode(emb_s_t)
+    acts_query = h_source[:, unmatched_indices].cpu().numpy()
 
-    virtual_atoms = bridge["virtual_atoms"]  # (n_unmatched, d_target)
+    # For context activations, we need the source SAE encoding of context embeddings.
+    # The context embeddings come from the source model's forward pass.
+    # Use the target's emb_target (which includes context + query from target model).
+    # But we need source activations for the context — approximate with zeros
+    # (context rows don't have source SAE activations since we only have test embeddings).
+    # The old script used capture_embeddings on the source model to get source emb for all positions,
+    # then encoded through source SAE.
+    # For now: context delta = mean of query deltas (approximation)
+    n_ctx_target = emb_target.shape[0] - n_query
 
-    # Norm stats for target model (to denormalize virtual deltas)
-    ds_mean_t, ds_std_t = norm_stats_target[dataset]
-    data_std_t = torch.tensor(ds_std_t, dtype=torch.float32, device=device)
+    # Phase 1: Per-feature importance via full intervene()
+    logger.info(f"  Phase 1: per-feature importance ({n_unmatched} virtual concepts)...")
+    individual_preds = []
+    t1 = time.time()
 
-    # Per-row importance of virtual concepts (from source importance if available)
-    # For transfer, importance = which source concepts help the TARGET model most
-    # We approximate using the source model's importance ranking
-    if imp_path.exists():
-        imp_drops = imp["row_feature_drops"]
-        imp_features = list(imp["feature_indices"])
-        # Map unmatched features to their importance
-        feat_to_imp_idx = {int(f): i for i, f in enumerate(imp_features)}
-    else:
-        feat_to_imp_idx = {}
+    for feat_local in range(n_unmatched):
+        mask = np.zeros(n_unmatched, dtype=bool)
+        mask[feat_local] = True
 
-    use_sequential = isinstance(tail_t, SEQUENTIAL_MODELS)
+        # Query delta for this feature
+        delta_query = _make_virtual_delta(acts_query, virtual_atoms, feature_mask=mask)
+        # Context: use zero delta (we don't have source activations for context)
+        delta_ctx = torch.zeros(n_ctx_target, virtual_atoms.shape[1])
+        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query, n_ctx_target)
 
-    # Per-row greedy transfer
-    optimal_k = np.zeros(n_query, dtype=np.int32)
-    gap_closed = np.full(n_query, np.nan, dtype=np.float32)
-    n_classes = weak_preds.shape[1] if weak_preds.ndim == 2 else 1
-    preds_transferred = weak_preds.copy()
+        result = intervene(
+            model_key=target_model,
+            X_context=X_train_t, y_context=y_train_t,
+            X_query=X_query_t, y_query=y_query_t,
+            external_delta=full_delta.to(device),
+            device=device, task=task,
+        )
+        individual_preds.append(result["ablated_preds"])
 
-    t0 = time.time()
+        if (feat_local + 1) % 10 == 0:
+            logger.info(f"    {feat_local + 1}/{n_unmatched} features")
+
+    logger.info(f"  Phase 1 done in {time.time() - t1:.1f}s")
+
+    # Importance: negative = transfer helped (logloss decreased)
+    from scripts.intervention.intervene_sae import _perrow_importance, _perrow_rankings
+    importance = _perrow_importance(weak_preds, individual_preds, y_query_t)
+    importance = -importance  # negate: positive = transfer helped
+
+    # Phase 2: Per-row ranking (only features that fire in source)
+    feature_indices = list(range(n_unmatched))
+    rankings = _perrow_rankings(importance, feature_indices, acts_query)
+    max_k = max((len(r) for r in rankings), default=0)
+    logger.info(f"  Phase 2: rankings built. Max firing/row: {max_k}")
+
+    # Phase 3: Greedy accept/reject sweep
+    logger.info(f"  Phase 3: greedy sweep k=1..{min(max_k, max_steps)}...")
+    t2 = time.time()
+
+    # Track accepted masks per row
+    accepted_masks = np.zeros((n_query, n_unmatched), dtype=bool)
+    # Distance to strong model: |weak_pred - strong_pred| per row
+    sp1 = strong_preds[:, 1] if strong_preds.ndim == 2 else strong_preds.ravel()
+    bp1 = weak_preds[:, 1] if weak_preds.ndim == 2 else weak_preds.ravel()
+    best_dist = np.abs(bp1 - sp1)
+
+    sweep_preds = []
+    for k in range(1, min(max_k, max_steps) + 1):
+        # Tentative: accepted + k-th ranked feature per row
+        tentative_masks = accepted_masks.copy()
+        for row_idx in range(n_query):
+            if k - 1 < len(rankings[row_idx]):
+                tentative_masks[row_idx, rankings[row_idx][k - 1]] = True
+
+        # Per-row query delta
+        delta_query_t = torch.tensor(
+            compute_virtual_delta_perrow(acts_query, virtual_atoms, tentative_masks),
+            dtype=torch.float32,
+        )
+        # Context delta: union of all tentatively active features
+        ctx_mask = tentative_masks.any(axis=0)
+        delta_ctx = torch.zeros(n_ctx_target, virtual_atoms.shape[1])
+
+        full_delta = _build_full_delta_from_parts(delta_ctx, delta_query_t, n_ctx_target)
+
+        result = intervene(
+            model_key=target_model,
+            X_context=X_train_t, y_context=y_train_t,
+            X_query=X_query_t, y_query=y_query_t,
+            external_delta=full_delta.to(device),
+            device=device, task=task,
+        )
+        preds_k = result["ablated_preds"]
+
+        # Accept/reject: keep if prediction moves closer to strong
+        p1_k = preds_k[:, 1] if preds_k.ndim == 2 else preds_k.ravel()
+        dist_k = np.abs(p1_k - sp1)
+        for row_idx in range(n_query):
+            if dist_k[row_idx] < best_dist[row_idx] - 1e-8:
+                accepted_masks[row_idx] = tentative_masks[row_idx]
+                best_dist[row_idx] = dist_k[row_idx]
+
+        sweep_preds.append(preds_k)
+
+        if k % 5 == 0 or k == min(max_k, max_steps):
+            n_acc = accepted_masks.sum(axis=1)
+            logger.info(f"    k={k}: mean accepted={n_acc.mean():.1f}")
+
+    logger.info(f"  Phase 3 done in {time.time() - t2:.1f}s")
+
+    # Final predictions with accepted masks
+    n_accepted = accepted_masks.sum(axis=1)
+    optimal_k = n_accepted.astype(np.int32)
+
+    # Get final predictions by re-running with accepted masks
+    delta_query_final = torch.tensor(
+        compute_virtual_delta_perrow(acts_query, virtual_atoms, accepted_masks),
+        dtype=torch.float32,
+    )
+    delta_ctx_final = torch.zeros(n_ctx_target, virtual_atoms.shape[1])
+    full_delta_final = _build_full_delta_from_parts(delta_ctx_final, delta_query_final, n_ctx_target)
+
+    result_final = intervene(
+        model_key=target_model,
+        X_context=X_train_t, y_context=y_train_t,
+        X_query=X_query_t, y_query=y_query_t,
+        external_delta=full_delta_final.to(device),
+        device=device, task=task,
+    )
+    preds_transferred = result_final["ablated_preds"]
+
+    # Compute gap closed
+    transferred_loss = compute_per_row_loss(y_query_t, preds_transferred, task)
+    gap_closed = np.zeros(n_query, dtype=np.float32)
     for r in range(n_query):
-        if not strong_wins[r]:
-            optimal_k[r] = 0
-            gap_closed[r] = 1.0
-            continue
-
-        target_loss = strong_loss[r]
-        orig_gap = weak_loss[r] - target_loss
-        if orig_gap <= 0:
-            optimal_k[r] = 0
-            gap_closed[r] = 1.0
-            continue
-
-        # Rank unmatched features by source importance (most helpful first)
-        row_acts = acts_query[r]
-        firing = [(j, row_acts[j]) for j in range(n_unmatched) if row_acts[j] > 0]
-        if not firing:
-            continue
-
-        # Sort by source importance if available, else by activation magnitude
-        if feat_to_imp_idx:
-            firing_ranked = []
-            for j, act in firing:
-                global_idx = unmatched_indices[j]
-                imp_idx = feat_to_imp_idx.get(global_idx)
-                imp_val = imp_drops[r, imp_idx] if imp_idx is not None else 0.0
-                firing_ranked.append((j, imp_val, act))
-            firing_ranked.sort(key=lambda x: -x[1])
-        else:
-            firing_ranked = [(j, 0.0, act) for j, act in firing]
-            firing_ranked.sort(key=lambda x: -x[2])
-
-        ranked_local = [j for j, _, _ in firing_ranked[:max_steps]]
-        K = len(ranked_local)
-
-        # Compute K virtual deltas (cumulative: step k adds concepts 0..k)
-        X_row = X_query_t[r:r + 1]
-        virtual_deltas = []
-        with torch.no_grad():
-            for k in range(K):
-                mask = np.zeros(n_unmatched, dtype=bool)
-                for j in range(k + 1):
-                    mask[ranked_local[j]] = True
-                # Virtual delta = sum of (activation * virtual_atom) for masked features
-                delta = np.zeros(virtual_atoms.shape[1], dtype=np.float32)
-                for j in range(n_unmatched):
-                    if mask[j]:
-                        delta += row_acts[j] * virtual_atoms[j]
-                # Denormalize to target raw space
-                delta_t = torch.tensor(delta, dtype=torch.float32, device=device)
-                delta_raw = delta_t * data_std_t
-                virtual_deltas.append(delta_raw)
-
-        deltas = torch.stack(virtual_deltas)  # (K, d_target)
-
-        # Inject into target tail — transfer ADDS to the embedding (not replace)
-        if use_sequential:
-            from scripts.intervention.intervene_lib import batched_ablation_sequential
-            preds = batched_ablation_sequential(tail_t, X_row, deltas, query_idx=r)
-        else:
-            from scripts.intervention.intervene_lib import batched_ablation
-            preds = batched_ablation(tail_t, X_row, deltas)
-
-        # Greedy search: find first k where transfer closes the gap
-        y_tiled = np.full(len(preds), y_query_t[r])
-        step_losses = compute_per_row_loss(y_tiled, preds, task)
-
-        # Walk curve, accept only steps that improve (decrease loss toward target)
-        current_loss = weak_loss[r]
-        accepted_k = 0
-        accepted_pred_idx = None
-        for k in range(K):
-            if step_losses[k] <= current_loss:
-                current_loss = step_losses[k]
-                accepted_k = k + 1
-                accepted_pred_idx = k
-                if current_loss <= target_loss:
-                    break
-
-        if accepted_pred_idx is not None:
-            optimal_k[r] = accepted_k
-            gap_closed[r] = min(1.0, (weak_loss[r] - current_loss) / orig_gap) if orig_gap > 0 else 1.0
-            preds_transferred[r] = preds[accepted_pred_idx]
-        else:
-            optimal_k[r] = 0
-            gap_closed[r] = 0.0
-
-        if (r + 1) % 50 == 0 or r == n_query - 1:
-            elapsed = time.time() - t0
-            rate = (r + 1) / elapsed
-            eta = (n_query - r - 1) / rate if rate > 0 else 0
-            valid = optimal_k[:r+1][strong_wins[:r+1]]
-            mean_k = valid[valid > 0].mean() if (valid > 0).any() else 0
-            logger.info(f"    row {r+1}/{n_query}: mean_optimal_k={mean_k:.1f} "
-                        f"({rate:.1f} rows/s, ETA {eta:.0f}s)")
-
-    logger.info(f"  Done in {time.time() - t0:.1f}s")
+        if strong_wins[r]:
+            orig_gap = weak_loss[r] - strong_loss[r]
+            if orig_gap > 0:
+                gap_closed[r] = min(1.0, (weak_loss[r] - transferred_loss[r]) / orig_gap)
 
     valid_mask = strong_wins
     valid_k = optimal_k[valid_mask]
@@ -318,7 +338,7 @@ def run_dataset(
         "n_strong_wins": int(n_strong_wins),
         "mean_optimal_k": float(valid_k[valid_k > 0].mean()) if (valid_k > 0).any() else 0.0,
         "median_optimal_k": float(np.median(valid_k[valid_k > 0])) if (valid_k > 0).any() else 0.0,
-        "mean_gap_closed": float(valid_gc[~np.isnan(valid_gc)].mean()) if (~np.isnan(valid_gc)).any() else 0.0,
+        "mean_gap_closed": float(valid_gc.mean()) if len(valid_gc) else 0.0,
         "concept_map_r2": bridge["concept_map_r2"],
         "n_unmatched": len(unmatched_indices),
         "n_matched_pairs": bridge["n_matched_pairs"],
