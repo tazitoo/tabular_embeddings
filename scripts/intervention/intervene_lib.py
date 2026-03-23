@@ -131,7 +131,24 @@ def get_extraction_layer_taskaware(model_key: str, dataset: str = None) -> int:
             return int(layers[datasets.index(dataset)])
 
     # All datasets use the same layer in task-aware fixed mode
-    return int(layers[0])
+    layer = int(layers[0])
+
+    # Clamp to model's transformer block count: the NPZ may include
+    # non-block layers (e.g. final_norm for Mitra) that aren't in
+    # model.layers. The tail classes index into model.layers, so we
+    # need to cap at len(model.layers) - 1.  The extraction at
+    # final_norm ≈ last transformer block output anyway.
+    MODEL_LAYER_COUNTS = {
+        "mitra": 12, "tabpfn": 24, "tabicl": 12, "tabicl_v2": 12,
+        "tabdpt": 24, "hyperfast": 3, "carte": 5, "tabula8b": 33,
+    }
+    max_layer = MODEL_LAYER_COUNTS.get(model_key, 999) - 1
+    if layer > max_layer:
+        logger.debug("Clamping %s layer %d → %d (model has %d blocks)",
+                      model_key, layer, max_layer, max_layer + 1)
+        layer = max_layer
+
+    return layer
 
 
 def load_norm_stats(
