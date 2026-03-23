@@ -1241,10 +1241,8 @@ def _plot_ablation_sweep_results(npz_path: Path, output_path: Path):
     valid_k = optimal_k[strong_wins & (optimal_k > 0)]
     weak_wins = ~strong_wins
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig, ax = plt.subplots(1, 1, figsize=(7, 7))
 
-    # --- Left: scatter ---
-    ax = axes[0]
     ax.scatter(p_s[weak_wins], p_w[weak_wins], facecolors="none",
                edgecolors="#999999", s=14, alpha=0.5, linewidths=0.6,
                label=f"{disp_w} wins (n={weak_wins.sum()})", zorder=2)
@@ -1270,25 +1268,14 @@ def _plot_ablation_sweep_results(npz_path: Path, output_path: Path):
     ax.set_aspect("equal")
     ax.legend(fontsize=8, loc="lower right")
 
+    k_summary = (f"median k={np.median(valid_k):.0f}, mean k={valid_k.mean():.1f}"
+                 if len(valid_k) > 0 else "no rows modified")
     ax.set_title(
         f"{dataset} — per-row ablation "
-        f"({n_intervened} intervened / {n_improvable} improvable / {n_total} total)",
+        f"({n_intervened} intervened / {n_improvable} improvable / {n_total} total)\n"
+        f"{k_summary}",
         fontsize=10,
     )
-
-    # --- Right: histogram of optimal_k ---
-    ax2 = axes[1]
-    if len(valid_k) > 0:
-        ax2.hist(valid_k, bins=np.arange(0.5, valid_k.max() + 1.5, 1),
-                 color="steelblue", edgecolor="white", alpha=0.8)
-        ax2.axvline(valid_k.mean(), color="red", linestyle="--", alpha=0.7,
-                    label=f"Mean={valid_k.mean():.1f}")
-        ax2.axvline(np.median(valid_k), color="orange", linestyle="--", alpha=0.7,
-                    label=f"Median={np.median(valid_k):.0f}")
-        ax2.legend(fontsize=9)
-    ax2.set_xlabel(f"Concepts removed to match {disp_w}", fontsize=11)
-    ax2.set_ylabel("Number of rows", fontsize=11)
-    ax2.set_title(f"Concept gap distribution", fontsize=10)
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
