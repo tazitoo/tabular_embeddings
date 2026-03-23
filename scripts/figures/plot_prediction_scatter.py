@@ -1254,6 +1254,8 @@ def _plot_ablation_sweep_results(npz_path: Path, output_path: Path):
     _draw_scatter_layers(ax, ps, pw, pi, pw, yt, ok, "o", event_rate)
     _draw_scatter_chrome(ax, p_s, p_w, pi, pw, disp_s, disp_w, event_rate)
 
+    ax.legend(fontsize=7, loc="lower right")
+
     k_summary = (f"median k={np.median(valid_k):.0f}, mean k={valid_k.mean():.1f}"
                  if len(valid_k) > 0 else "no rows modified")
     ax.set_title(
