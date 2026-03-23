@@ -305,19 +305,26 @@ SEQUENTIAL_MODELS = (HyperFastTail, CARTETail, Tabula8BTail)
 # ── Row alignment ───────────────────────────────────────────────────────────
 
 
-def _sample_context(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    max_context: int,
-    task: str,
-    seed: int = 42,
-) -> tuple:
-    """Subsample context rows with stratified sampling for classification.
+def _cap_context(X_train, y_train, max_context: int, task: str, seed: int = 42):
+    """Subsample context if it exceeds max_context.
 
-    Matches 04_extract_all_layers.py sample_context() logic exactly.
+    Replicates the exact logic from 04_extract_all_layers.py so the tail
+    model sees the same context rows that produced the embeddings.
+
+    - DataFrame models (CARTE, Tabula-8B): simple rng.choice (line 261)
+    - Numpy models: stratified for classification, simple for regression (line 55-88)
     """
+    if len(X_train) <= max_context:
+        return X_train, y_train
+
     rng = np.random.RandomState(seed)
 
+    if hasattr(X_train, 'iloc'):
+        # DataFrame path — simple random (matches line 261-263)
+        idx = rng.choice(len(X_train), max_context, replace=False)
+        return X_train.iloc[idx].reset_index(drop=True), y_train[idx]
+
+    # Numpy path — stratified for classification (matches sample_context())
     if task == "classification":
         classes, counts = np.unique(y_train, return_counts=True)
         indices = []
@@ -378,6 +385,7 @@ def load_dataset_context(
     model_key: str,
     dataset: str,
     splits: Optional[dict] = None,
+    max_context: int = 1024,
 ) -> Tuple:
     """Load preprocessed data and resolve row alignment for one dataset.
 
@@ -423,6 +431,7 @@ def load_dataset_context(
 
         X_train = X_df.iloc[train_idx].reset_index(drop=True)
         y_train = y[train_idx]
+        X_train, y_train = _cap_context(X_train, y_train, max_context, task)
 
         # Query rows: absolute row_indices into original DataFrame
         X_query = X_df.iloc[row_indices].reset_index(drop=True)
@@ -435,6 +444,7 @@ def load_dataset_context(
         positions = align_test_rows(holdout_indices, row_indices)
         X_train = data.X_train
         y_train = data.y_train
+        X_train, y_train = _cap_context(X_train, y_train, max_context, task)
         X_query = data.X_test[positions]
         y_query = data.y_test[positions]
 
