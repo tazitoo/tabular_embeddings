@@ -514,6 +514,38 @@ def compute_feature_deltas(
     return delta_raw
 
 
+def compute_feature_reconstructions(
+    sae: torch.nn.Module,
+    h_row: torch.Tensor,
+    feature_indices: List[int],
+    data_mean: torch.Tensor,
+    data_std: torch.Tensor,
+) -> torch.Tensor:
+    """Compute full SAE reconstructions with each feature ablated.
+
+    For models (like Mitra) where we need to REPLACE the activation rather
+    than add a delta — the reconstruction IS the intervention.
+
+    Args:
+        sae: Trained SAE in eval mode
+        h_row: (hidden_dim,) SAE activations for this row (already encoded)
+        feature_indices: which features to ablate
+        data_mean: (emb_dim,) per-dataset mean for denormalization
+        data_std: (emb_dim,) per-dataset std for denormalization
+
+    Returns:
+        recons: (K, emb_dim) reconstructed activations in raw embedding space
+    """
+    K = len(feature_indices)
+    with torch.no_grad():
+        h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
+        for k, fi in enumerate(feature_indices):
+            h_batch[k, fi] = 0.0
+        recon_norm = sae.decode(h_batch)  # (K, emb_dim) in normalized space
+        recon_raw = recon_norm * data_std.unsqueeze(0) + data_mean.unsqueeze(0)
+    return recon_raw
+
+
 # ── Batched ablation ─────────────────────────────────────────────────────────
 
 
@@ -551,12 +583,31 @@ def batched_ablation(
         tail.recapture(X_batch)
 
         if isinstance(tail, MitraTail):
-            # Mitra: hook-based injection with separate support/query deltas.
-            # Zero support delta, per-query deltas in query portion.
-            n_sup = sum(s.shape[1] for s in tail.captured_support)
-            delta_sup = torch.zeros(n_sup, chunk_deltas.shape[1],
-                                    device=tail.device, dtype=chunk_deltas.dtype)
-            preds = tail._predict_with_delta(delta_sup, chunk_deltas)
+            # Mitra: activation patching — replace y-token with SAE reconstruction.
+            # chunk_deltas for Mitra contains full reconstructions, not deltas.
+            # Inject via patching layer L's forward to replace y-token (position 0).
+            layer = tail.layers[tail.extraction_layer]
+            original_forward = layer.forward
+
+            def make_patched_forward(recons):
+                def patched_forward(*args, **kwargs):
+                    sup, qry = original_forward(*args, **kwargs)
+                    if qry.ndim == 4:
+                        qry = qry.clone()
+                        qry[0, :, 0, :] = recons  # replace y-token for all K query copies
+                    return sup, qry
+                return patched_forward
+
+            layer.forward = make_patched_forward(chunk_deltas)
+            try:
+                with torch.no_grad():
+                    if tail.task == "regression":
+                        preds = tail.clf.predict(tail.X_query)
+                    else:
+                        preds = tail.clf.predict_proba(tail.X_query)
+                preds = np.asarray(preds)
+            finally:
+                layer.forward = original_forward
         else:
             state = tail.hidden_state.clone()
             _inject_query_deltas(tail, state, chunk_deltas)

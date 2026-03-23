@@ -29,9 +29,9 @@ from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
     load_sae, get_extraction_layer_taskaware, build_tail,
     load_dataset_context, load_test_embeddings,
-    compute_per_row_loss, compute_feature_deltas,
+    compute_per_row_loss, compute_feature_deltas, compute_feature_reconstructions,
     batched_ablation, batched_ablation_sequential,
-    SEQUENTIAL_MODELS, DATAFRAME_MODELS,
+    MitraTail, SEQUENTIAL_MODELS, DATAFRAME_MODELS,
 )
 from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 
@@ -76,6 +76,7 @@ def run_dataset(
 
     # Norm stats for denormalization
     ds_mean, ds_std = norm_stats[dataset]
+    data_mean_t = torch.tensor(ds_mean, dtype=torch.float32, device=device)
     data_std_t = torch.tensor(ds_std, dtype=torch.float32, device=device)
 
     logger.info(f"  Context: {X_train.shape}, Query: {n_query}, "
@@ -114,12 +115,19 @@ def run_dataset(
 
         firing_feat_indices = [alive_features[i] for i in row_firing]
         h_row = activations[r]
-        deltas = compute_feature_deltas(sae, h_row, firing_feat_indices, data_std_t)
 
         X_row = X_query[r:r + 1]
-        if use_sequential:
+        if isinstance(tail, MitraTail):
+            # Mitra: activation patching — pass full reconstructions, not deltas
+            recons = compute_feature_reconstructions(
+                sae, h_row, firing_feat_indices, data_mean_t, data_std_t,
+            )
+            preds = batched_ablation(tail, X_row, recons, max_K=max_K)
+        elif use_sequential:
+            deltas = compute_feature_deltas(sae, h_row, firing_feat_indices, data_std_t)
             preds = batched_ablation_sequential(tail, X_row, deltas, query_idx=r)
         else:
+            deltas = compute_feature_deltas(sae, h_row, firing_feat_indices, data_std_t)
             preds = batched_ablation(tail, X_row, deltas, max_K=max_K)
 
         y_tiled = np.full(len(preds), y_query[r])
