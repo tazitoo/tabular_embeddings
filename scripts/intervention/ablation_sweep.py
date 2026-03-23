@@ -159,7 +159,7 @@ def run_dataset(
         if not row_firing:
             continue
 
-        firing_importance = [(i, row_drops[i]) for i in row_firing]
+        firing_importance = [(i, row_drops[i]) for i in row_firing if row_drops[i] > 0]
         firing_importance.sort(key=lambda x: -x[1])
         ranked = [int(feature_indices[i]) for i, _ in firing_importance[:max_steps]]
         K = len(ranked)
