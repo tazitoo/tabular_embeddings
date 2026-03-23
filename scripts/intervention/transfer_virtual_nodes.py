@@ -826,18 +826,26 @@ def build_concept_bridge(
                      r2, M.shape, len(matched_pairs))
         virtual = compute_virtual_atoms(unmatched_atoms, M)
 
-    # 8. Calibrate magnitude: rescale each virtual atom norm using
-    #    the landmark norm relationship (source_norm → target_norm)
-    matched_src_norms = np.linalg.norm(matched_source_atoms, axis=1)
-    matched_tgt_norms = np.linalg.norm(matched_target_atoms, axis=1)
-    unmatched_src_norms = np.linalg.norm(unmatched_atoms, axis=1)
-    virtual = calibrate_virtual_atom_norms(
-        virtual, unmatched_src_norms, matched_src_norms, matched_tgt_norms,
-    )
-    logger.info(
-        "Virtual atoms: %d unmatched -> shape %s (norm-calibrated)",
-        len(unmatched_source_features), virtual.shape,
-    )
+    # 8. Calibrate magnitude
+    if map_type == "local":
+        # Local ridge already predicts direction + magnitude from K neighbors.
+        # Global norm calibration would overwrite with a noisy estimate.
+        logger.info(
+            "Virtual atoms: %d unmatched -> shape %s (local magnitude)",
+            len(unmatched_source_features), virtual.shape,
+        )
+    else:
+        # Global maps: rescale norms using landmark relationship
+        matched_src_norms = np.linalg.norm(matched_source_atoms, axis=1)
+        matched_tgt_norms = np.linalg.norm(matched_target_atoms, axis=1)
+        unmatched_src_norms = np.linalg.norm(unmatched_atoms, axis=1)
+        virtual = calibrate_virtual_atom_norms(
+            virtual, unmatched_src_norms, matched_src_norms, matched_tgt_norms,
+        )
+        logger.info(
+            "Virtual atoms: %d unmatched -> shape %s (norm-calibrated)",
+            len(unmatched_source_features), virtual.shape,
+        )
 
     return {
         "virtual_atoms": virtual,
