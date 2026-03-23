@@ -390,6 +390,73 @@ def fit_concept_map_mlp(
     return model, r2
 
 
+def compute_local_transfer_delta(
+    atoms_source: np.ndarray,
+    atoms_target: np.ndarray,
+    h_source_row: np.ndarray,
+    h_target_row: np.ndarray,
+    matched_pairs: List[Tuple[int, int]],
+    unmatched_source: List[int],
+    alpha: float = 1.0,
+) -> np.ndarray:
+    """Per-row local linear map from source to target embedding space.
+
+    Uses the matched features that fire on THIS row as local training data.
+    Each matched pair contributes: source_atom * source_act → target_atom * target_act.
+    Fits a local ridge map on these contributions, then applies it to unmatched
+    source contributions to get the transfer delta in target space.
+
+    Args:
+        atoms_source: (H_source, d_source) full decoder atom matrix.
+        atoms_target: (H_target, d_target) full decoder atom matrix.
+        h_source_row: (H_source,) source SAE activations for this row.
+        h_target_row: (H_target,) target SAE activations for this row.
+        matched_pairs: list of (source_global_idx, target_global_idx) pairs.
+        unmatched_source: list of source global indices to transfer.
+        alpha: Ridge regularization.
+
+    Returns:
+        delta: (d_target,) transfer delta in target embedding space.
+            Returns zeros if insufficient matched pairs fire.
+    """
+    from sklearn.linear_model import Ridge
+
+    d_target = atoms_target.shape[1]
+
+    # Find matched pairs where BOTH sides fire on this row
+    source_contributions = []
+    target_contributions = []
+    for si, ti in matched_pairs:
+        a_s = float(h_source_row[si])
+        a_t = float(h_target_row[ti])
+        if a_s > 0 and a_t > 0:
+            source_contributions.append(a_s * atoms_source[si])
+            target_contributions.append(a_t * atoms_target[ti])
+
+    n_local = len(source_contributions)
+    if n_local < 3:
+        # Not enough local training data
+        return np.zeros(d_target, dtype=np.float32)
+
+    X_local = np.stack(source_contributions)  # (n_local, d_source)
+    Y_local = np.stack(target_contributions)  # (n_local, d_target)
+
+    # Fit local linear map
+    reg = Ridge(alpha=alpha, fit_intercept=False)
+    reg.fit(X_local, Y_local)
+
+    # Apply to unmatched source contributions
+    delta = np.zeros(d_target, dtype=np.float32)
+    for si in unmatched_source:
+        a_s = float(h_source_row[si])
+        if a_s > 0:
+            contribution_s = a_s * atoms_source[si]
+            contribution_t = reg.predict(contribution_s.reshape(1, -1))[0]
+            delta += contribution_t
+
+    return delta
+
+
 def compute_virtual_atoms_mlp(
     atoms_source_unmatched: np.ndarray,
     model: torch.nn.Module,
