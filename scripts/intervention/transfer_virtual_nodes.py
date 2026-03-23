@@ -298,6 +298,117 @@ def fit_concept_map(
     return M, r2
 
 
+def fit_concept_map_mlp(
+    atoms_source: np.ndarray,
+    atoms_target: np.ndarray,
+    hidden_dim: int = 256,
+    n_epochs: int = 500,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-4,
+    val_frac: float = 0.2,
+) -> Tuple[torch.nn.Module, float]:
+    """Fit a 2-layer MLP map from source to target decoder atoms.
+
+    Nonlinear alternative to ridge regression for cross-model concept mapping.
+    Uses early stopping on a validation split.
+
+    Args:
+        atoms_source: (n_pairs, d_source) matched source decoder atoms.
+        atoms_target: (n_pairs, d_target) matched target decoder atoms.
+        hidden_dim: MLP hidden layer size.
+        n_epochs: Max training epochs.
+        lr: Learning rate.
+        weight_decay: L2 regularization.
+        val_frac: Fraction held out for early stopping.
+
+    Returns:
+        model: Trained MLP (on CPU, eval mode).
+        r2: Validation R² score.
+    """
+    n_pairs, d_source = atoms_source.shape
+    d_target = atoms_target.shape[1]
+
+    # Train/val split
+    n_val = max(1, int(n_pairs * val_frac))
+    n_train = n_pairs - n_val
+    rng = np.random.RandomState(42)
+    perm = rng.permutation(n_pairs)
+    train_idx, val_idx = perm[:n_train], perm[n_train:]
+
+    X_train = torch.tensor(atoms_source[train_idx], dtype=torch.float32)
+    Y_train = torch.tensor(atoms_target[train_idx], dtype=torch.float32)
+    X_val = torch.tensor(atoms_source[val_idx], dtype=torch.float32)
+    Y_val = torch.tensor(atoms_target[val_idx], dtype=torch.float32)
+
+    # 2-layer MLP: source_dim → hidden → target_dim
+    model = torch.nn.Sequential(
+        torch.nn.Linear(d_source, hidden_dim),
+        torch.nn.ReLU(),
+        torch.nn.Linear(hidden_dim, d_target),
+    )
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    best_val_loss = float("inf")
+    best_state = None
+    patience = 50
+    no_improve = 0
+
+    for epoch in range(n_epochs):
+        model.train()
+        pred = model(X_train)
+        loss = torch.nn.functional.mse_loss(pred, Y_train)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # Validation
+        model.eval()
+        with torch.no_grad():
+            val_pred = model(X_val)
+            val_loss = torch.nn.functional.mse_loss(val_pred, Y_val).item()
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    # Compute R² on validation set
+    model.eval()
+    with torch.no_grad():
+        val_pred = model(X_val).numpy()
+    ss_res = np.sum((Y_val.numpy() - val_pred) ** 2)
+    ss_tot = np.sum((Y_val.numpy() - Y_val.numpy().mean(axis=0)) ** 2)
+    r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+
+    return model, r2
+
+
+def compute_virtual_atoms_mlp(
+    atoms_source_unmatched: np.ndarray,
+    model: torch.nn.Module,
+) -> np.ndarray:
+    """Project unmatched source decoder atoms into target space via MLP.
+
+    Args:
+        atoms_source_unmatched: (n_unmatched, d_source).
+        model: Trained MLP from fit_concept_map_mlp.
+
+    Returns:
+        (n_unmatched, d_target) virtual decoder atoms.
+    """
+    model.eval()
+    with torch.no_grad():
+        x = torch.tensor(atoms_source_unmatched, dtype=torch.float32)
+        return model(x).numpy()
+
+
 # -- Virtual atom construction -------------------------------------------------
 
 
@@ -475,6 +586,8 @@ def build_concept_bridge(
     min_match_r: float = 0.2,
     ridge_alpha: float = 1.0,
     landmark_min_cosine: float = 0.0,
+    map_type: str = "ridge",
+    mlp_hidden_dim: int = 256,
 ) -> Dict:
     """Build a concept bridge from source SAE to target SAE.
 
@@ -546,15 +659,24 @@ def build_concept_bridge(
         )
     )
 
-    # 6. Fit concept-level linear map on filtered pairs (direction)
-    M, r2 = fit_concept_map(matched_source_atoms, matched_target_atoms, alpha=ridge_alpha)
-    logger.info("Concept map: R²=%.4f, shape=%s (%d landmarks)", r2, M.shape, len(matched_pairs))
-
-    # 7. Project unmatched source atoms into target space
+    # 6. Fit concept map (direction)
     unmatched_atoms = np.stack(
         [atoms_source[gi] for gi in unmatched_source_features], axis=0
     )
-    virtual = compute_virtual_atoms(unmatched_atoms, M)
+
+    if map_type == "mlp":
+        mlp_model, r2 = fit_concept_map_mlp(
+            matched_source_atoms, matched_target_atoms,
+            hidden_dim=mlp_hidden_dim,
+        )
+        logger.info("Concept map (MLP): R²=%.4f, hidden=%d (%d landmarks)",
+                     r2, mlp_hidden_dim, len(matched_pairs))
+        virtual = compute_virtual_atoms_mlp(unmatched_atoms, mlp_model)
+    else:
+        M, r2 = fit_concept_map(matched_source_atoms, matched_target_atoms, alpha=ridge_alpha)
+        logger.info("Concept map (ridge): R²=%.4f, shape=%s (%d landmarks)",
+                     r2, M.shape, len(matched_pairs))
+        virtual = compute_virtual_atoms(unmatched_atoms, M)
 
     # 8. Calibrate magnitude: rescale each virtual atom norm using
     #    the landmark norm relationship (source_norm → target_norm)

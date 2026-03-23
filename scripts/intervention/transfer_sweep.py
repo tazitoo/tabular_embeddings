@@ -339,6 +339,9 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-steps", type=int, default=64)
     parser.add_argument("--ridge-alpha", type=float, default=1.0)
+    parser.add_argument("--map-type", choices=["ridge", "mlp"], default="ridge",
+                        help="Concept map type: ridge (linear) or mlp (nonlinear)")
+    parser.add_argument("--mlp-hidden-dim", type=int, default=256)
     args = parser.parse_args()
 
     splits = json.loads(SPLITS_PATH.read_text())
@@ -361,6 +364,7 @@ def main():
     bridge = build_concept_bridge(
         sae_source, sae_target, corr, indices_a, indices_b,
         unmatched, ridge_alpha=args.ridge_alpha,
+        map_type=args.map_type, mlp_hidden_dim=args.mlp_hidden_dim,
     )
     logger.info("  Bridge: R²=%.4f, %d landmarks, %d virtual atoms",
                 bridge["concept_map_r2"], bridge["n_matched_pairs"],
