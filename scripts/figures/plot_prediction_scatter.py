@@ -1196,6 +1196,107 @@ def plot_shift_distribution(
     logger.info("Saved distribution to %s", output_path)
 
 
+def _plot_ablation_sweep_results(npz_path: Path, output_path: Path):
+    """Load ablation_sweep NPZ and generate scatter + histogram plots.
+
+    The NPZ contains pre-computed strong_wins mask (multiclass-aware),
+    so no loss recomputation is needed here.
+    """
+    data = np.load(npz_path, allow_pickle=False)
+
+    preds_s = data["preds_strong"]
+    preds_w = data["preds_weak"]
+    preds_i = data["preds_intervened"]
+    y = data["y_query"].astype(int)
+    optimal_k = data["optimal_k"]
+    strong_wins = data["strong_wins"]
+
+    # Extract model names from path: {strong}_vs_{weak}/{dataset}.npz
+    pair_name = npz_path.parent.name  # e.g. "tabicl_vs_tabdpt"
+    dataset = npz_path.stem
+    parts = pair_name.split("_vs_")
+    model_strong = parts[0] if len(parts) == 2 else "strong"
+    model_weak = parts[1] if len(parts) == 2 else "weak"
+    disp_s = DISPLAY_NAMES.get(model_strong, model_strong)
+    disp_w = DISPLAY_NAMES.get(model_weak, model_weak)
+
+    # Scalar scores for scatter axes
+    n_classes = preds_s.shape[1] if preds_s.ndim == 2 else 1
+    if n_classes > 1:
+        # Classification: P(correct class)
+        p_s = preds_s[np.arange(len(y)), y]
+        p_w = preds_w[np.arange(len(y)), y]
+        p_i = preds_i[np.arange(len(y)), y]
+        axis_label = "P(correct class)"
+    else:
+        # Regression: raw predictions
+        p_s = preds_s.ravel()
+        p_w = preds_w.ravel()
+        p_i = preds_i.ravel()
+        axis_label = "Prediction"
+
+    n_total = len(y)
+    n_improvable = int(strong_wins.sum())
+    n_intervened = int((optimal_k > 0).sum())
+    valid_k = optimal_k[strong_wins & (optimal_k > 0)]
+    weak_wins = ~strong_wins
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # --- Left: scatter ---
+    ax = axes[0]
+    ax.scatter(p_s[weak_wins], p_w[weak_wins], facecolors="none",
+               edgecolors="#999999", s=14, alpha=0.5, linewidths=0.6,
+               label=f"{disp_w} wins (n={weak_wins.sum()})", zorder=2)
+
+    ax.scatter(p_s[strong_wins], p_w[strong_wins], facecolors="none",
+               edgecolors="steelblue", s=20, alpha=0.7, linewidths=0.8,
+               label=f"{disp_s} wins (n={n_improvable})", zorder=3)
+
+    mask = strong_wins & (optimal_k > 0)
+    for r in np.where(mask)[0]:
+        ax.annotate("", xy=(p_i[r], p_w[r]), xytext=(p_s[r], p_w[r]),
+                    arrowprops=dict(arrowstyle="->", color="#e74c3c", alpha=0.35, lw=0.7))
+
+    ax.scatter(p_i[mask], p_w[mask], c="#e74c3c", s=16, alpha=0.7,
+               label=f"After ablation (n={n_intervened})", zorder=4)
+
+    lims = [min(p_s.min(), p_w.min()) - 0.02, max(p_s.max(), p_w.max()) + 0.02]
+    ax.plot(lims, lims, "k--", alpha=0.3, lw=1)
+    ax.set_xlabel(f"{disp_s}  {axis_label}", fontsize=11)
+    ax.set_ylabel(f"{disp_w}  {axis_label}", fontsize=11)
+    ax.set_xlim(lims)
+    ax.set_ylim(lims)
+    ax.set_aspect("equal")
+    ax.legend(fontsize=8, loc="lower right")
+
+    ax.set_title(
+        f"{dataset} — per-row ablation "
+        f"({n_intervened} intervened / {n_improvable} improvable / {n_total} total)",
+        fontsize=10,
+    )
+
+    # --- Right: histogram of optimal_k ---
+    ax2 = axes[1]
+    if len(valid_k) > 0:
+        ax2.hist(valid_k, bins=np.arange(0.5, valid_k.max() + 1.5, 1),
+                 color="steelblue", edgecolor="white", alpha=0.8)
+        ax2.axvline(valid_k.mean(), color="red", linestyle="--", alpha=0.7,
+                    label=f"Mean={valid_k.mean():.1f}")
+        ax2.axvline(np.median(valid_k), color="orange", linestyle="--", alpha=0.7,
+                    label=f"Median={np.median(valid_k):.0f}")
+        ax2.legend(fontsize=9)
+    ax2.set_xlabel(f"Concepts removed to match {disp_w}", fontsize=11)
+    ax2.set_ylabel("Number of rows", fontsize=11)
+    ax2.set_title(f"Concept gap distribution", fontsize=10)
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved ablation scatter to %s", output_path)
+
+
 def _plot_transfer_results(npz_path: Path, output_path: Path):
     """Load saved vnode transfer results and generate all plots."""
     data = np.load(npz_path, allow_pickle=False)
