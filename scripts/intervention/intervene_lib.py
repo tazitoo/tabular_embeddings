@@ -231,8 +231,18 @@ def compute_per_row_loss(y_true: np.ndarray, preds: np.ndarray, task: str) -> np
         return (preds.ravel() - y_true.ravel()) ** 2
 
     y_int = y_true.astype(int)
-    if preds.ndim == 2:
+    if preds.ndim == 2 and preds.shape[1] == 1:
+        # Single-column output (e.g. Mitra binary): treat as P(y=1)
+        p = preds.ravel()
+        p_correct = np.where(y_int == 1, p, 1 - p)
+    elif preds.ndim == 2 and preds.shape[1] > y_int.max():
         p_correct = preds[np.arange(len(y_int)), y_int]
+    elif preds.ndim == 2:
+        # Fewer columns than expected — remap classes to 0..n_cols-1
+        classes = np.unique(y_int)
+        remap = {c: i for i, c in enumerate(classes)}
+        y_remapped = np.array([remap[c] for c in y_int])
+        p_correct = preds[np.arange(len(y_remapped)), y_remapped]
     else:
         p = preds.ravel()
         p_correct = np.where(y_int == 1, p, 1 - p)
