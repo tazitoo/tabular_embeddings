@@ -384,8 +384,9 @@ def run_dataset(
         mask = np.zeros(n_unmatched, dtype=bool)
         mask[feat_local] = True
 
-        # Query delta for this feature
-        delta_query = _make_virtual_delta(acts_query, virtual_atoms, feature_mask=mask)
+        # Query delta for this feature (negated — local interpolation produces
+        # the target-space position, but we need the corrective direction)
+        delta_query = -_make_virtual_delta(acts_query, virtual_atoms, feature_mask=mask)
         # Context: use zero delta (we don't have source activations for context)
         delta_ctx = torch.zeros(n_ctx_target, virtual_atoms.shape[1])
         full_delta = _build_full_delta_from_parts(delta_ctx, delta_query, n_ctx_target)
@@ -434,8 +435,8 @@ def run_dataset(
             if k - 1 < len(rankings[row_idx]):
                 tentative_masks[row_idx, rankings[row_idx][k - 1]] = True
 
-        # Per-row query delta
-        delta_query_t = torch.tensor(
+        # Per-row query delta (negated)
+        delta_query_t = -torch.tensor(
             compute_virtual_delta_perrow(acts_query, virtual_atoms, tentative_masks),
             dtype=torch.float32,
         )
@@ -474,8 +475,8 @@ def run_dataset(
     n_accepted = accepted_masks.sum(axis=1)
     optimal_k = n_accepted.astype(np.int32)
 
-    # Get final predictions by re-running with accepted masks
-    delta_query_final = torch.tensor(
+    # Get final predictions by re-running with accepted masks (negated)
+    delta_query_final = -torch.tensor(
         compute_virtual_delta_perrow(acts_query, virtual_atoms, accepted_masks),
         dtype=torch.float32,
     )
