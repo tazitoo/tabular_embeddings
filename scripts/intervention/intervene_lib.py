@@ -295,6 +295,39 @@ SEQUENTIAL_MODELS = (HyperFastTail, CARTETail, Tabula8BTail)
 # ── Row alignment ───────────────────────────────────────────────────────────
 
 
+def _sample_context(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    max_context: int,
+    task: str,
+    seed: int = 42,
+) -> tuple:
+    """Subsample context rows with stratified sampling for classification.
+
+    Matches 04_extract_all_layers.py sample_context() logic exactly.
+    """
+    rng = np.random.RandomState(seed)
+
+    if task == "classification":
+        classes, counts = np.unique(y_train, return_counts=True)
+        indices = []
+        for cls, count in zip(classes, counts):
+            cls_idx = np.where(y_train == cls)[0]
+            n_take = max(1, int(max_context * count / len(y_train)))
+            indices.append(rng.choice(cls_idx, size=min(n_take, len(cls_idx)), replace=False))
+        indices = np.concatenate(indices)
+        if len(indices) > max_context:
+            indices = rng.choice(indices, size=max_context, replace=False)
+        elif len(indices) < max_context:
+            remaining = np.setdiff1d(np.arange(len(y_train)), indices)
+            extra = rng.choice(remaining, size=max_context - len(indices), replace=False)
+            indices = np.concatenate([indices, extra])
+    else:
+        indices = rng.choice(len(X_train), size=max_context, replace=False)
+
+    return X_train[indices], y_train[indices]
+
+
 def align_test_rows(
     holdout_indices: np.ndarray,
     test_row_indices: np.ndarray,
@@ -402,6 +435,12 @@ def load_dataset_context(
         y_train = data.y_train
         X_query = data.X_test[positions]
         y_query = data.y_test[positions]
+
+        # Subsample context if needed (matches 04_extract_all_layers.py)
+        if len(X_train) > max_context:
+            X_train, y_train = _sample_context(
+                X_train, y_train, max_context, task,
+            )
 
     return X_train, y_train, X_query, y_query, row_indices, task
 
