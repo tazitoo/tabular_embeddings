@@ -197,24 +197,21 @@ def run_dataset(
                 deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
             preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
 
-        # Search for first k where ablated loss >= weak model's loss
-        # step_losses[k] = absolute loss after ablating top-(k+1) features
+        # Find first k where ablated loss >= weak model's loss
         y_tiled = np.full(len(preds), y_query_s[r])
-        step_losses = compute_per_row_loss(y_tiled, preds, task)
+        step_losses = compute_per_row_loss(y_tiled, preds, task)  # (K,) absolute
 
-        best_k = K  # default: all features needed
-        best_gap = orig_gap
-        for k in range(K):
-            gap = abs(step_losses[k] - target_loss)
-            if gap < best_gap:
-                best_gap = gap
-                best_k = k + 1
-            if step_losses[k] >= target_loss:
-                best_k = k + 1
-                break
+        # Delta: how much gap remains at each step
+        gap_remaining = target_loss - step_losses  # positive = still better than weak
+        crossed = np.where(gap_remaining <= 0)[0]  # steps where we've matched or exceeded weak
 
-        optimal_k[r] = best_k
-        gap_closed[r] = 1.0 - best_gap / orig_gap if orig_gap > 0 else 1.0
+        if len(crossed) > 0:
+            optimal_k[r] = int(crossed[0]) + 1  # first crossing point
+            gap_closed[r] = 1.0
+        else:
+            # Never fully closed — report closest
+            optimal_k[r] = K
+            gap_closed[r] = 1.0 - gap_remaining.min() / orig_gap if orig_gap > 0 else 1.0
 
         if (r + 1) % 50 == 0 or r == n_query - 1:
             elapsed = time.time() - t0
