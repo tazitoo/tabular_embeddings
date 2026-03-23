@@ -903,7 +903,10 @@ class Tabula8BTail:
         """Load LLM once, serialize context, compute baselines per row."""
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+        import os
         model_path = "/data/models/tabula-8b"
+        if not os.path.isdir(model_path):
+            model_path = "mlfoundations/tabula-8b"
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
