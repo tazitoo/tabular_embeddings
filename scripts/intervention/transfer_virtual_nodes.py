@@ -464,14 +464,11 @@ def compute_local_virtual_atoms(
     unmatched_source: List[int],
     n_neighbors: int = 8,
     alpha: float = 1.0,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Per-feature local linear interpolation from nearest matched neighbors.
 
-    For each unmatched source feature, finds the K nearest matched features
-    in decoder atom cosine similarity, fits a local ridge on those K pairs,
-    and projects the unmatched atom into target space.
-
-    No per-row data needed — this is purely geometric, computed once.
+    Direction: local ridge on unit-normed decoder atoms from K nearest neighbors.
+    Magnitude: median target/source norm ratio from the same K neighbors.
 
     Args:
         atoms_source: (H_source, d_source) full decoder atom matrix.
@@ -482,7 +479,8 @@ def compute_local_virtual_atoms(
         alpha: Ridge regularization.
 
     Returns:
-        virtual_atoms: (n_unmatched, d_target) local-interpolated atoms.
+        virtual_directions: (n_unmatched, d_target) unit vectors in target space.
+        virtual_scales: (n_unmatched,) magnitude scale factors from local norm ratios.
     """
     from sklearn.linear_model import Ridge
     from sklearn.metrics.pairwise import cosine_similarity
@@ -490,43 +488,56 @@ def compute_local_virtual_atoms(
     n_unmatched = len(unmatched_source)
     d_target = atoms_target.shape[1]
 
-    # Gather matched source atoms for neighbor search
+    # Gather matched atoms
     matched_src_indices = [si for si, _ in matched_pairs]
     matched_tgt_indices = [ti for _, ti in matched_pairs]
-    matched_src_atoms = atoms_source[matched_src_indices]  # (n_matched, d_source)
-    matched_tgt_atoms = atoms_target[matched_tgt_indices]  # (n_matched, d_target)
+    matched_src_atoms = atoms_source[matched_src_indices]
+    matched_tgt_atoms = atoms_target[matched_tgt_indices]
     n_matched = len(matched_pairs)
 
-    virtual = np.zeros((n_unmatched, d_target), dtype=np.float32)
+    # Unit-normalize for direction fitting
+    src_norms = np.linalg.norm(matched_src_atoms, axis=1, keepdims=True)
+    tgt_norms = np.linalg.norm(matched_tgt_atoms, axis=1, keepdims=True)
+    src_norms[src_norms < 1e-8] = 1.0
+    tgt_norms[tgt_norms < 1e-8] = 1.0
+    matched_src_unit = matched_src_atoms / src_norms
+    matched_tgt_unit = matched_tgt_atoms / tgt_norms
+
+    virtual_directions = np.zeros((n_unmatched, d_target), dtype=np.float32)
+    virtual_scales = np.zeros(n_unmatched, dtype=np.float32)
 
     for u, si in enumerate(unmatched_source):
-        query_atom = atoms_source[si:si+1]  # (1, d_source)
+        query_atom = atoms_source[si:si+1]
+        query_norm = np.linalg.norm(query_atom)
+        if query_norm < 1e-8:
+            continue
+        query_unit = query_atom / query_norm
 
-        # Cosine similarity to all matched source atoms
-        sims = cosine_similarity(query_atom, matched_src_atoms)[0]  # (n_matched,)
+        # K nearest matched source atoms by cosine similarity
+        sims = cosine_similarity(query_unit, matched_src_unit)[0]
         K = min(n_neighbors, n_matched)
         top_k = np.argsort(-sims)[:K]
 
-        # Local training data: the K nearest matched pairs
-        X_local = matched_src_atoms[top_k]  # (K, d_source)
-        Y_local = matched_tgt_atoms[top_k]  # (K, d_target)
-
         if K < 2:
-            # Not enough neighbors — use weighted average
-            if K == 1:
-                # Scale by ratio of norms
-                src_norm = np.linalg.norm(X_local[0])
-                tgt_norm = np.linalg.norm(Y_local[0])
-                scale = tgt_norm / src_norm if src_norm > 1e-8 else 1.0
-                virtual[u] = query_atom[0] * scale * (d_target / query_atom.shape[1])
             continue
 
-        # Fit local ridge
+        # Direction: local ridge on unit vectors
+        X_local = matched_src_unit[top_k]
+        Y_local = matched_tgt_unit[top_k]
         reg = Ridge(alpha=alpha, fit_intercept=False)
         reg.fit(X_local, Y_local)
-        virtual[u] = reg.predict(query_atom)[0]
+        direction = reg.predict(query_unit)[0]
+        dir_norm = np.linalg.norm(direction)
+        if dir_norm > 1e-8:
+            virtual_directions[u] = direction / dir_norm
 
-    return virtual
+        # Magnitude: median norm ratio from K neighbors
+        local_src_norms = src_norms[top_k].ravel()
+        local_tgt_norms = tgt_norms[top_k].ravel()
+        ratios = local_tgt_norms / local_src_norms
+        virtual_scales[u] = float(np.median(ratios)) * query_norm
+
+    return virtual_directions, virtual_scales
 
 
 def compute_virtual_atoms_mlp(
@@ -804,11 +815,13 @@ def build_concept_bridge(
     )
 
     if map_type == "local":
-        virtual = compute_local_virtual_atoms(
+        virtual_directions, virtual_scales = compute_local_virtual_atoms(
             atoms_source, atoms_target, matched_pairs,
             unmatched_source_features, n_neighbors=min(8, len(matched_pairs)),
             alpha=ridge_alpha,
         )
+        # Recombine: virtual_atom = direction * scale
+        virtual = virtual_directions * virtual_scales[:, np.newaxis]
         r2 = float("nan")  # no single global R²
         logger.info("Concept map (local): %d neighbors, %d landmarks, %d virtual atoms",
                      min(8, len(matched_pairs)), len(matched_pairs), len(unmatched_source_features))
