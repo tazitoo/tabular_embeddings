@@ -1239,34 +1239,20 @@ def _plot_ablation_sweep_results(npz_path: Path, output_path: Path):
     n_improvable = int(strong_wins.sum())
     n_intervened = int((optimal_k > 0).sum())
     valid_k = optimal_k[strong_wins & (optimal_k > 0)]
-    weak_wins = ~strong_wins
+
+    # Filter to strong_wins rows (same as plot_perrow_scatter's source_better)
+    ps = p_s[strong_wins]
+    pw = p_w[strong_wins]
+    pi = p_i[strong_wins]
+    yt = y[strong_wins]
+    ok = optimal_k[strong_wins]
+    event_rate = y.mean()
 
     fig, ax = plt.subplots(1, 1, figsize=(7, 7))
 
-    ax.scatter(p_s[weak_wins], p_w[weak_wins], facecolors="none",
-               edgecolors="#999999", s=14, alpha=0.5, linewidths=0.6,
-               label=f"{disp_w} wins (n={weak_wins.sum()})", zorder=2)
-
-    ax.scatter(p_s[strong_wins], p_w[strong_wins], facecolors="none",
-               edgecolors="steelblue", s=20, alpha=0.7, linewidths=0.8,
-               label=f"{disp_s} wins (n={n_improvable})", zorder=3)
-
-    mask = strong_wins & (optimal_k > 0)
-    for r in np.where(mask)[0]:
-        ax.annotate("", xy=(p_i[r], p_w[r]), xytext=(p_s[r], p_w[r]),
-                    arrowprops=dict(arrowstyle="->", color="#e74c3c", alpha=0.35, lw=0.7))
-
-    ax.scatter(p_i[mask], p_w[mask], c="#e74c3c", s=16, alpha=0.7,
-               label=f"After ablation (n={n_intervened})", zorder=4)
-
-    lims = [min(p_s.min(), p_w.min()) - 0.02, max(p_s.max(), p_w.max()) + 0.02]
-    ax.plot(lims, lims, "k--", alpha=0.3, lw=1)
-    ax.set_xlabel(f"{disp_s}  {axis_label}", fontsize=11)
-    ax.set_ylabel(f"{disp_w}  {axis_label}", fontsize=11)
-    ax.set_xlim(lims)
-    ax.set_ylim(lims)
-    ax.set_aspect("equal")
-    ax.legend(fontsize=8, loc="lower right")
+    # Ablation mode: x = strong (changes), y = weak (fixed)
+    _draw_scatter_layers(ax, ps, pw, pi, pw, yt, ok, "o", event_rate)
+    _draw_scatter_chrome(ax, p_s, p_w, pi, pw, disp_s, disp_w, event_rate)
 
     k_summary = (f"median k={np.median(valid_k):.0f}, mean k={valid_k.mean():.1f}"
                  if len(valid_k) > 0 else "no rows modified")
@@ -1274,7 +1260,7 @@ def _plot_ablation_sweep_results(npz_path: Path, output_path: Path):
         f"{dataset} — per-row ablation "
         f"({n_intervened} intervened / {n_improvable} improvable / {n_total} total)\n"
         f"{k_summary}",
-        fontsize=10,
+        fontsize=9,
     )
 
     fig.tight_layout()
