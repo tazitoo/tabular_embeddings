@@ -228,6 +228,7 @@ def find_optimal_ablation(
     logger.info("Sweeping k=1..%d ablation levels for %s...", len(feature_lists), ablate_model)
     baseline_preds_raw, ablated_list = sweep_intervene(
         model_key=ablate_model,
+        dataset_name=dataset,
         X_context=X_ctx, y_context=y_ctx,
         X_query=X_q, y_query=y_q,
         feature_lists=feature_lists,
@@ -486,6 +487,7 @@ def find_per_row_optimal_ablation(
 
     result = perrow_sweep_intervene(
         model_key=ablate_model,
+        dataset_name=dataset,
         X_context=X_ctx, y_context=y_ctx,
         X_query=X_q, y_query=y_q,
         unmatched_features=feat_indices,
@@ -960,23 +962,31 @@ def plot_perrow_scatter(
     k_summary = (f"median k={np.median(ok_mod):.0f}, mean k={ok_mod.mean():.1f}"
                  if ok_mod.size > 0 else "no rows modified")
 
-    # Post-intervention AUC
+    # Post-intervention metric
+    def _safe_auc(y, p):
+        """AUC for binary, neg_logloss proxy for multiclass/regression."""
+        try:
+            return roc_auc_score(y, p)
+        except ValueError:
+            # Multiclass or single-class: use mean P(correct) as proxy
+            return float(np.mean(p))
+
     if mode == "transfer":
         full_p1 = np.where(optimal_k > 0, preds_intervened, preds_weak)
-        auc_post = roc_auc_score(y_true, full_p1)
+        auc_post = _safe_auc(y_true, full_p1)
         gap = auc_strong - auc_weak
         pct = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
         auc_line = (f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
                     f"   |   {disp_w}+: AUC={auc_post:.3f} ({pct:+.0f}%)")
     elif mode == "reverse_transfer":
         full_p1 = np.where(optimal_k > 0, preds_intervened, preds_strong)
-        auc_post = roc_auc_score(y_true, full_p1)
+        auc_post = _safe_auc(y_true, full_p1)
         auc_line = (f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"
                     f"   |   {disp_s}+: AUC={auc_post:.3f} "
                     f"(\u0394={auc_post - auc_strong:+.4f})")
     else:
         full_p1 = np.where(optimal_k > 0, preds_intervened, preds_strong)
-        auc_post = roc_auc_score(y_true, full_p1)
+        auc_post = _safe_auc(y_true, full_p1)
         gap = auc_strong - auc_weak
         pct = (auc_post - auc_weak) / gap * 100 if abs(gap) > 0.001 else float("nan")
         auc_line = (f"{disp_s}: AUC={auc_strong:.3f}   |   {disp_w}: AUC={auc_weak:.3f}"

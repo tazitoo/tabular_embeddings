@@ -200,25 +200,30 @@ def run_dataset(
                 deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
             preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
 
-        # Find first k where ablated loss >= weak model's loss
+        # Walk the curve, only accepting steps that increase loss (degrade prediction).
+        # Skip steps where ablation accidentally improves — those concepts interact.
         y_tiled = np.full(len(preds), y_query_s[r])
         step_losses = compute_per_row_loss(y_tiled, preds, task)  # (K,) absolute
 
-        # Delta: how much gap remains at each step
-        gap_remaining = target_loss - step_losses  # positive = still better than weak
-        crossed = np.where(gap_remaining <= 0)[0]  # steps where we've matched or exceeded weak
+        current_loss = baseline_loss_s[r]
+        accepted_k = 0
+        accepted_pred_idx = None
+        for k in range(K):
+            if step_losses[k] >= current_loss:
+                # This ablation degrades prediction — accept it
+                current_loss = step_losses[k]
+                accepted_k = k + 1
+                accepted_pred_idx = k
+                if current_loss >= target_loss:
+                    break  # reached parity with weak model
 
-        if len(crossed) > 0:
-            best_k = int(crossed[0])
-            optimal_k[r] = best_k + 1
-            gap_closed[r] = 1.0
+        if accepted_pred_idx is not None:
+            optimal_k[r] = accepted_k
+            gap_closed[r] = min(1.0, (current_loss - baseline_loss_s[r]) / orig_gap) if orig_gap > 0 else 1.0
+            preds_intervened[r] = preds[accepted_pred_idx]
         else:
-            best_k = K - 1
-            optimal_k[r] = K
-            gap_closed[r] = 1.0 - gap_remaining.min() / orig_gap if orig_gap > 0 else 1.0
-
-        # Save prediction at optimal_k for scatter plots
-        preds_intervened[r] = preds[best_k]
+            optimal_k[r] = 0
+            gap_closed[r] = 0.0
 
         if (r + 1) % 50 == 0 or r == n_query - 1:
             elapsed = time.time() - t0
