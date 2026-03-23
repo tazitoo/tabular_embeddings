@@ -1106,6 +1106,8 @@ class MitraTail:
             task=task, device=device,
         )
         tail.baseline_preds = np.asarray(baseline_preds)
+        tail.X_context = X_context
+        tail.y_context = y_context
         return tail
 
     def _predict_with_delta(self, delta_support, delta_query):

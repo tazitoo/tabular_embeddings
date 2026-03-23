@@ -583,31 +583,10 @@ def batched_ablation(
         tail.recapture(X_batch)
 
         if isinstance(tail, MitraTail):
-            # Mitra: activation patching — replace y-token with SAE reconstruction.
-            # chunk_deltas for Mitra contains full reconstructions, not deltas.
-            # Inject via patching layer L's forward to replace y-token (position 0).
-            layer = tail.layers[tail.extraction_layer]
-            original_forward = layer.forward
-
-            def make_patched_forward(recons):
-                def patched_forward(*args, **kwargs):
-                    sup, qry = original_forward(*args, **kwargs)
-                    if qry.ndim == 4:
-                        qry = qry.clone()
-                        qry[0, :, 0, :] = recons  # replace y-token for all K query copies
-                    return sup, qry
-                return patched_forward
-
-            layer.forward = make_patched_forward(chunk_deltas)
-            try:
-                with torch.no_grad():
-                    if tail.task == "regression":
-                        preds = tail.clf.predict(tail.X_query)
-                    else:
-                        preds = tail.clf.predict_proba(tail.X_query)
-                preds = np.asarray(preds)
-            finally:
-                layer.forward = original_forward
+            # Mitra: activation patching — call tab2d() directly with
+            # checkpoint-free forward. predict_proba() uses checkpoint()
+            # which discards our layer modifications.
+            preds = _mitra_patched_predict(tail, chunk_deltas)
         else:
             state = tail.hidden_state.clone()
             _inject_query_deltas(tail, state, chunk_deltas)
@@ -616,6 +595,100 @@ def batched_ablation(
         all_preds.append(preds)
 
     return np.concatenate(all_preds, axis=0) if len(all_preds) > 1 else all_preds[0]
+
+
+def _mitra_patched_predict(tail, recons: torch.Tensor) -> np.ndarray:
+    """Mitra-specific: call tab2d directly with checkpoint-free forward.
+
+    predict_proba() goes through trainer.predict() which uses
+    torch.utils.checkpoint.checkpoint(layer, ...) — this discards any
+    modifications to layer.forward. We must:
+    1. Build batch tensors via trainer's DatasetFinetune
+    2. Monkey-patch tab2d.forward to skip checkpoint
+    3. Call tab2d() directly
+    4. Patch y-token at extraction layer with SAE reconstructions
+    5. Convert logits → probabilities
+    """
+    import types
+    import einops
+    from autogluon.tabular.models.mitra._internal.data.dataset_finetune import DatasetFinetune
+
+    trainer = tail.clf.trainers[0]
+    tab2d = trainer.model
+    tab2d.eval()
+
+    # Build batch tensors (same as trainer.predict)
+    x_s_raw = trainer.preprocessor.transform_X(tail.X_context)
+    x_q_raw = trainer.preprocessor.transform_X(tail.X_query)
+    y_s_raw = trainer.preprocessor.transform_y(tail.y_context)
+
+    trainer.rng.set_state(tail.rng_state)
+    ds = DatasetFinetune(
+        trainer.cfg,
+        x_support=x_s_raw, y_support=y_s_raw, x_query=x_q_raw, y_query=None,
+        max_samples_support=trainer.cfg.hyperparams['max_samples_support'],
+        max_samples_query=trainer.cfg.hyperparams['max_samples_query'],
+        rng=trainer.rng,
+    )
+    batch = next(iter(trainer.make_loader(ds, training=False)))
+    device = tail.device
+    x_s = batch['x_support'].float().to(device)
+    y_s = batch['y_support'].to(device)
+    x_q = batch['x_query'].float().to(device)
+    pf = batch['padding_features'].to(device)
+    pos = batch['padding_obs_support'].to(device)
+    poq = batch['padding_obs_query'].to(device)
+
+    # Monkey-patch forward to skip checkpoint AND replace y-token at layer L
+    extraction_layer = tail.extraction_layer
+    original_forward = tab2d.forward
+
+    def forward_no_ckpt_patched(self, x_support, y_support, x_query,
+                                 padding_features, padding_obs_support, padding_obs_query__):
+        x_query__ = x_query
+        batch_size = x_support.shape[0]
+        n_obs_query__ = x_query__.shape[1]
+
+        x_support, x_query__ = self.x_quantile(x_support, x_query__, padding_obs_support, padding_features)
+        x_support = self.x_embedding(x_support)
+        x_query__ = self.x_embedding(x_query__)
+        y_support, y_query__ = self.y_embedding(y_support, padding_obs_support, n_obs_query__)
+
+        support, pack_support = einops.pack((y_support, x_support), 'b s * d')
+        query__, pack_query__ = einops.pack((y_query__, x_query__), 'b s * d')
+
+        padding_features_y = torch.zeros((batch_size, 1), device=padding_features.device, dtype=torch.bool)
+        padding_features, _ = einops.pack((padding_features_y, padding_features), 'b *')
+
+        # Direct layer calls — no checkpoint
+        for i, layer in enumerate(self.layers):
+            support, query__ = layer(support, query__, None, None,
+                                     batch_size, padding_obs_support, padding_obs_query__, padding_features)
+            if i == extraction_layer and query__.ndim == 4:
+                # Replace y-token (position 0) with SAE reconstructions
+                query__ = query__.clone()
+                query__[0, :, 0, :] = recons
+
+        query__ = self.final_layer_norm(query__)
+        query__ = self.final_layer(query__)
+
+        query__, _ = einops.unpack(query__, pack_query__, 'b s * c')
+        y_query__ = query__[:, :, 0, :]
+        return y_query__
+
+    tab2d.forward = types.MethodType(forward_no_ckpt_patched, tab2d)
+    try:
+        with torch.no_grad():
+            logits = tab2d(x_s, y_s, x_q, pf, pos, poq)
+    finally:
+        tab2d.forward = original_forward
+
+    # Convert logits → probabilities
+    probs = torch.softmax(logits[0], dim=-1).float().cpu().numpy()
+
+    # Inverse-transform predictions (same as trainer.predict)
+    preds = trainer.preprocessor.inverse_transform_y(probs)
+    return np.asarray(preds)
 
 
 def _inject_query_deltas(tail, state: torch.Tensor, deltas: torch.Tensor):
