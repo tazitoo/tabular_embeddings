@@ -134,6 +134,9 @@ def run_dataset(
     # Per-row ablation search
     optimal_k = np.zeros(n_query, dtype=np.int32)
     gap_closed = np.full(n_query, np.nan, dtype=np.float32)
+    # Store intervened predictions at optimal_k for scatter plots
+    n_classes = baseline_preds_s.shape[1] if baseline_preds_s.ndim == 2 else 1
+    preds_intervened = baseline_preds_s.copy()  # default: unmodified
 
     t0 = time.time()
     for r in range(n_query):
@@ -206,12 +209,16 @@ def run_dataset(
         crossed = np.where(gap_remaining <= 0)[0]  # steps where we've matched or exceeded weak
 
         if len(crossed) > 0:
-            optimal_k[r] = int(crossed[0]) + 1  # first crossing point
+            best_k = int(crossed[0])
+            optimal_k[r] = best_k + 1
             gap_closed[r] = 1.0
         else:
-            # Never fully closed — report closest
+            best_k = K - 1
             optimal_k[r] = K
             gap_closed[r] = 1.0 - gap_remaining.min() / orig_gap if orig_gap > 0 else 1.0
+
+        # Save prediction at optimal_k for scatter plots
+        preds_intervened[r] = preds[best_k]
 
         if (r + 1) % 50 == 0 or r == n_query - 1:
             elapsed = time.time() - t0
@@ -233,6 +240,9 @@ def run_dataset(
         "optimal_k": optimal_k,
         "gap_closed": gap_closed,
         "strong_wins": strong_wins,
+        "preds_strong": baseline_preds_s,
+        "preds_weak": weak_preds,
+        "preds_intervened": preds_intervened,
         "baseline_loss_strong": baseline_loss_s,
         "baseline_loss_weak": weak_loss,
         "n_query": n_query,
