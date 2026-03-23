@@ -457,6 +457,78 @@ def compute_local_transfer_delta(
     return delta
 
 
+def compute_local_virtual_atoms(
+    atoms_source: np.ndarray,
+    atoms_target: np.ndarray,
+    matched_pairs: List[Tuple[int, int]],
+    unmatched_source: List[int],
+    n_neighbors: int = 8,
+    alpha: float = 1.0,
+) -> np.ndarray:
+    """Per-feature local linear interpolation from nearest matched neighbors.
+
+    For each unmatched source feature, finds the K nearest matched features
+    in decoder atom cosine similarity, fits a local ridge on those K pairs,
+    and projects the unmatched atom into target space.
+
+    No per-row data needed — this is purely geometric, computed once.
+
+    Args:
+        atoms_source: (H_source, d_source) full decoder atom matrix.
+        atoms_target: (H_target, d_target) full decoder atom matrix.
+        matched_pairs: list of (source_global_idx, target_global_idx).
+        unmatched_source: list of source global indices to project.
+        n_neighbors: number of nearest matched atoms to use per feature.
+        alpha: Ridge regularization.
+
+    Returns:
+        virtual_atoms: (n_unmatched, d_target) local-interpolated atoms.
+    """
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    n_unmatched = len(unmatched_source)
+    d_target = atoms_target.shape[1]
+
+    # Gather matched source atoms for neighbor search
+    matched_src_indices = [si for si, _ in matched_pairs]
+    matched_tgt_indices = [ti for _, ti in matched_pairs]
+    matched_src_atoms = atoms_source[matched_src_indices]  # (n_matched, d_source)
+    matched_tgt_atoms = atoms_target[matched_tgt_indices]  # (n_matched, d_target)
+    n_matched = len(matched_pairs)
+
+    virtual = np.zeros((n_unmatched, d_target), dtype=np.float32)
+
+    for u, si in enumerate(unmatched_source):
+        query_atom = atoms_source[si:si+1]  # (1, d_source)
+
+        # Cosine similarity to all matched source atoms
+        sims = cosine_similarity(query_atom, matched_src_atoms)[0]  # (n_matched,)
+        K = min(n_neighbors, n_matched)
+        top_k = np.argsort(-sims)[:K]
+
+        # Local training data: the K nearest matched pairs
+        X_local = matched_src_atoms[top_k]  # (K, d_source)
+        Y_local = matched_tgt_atoms[top_k]  # (K, d_target)
+
+        if K < 2:
+            # Not enough neighbors — use weighted average
+            if K == 1:
+                # Scale by ratio of norms
+                src_norm = np.linalg.norm(X_local[0])
+                tgt_norm = np.linalg.norm(Y_local[0])
+                scale = tgt_norm / src_norm if src_norm > 1e-8 else 1.0
+                virtual[u] = query_atom[0] * scale * (d_target / query_atom.shape[1])
+            continue
+
+        # Fit local ridge
+        reg = Ridge(alpha=alpha, fit_intercept=False)
+        reg.fit(X_local, Y_local)
+        virtual[u] = reg.predict(query_atom)[0]
+
+    return virtual
+
+
 def compute_virtual_atoms_mlp(
     atoms_source_unmatched: np.ndarray,
     model: torch.nn.Module,
@@ -731,7 +803,16 @@ def build_concept_bridge(
         [atoms_source[gi] for gi in unmatched_source_features], axis=0
     )
 
-    if map_type == "mlp":
+    if map_type == "local":
+        virtual = compute_local_virtual_atoms(
+            atoms_source, atoms_target, matched_pairs,
+            unmatched_source_features, n_neighbors=min(8, len(matched_pairs)),
+            alpha=ridge_alpha,
+        )
+        r2 = float("nan")  # no single global R²
+        logger.info("Concept map (local): %d neighbors, %d landmarks, %d virtual atoms",
+                     min(8, len(matched_pairs)), len(matched_pairs), len(unmatched_source_features))
+    elif map_type == "mlp":
         mlp_model, r2 = fit_concept_map_mlp(
             matched_source_atoms, matched_target_atoms,
             hidden_dim=mlp_hidden_dim,

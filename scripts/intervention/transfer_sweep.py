@@ -560,25 +560,16 @@ def main():
     unmatched = get_unmatched_features(args.source, args.target)
     logger.info("  Cross-corr: %s, unmatched source features: %d", corr.shape, len(unmatched))
 
-    if args.map_type == "local":
-        # Local map: just need MNN matched pairs, no global map
-        mnn_local = build_mnn_matches(corr, min_r=args.min_match_r)
-        indices_a = np.asarray(indices_a)
-        indices_b = np.asarray(indices_b)
-        matched_pairs = [(int(indices_a[i]), int(indices_b[j])) for i, j in mnn_local]
-        bridge = None
-        logger.info("  Local map: %d MNN pairs (min_r=%.2f), %d unmatched",
-                     len(matched_pairs), args.min_match_r, len(unmatched))
-    else:
-        bridge = build_concept_bridge(
-            sae_source, sae_target, corr, indices_a, indices_b,
-            unmatched, min_match_r=args.min_match_r, ridge_alpha=args.ridge_alpha,
-            map_type=args.map_type, mlp_hidden_dim=args.mlp_hidden_dim,
-        )
-        matched_pairs = bridge["matched_pairs"]
-        logger.info("  Bridge: R²=%.4f, %d landmarks, %d virtual atoms",
-                     bridge["concept_map_r2"], bridge["n_matched_pairs"],
-                     len(bridge["unmatched_indices"]))
+    bridge = build_concept_bridge(
+        sae_source, sae_target, corr, indices_a, indices_b,
+        unmatched, min_match_r=args.min_match_r, ridge_alpha=args.ridge_alpha,
+        map_type=args.map_type, mlp_hidden_dim=args.mlp_hidden_dim,
+    )
+    r2 = bridge["concept_map_r2"]
+    r2_str = f"R²={r2:.4f}" if not np.isnan(r2) else "local interpolation"
+    logger.info("  Bridge: %s, %d landmarks, %d virtual atoms",
+                 r2_str, bridge["n_matched_pairs"],
+                 len(bridge["unmatched_indices"]))
 
     # Find datasets with test embeddings for both models
     per_ds_s = load_test_embeddings(args.source)
@@ -611,16 +602,7 @@ def main():
             continue
 
         try:
-            if args.map_type == "local":
-                result = run_dataset_local(
-                    args.source, args.target, ds,
-                    sae_source, sae_target,
-                    matched_pairs, unmatched, splits,
-                    norm_stats_source, norm_stats_target,
-                    args.device,
-                )
-            else:
-                result = run_dataset(
+            result = run_dataset(
                 args.source, args.target, ds,
                 sae_source, sae_target, bridge, splits,
                 norm_stats_source, norm_stats_target,
