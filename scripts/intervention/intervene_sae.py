@@ -911,7 +911,10 @@ class Tabula8BTail:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        bnb_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+            llm_int8_enable_fp32_cpu_offload=True,
+        )
         llm = AutoModelForCausalLM.from_pretrained(
             model_path,
             device_map="auto",
