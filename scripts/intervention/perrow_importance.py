@@ -139,9 +139,13 @@ def run_dataset(
             elapsed = time.time() - t0
             rate = (r + 1) / elapsed
             eta = (n_query - r - 1) / rate if rate > 0 else 0
-            n_pos = (row_feature_drops[r] > 0).sum()
+            row_drops = row_feature_drops[r]
+            nz = row_drops[row_drops != 0]
+            n_pos = (row_drops > 0).sum()
+            mean_drop = nz.mean() if len(nz) else 0.0
             logger.info(f"    row {r+1}/{n_query}: {len(row_firing)} firing, "
-                        f"{n_pos} helpful ({rate:.1f} rows/s, ETA {eta:.0f}s)")
+                        f"{n_pos} helpful, mean={mean_drop:+.4f} "
+                        f"({rate:.1f} rows/s, ETA {eta:.0f}s)")
 
     logger.info(f"  Done in {time.time() - t0:.1f}s")
 
