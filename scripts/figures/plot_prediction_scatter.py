@@ -1062,8 +1062,8 @@ def _draw_scatter_chrome(ax, preds_strong, preds_weak, int_x, int_y,
             fontsize=7, color="gray", va="bottom", ha="right",
             transform=ax.get_yaxis_transform())
 
-    ax.set_xlabel(f"{disp_s}  P(class=1)", fontsize=10)
-    ax.set_ylabel(f"{disp_w}  P(class=1)", fontsize=10)
+    ax.set_xlabel(f"{disp_s} predictions", fontsize=10)
+    ax.set_ylabel(f"{disp_w} predictions", fontsize=10)
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_aspect("equal")
