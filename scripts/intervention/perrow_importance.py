@@ -175,7 +175,6 @@ def main():
     # Load SAE once
     sae, config = load_sae(args.model, device=args.device)
     sae.eval()
-    extraction_layer = get_extraction_layer_taskaware(args.model)
     norm_stats = load_norm_stats_matching(args.model)
 
     # Datasets with test embeddings
@@ -188,7 +187,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Per-row importance: {args.model}")
-    logger.info(f"  SAE: {config.input_dim} -> {config.hidden_dim}, L{extraction_layer}")
+    logger.info(f"  SAE: {config.input_dim} -> {config.hidden_dim}")
     logger.info(f"  Datasets: {len(datasets)}")
     logger.info(f"  Device: {args.device}")
 
@@ -205,6 +204,7 @@ def main():
             continue
 
         try:
+            extraction_layer = get_extraction_layer_taskaware(args.model, dataset=ds)
             result = run_dataset(
                 args.model, ds, sae, extraction_layer,
                 splits, norm_stats, args.device, args.max_K,
