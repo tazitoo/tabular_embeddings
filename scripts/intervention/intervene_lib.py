@@ -368,7 +368,6 @@ def load_dataset_context(
     model_key: str,
     dataset: str,
     splits: Optional[dict] = None,
-    max_context: int = 1024,
 ) -> Tuple:
     """Load preprocessed data and resolve row alignment for one dataset.
 
@@ -415,13 +414,6 @@ def load_dataset_context(
         X_train = X_df.iloc[train_idx].reset_index(drop=True)
         y_train = y[train_idx]
 
-        # Subsample context if needed (matches 04_extract_all_layers.py)
-        if len(X_train) > max_context:
-            rng = np.random.RandomState(42)
-            idx = rng.choice(len(X_train), max_context, replace=False)
-            X_train = X_train.iloc[idx].reset_index(drop=True)
-            y_train = y_train[idx]
-
         # Query rows: absolute row_indices into original DataFrame
         X_query = X_df.iloc[row_indices].reset_index(drop=True)
         y_query = y[row_indices]
@@ -435,12 +427,6 @@ def load_dataset_context(
         y_train = data.y_train
         X_query = data.X_test[positions]
         y_query = data.y_test[positions]
-
-        # Subsample context if needed (matches 04_extract_all_layers.py)
-        if len(X_train) > max_context:
-            X_train, y_train = _sample_context(
-                X_train, y_train, max_context, task,
-            )
 
     return X_train, y_train, X_query, y_query, row_indices, task
 

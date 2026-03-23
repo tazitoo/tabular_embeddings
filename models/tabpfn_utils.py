@@ -62,7 +62,8 @@ def load_tabpfn(
         if os.path.exists(worker_path):
             model_path = worker_path
 
-    kwargs = dict(device=device, n_estimators=n_estimators)
+    kwargs = dict(device=device, n_estimators=n_estimators,
+                  ignore_pretraining_limits=True)
     if model_path is not None:
         kwargs["model_path"] = model_path
 
