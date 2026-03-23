@@ -629,9 +629,10 @@ def main():
             np.savez_compressed(str(out_path), **result)
 
             if result["n_strong_wins"] > 0:
+                mean_k = result.get('mean_optimal_k', 0)
                 logger.info(f"  -> {out_path.name}: {result['n_strong_wins']} rows, "
-                            f"mean_k={result['mean_optimal_k']:.1f}, "
-                            f"gap_closed={result['mean_gap_closed']:.2f}")
+                            f"gap_closed={result['mean_gap_closed']:.2f}"
+                            + (f", mean_k={mean_k:.1f}" if mean_k else ""))
             else:
                 logger.info(f"  -> {out_path.name}: weak model wins all rows")
 
