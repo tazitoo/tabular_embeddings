@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Cumulative ablation sweep: remove features in importance order, measure degradation.
+"""Cross-model ablation sweep: how many concepts separate two models?
 
-For each model and dataset:
-  1. Load per-row importance from perrow_importance output
-  2. Build tail model (fit once)
-  3. For each row: rank features by importance, cumulatively ablate top-1..top-K
-  4. Measure prediction loss at each ablation step → degradation curve
+For a model pair (strong vs weak) on each dataset:
+  1. Load per-row importance for the stronger model
+  2. Filter to rows where the stronger model outperforms the weaker
+  3. Cumulatively ablate the stronger model's features in importance order
+  4. Search along predictions until logloss matches the weaker model's
+
+The number of concepts removed to reach parity = the "concept gap."
+
+Builds on find_per_row_optimal_ablation() from plot_prediction_scatter.py,
+rewritten to use the intervene_lib backbone.
 
 Output:
-    output/ablation_sweep/{model}/{dataset}.npz
+    output/ablation_sweep/{strong_model}_vs_{weak_model}/{dataset}.npz
 
 Usage:
-    python -m scripts.intervention.ablation_sweep --model tabpfn --device cuda
-    python -m scripts.intervention.ablation_sweep --model tabicl --datasets website_phishing
+    python -m scripts.intervention.ablation_sweep --strong tabpfn --weak tabicl --device cuda
+    python -m scripts.intervention.ablation_sweep --strong tabpfn --weak tabicl --datasets website_phishing
 """
 import argparse
 import json
@@ -28,7 +33,7 @@ from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
     load_sae, get_extraction_layer_taskaware, build_tail,
     load_dataset_context, load_test_embeddings,
-    compute_per_row_loss, compute_feature_reconstructions,
+    compute_per_row_loss, compute_feature_deltas, compute_feature_reconstructions,
     batched_ablation, batched_ablation_sequential,
     MitraTail, SEQUENTIAL_MODELS,
 )
@@ -43,228 +48,253 @@ IMPORTANCE_DIR = PROJECT_ROOT / "output" / "perrow_importance"
 SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
 
 
-def compute_cumulative_deltas(
-    sae: torch.nn.Module,
-    h_row: torch.Tensor,
-    ranked_features: list,
-    data_std: torch.Tensor,
-) -> torch.Tensor:
-    """Compute deltas for cumulative ablation: step k zeros features 0..k.
-
-    Returns:
-        deltas: (K, emb_dim) where deltas[k] is the delta from zeroing
-                the top-(k+1) features simultaneously.
-    """
-    K = len(ranked_features)
-    with torch.no_grad():
-        recon_full = sae.decode(h_row.unsqueeze(0))  # (1, emb_dim)
-
-        h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
-        for k in range(K):
-            # Zero features 0..k (cumulative)
-            for j in range(k + 1):
-                h_batch[k, ranked_features[j]] = 0.0
-
-        recon_ablated = sae.decode(h_batch)
-        delta_norm = recon_ablated - recon_full
-        delta_raw = delta_norm * data_std.unsqueeze(0)
-
-    return delta_raw
-
-
-def compute_cumulative_reconstructions(
-    sae: torch.nn.Module,
-    h_row: torch.Tensor,
-    ranked_features: list,
-    data_mean: torch.Tensor,
-    data_std: torch.Tensor,
-) -> torch.Tensor:
-    """For Mitra: full reconstructions with cumulative ablation."""
-    K = len(ranked_features)
-    with torch.no_grad():
-        h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
-        for k in range(K):
-            for j in range(k + 1):
-                h_batch[k, ranked_features[j]] = 0.0
-        recon_norm = sae.decode(h_batch)
-        recon_raw = recon_norm * data_std.unsqueeze(0) + data_mean.unsqueeze(0)
-    return recon_raw
-
-
 def run_dataset(
-    model_key: str,
+    strong_model: str,
+    weak_model: str,
     dataset: str,
-    sae: torch.nn.Module,
-    extraction_layer: int,
+    sae_strong: torch.nn.Module,
+    sae_weak: torch.nn.Module,
     splits: dict,
-    norm_stats: dict,
+    norm_stats_strong: dict,
+    norm_stats_weak: dict,
     device: str,
     max_K: int,
     max_steps: int,
 ) -> dict:
-    """Run cumulative ablation sweep for one dataset."""
-    # Load importance results
-    imp_path = IMPORTANCE_DIR / model_key / f"{dataset}.npz"
-    if not imp_path.exists():
-        raise FileNotFoundError(f"No importance results: {imp_path}")
+    """Cross-model ablation for one dataset."""
 
+    # Load importance for the strong model
+    imp_path = IMPORTANCE_DIR / strong_model / f"{dataset}.npz"
     imp = np.load(imp_path, allow_pickle=True)
-    row_feature_drops = imp["row_feature_drops"]  # (n_query, n_alive)
-    feature_indices = imp["feature_indices"]        # (n_alive,)
-    baseline_preds_saved = imp["baseline_preds"]
-    y_query_saved = imp["y_query"]
-    n_query = len(y_query_saved)
+    row_feature_drops = imp["row_feature_drops"]
+    feature_indices = imp["feature_indices"]
 
-    # Load context + aligned query rows
-    X_train, y_train, X_query, y_query, row_indices, task = load_dataset_context(
-        model_key, dataset, splits,
+    # Load context + query for strong model
+    X_train_s, y_train_s, X_query_s, y_query_s, row_indices, task = load_dataset_context(
+        strong_model, dataset, splits,
     )
-    assert len(X_query) == n_query, f"Query count mismatch: {len(X_query)} vs {n_query}"
+    n_query = len(X_query_s)
 
-    # Mitra needs int64 labels
-    if y_train.dtype == np.int32:
-        y_train = y_train.astype(np.int64)
+    if y_train_s.dtype == np.int32:
+        y_train_s = y_train_s.astype(np.int64)
 
-    # Load test embeddings and SAE encode
-    per_ds = load_test_embeddings(model_key)
-    emb = per_ds[dataset]
+    # Load test embeddings for strong model
+    per_ds_s = load_test_embeddings(strong_model)
+    emb_s = per_ds_s[dataset]
     with torch.no_grad():
-        emb_t = torch.tensor(emb, dtype=torch.float32, device=device)
-        activations = sae.encode(emb_t)
+        emb_t = torch.tensor(emb_s, dtype=torch.float32, device=device)
+        activations_s = sae_strong.encode(emb_t)
+    firing_mask_s = (activations_s > 0).cpu().numpy()
 
-    firing_mask = (activations > 0).cpu().numpy()
+    # Norm stats for strong model
+    ds_mean_s, ds_std_s = norm_stats_strong[dataset]
+    data_mean_t_s = torch.tensor(ds_mean_s, dtype=torch.float32, device=device)
+    data_std_t_s = torch.tensor(ds_std_s, dtype=torch.float32, device=device)
 
-    # Norm stats
-    ds_mean, ds_std = norm_stats[dataset]
-    data_mean_t = torch.tensor(ds_mean, dtype=torch.float32, device=device)
-    data_std_t = torch.tensor(ds_std, dtype=torch.float32, device=device)
-
-    logger.info(f"  Context: {X_train.shape}, Query: {n_query}, Task: {task}")
-
-    # Build tail ONCE
+    # Build tail for strong model → baseline predictions
+    extraction_layer_s = get_extraction_layer_taskaware(strong_model, dataset=dataset)
     t0 = time.time()
-    tail = build_tail(model_key, X_train, y_train, X_query,
-                      extraction_layer, task, device)
-    baseline_preds = tail.baseline_preds
-    baseline_loss = compute_per_row_loss(y_query, baseline_preds, task)
-    logger.info(f"  Tail built in {time.time() - t0:.1f}s, "
-                f"mean baseline loss: {baseline_loss.mean():.4f}")
+    tail_s = build_tail(strong_model, X_train_s, y_train_s, X_query_s,
+                        extraction_layer_s, task, device)
+    baseline_preds_s = tail_s.baseline_preds
+    baseline_loss_s = compute_per_row_loss(y_query_s, baseline_preds_s, task)
 
-    use_sequential = isinstance(tail, SEQUENTIAL_MODELS)
-    use_mitra = isinstance(tail, MitraTail)
+    # Build tail for weak model → weak model predictions
+    X_train_w, y_train_w, X_query_w, y_query_w, _, _ = load_dataset_context(
+        weak_model, dataset, splits,
+    )
+    if y_train_w.dtype == np.int32:
+        y_train_w = y_train_w.astype(np.int64)
 
-    # Per-row cumulative ablation
-    # For each row, rank firing features by importance (most helpful first)
-    # Then ablate top-1, top-2, ..., top-min(K, max_steps)
-    n_steps_per_row = []
-    # Store per-row degradation curves: (n_query, max_steps)
-    curve = np.full((n_query, max_steps), np.nan, dtype=np.float32)
+    extraction_layer_w = get_extraction_layer_taskaware(weak_model, dataset=dataset)
+    tail_w = build_tail(weak_model, X_train_w, y_train_w, X_query_w,
+                        extraction_layer_w, task, device)
+    weak_preds = tail_w.baseline_preds
+    weak_loss = compute_per_row_loss(y_query_w, weak_preds, task)
+
+    logger.info(f"  Tails built in {time.time() - t0:.1f}s")
+    logger.info(f"  Strong ({strong_model}) mean loss: {baseline_loss_s.mean():.4f}")
+    logger.info(f"  Weak ({weak_model}) mean loss: {weak_loss.mean():.4f}")
+
+    # Filter to rows where strong outperforms weak
+    strong_wins = baseline_loss_s < weak_loss
+    n_strong_wins = strong_wins.sum()
+    logger.info(f"  Strong wins on {n_strong_wins}/{n_query} rows")
+
+    if n_strong_wins == 0:
+        return {"n_strong_wins": 0, "n_query": n_query}
+
+    # Free weak tail
+    del tail_w
+    torch.cuda.empty_cache()
+
+    use_sequential = isinstance(tail_s, SEQUENTIAL_MODELS)
+    use_mitra = isinstance(tail_s, MitraTail)
+
+    # Per-row ablation search
+    optimal_k = np.zeros(n_query, dtype=np.int32)
+    gap_closed = np.full(n_query, np.nan, dtype=np.float32)
 
     t0 = time.time()
     for r in range(n_query):
-        # Get this row's firing features sorted by importance (descending)
-        row_drops = row_feature_drops[r]
-        row_firing = [i for i, fi in enumerate(feature_indices)
-                      if firing_mask[r, fi]]
-        if not row_firing:
-            n_steps_per_row.append(0)
+        if not strong_wins[r]:
+            optimal_k[r] = 0
+            gap_closed[r] = 1.0
             continue
 
-        # Sort by importance (most helpful = highest positive drop)
+        target_loss = weak_loss[r]
+        orig_gap = target_loss - baseline_loss_s[r]
+        if orig_gap <= 0:
+            optimal_k[r] = 0
+            gap_closed[r] = 1.0
+            continue
+
+        # Rank this row's firing features by importance
+        row_drops = row_feature_drops[r]
+        row_firing = [i for i, fi in enumerate(feature_indices)
+                      if firing_mask_s[r, fi]]
+        if not row_firing:
+            continue
+
         firing_importance = [(i, row_drops[i]) for i in row_firing]
         firing_importance.sort(key=lambda x: -x[1])
-
-        # Take top max_steps features
-        ranked = [feature_indices[i] for i, _ in firing_importance[:max_steps]]
+        ranked = [int(feature_indices[i]) for i, _ in firing_importance[:max_steps]]
         K = len(ranked)
-        n_steps_per_row.append(K)
 
-        h_row = activations[r]
-        X_row = X_query[r:r + 1]
+        h_row = activations_s[r]
+        X_row = X_query_s[r:r + 1]
 
+        # Compute cumulative ablations
         if use_mitra:
-            recons = compute_cumulative_reconstructions(
-                sae, h_row, ranked, data_mean_t, data_std_t,
-            )
-            preds = batched_ablation(tail, X_row, recons, max_K=max_K)
+            # Full reconstructions for each cumulative step
+            recons_list = []
+            with torch.no_grad():
+                h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
+                for k in range(K):
+                    for j in range(k + 1):
+                        h_batch[k, ranked[j]] = 0.0
+                recon_norm = sae_strong.decode(h_batch)
+                recons = recon_norm * data_std_t_s.unsqueeze(0) + data_mean_t_s.unsqueeze(0)
+            preds = batched_ablation(tail_s, X_row, recons, max_K=max_K)
         elif use_sequential:
-            deltas = compute_cumulative_deltas(sae, h_row, ranked, data_std_t)
-            preds = batched_ablation_sequential(tail, X_row, deltas, query_idx=r)
+            with torch.no_grad():
+                recon_full = sae_strong.decode(h_row.unsqueeze(0))
+                h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
+                for k in range(K):
+                    for j in range(k + 1):
+                        h_batch[k, ranked[j]] = 0.0
+                recon_abl = sae_strong.decode(h_batch)
+                deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
+            preds = batched_ablation_sequential(tail_s, X_row, deltas, query_idx=r)
         else:
-            deltas = compute_cumulative_deltas(sae, h_row, ranked, data_std_t)
-            preds = batched_ablation(tail, X_row, deltas, max_K=max_K)
+            with torch.no_grad():
+                recon_full = sae_strong.decode(h_row.unsqueeze(0))
+                h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
+                for k in range(K):
+                    for j in range(k + 1):
+                        h_batch[k, ranked[j]] = 0.0
+                recon_abl = sae_strong.decode(h_batch)
+                deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
+            preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
 
-        y_tiled = np.full(len(preds), y_query[r])
+        # Search for k where logloss matches weak model
+        y_tiled = np.full(len(preds), y_query_s[r])
         step_losses = compute_per_row_loss(y_tiled, preds, task)
-        curve[r, :K] = step_losses - baseline_loss[r]
+
+        best_k = 0
+        best_gap_remaining = orig_gap
+        for k in range(K):
+            gap_remaining = abs(step_losses[k] - (target_loss - baseline_loss_s[r]))
+            # Actually: step_losses[k] is ablated_loss - baseline, we want
+            # ablated_loss >= target_loss, i.e. step_losses[k] >= orig_gap
+            ablated_loss = baseline_loss_s[r] + step_losses[k]
+            gap_now = abs(ablated_loss - target_loss)
+            if gap_now < best_gap_remaining:
+                best_gap_remaining = gap_now
+                best_k = k + 1
+            if ablated_loss >= target_loss:
+                best_k = k + 1
+                break
+
+        optimal_k[r] = best_k
+        gap_closed[r] = 1.0 - best_gap_remaining / orig_gap if orig_gap > 0 else 1.0
 
         if (r + 1) % 50 == 0 or r == n_query - 1:
             elapsed = time.time() - t0
             rate = (r + 1) / elapsed
             eta = (n_query - r - 1) / rate if rate > 0 else 0
-            # Mean curve at step K (all features ablated)
-            full_ablation = curve[r, K - 1] if K > 0 else 0
-            logger.info(f"    row {r+1}/{n_query}: {K} steps, "
-                        f"full_ablation={full_ablation:+.4f} "
+            valid = optimal_k[:r+1][strong_wins[:r+1]]
+            mean_k = valid.mean() if len(valid) else 0
+            logger.info(f"    row {r+1}/{n_query}: mean_optimal_k={mean_k:.1f} "
                         f"({rate:.1f} rows/s, ETA {eta:.0f}s)")
 
     logger.info(f"  Done in {time.time() - t0:.1f}s")
 
-    # Compute mean degradation curve (averaging across rows)
-    mean_curve = np.nanmean(curve, axis=0)
-    # Count how many rows contribute at each step
-    n_valid = np.sum(~np.isnan(curve), axis=0)
+    # Summary stats for strong-wins rows only
+    valid_mask = strong_wins
+    valid_k = optimal_k[valid_mask]
+    valid_gc = gap_closed[valid_mask]
 
     return {
-        "curve": curve,                          # (n_query, max_steps)
-        "mean_curve": mean_curve,                # (max_steps,)
-        "n_valid": n_valid,                      # (max_steps,)
-        "baseline_loss": baseline_loss,          # (n_query,)
-        "n_steps_per_row": np.array(n_steps_per_row),
+        "optimal_k": optimal_k,
+        "gap_closed": gap_closed,
+        "strong_wins": strong_wins,
+        "baseline_loss_strong": baseline_loss_s,
+        "baseline_loss_weak": weak_loss,
+        "n_query": n_query,
+        "n_strong_wins": int(n_strong_wins),
+        "mean_optimal_k": float(valid_k.mean()) if len(valid_k) else 0.0,
+        "median_optimal_k": float(np.median(valid_k)) if len(valid_k) else 0.0,
+        "mean_gap_closed": float(valid_gc.mean()) if len(valid_gc) else 0.0,
         "feature_indices": feature_indices,
-        "y_query": y_query.astype(np.float32),
+        "y_query": y_query_s.astype(np.float32),
         "row_indices": row_indices.astype(np.int32),
-        "extraction_layer": np.array(extraction_layer),
     }
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Cumulative ablation sweep: degrade predictions by removing concepts")
-    parser.add_argument("--model", required=True, choices=SUPPORTED_MODELS)
+        description="Cross-model ablation: how many concepts separate two models?")
+    parser.add_argument("--strong", required=True, choices=SUPPORTED_MODELS,
+                        help="Stronger model (the one being ablated)")
+    parser.add_argument("--weak", required=True, choices=SUPPORTED_MODELS,
+                        help="Weaker model (target performance level)")
     parser.add_argument("--datasets", nargs="+", default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-K", type=int, default=512)
-    parser.add_argument("--max-steps", type=int, default=64,
-                        help="Max ablation steps per row (default: top 64 features)")
+    parser.add_argument("--max-steps", type=int, default=64)
     args = parser.parse_args()
 
     splits = json.loads(SPLITS_PATH.read_text())
 
-    sae, config = load_sae(args.model, device=args.device)
-    sae.eval()
-    norm_stats = load_norm_stats_matching(args.model)
+    # Load SAEs for both models
+    sae_strong, cfg_s = load_sae(args.strong, device=args.device)
+    sae_strong.eval()
+    sae_weak, cfg_w = load_sae(args.weak, device=args.device)
+    sae_weak.eval()
 
-    # Datasets with both test embeddings AND importance results
-    per_ds = load_test_embeddings(args.model)
+    norm_stats_strong = load_norm_stats_matching(args.strong)
+    norm_stats_weak = load_norm_stats_matching(args.weak)
+
+    # Find datasets with importance results for the strong model
+    per_ds = load_test_embeddings(args.strong)
     available = sorted(per_ds.keys())
     has_importance = [d for d in available
-                      if (IMPORTANCE_DIR / args.model / f"{d}.npz").exists()]
+                      if (IMPORTANCE_DIR / args.strong / f"{d}.npz").exists()]
 
     if args.datasets:
         datasets = [d for d in has_importance if d in args.datasets]
     else:
         datasets = has_importance
 
-    out_dir = OUTPUT_DIR / args.model
+    pair_name = f"{args.strong}_vs_{args.weak}"
+    out_dir = OUTPUT_DIR / pair_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Ablation sweep: {args.model}")
-    logger.info(f"  SAE: {config.input_dim} -> {config.hidden_dim}")
-    logger.info(f"  Datasets: {len(datasets)} (of {len(has_importance)} with importance)")
+    logger.info(f"Ablation sweep: {args.strong} -> {args.weak}")
+    logger.info(f"  Datasets: {len(datasets)}")
     logger.info(f"  Max steps: {args.max_steps}")
-    logger.info(f"  Device: {args.device}")
 
     for i, ds in enumerate(datasets):
         out_path = out_dir / f"{ds}.npz"
@@ -274,26 +304,25 @@ def main():
 
         logger.info(f"\n[{i+1}/{len(datasets)}] {ds}")
 
-        if ds not in norm_stats:
-            logger.info(f"  SKIP (no norm stats)")
+        if ds not in norm_stats_strong or ds not in norm_stats_weak:
+            logger.info(f"  SKIP (missing norm stats)")
             continue
 
         try:
-            extraction_layer = get_extraction_layer_taskaware(args.model, dataset=ds)
             result = run_dataset(
-                args.model, ds, sae, extraction_layer,
-                splits, norm_stats, args.device, args.max_K, args.max_steps,
+                args.strong, args.weak, ds,
+                sae_strong, sae_weak, splits,
+                norm_stats_strong, norm_stats_weak,
+                args.device, args.max_K, args.max_steps,
             )
             np.savez_compressed(str(out_path), **result)
 
-            mc = result["mean_curve"]
-            valid = ~np.isnan(mc)
-            if valid.any():
-                last_valid = np.where(valid)[0][-1]
-                logger.info(f"  -> {out_path.name}: {last_valid+1} steps, "
-                            f"final degradation={mc[last_valid]:+.4f}")
+            if result["n_strong_wins"] > 0:
+                logger.info(f"  -> {out_path.name}: {result['n_strong_wins']} rows, "
+                            f"mean_k={result['mean_optimal_k']:.1f}, "
+                            f"gap_closed={result['mean_gap_closed']:.2f}")
             else:
-                logger.info(f"  -> {out_path.name}: no valid steps")
+                logger.info(f"  -> {out_path.name}: weak model wins all rows")
 
         except Exception as e:
             logger.error(f"  FAIL: {e}")
