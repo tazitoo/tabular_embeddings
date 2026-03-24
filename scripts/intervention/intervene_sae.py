@@ -1755,12 +1755,16 @@ def intervene_mitra(
     task: str = "classification",
     data_mean: Optional[torch.Tensor] = None,
     data_std: Optional[torch.Tensor] = None,
+    external_delta: Optional[torch.Tensor] = None,
 ) -> Dict[str, np.ndarray]:
     """Run Mitra with SAE feature ablation at extraction layer.
 
     Mitra's Tab2D layers return a (support, query) tuple — support is the context
     tensor, query is the prediction tensor. Both must be captured and modified.
     Each tensor is 4D: (1, n_samples, n_feat+1, dim) with y-token at position 0.
+
+    If external_delta is provided, skip SAE delta computation and inject it
+    directly. external_delta shape: (n_support + n_query, dim).
     """
     n_features = X_query.shape[1]
     max_context = max(100, 200_000 // max(n_features, 1))
@@ -1783,12 +1787,17 @@ def intervene_mitra(
     tab2d_model = trainer.model
     layers = tab2d_model.layers
 
+    # Resolve hook target: layer index == len(layers) means final_layer_norm
+    if extraction_layer >= len(layers):
+        hook_module = tab2d_model.final_layer_norm
+    else:
+        hook_module = layers[extraction_layer]
+
     # Save RNG state — Mitra's DatasetFinetune uses trainer.rng for batching,
     # so the RNG must be at the same state for both passes to get identical batches.
     rng_state = trainer.rng.get_state()
 
     # --- Pass 1: Capture hidden state + baseline predictions ---
-    # Mitra layers return (support_tensor, query_tensor) tuples.
     captured_support = []
     captured_query = []
 
@@ -1799,8 +1808,11 @@ def intervene_mitra(
                 captured_support.append(sup.detach())
             if isinstance(qry, torch.Tensor):
                 captured_query.append(qry.detach())
+        elif isinstance(output, torch.Tensor):
+            # final_layer_norm: single tensor (query only)
+            captured_query.append(output.detach())
 
-    handle = layers[extraction_layer].register_forward_hook(capture_hook)
+    handle = hook_module.register_forward_hook(capture_hook)
     try:
         with torch.no_grad():
             if task == "regression":
@@ -1825,9 +1837,20 @@ def intervene_mitra(
     support_emb = extract_y_tokens(captured_support)
     query_emb = extract_y_tokens(captured_query)
 
-    # Compute delta for support and query separately
-    delta_support = compute_ablation_delta(sae, support_emb, ablate_features, data_mean=data_mean, data_std=data_std)
-    delta_query = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean, data_std=data_std)
+    # Compute delta
+    if external_delta is not None:
+        delta = external_delta.to(device)
+        n_sup = support_emb.shape[0] if support_emb is not None else 0
+        if n_sup > 0 and delta.shape[0] >= n_sup + n_query:
+            delta_support = delta[:n_sup]
+            delta_query = delta[n_sup:n_sup + n_query]
+        else:
+            # Query-only delta
+            delta_support = torch.zeros_like(query_emb) if support_emb is not None else None
+            delta_query = delta[:n_query] if delta.shape[0] >= n_query else delta
+    else:
+        delta_support = compute_ablation_delta(sae, support_emb, ablate_features, data_mean=data_mean, data_std=data_std)
+        delta_query = compute_ablation_delta(sae, query_emb, ablate_features, data_mean=data_mean, data_std=data_std)
 
     # --- Pass 2: Inject delta at layer L output for both support and query ---
     # Restore RNG state so batching is identical to pass 1
@@ -1836,33 +1859,38 @@ def intervene_mitra(
     qry_offset = [0]
 
     def modify_output_hook(module, input, output):
-        if not (isinstance(output, tuple) and len(output) >= 2):
-            return output
+        if isinstance(output, tuple) and len(output) >= 2:
+            sup, qry = output[0], output[1]
+            modified = list(output)
 
-        sup, qry = output[0], output[1]
-        modified = list(output)
+            if delta_support is not None and isinstance(sup, torch.Tensor) and sup.ndim == 4:
+                sup = sup.clone()
+                n_sup = sup.shape[1]
+                s = sup_offset[0]
+                sup[0] += delta_support[s:s + n_sup].unsqueeze(1)
+                sup_offset[0] = s + n_sup
+                modified[0] = sup
 
-        # Modify support tensor
-        if isinstance(sup, torch.Tensor) and sup.ndim == 4:
-            sup = sup.clone()
-            n_sup = sup.shape[1]
-            s = sup_offset[0]
-            sup[0] += delta_support[s:s + n_sup].unsqueeze(1)
-            sup_offset[0] = s + n_sup
-            modified[0] = sup
+            if isinstance(qry, torch.Tensor) and qry.ndim == 4:
+                qry = qry.clone()
+                n_qry = qry.shape[1]
+                s = qry_offset[0]
+                qry[0] += delta_query[s:s + n_qry].unsqueeze(1)
+                qry_offset[0] = s + n_qry
+                modified[1] = qry
 
-        # Modify query tensor
-        if isinstance(qry, torch.Tensor) and qry.ndim == 4:
-            qry = qry.clone()
-            n_qry = qry.shape[1]
+            return tuple(modified)
+        elif isinstance(output, torch.Tensor) and output.ndim == 4:
+            # final_layer_norm: single tensor (query only)
+            out = output.clone()
+            n_qry = out.shape[1]
             s = qry_offset[0]
-            qry[0] += delta_query[s:s + n_qry].unsqueeze(1)
+            out[0] += delta_query[s:s + n_qry].unsqueeze(1)
             qry_offset[0] = s + n_qry
-            modified[1] = qry
+            return out
+        return output
 
-        return tuple(modified)
-
-    handle = layers[extraction_layer].register_forward_hook(modify_output_hook)
+    handle = hook_module.register_forward_hook(modify_output_hook)
     try:
         with torch.no_grad():
             sup_offset[0] = 0
