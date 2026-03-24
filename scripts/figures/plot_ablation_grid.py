@@ -69,15 +69,14 @@ def _draw_panel(ax, npz_path: Path):
     valid_k = optimal_k[strong_wins & modified]
 
     # --- Draw layers ---
-    # All rows: faint gray
-    ax.scatter(p_s, p_w, facecolors="none", edgecolors="#cccccc",
-               s=6, alpha=0.4, linewidths=0.3, zorder=2)
+    # All rows: gray with transparency
+    ax.scatter(p_s, p_w, c="#999999", s=4, alpha=0.3, edgecolors="none", zorder=2)
 
-    # Strong-wins rows where intervention happened: show intervened positions
+    # Intervened positions: small black dots
     sw_mod = strong_wins & modified
     if sw_mod.any():
-        ax.scatter(p_i[sw_mod], p_w[sw_mod], c="#D55E00",
-                   s=6, alpha=0.5, edgecolors="none", zorder=4)
+        ax.scatter(p_i[sw_mod], p_w[sw_mod], c="black", s=1, alpha=0.7,
+                   edgecolors="none", marker=".", zorder=4)
 
     # y=x line
     lo, hi = 0, 1
