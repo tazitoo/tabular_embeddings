@@ -671,8 +671,10 @@ def _mitra_patched_predict(tail, recons: torch.Tensor) -> np.ndarray:
     finally:
         tab2d.forward = original_forward
 
-    # Convert logits → probabilities
-    probs = torch.softmax(logits[0], dim=-1).float().cpu().numpy()
+    # Convert logits → probabilities, truncate to actual class count
+    # (Mitra internally uses 10 class slots; predict_proba slices to n_classes)
+    n_classes = len(np.unique(tail.y_context))
+    probs = torch.softmax(logits[0, :, :n_classes], dim=-1).float().cpu().numpy()
 
     # Inverse-transform predictions (same as trainer.predict)
     preds = trainer.preprocessor.inverse_transform_y(probs)
