@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 """Cross-model ablation sweep: how many concepts separate two models?
 
-For a model pair (strong vs weak) on each dataset:
-  1. Load per-row importance for the stronger model
-  2. Filter to rows where the stronger model outperforms the weaker
-  3. Cumulatively ablate the stronger model's features in importance order
-  4. Search along predictions until logloss matches the weaker model's
-
-The number of concepts removed to reach parity = the "concept gap."
-
-Builds on find_per_row_optimal_ablation() from plot_prediction_scatter.py,
-rewritten to use the intervene_lib backbone.
+For each dataset, determines which model is stronger (dataset-level AUC/RMSE),
+then ablates the stronger model's features until per-row loss reaches parity
+with the weaker model.
 
 Output:
-    output/ablation_sweep/{strong_model}_vs_{weak_model}/{dataset}.npz
+    output/ablation_sweep/{model_a}_vs_{model_b}/{dataset}.npz
+
+    The output is symmetric — only one directory per unordered pair.
+    The NPZ records which model was stronger per dataset.
 
 Usage:
-    python -m scripts.intervention.ablation_sweep --strong tabpfn --weak tabicl --device cuda
-    python -m scripts.intervention.ablation_sweep --strong tabpfn --weak tabicl --datasets website_phishing
+    python -m scripts.intervention.ablation_sweep --models tabpfn tabicl --device cuda
+    python -m scripts.intervention.ablation_sweep --models tabpfn tabicl --datasets credit-g
 """
 import argparse
 import json
@@ -33,7 +29,7 @@ from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
     load_sae, get_extraction_layer_taskaware, build_tail,
     load_dataset_context, load_test_embeddings,
-    compute_per_row_loss, compute_feature_deltas, compute_feature_reconstructions,
+    compute_per_row_loss, compute_importance_metric,
     batched_ablation, batched_ablation_sequential,
     MitraTail, SEQUENTIAL_MODELS,
 )
@@ -49,94 +45,111 @@ SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfa
 
 
 def run_dataset(
-    strong_model: str,
-    weak_model: str,
+    model_a: str,
+    model_b: str,
     dataset: str,
-    sae_strong: torch.nn.Module,
-    sae_weak: torch.nn.Module,
+    saes: dict,
     splits: dict,
-    norm_stats_strong: dict,
-    norm_stats_weak: dict,
+    norm_stats: dict,
+    test_embeddings: dict,
     device: str,
     max_K: int,
     max_steps: int,
 ) -> dict:
-    """Cross-model ablation for one dataset."""
+    """Cross-model ablation for one dataset.
 
-    # Load importance for the strong model
-    imp_path = IMPORTANCE_DIR / strong_model / f"{dataset}.npz"
+    Determines strong/weak from dataset-level metric, then ablates the
+    strong model's features on rows where it outperforms the weak model.
+    """
+
+    # Build tails for both models → baseline predictions
+    tails = {}
+    preds = {}
+    losses = {}
+    y_query = None
+    row_indices = None
+    task = None
+
+    t0 = time.time()
+    for m in (model_a, model_b):
+        X_train, y_train, X_query, y_q, ridx, t = load_dataset_context(m, dataset, splits)
+        if y_train.dtype == np.int32:
+            y_train = y_train.astype(np.int64)
+        if task is None:
+            task = t
+            y_query = y_q
+            row_indices = ridx
+            n_query = len(X_query)
+
+        layer = get_extraction_layer_taskaware(m, dataset=dataset)
+        tails[m] = build_tail(m, X_train, y_train, X_query, layer, task, device)
+        preds[m] = tails[m].baseline_preds
+        losses[m] = compute_per_row_loss(y_query, preds[m], task)
+
+    logger.info(f"  Tails built in {time.time() - t0:.1f}s")
+
+    # Determine strong/weak from dataset-level metric (higher = better)
+    metric_a, metric_name = compute_importance_metric(y_query, preds[model_a], task)
+    metric_b, _ = compute_importance_metric(y_query, preds[model_b], task)
+
+    if metric_a >= metric_b:
+        strong, weak = model_a, model_b
+    else:
+        strong, weak = model_b, model_a
+
+    logger.info(f"  {strong} ({metric_name}={max(metric_a, metric_b):.4f}) > "
+                f"{weak} ({metric_name}={min(metric_a, metric_b):.4f})")
+
+    baseline_loss_s = losses[strong]
+    weak_loss = losses[weak]
+    baseline_preds_s = preds[strong]
+    weak_preds = preds[weak]
+    tail_s = tails[strong]
+
+    # Free weak tail
+    del tails[weak]
+    torch.cuda.empty_cache()
+
+    # Load importance + SAE activations for the strong model
+    imp_path = IMPORTANCE_DIR / strong / f"{dataset}.npz"
     imp = np.load(imp_path, allow_pickle=True)
     row_feature_drops = imp["row_feature_drops"]
     feature_indices = imp["feature_indices"]
 
-    # Load context + query for strong model
-    X_train_s, y_train_s, X_query_s, y_query_s, row_indices, task = load_dataset_context(
-        strong_model, dataset, splits,
-    )
-    n_query = len(X_query_s)
-
-    if y_train_s.dtype == np.int32:
-        y_train_s = y_train_s.astype(np.int64)
-
-    # Load test embeddings for strong model
-    per_ds_s = load_test_embeddings(strong_model)
-    emb_s = per_ds_s[dataset]
+    emb_s = test_embeddings[strong][dataset]
     with torch.no_grad():
         emb_t = torch.tensor(emb_s, dtype=torch.float32, device=device)
-        activations_s = sae_strong.encode(emb_t)
+        activations_s = saes[strong].encode(emb_t)
     firing_mask_s = (activations_s > 0).cpu().numpy()
 
-    # Norm stats for strong model
-    ds_mean_s, ds_std_s = norm_stats_strong[dataset]
+    ds_mean_s, ds_std_s = norm_stats[strong][dataset]
     data_mean_t_s = torch.tensor(ds_mean_s, dtype=torch.float32, device=device)
     data_std_t_s = torch.tensor(ds_std_s, dtype=torch.float32, device=device)
 
-    # Build tail for strong model → baseline predictions
-    extraction_layer_s = get_extraction_layer_taskaware(strong_model, dataset=dataset)
-    t0 = time.time()
-    tail_s = build_tail(strong_model, X_train_s, y_train_s, X_query_s,
-                        extraction_layer_s, task, device)
-    baseline_preds_s = tail_s.baseline_preds
-    baseline_loss_s = compute_per_row_loss(y_query_s, baseline_preds_s, task)
-
-    # Build tail for weak model → weak model predictions
-    X_train_w, y_train_w, X_query_w, y_query_w, _, _ = load_dataset_context(
-        weak_model, dataset, splits,
-    )
-    if y_train_w.dtype == np.int32:
-        y_train_w = y_train_w.astype(np.int64)
-
-    extraction_layer_w = get_extraction_layer_taskaware(weak_model, dataset=dataset)
-    tail_w = build_tail(weak_model, X_train_w, y_train_w, X_query_w,
-                        extraction_layer_w, task, device)
-    weak_preds = tail_w.baseline_preds
-    weak_loss = compute_per_row_loss(y_query_w, weak_preds, task)
-
-    logger.info(f"  Tails built in {time.time() - t0:.1f}s")
-    logger.info(f"  Strong ({strong_model}) mean loss: {baseline_loss_s.mean():.4f}")
-    logger.info(f"  Weak ({weak_model}) mean loss: {weak_loss.mean():.4f}")
-
     # Filter to rows where strong outperforms weak
     strong_wins = baseline_loss_s < weak_loss
-    n_strong_wins = strong_wins.sum()
+    n_strong_wins = int(strong_wins.sum())
     logger.info(f"  Strong wins on {n_strong_wins}/{n_query} rows")
 
     if n_strong_wins == 0:
-        return {"n_strong_wins": 0, "n_query": n_query}
-
-    # Free weak tail
-    del tail_w
-    torch.cuda.empty_cache()
+        return {
+            "strong_model": strong, "weak_model": weak,
+            "n_strong_wins": 0, "n_query": n_query,
+            "metric_strong": float(max(metric_a, metric_b)),
+            "metric_weak": float(min(metric_a, metric_b)),
+            "metric_name": metric_name,
+        }
 
     use_sequential = isinstance(tail_s, SEQUENTIAL_MODELS)
     use_mitra = isinstance(tail_s, MitraTail)
 
+    # Load query data for the strong model (needed for batched ablation)
+    X_train_s, y_train_s, X_query_s, _, _, _ = load_dataset_context(strong, dataset, splits)
+
     # Per-row ablation search
     optimal_k = np.zeros(n_query, dtype=np.int32)
     gap_closed = np.full(n_query, np.nan, dtype=np.float32)
-    # Store intervened predictions at optimal_k for scatter plots
-    n_classes = baseline_preds_s.shape[1] if baseline_preds_s.ndim == 2 else 1
-    preds_intervened = baseline_preds_s.copy()  # default: unmodified
+    preds_intervened = baseline_preds_s.copy()
 
     t0 = time.time()
     for r in range(n_query):
@@ -169,58 +182,54 @@ def run_dataset(
 
         # Compute cumulative ablations
         if use_mitra:
-            # Full reconstructions for each cumulative step
-            recons_list = []
             with torch.no_grad():
                 h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
                 for k in range(K):
                     for j in range(k + 1):
                         h_batch[k, ranked[j]] = 0.0
-                recon_norm = sae_strong.decode(h_batch)
+                recon_norm = saes[strong].decode(h_batch)
                 recons = recon_norm * data_std_t_s.unsqueeze(0) + data_mean_t_s.unsqueeze(0)
-            preds = batched_ablation(tail_s, X_row, recons, max_K=max_K)
+            step_preds = batched_ablation(tail_s, X_row, recons, max_K=max_K)
         elif use_sequential:
             with torch.no_grad():
-                recon_full = sae_strong.decode(h_row.unsqueeze(0))
+                recon_full = saes[strong].decode(h_row.unsqueeze(0))
                 h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
                 for k in range(K):
                     for j in range(k + 1):
                         h_batch[k, ranked[j]] = 0.0
-                recon_abl = sae_strong.decode(h_batch)
+                recon_abl = saes[strong].decode(h_batch)
                 deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
-            preds = batched_ablation_sequential(tail_s, X_row, deltas, query_idx=r)
+            step_preds = batched_ablation_sequential(tail_s, X_row, deltas, query_idx=r)
         else:
             with torch.no_grad():
-                recon_full = sae_strong.decode(h_row.unsqueeze(0))
+                recon_full = saes[strong].decode(h_row.unsqueeze(0))
                 h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
                 for k in range(K):
                     for j in range(k + 1):
                         h_batch[k, ranked[j]] = 0.0
-                recon_abl = sae_strong.decode(h_batch)
+                recon_abl = saes[strong].decode(h_batch)
                 deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
-            preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
+            step_preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
 
-        # Walk the curve, only accepting steps that increase loss (degrade prediction).
-        # Skip steps where ablation accidentally improves — those concepts interact.
-        y_tiled = np.full(len(preds), y_query_s[r])
-        step_losses = compute_per_row_loss(y_tiled, preds, task)  # (K,) absolute
+        # Walk the curve, only accepting steps that increase loss
+        y_tiled = np.full(len(step_preds), y_query[r])
+        step_losses = compute_per_row_loss(y_tiled, step_preds, task)
 
         current_loss = baseline_loss_s[r]
         accepted_k = 0
         accepted_pred_idx = None
         for k in range(K):
             if step_losses[k] >= current_loss:
-                # This ablation degrades prediction — accept it
                 current_loss = step_losses[k]
                 accepted_k = k + 1
                 accepted_pred_idx = k
                 if current_loss >= target_loss:
-                    break  # reached parity with weak model
+                    break
 
         if accepted_pred_idx is not None:
             optimal_k[r] = accepted_k
             gap_closed[r] = min(1.0, (current_loss - baseline_loss_s[r]) / orig_gap) if orig_gap > 0 else 1.0
-            preds_intervened[r] = preds[accepted_pred_idx]
+            preds_intervened[r] = step_preds[accepted_pred_idx]
         else:
             optimal_k[r] = 0
             gap_closed[r] = 0.0
@@ -236,12 +245,12 @@ def run_dataset(
 
     logger.info(f"  Done in {time.time() - t0:.1f}s")
 
-    # Summary stats for strong-wins rows only
-    valid_mask = strong_wins
-    valid_k = optimal_k[valid_mask]
-    valid_gc = gap_closed[valid_mask]
+    valid_k = optimal_k[strong_wins]
+    valid_gc = gap_closed[strong_wins]
 
     return {
+        "strong_model": strong,
+        "weak_model": weak,
         "optimal_k": optimal_k,
         "gap_closed": gap_closed,
         "strong_wins": strong_wins,
@@ -251,12 +260,15 @@ def run_dataset(
         "baseline_loss_strong": baseline_loss_s,
         "baseline_loss_weak": weak_loss,
         "n_query": n_query,
-        "n_strong_wins": int(n_strong_wins),
+        "n_strong_wins": n_strong_wins,
         "mean_optimal_k": float(valid_k.mean()) if len(valid_k) else 0.0,
         "median_optimal_k": float(np.median(valid_k)) if len(valid_k) else 0.0,
         "mean_gap_closed": float(valid_gc.mean()) if len(valid_gc) else 0.0,
+        "metric_strong": float(max(metric_a, metric_b)),
+        "metric_weak": float(min(metric_a, metric_b)),
+        "metric_name": metric_name,
         "feature_indices": feature_indices,
-        "y_query": y_query_s.astype(np.float32),
+        "y_query": y_query.astype(np.float32),
         "row_indices": row_indices.astype(np.int32),
     }
 
@@ -264,10 +276,8 @@ def run_dataset(
 def main():
     parser = argparse.ArgumentParser(
         description="Cross-model ablation: how many concepts separate two models?")
-    parser.add_argument("--strong", required=True, choices=SUPPORTED_MODELS,
-                        help="Stronger model (the one being ablated)")
-    parser.add_argument("--weak", required=True, choices=SUPPORTED_MODELS,
-                        help="Weaker model (target performance level)")
+    parser.add_argument("--models", nargs=2, required=True, metavar="MODEL",
+                        help="Two models to compare (order does not matter)")
     parser.add_argument("--datasets", nargs="+", default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--resume", action="store_true")
@@ -275,34 +285,37 @@ def main():
     parser.add_argument("--max-steps", type=int, default=64)
     args = parser.parse_args()
 
+    model_a, model_b = sorted(args.models)
+    pair_name = f"{model_a}_vs_{model_b}"
+
     splits = json.loads(SPLITS_PATH.read_text())
 
-    # Load SAEs for both models
-    sae_strong, cfg_s = load_sae(args.strong, device=args.device)
-    sae_strong.eval()
-    sae_weak, cfg_w = load_sae(args.weak, device=args.device)
-    sae_weak.eval()
+    # Load SAEs and norm stats for both models
+    saes = {}
+    norm_stats = {}
+    test_embeddings = {}
+    for m in (model_a, model_b):
+        sae, _ = load_sae(m, device=args.device)
+        sae.eval()
+        saes[m] = sae
+        norm_stats[m] = load_norm_stats_matching(m)
+        test_embeddings[m] = load_test_embeddings(m)
 
-    norm_stats_strong = load_norm_stats_matching(args.strong)
-    norm_stats_weak = load_norm_stats_matching(args.weak)
-
-    # Find datasets with importance results for the strong model
-    per_ds = load_test_embeddings(args.strong)
-    available = sorted(per_ds.keys())
-    has_importance = [d for d in available
-                      if (IMPORTANCE_DIR / args.strong / f"{d}.npz").exists()]
+    # Find datasets where both models have importance data
+    ds_a = set(d.stem for d in (IMPORTANCE_DIR / model_a).glob("*.npz"))
+    ds_b = set(d.stem for d in (IMPORTANCE_DIR / model_b).glob("*.npz"))
+    available = sorted(ds_a & ds_b)
 
     if args.datasets:
-        datasets = [d for d in has_importance if d in args.datasets]
+        datasets = [d for d in available if d in args.datasets]
     else:
-        datasets = has_importance
+        datasets = available
 
-    pair_name = f"{args.strong}_vs_{args.weak}"
     out_dir = OUTPUT_DIR / pair_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Ablation sweep: {args.strong} -> {args.weak}")
-    logger.info(f"  Datasets: {len(datasets)}")
+    logger.info(f"Ablation sweep: {model_a} vs {model_b}")
+    logger.info(f"  Datasets: {len(datasets)} (of {len(ds_a)} / {len(ds_b)} with importance)")
     logger.info(f"  Max steps: {args.max_steps}")
 
     for i, ds in enumerate(datasets):
@@ -313,25 +326,25 @@ def main():
 
         logger.info(f"\n[{i+1}/{len(datasets)}] {ds}")
 
-        if ds not in norm_stats_strong or ds not in norm_stats_weak:
+        if ds not in norm_stats[model_a] or ds not in norm_stats[model_b]:
             logger.info(f"  SKIP (missing norm stats)")
             continue
 
         try:
             result = run_dataset(
-                args.strong, args.weak, ds,
-                sae_strong, sae_weak, splits,
-                norm_stats_strong, norm_stats_weak,
+                model_a, model_b, ds,
+                saes, splits, norm_stats, test_embeddings,
                 args.device, args.max_K, args.max_steps,
             )
             np.savez_compressed(str(out_path), **result)
 
             if result["n_strong_wins"] > 0:
-                logger.info(f"  -> {out_path.name}: {result['n_strong_wins']} rows, "
+                logger.info(f"  -> {out_path.name}: {result['strong_model']}>{result['weak_model']}, "
+                            f"{result['n_strong_wins']} rows, "
                             f"mean_k={result['mean_optimal_k']:.1f}, "
                             f"gap_closed={result['mean_gap_closed']:.2f}")
             else:
-                logger.info(f"  -> {out_path.name}: weak model wins all rows")
+                logger.info(f"  -> {out_path.name}: models tied (no rows with clear winner)")
 
         except Exception as e:
             logger.error(f"  FAIL: {e}")
