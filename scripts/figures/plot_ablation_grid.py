@@ -73,18 +73,11 @@ def _draw_panel(ax, npz_path: Path):
     ax.scatter(p_s, p_w, facecolors="none", edgecolors="#cccccc",
                s=6, alpha=0.4, linewidths=0.3, zorder=2)
 
-    # Strong-wins rows where intervention happened: arrows from original to intervened
+    # Strong-wins rows where intervention happened: show intervened positions
     sw_mod = strong_wins & modified
     if sw_mod.any():
-        # Draw arrows (original → intervened)
-        for idx in np.where(sw_mod)[0]:
-            ax.annotate("", xy=(p_i[idx], p_w[idx]), xytext=(p_s[idx], p_w[idx]),
-                         arrowprops=dict(arrowstyle="-|>", color="#D55E00",
-                                         lw=0.4, alpha=0.5),
-                         zorder=3)
-        # Intervened points
         ax.scatter(p_i[sw_mod], p_w[sw_mod], c="#D55E00",
-                   s=6, alpha=0.7, edgecolors="none", zorder=4)
+                   s=6, alpha=0.5, edgecolors="none", zorder=4)
 
     # y=x line
     lo, hi = 0, 1
