@@ -1062,7 +1062,7 @@ class MitraTail:
     """
 
     def __init__(self, clf, trainer, layers, captured_support, captured_query,
-                 rng_state, extraction_layer, n_query, X_query, task, device):
+                 rng_state, extraction_layer, hook_module, n_query, X_query, task, device):
         self.clf = clf
         self.trainer = trainer
         self.layers = layers
@@ -1070,6 +1070,7 @@ class MitraTail:
         self.captured_query = captured_query      # list of (1, n_qry, n_feat+1, dim)
         self.rng_state = rng_state
         self.extraction_layer = extraction_layer
+        self.hook_module = hook_module  # actual module to hook (may be final_layer_norm)
         self.n_query = n_query
         self.X_query = X_query
         self.task = task
@@ -1098,20 +1099,33 @@ class MitraTail:
         trainer = clf.trainers[0]
         layers = trainer.model.layers
 
+        # Resolve hook target: layer index == len(layers) means final_layer_norm
+        # (the extraction code hooks layers 0..N-1 then final_layer_norm as layer N)
+        if extraction_layer >= len(layers):
+            hook_module = trainer.model.final_layer_norm
+        else:
+            hook_module = layers[extraction_layer]
+
         rng_state = trainer.rng.get_state()
 
         captured_support = []
         captured_query = []
 
+        is_final_norm = extraction_layer >= len(layers)
+
         def capture_hook(module, input, output):
             if isinstance(output, tuple) and len(output) >= 2:
+                # Tab2D layer: (support, query) tuple
                 sup, qry = output[0], output[1]
                 if isinstance(sup, torch.Tensor):
                     captured_support.append(sup.detach())
                 if isinstance(qry, torch.Tensor):
                     captured_query.append(qry.detach())
+            elif isinstance(output, torch.Tensor):
+                # final_layer_norm: single tensor (query only)
+                captured_query.append(output.detach())
 
-        handle = layers[extraction_layer].register_forward_hook(capture_hook)
+        handle = hook_module.register_forward_hook(capture_hook)
         try:
             with torch.no_grad():
                 if task == "regression":
@@ -1127,6 +1141,7 @@ class MitraTail:
             captured_query=captured_query,
             rng_state=rng_state,
             extraction_layer=extraction_layer,
+            hook_module=hook_module,
             n_query=len(X_query), X_query=X_query,
             task=task, device=device,
         )
@@ -1142,27 +1157,36 @@ class MitraTail:
         qry_offset = [0]
 
         def modify_hook(module, input, output):
-            if not (isinstance(output, tuple) and len(output) >= 2):
-                return output
-            sup, qry = output[0], output[1]
-            modified = list(output)
-            if isinstance(sup, torch.Tensor) and sup.ndim == 4:
-                sup = sup.clone()
-                n_sup = sup.shape[1]
-                s = sup_offset[0]
-                sup[0] += delta_support[s:s + n_sup].unsqueeze(1)
-                sup_offset[0] = s + n_sup
-                modified[0] = sup
-            if isinstance(qry, torch.Tensor) and qry.ndim == 4:
-                qry = qry.clone()
-                n_qry = qry.shape[1]
+            if isinstance(output, tuple) and len(output) >= 2:
+                # Tab2D layer: (support, query) tuple
+                sup, qry = output[0], output[1]
+                modified = list(output)
+                if isinstance(sup, torch.Tensor) and sup.ndim == 4:
+                    sup = sup.clone()
+                    n_sup = sup.shape[1]
+                    s = sup_offset[0]
+                    sup[0] += delta_support[s:s + n_sup].unsqueeze(1)
+                    sup_offset[0] = s + n_sup
+                    modified[0] = sup
+                if isinstance(qry, torch.Tensor) and qry.ndim == 4:
+                    qry = qry.clone()
+                    n_qry = qry.shape[1]
+                    s = qry_offset[0]
+                    qry[0] += delta_query[s:s + n_qry].unsqueeze(1)
+                    qry_offset[0] = s + n_qry
+                    modified[1] = qry
+                return tuple(modified)
+            elif isinstance(output, torch.Tensor) and output.ndim == 4:
+                # final_layer_norm: single tensor (query only)
+                out = output.clone()
+                n_qry = out.shape[1]
                 s = qry_offset[0]
-                qry[0] += delta_query[s:s + n_qry].unsqueeze(1)
+                out[0] += delta_query[s:s + n_qry].unsqueeze(1)
                 qry_offset[0] = s + n_qry
-                modified[1] = qry
-            return tuple(modified)
+                return out
+            return output
 
-        handle = self.layers[self.extraction_layer].register_forward_hook(modify_hook)
+        handle = self.hook_module.register_forward_hook(modify_hook)
         try:
             with torch.no_grad():
                 if self.task == "regression":

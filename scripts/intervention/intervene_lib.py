@@ -131,24 +131,7 @@ def get_extraction_layer_taskaware(model_key: str, dataset: str = None) -> int:
             return int(layers[datasets.index(dataset)])
 
     # All datasets use the same layer in task-aware fixed mode
-    layer = int(layers[0])
-
-    # Clamp to model's transformer block count: the NPZ may include
-    # non-block layers (e.g. final_norm for Mitra) that aren't in
-    # model.layers. The tail classes index into model.layers, so we
-    # need to cap at len(model.layers) - 1.  The extraction at
-    # final_norm ≈ last transformer block output anyway.
-    MODEL_LAYER_COUNTS = {
-        "mitra": 12, "tabpfn": 24, "tabicl": 12, "tabicl_v2": 12,
-        "tabdpt": 24, "hyperfast": 3, "carte": 5, "tabula8b": 33,
-    }
-    max_layer = MODEL_LAYER_COUNTS.get(model_key, 999) - 1
-    if layer > max_layer:
-        logger.debug("Clamping %s layer %d → %d (model has %d blocks)",
-                      model_key, layer, max_layer, max_layer + 1)
-        layer = max_layer
-
-    return layer
+    return int(layers[0])
 
 
 def load_norm_stats(
@@ -661,6 +644,7 @@ def _mitra_patched_predict(tail, recons: torch.Tensor) -> np.ndarray:
         padding_features, _ = einops.pack((padding_features_y, padding_features), 'b *')
 
         # Direct layer calls — no checkpoint
+        n_layers = len(self.layers)
         for i, layer in enumerate(self.layers):
             support, query__ = layer(support, query__, None, None,
                                      batch_size, padding_obs_support, padding_obs_query__, padding_features)
@@ -670,6 +654,10 @@ def _mitra_patched_predict(tail, recons: torch.Tensor) -> np.ndarray:
                 query__[0, :, 0, :] = recons
 
         query__ = self.final_layer_norm(query__)
+        # If extraction_layer == n_layers, patch after final_layer_norm
+        if extraction_layer >= n_layers and query__.ndim == 4:
+            query__ = query__.clone()
+            query__[0, :, 0, :] = recons
         query__ = self.final_layer(query__)
 
         query__, _ = einops.unpack(query__, pack_query__, 'b s * c')
