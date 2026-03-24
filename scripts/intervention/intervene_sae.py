@@ -1121,11 +1121,9 @@ class MitraTail:
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
                   task="classification", device="cuda"):
         """One-time setup: fit Mitra, capture hidden state at layer L."""
-        n_features = X_query.shape[1]
-        max_context = max(100, 200_000 // max(n_features, 1))
-        if len(X_context) > max_context:
-            X_context = X_context[:max_context]
-            y_context = y_context[:max_context]
+        # Context is already capped by load_dataset_context (max_context=1024).
+        # Do NOT apply a per-feature cap here — it would create a mismatch
+        # with the SAE training conditions (extracted at 600-1024 context).
 
         if task == "regression":
             from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
@@ -1775,11 +1773,9 @@ def intervene_mitra(
     If external_delta is provided, skip SAE delta computation and inject it
     directly. external_delta shape: (n_support + n_query, dim).
     """
-    n_features = X_query.shape[1]
-    max_context = max(100, 200_000 // max(n_features, 1))
-    if len(X_context) > max_context:
-        X_context = X_context[:max_context]
-        y_context = y_context[:max_context]
+    # Context is already capped by load_dataset_context (max_context=1024).
+    # Do NOT apply a per-feature cap here — it would create a mismatch
+    # with the SAE training conditions (extracted at 600-1024 context).
 
     if task == "regression":
         from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
@@ -3775,11 +3771,9 @@ def perrow_sweep_intervene_mitra(
     extract y-token embeddings, and apply per-row SAE ablation deltas.
     RNG state is saved/restored for deterministic batching across passes.
     """
-    n_features = X_query.shape[1]
-    max_context = max(100, 200_000 // max(n_features, 1))
-    if len(X_context) > max_context:
-        X_context = X_context[:max_context]
-        y_context = y_context[:max_context]
+    # Context is already capped by load_dataset_context (max_context=1024).
+    # Do NOT apply a per-feature cap here — it would create a mismatch
+    # with the SAE training conditions (extracted at 600-1024 context).
 
     if task == "regression":
         from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor

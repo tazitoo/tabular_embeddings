@@ -681,11 +681,8 @@ def _boost_mitra(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
     import torch
     from scripts.intervention.intervene_sae import compute_boost_delta
 
-    n_features = X_q.shape[1]
-    max_context = max(100, 200_000 // max(n_features, 1))
-    if len(X_ctx) > max_context:
-        X_ctx = X_ctx[:max_context]
-        y_ctx = y_ctx[:max_context]
+    # Context is already capped upstream (max_context=1024).
+    # Do NOT apply a per-feature cap — must match SAE training conditions.
 
     if task == "regression":
         from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
@@ -1265,11 +1262,8 @@ def _transplant_mitra(X_ctx, y_ctx, X_q, y_q, delta, extraction_layer, device, t
     """Transplant intervention for Mitra."""
     import torch
 
-    n_features = X_q.shape[1]
-    max_context = max(100, 200_000 // max(n_features, 1))
-    if len(X_ctx) > max_context:
-        X_ctx = X_ctx[:max_context]
-        y_ctx = y_ctx[:max_context]
+    # Context is already capped upstream (max_context=1024).
+    # Do NOT apply a per-feature cap — must match SAE training conditions.
 
     if task == "regression":
         from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor

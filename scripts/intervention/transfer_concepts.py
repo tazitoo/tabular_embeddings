@@ -621,11 +621,9 @@ def _capture_tabula8b(X_ctx, y_ctx, X_query, extraction_layer, device, task):
 
 
 def _capture_mitra(X_ctx, y_ctx, X_query, extraction_layer, device, task):
-    n_features = X_query.shape[1]
-    max_context = max(100, 200_000 // max(n_features, 1))
-    if len(X_ctx) > max_context:
-        X_ctx = X_ctx[:max_context]
-        y_ctx = y_ctx[:max_context]
+    # Context is already capped by load_dataset_context (max_context=1024).
+    # Do NOT apply a per-feature cap here — it would create a mismatch
+    # with the SAE training conditions (extracted at 600-1024 context).
 
     if task == "regression":
         from autogluon.tabular.models.mitra.sklearn_interface import MitraRegressor
