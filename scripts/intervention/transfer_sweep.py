@@ -191,7 +191,6 @@ def _transfer_one_direction(
             X_query=X_query_t, y_query=y_query,
             external_delta=full_delta.to(device),
             device=device, task=task,
-            extraction_layer=extraction_layer_t,
         )
         individual_preds.append(result["ablated_preds"])
 
@@ -239,7 +238,6 @@ def _transfer_one_direction(
             X_query=X_query_t, y_query=y_query,
             external_delta=full_delta.to(device),
             device=device, task=task,
-            extraction_layer=extraction_layer_t,
         )
         preds_k = result["ablated_preds"]
 
@@ -356,7 +354,6 @@ def _transfer_local(
             X_query=X_query_t, y_query=y_query,
             external_delta=full_delta.to(device),
             device=device, task=task,
-            extraction_layer=extraction_layer_t,
         )
 
         transferred_loss_r = compute_per_row_loss(

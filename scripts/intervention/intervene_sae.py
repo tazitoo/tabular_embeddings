@@ -4378,9 +4378,11 @@ def intervene(
     training_dir: Path = DEFAULT_TRAINING_DIR,
     external_delta: Optional[torch.Tensor] = None,
     dataset_name: Optional[str] = None,
-    extraction_layer: Optional[int] = None,
 ) -> Dict[str, np.ndarray]:
     """Run a model with SAE feature ablation at its optimal extraction layer.
+
+    The extraction layer is always determined from the task-aware norm stats
+    NPZ (round 10), ensuring consistency with SAE training conditions.
 
     Args:
         model_key: One of 'tabpfn', 'mitra', 'tabicl', 'tabicl_v2', 'tabdpt',
@@ -4391,13 +4393,11 @@ def intervene(
         device: Torch device
         task: 'classification' or 'regression'
         sae_dir: Path to SAE checkpoints
-        layers_path: Path to optimal_extraction_layers.json
+        layers_path: Path to optimal_extraction_layers.json (deprecated, unused)
         training_dir: Path to SAE training data (for norm stats)
         external_delta: Pre-computed delta to inject directly, skipping SAE computation.
             Used by concept transfer to inject deltas translated from another model's space.
         dataset_name: Dataset name for loading per-dataset norm stats.
-        extraction_layer: Override the extraction layer (default: read from config).
-            Use this to ensure consistency with task-aware layer selection.
 
     Returns:
         Dict with 'baseline_preds', 'ablated_preds', 'y_query'
@@ -4410,7 +4410,8 @@ def intervene(
     np.random.seed(42)
 
     if extraction_layer is None:
-        extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
+        from scripts.intervention.intervene_lib import get_extraction_layer_taskaware
+        extraction_layer = get_extraction_layer_taskaware(model_key)
 
     if external_delta is not None:
         # External delta provided — SAE not needed for delta computation.
