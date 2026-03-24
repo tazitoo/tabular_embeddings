@@ -157,7 +157,7 @@ def _transfer_one_direction(
             splits, norm_stats_source, norm_stats_target,
             X_train_t, y_train_t, X_query_t, y_query,
             target_preds, source_preds, target_loss, source_loss,
-            source_wins, n_ctx_target, task, device,
+            source_wins, n_ctx_target, extraction_layer_t, task, device,
         )
 
     # ── Virtual atoms (ridge / mlp / local-interpolation bridge) ─────────
@@ -191,6 +191,7 @@ def _transfer_one_direction(
             X_query=X_query_t, y_query=y_query,
             external_delta=full_delta.to(device),
             device=device, task=task,
+            extraction_layer=extraction_layer_t,
         )
         individual_preds.append(result["ablated_preds"])
 
@@ -238,6 +239,7 @@ def _transfer_one_direction(
             X_query=X_query_t, y_query=y_query,
             external_delta=full_delta.to(device),
             device=device, task=task,
+            extraction_layer=extraction_layer_t,
         )
         preds_k = result["ablated_preds"]
 
@@ -298,7 +300,7 @@ def _transfer_local(
     splits, norm_stats_source, norm_stats_target,
     X_train_t, y_train_t, X_query_t, y_query,
     target_preds, source_preds, target_loss, source_loss,
-    source_wins, n_ctx_target, task, device,
+    source_wins, n_ctx_target, extraction_layer_t, task, device,
 ):
     """Per-row local ridge transfer (no global map)."""
     n_query = len(y_query)
@@ -353,6 +355,7 @@ def _transfer_local(
             X_query=X_query_t, y_query=y_query,
             external_delta=full_delta.to(device),
             device=device, task=task,
+            extraction_layer=extraction_layer_t,
         )
 
         transferred_loss_r = compute_per_row_loss(

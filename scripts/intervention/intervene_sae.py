@@ -4369,6 +4369,7 @@ def intervene(
     training_dir: Path = DEFAULT_TRAINING_DIR,
     external_delta: Optional[torch.Tensor] = None,
     dataset_name: Optional[str] = None,
+    extraction_layer: Optional[int] = None,
 ) -> Dict[str, np.ndarray]:
     """Run a model with SAE feature ablation at its optimal extraction layer.
 
@@ -4386,6 +4387,8 @@ def intervene(
         external_delta: Pre-computed delta to inject directly, skipping SAE computation.
             Used by concept transfer to inject deltas translated from another model's space.
         dataset_name: Dataset name for loading per-dataset norm stats.
+        extraction_layer: Override the extraction layer (default: read from config).
+            Use this to ensure consistency with task-aware layer selection.
 
     Returns:
         Dict with 'baseline_preds', 'ablated_preds', 'y_query'
@@ -4397,7 +4400,8 @@ def intervene(
     torch.manual_seed(42)
     np.random.seed(42)
 
-    extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
+    if extraction_layer is None:
+        extraction_layer = get_extraction_layer(model_key, layers_path=layers_path)
 
     if external_delta is not None:
         # External delta provided — SAE not needed for delta computation.
