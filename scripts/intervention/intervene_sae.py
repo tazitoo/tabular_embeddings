@@ -728,34 +728,61 @@ class CARTETail:
         if not ft_path:
             raise ValueError("FastText model not found for CARTE tail")
 
-        # Robust preprocessing (matches extraction code)
-        X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32),
-                                  nan=0.0, posinf=0.0, neginf=0.0)
-        X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32),
-                                nan=0.0, posinf=0.0, neginf=0.0)
+        import pandas as pd
 
-        col_std = X_context.std(axis=0)
-        nonconstant = col_std > 0
-        if not nonconstant.all():
-            X_context = X_context[:, nonconstant]
-            X_query = X_query[:, nonconstant]
+        # CARTE handles mixed-type DataFrames natively via fasttext.
+        # Convert to DataFrame if needed, keeping string columns intact.
+        if isinstance(X_context, pd.DataFrame):
+            df_ctx = X_context.reset_index(drop=True)
+            df_qry = X_query.reset_index(drop=True)
+        else:
+            X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32),
+                                      nan=0.0, posinf=0.0, neginf=0.0)
+            X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32),
+                                    nan=0.0, posinf=0.0, neginf=0.0)
+            feature_names = [f"f{i}" for i in range(X_context.shape[1])]
+            df_ctx = pd.DataFrame(X_context, columns=feature_names)
+            df_qry = pd.DataFrame(X_query, columns=feature_names)
 
-        scaler = RobustScaler()
-        X_context = scaler.fit_transform(X_context)
-        X_query = scaler.transform(X_query)
-        X_context = np.clip(X_context, -10, 10)
-        X_query = np.clip(X_query, -10, 10)
+        # Scale numeric columns only
+        from sklearn.preprocessing import RobustScaler
+        numeric_cols = df_ctx.select_dtypes(include=[np.number]).columns.tolist()
+        if numeric_cols:
+            # Drop constant numeric columns
+            col_std = df_ctx[numeric_cols].std()
+            nonconstant = col_std[col_std > 0].index.tolist()
+            drop_cols = [c for c in numeric_cols if c not in nonconstant]
+            if drop_cols:
+                df_ctx = df_ctx.drop(columns=drop_cols)
+                df_qry = df_qry.drop(columns=drop_cols)
+                numeric_cols = [c for c in numeric_cols if c in nonconstant]
+            if numeric_cols:
+                scaler = RobustScaler()
+                df_ctx[numeric_cols] = np.clip(scaler.fit_transform(df_ctx[numeric_cols]), -10, 10)
+                df_qry[numeric_cols] = np.clip(scaler.transform(df_qry[numeric_cols]), -10, 10)
+
+        # Ensure at least one categorical column for CARTE
+        cat_cols = df_ctx.select_dtypes(include=["object", "category"]).columns.tolist()
+        if not cat_cols and numeric_cols:
+            n_bins = min(5, len(numeric_cols))
+            df_ctx["_cat"] = pd.cut(
+                df_ctx[numeric_cols[0]], bins=n_bins,
+                labels=[f"bin_{i}" for i in range(n_bins)],
+            ).astype(str)
+            df_qry["_cat"] = pd.cut(
+                df_qry[numeric_cols[0]], bins=n_bins,
+                labels=[f"bin_{i}" for i in range(n_bins)],
+            ).astype(str)
 
         # Prepare targets
         y_context = np.asarray(y_context)
         if y_context.dtype == np.float64:
             y_context = y_context.astype(np.int64)
 
-        feature_names = [f"f{i}" for i in range(X_context.shape[1])]
         t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
-
-        X_context_graph = _carte_prepare_graphs(X_context, feature_names, t2g, fit=True)
-        X_query_graph = _carte_prepare_graphs(X_query, feature_names, t2g, fit=False)
+        t2g.fit(df_ctx)
+        X_context_graph = t2g.transform(df_ctx)
+        X_query_graph = t2g.transform(df_qry)
 
         for i, g in enumerate(X_context_graph):
             g.y = torch.tensor([y_context[i]], dtype=torch.float32)
