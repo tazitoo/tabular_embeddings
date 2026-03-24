@@ -22,7 +22,7 @@ from scripts.intervention.concept_performance_diagnostic import DISPLAY_NAMES
 
 MODELS = ["tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt", "hyperfast", "carte", "tabula8b"]
 SWEEP_DIR = PROJECT_ROOT / "output" / "ablation_sweep"
-OUTPUT_DIR = PROJECT_ROOT / "output" / "figures"
+OUTPUT_DIR = PROJECT_ROOT / "output" / "figures" / "ablation_sweep"
 
 NCOLS = 4
 NROWS = 7
@@ -82,13 +82,13 @@ def _draw_panel(ax, npz_path: Path):
 
     # --- Draw layers ---
     # All rows: gray with transparency
-    ax.scatter(p_s, p_w, c="#999999", s=4, alpha=0.3, edgecolors="none", zorder=2)
+    ax.scatter(p_s, p_w, c="#aaaaaa", s=12, alpha=0.4, edgecolors="none", zorder=2)
 
-    # Intervened positions: small black dots
+    # Intervened positions: black dots
     sw_mod = strong_wins & modified
     if sw_mod.any():
-        ax.scatter(p_i[sw_mod], p_w[sw_mod], c="black", s=1, alpha=0.7,
-                   edgecolors="none", marker=".", zorder=4)
+        ax.scatter(p_i[sw_mod], p_w[sw_mod], c="black", s=8, alpha=0.7,
+                   edgecolors="none", zorder=4)
 
     # y=x line
     lo, hi = 0, 1
@@ -164,7 +164,7 @@ def main():
                  fontsize=10, y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.99], h_pad=0.8, w_pad=0.5)
 
-    output_path = args.output or OUTPUT_DIR / f"ablation_grid_{args.dataset}.pdf"
+    output_path = args.output or OUTPUT_DIR / f"{args.dataset}.pdf"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
