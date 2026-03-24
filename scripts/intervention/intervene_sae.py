@@ -1282,8 +1282,10 @@ class MitraTail:
                     captured_support.append(sup.detach())
                 if isinstance(qry, torch.Tensor):
                     captured_query.append(qry.detach())
+            elif isinstance(output, torch.Tensor):
+                captured_query.append(output.detach())
 
-        handle = self.layers[self.extraction_layer].register_forward_hook(capture_hook)
+        handle = self.hook_module.register_forward_hook(capture_hook)
         try:
             with torch.no_grad():
                 if self.task == "regression":
