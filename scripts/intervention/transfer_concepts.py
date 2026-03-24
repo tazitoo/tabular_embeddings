@@ -407,13 +407,19 @@ def _capture_tabicl_v2(X_ctx, y_ctx, X_query, extraction_layer, device, task):
     clf.fit(X_ctx, y_ctx)
     blocks = clf.model_.icl_predictor.tf_icl.blocks
 
+    # Resolve hook target: layer >= len(blocks) means post-blocks LayerNorm
+    if extraction_layer >= len(blocks):
+        hook_module = clf.model_.icl_predictor.ln
+    else:
+        hook_module = blocks[extraction_layer]
+
     captured = {}
 
     def hook(module, input, output):
         if isinstance(output, torch.Tensor):
             captured["hidden"] = output.detach()
 
-    handle = blocks[extraction_layer].register_forward_hook(hook)
+    handle = hook_module.register_forward_hook(hook)
     try:
         with torch.no_grad():
             if task == "regression":

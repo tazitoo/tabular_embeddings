@@ -586,13 +586,19 @@ class TabICLV2Tail:
         model = clf.model_
         blocks = model.icl_predictor.tf_icl.blocks
 
+        # Resolve hook target: layer >= len(blocks) means post-blocks LayerNorm
+        if extraction_layer >= len(blocks):
+            hook_module = model.icl_predictor.ln
+        else:
+            hook_module = blocks[extraction_layer]
+
         captured = {}
 
         def capture_hook(module, input, output):
             if isinstance(output, torch.Tensor):
                 captured["hidden"] = output.detach()
 
-        handle = blocks[extraction_layer].register_forward_hook(capture_hook)
+        handle = hook_module.register_forward_hook(capture_hook)
         try:
             with torch.no_grad():
                 if task == "regression":
@@ -613,6 +619,7 @@ class TabICLV2Tail:
             n_query=n_query, X_query=X_query,
             task=task, device=device,
         )
+        tail.hook_module = hook_module
         tail.baseline_preds = np.asarray(baseline_preds)
         return tail
 
@@ -670,7 +677,7 @@ class TabICLV2Tail:
             if isinstance(output, torch.Tensor):
                 captured["hidden"] = output.detach()
 
-        handle = self.blocks[self.extraction_layer].register_forward_hook(capture_hook)
+        handle = self.hook_module.register_forward_hook(capture_hook)
         try:
             with torch.no_grad():
                 if self.task == "regression":
@@ -2218,6 +2225,12 @@ def intervene_tabicl_v2(
     model = clf.model_
     blocks = model.icl_predictor.tf_icl.blocks
 
+    # Resolve hook target: layer >= len(blocks) means post-blocks LayerNorm
+    if extraction_layer >= len(blocks):
+        hook_module = model.icl_predictor.ln
+    else:
+        hook_module = blocks[extraction_layer]
+
     # --- Pass 1: Capture hidden state + baseline predictions ---
     captured = {}
 
@@ -2225,7 +2238,7 @@ def intervene_tabicl_v2(
         if isinstance(output, torch.Tensor):
             captured["hidden"] = output.detach()
 
-    handle = blocks[extraction_layer].register_forward_hook(capture_hook)
+    handle = hook_module.register_forward_hook(capture_hook)
     try:
         with torch.no_grad():
             if task == "regression":
@@ -2254,7 +2267,7 @@ def intervene_tabicl_v2(
             return output
         return output
 
-    handle = blocks[extraction_layer].register_forward_hook(modify_output_hook)
+    handle = hook_module.register_forward_hook(modify_output_hook)
     try:
         with torch.no_grad():
             if task == "regression":
