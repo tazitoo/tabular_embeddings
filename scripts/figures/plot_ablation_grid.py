@@ -32,6 +32,18 @@ def _draw_panel(ax, npz_path: Path):
     """Draw one ablation scatter panel on the given axes."""
     data = np.load(npz_path, allow_pickle=True)
 
+    # Handle degenerate results (n_strong_wins=0, no predictions saved)
+    if "preds_strong" not in data:
+        strong_model = str(data["strong_model"]) if "strong_model" in data else "?"
+        weak_model = str(data["weak_model"]) if "weak_model" in data else "?"
+        disp_s = DISPLAY_NAMES.get(strong_model, strong_model)
+        disp_w = DISPLAY_NAMES.get(weak_model, weak_model)
+        ax.text(0.5, 0.5, "tied", ha="center", va="center",
+                fontsize=6, color="#999999", transform=ax.transAxes)
+        ax.set_title(f"{disp_s} vs {disp_w}", fontsize=6, pad=2, color="#999999")
+        ax.tick_params(labelsize=4, length=2, pad=1)
+        return
+
     preds_s = data["preds_strong"]
     preds_w = data["preds_weak"]
     preds_i = data["preds_intervened"]
