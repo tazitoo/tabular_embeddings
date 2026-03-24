@@ -720,7 +720,7 @@ class CARTETail:
         from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
         _patch_carte_amp()
 
-        from carte_ai import CARTEClassifier, Table2GraphTransformer
+        from carte_ai import CARTEClassifier, CARTERegressor, Table2GraphTransformer
         from torch_geometric.data import Batch
         from sklearn.preprocessing import RobustScaler
 
@@ -776,7 +776,7 @@ class CARTETail:
 
         # Prepare targets
         y_context = np.asarray(y_context)
-        if y_context.dtype == np.float64:
+        if task != "regression" and y_context.dtype == np.float64:
             y_context = y_context.astype(np.int64)
 
         t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
@@ -787,7 +787,8 @@ class CARTETail:
         for i, g in enumerate(X_context_graph):
             g.y = torch.tensor([y_context[i]], dtype=torch.float32)
 
-        clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+        CARTEModel = CARTERegressor if task == "regression" else CARTEClassifier
+        clf = CARTEModel(device=device, num_model=1, max_epoch=50, disable_pbar=True)
         clf.fit(X_context_graph, y_context)
         torch.cuda.empty_cache()
 
@@ -835,7 +836,10 @@ class CARTETail:
 
         # Get baseline predictions
         with torch.no_grad():
-            baseline_preds = clf.predict_proba(X_query_graph)
+            if task == "regression":
+                baseline_preds = clf.predict(X_query_graph)
+            else:
+                baseline_preds = clf.predict_proba(X_query_graph)
 
         tail = cls(
             clf=clf, model=model, hook_module=hook_module,
@@ -875,7 +879,10 @@ class CARTETail:
         handle = self.hook_module.register_forward_hook(modify_hook)
         try:
             with torch.no_grad():
-                preds = self.clf.predict_proba(self.X_query_graph)
+                if self.task == "regression":
+                    preds = self.clf.predict(self.X_query_graph)
+                else:
+                    preds = self.clf.predict_proba(self.X_query_graph)
         finally:
             handle.remove()
         return np.asarray(preds)
