@@ -274,6 +274,7 @@ def _transfer_one_direction(
         X_query=X_query_t, y_query=y_query,
         external_delta=full_delta_final.to(device),
         device=device, task=task,
+        extraction_layer=extraction_layer_t,
     )
     preds_transferred = result_final["ablated_preds"]
 
