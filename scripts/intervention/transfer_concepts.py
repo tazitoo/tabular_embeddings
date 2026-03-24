@@ -634,6 +634,12 @@ def _capture_mitra(X_ctx, y_ctx, X_query, extraction_layer, device, task):
     trainer = clf.trainers[0]
     layers = trainer.model.layers
 
+    # Resolve hook target: layer index == len(layers) means final_layer_norm
+    if extraction_layer >= len(layers):
+        hook_module = trainer.model.final_layer_norm
+    else:
+        hook_module = layers[extraction_layer]
+
     captured_support = []
     captured_query = []
 
@@ -644,8 +650,11 @@ def _capture_mitra(X_ctx, y_ctx, X_query, extraction_layer, device, task):
                 captured_support.append(sup.detach())
             if isinstance(qry, torch.Tensor):
                 captured_query.append(qry.detach())
+        elif isinstance(output, torch.Tensor):
+            # final_layer_norm: single tensor (query only)
+            captured_query.append(output.detach())
 
-    handle = layers[extraction_layer].register_forward_hook(hook)
+    handle = hook_module.register_forward_hook(hook)
     try:
         with torch.no_grad():
             if task == "regression":
@@ -670,7 +679,11 @@ def _capture_mitra(X_ctx, y_ctx, X_query, extraction_layer, device, task):
     support_emb = extract_y_tokens(captured_support)
     query_emb = extract_y_tokens(captured_query)
     # Return concatenation of support + query y-token embeddings
-    all_emb = torch.cat([support_emb, query_emb], dim=0)
+    if support_emb is not None:
+        all_emb = torch.cat([support_emb, query_emb], dim=0)
+    else:
+        # final_layer_norm only captures query
+        all_emb = query_emb
     return all_emb, np.asarray(preds)
 
 
