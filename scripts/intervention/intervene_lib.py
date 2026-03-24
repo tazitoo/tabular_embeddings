@@ -192,15 +192,21 @@ def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) 
         rmse = float(np.sqrt(np.mean((preds - y_true) ** 2)))
         return -rmse, "neg_rmse"
 
-    n_classes = preds.shape[1] if preds.ndim == 2 else len(np.unique(y_true))
-    if n_classes == 2:
+    n_true_classes = len(np.unique(y_true))
+    n_pred_classes = preds.shape[1] if preds.ndim == 2 else n_true_classes
+
+    # Degenerate predictions (model outputs single class): can't compute meaningful metric
+    if n_pred_classes <= 1:
+        return float("-inf"), "degenerate"
+
+    if n_true_classes == 2 and n_pred_classes == 2:
         proba = preds[:, 1] if preds.ndim == 2 else preds
         try:
             return float(roc_auc_score(y_true, proba)), "auc"
         except ValueError:
-            return float(-log_loss(y_true, preds, labels=np.arange(n_classes))), "neg_logloss"
+            return float(-log_loss(y_true, preds, labels=np.arange(n_pred_classes))), "neg_logloss"
     else:
-        return float(-log_loss(y_true, preds, labels=np.arange(n_classes))), "neg_logloss"
+        return float(-log_loss(y_true, preds, labels=np.arange(n_pred_classes))), "neg_logloss"
 
 
 def compute_per_row_loss(y_true: np.ndarray, preds: np.ndarray, task: str) -> np.ndarray:

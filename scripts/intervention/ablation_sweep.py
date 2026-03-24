@@ -92,13 +92,24 @@ def run_dataset(
     metric_a, metric_name = compute_importance_metric(y_query, preds[model_a], task)
     metric_b, _ = compute_importance_metric(y_query, preds[model_b], task)
 
+    # Skip if either model produces degenerate predictions
+    if metric_name == "degenerate" or metric_a == float("-inf") or metric_b == float("-inf"):
+        logger.info(f"  SKIP (degenerate predictions from one or both models)")
+        return {
+            "strong_model": model_a, "weak_model": model_b,
+            "n_strong_wins": 0, "n_query": n_query,
+            "metric_strong": 0.0, "metric_weak": 0.0, "metric_name": "degenerate",
+        }
+
     if metric_a >= metric_b:
         strong, weak = model_a, model_b
+        metric_strong, metric_weak = metric_a, metric_b
     else:
         strong, weak = model_b, model_a
+        metric_strong, metric_weak = metric_b, metric_a
 
-    logger.info(f"  {strong} ({metric_name}={max(metric_a, metric_b):.4f}) > "
-                f"{weak} ({metric_name}={min(metric_a, metric_b):.4f})")
+    logger.info(f"  {strong} ({metric_name}={metric_strong:.4f}) > "
+                f"{weak} ({metric_name}={metric_weak:.4f})")
 
     baseline_loss_s = losses[strong]
     weak_loss = losses[weak]
@@ -135,8 +146,8 @@ def run_dataset(
         return {
             "strong_model": strong, "weak_model": weak,
             "n_strong_wins": 0, "n_query": n_query,
-            "metric_strong": float(max(metric_a, metric_b)),
-            "metric_weak": float(min(metric_a, metric_b)),
+            "metric_strong": float(metric_strong),
+            "metric_weak": float(metric_weak),
             "metric_name": metric_name,
         }
 
@@ -264,8 +275,8 @@ def run_dataset(
         "mean_optimal_k": float(valid_k.mean()) if len(valid_k) else 0.0,
         "median_optimal_k": float(np.median(valid_k)) if len(valid_k) else 0.0,
         "mean_gap_closed": float(valid_gc.mean()) if len(valid_gc) else 0.0,
-        "metric_strong": float(max(metric_a, metric_b)),
-        "metric_weak": float(min(metric_a, metric_b)),
+        "metric_strong": float(metric_strong),
+        "metric_weak": float(metric_weak),
         "metric_name": metric_name,
         "feature_indices": feature_indices,
         "y_query": y_query.astype(np.float32),
