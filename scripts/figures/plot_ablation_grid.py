@@ -128,13 +128,39 @@ def main():
                         help="Models to include (default: all 8)")
     args = parser.parse_args()
 
-    pairs = list(combinations(args.models, 2))
+    # Auto-detect which models have data for this dataset
+    if args.models == MODELS:
+        # Find models that appear in any pair directory for this dataset
+        active_models = set()
+        for pair_dir in args.sweep_dir.iterdir():
+            if not pair_dir.is_dir():
+                continue
+            if (pair_dir / f"{args.dataset}.npz").exists():
+                parts = pair_dir.name.split("_vs_")
+                if len(parts) == 2:
+                    active_models.update(parts)
+        # Map display names back to keys
+        from scripts.intervention.concept_performance_diagnostic import KEY_FROM_DISPLAY
+        model_list = sorted(
+            m for m in args.models
+            if m in active_models or DISPLAY_NAMES.get(m, m) in active_models
+        )
+        if not model_list:
+            model_list = args.models
+    else:
+        model_list = args.models
+
+    pairs = list(combinations(model_list, 2))
     n_pairs = len(pairs)
-    ncols = NCOLS
+    ncols = min(NCOLS, n_pairs)
     nrows = (n_pairs + ncols - 1) // ncols
 
-    # 8.5 x 11 inches (letter)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(8.5, 11))
+    # Scale page height to content
+    row_height = 11.0 / 7  # ~1.57 inches per row at full 7-row layout
+    fig_height = min(11, max(3, nrows * row_height + 0.5))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(8.5, fig_height))
+    if n_pairs == 1:
+        axes = np.array([axes])
     axes = axes.flatten()
 
     found = 0
