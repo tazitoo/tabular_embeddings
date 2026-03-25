@@ -71,11 +71,18 @@ print(f"P(1) stats: min={p2.min():.4f} max={p2.max():.4f} std={p2.std():.4f}")
 print()
 
 # --- Compare ---
+from sklearn.metrics import roc_auc_score, log_loss
+
+auc1 = roc_auc_score(data.y_test, p1)
+auc2 = roc_auc_score(data.y_test, p2)
+ll1 = log_loss(data.y_test, preds1)
+ll2 = log_loss(data.y_test, preds2)
+
 print("=" * 60)
 print("Comparison")
 print("=" * 60)
-print(f"Method 1 unique values: {len(np.unique(np.round(p1, 3)))}")
-print(f"Method 2 unique values: {len(np.unique(np.round(p2, 3)))}")
+print(f"Method 1 (ordinal, no cat):  AUC={auc1:.4f}  logloss={ll1:.4f}  unique={len(np.unique(np.round(p1, 3)))}")
+print(f"Method 2 (ordinal + cat_idx): AUC={auc2:.4f}  logloss={ll2:.4f}  unique={len(np.unique(np.round(p2, 3)))}")
 print()
 print("Method 1 sample:", preds1[:5, 1].round(4))
 print("Method 2 sample:", preds2[:5, 1].round(4))
