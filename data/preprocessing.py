@@ -257,7 +257,11 @@ def _preprocess_hyperfast(
     X_train_np = imp.fit_transform(X_train_np)
     X_test_np = imp.transform(X_test_np)
 
-    return X_train_np, X_test_np, []  # empty cat_indices after imputation
+    # Preserve cat_indices — HyperFast needs them for internal one-hot encoding.
+    # The values are ordinal-encoded integers; HyperFast's OneHotEncoder handles them.
+    all_cols = list(X_train.columns)
+    cat_indices = [all_cols.index(c) for c in cat_cols]
+    return X_train_np, X_test_np, cat_indices
 
 
 def _encode_y(
