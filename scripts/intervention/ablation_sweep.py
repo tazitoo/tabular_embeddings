@@ -203,14 +203,16 @@ def run_dataset(
 
         # Compute cumulative ablations
         if use_mitra:
+            # Use deltas (not full reconstructions) — reconstruction error cancels
             with torch.no_grad():
+                recon_full = saes[strong].decode(h_row.unsqueeze(0))
                 h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
                 for k in range(K):
                     for j in range(k + 1):
                         h_batch[k, ranked[j]] = 0.0
-                recon_norm = saes[strong].decode(h_batch)
-                recons = recon_norm * data_std_t_s.unsqueeze(0) + data_mean_t_s.unsqueeze(0)
-            step_preds = batched_ablation(tail_s, X_row, recons, max_K=max_K)
+                recon_abl = saes[strong].decode(h_batch)
+                deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
+            step_preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
         elif use_sequential:
             with torch.no_grad():
                 recon_full = saes[strong].decode(h_row.unsqueeze(0))

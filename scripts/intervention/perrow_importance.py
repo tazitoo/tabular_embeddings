@@ -118,11 +118,11 @@ def run_dataset(
 
         X_row = X_query[r:r + 1]
         if isinstance(tail, MitraTail):
-            # Mitra: activation patching — pass full reconstructions, not deltas
-            recons = compute_feature_reconstructions(
-                sae, h_row, firing_feat_indices, data_mean_t, data_std_t,
-            )
-            preds = batched_ablation(tail, X_row, recons, max_K=max_K)
+            # Mitra: use deltas (not full reconstructions) to avoid 36% SAE
+            # reconstruction error. batched_ablation handles Mitra via
+            # hook-based delta injection.
+            deltas = compute_feature_deltas(sae, h_row, firing_feat_indices, data_std_t)
+            preds = batched_ablation(tail, X_row, deltas, max_K=max_K)
         elif use_sequential:
             deltas = compute_feature_deltas(sae, h_row, firing_feat_indices, data_std_t)
             preds = batched_ablation_sequential(tail, X_row, deltas, query_idx=r)

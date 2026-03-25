@@ -577,10 +577,19 @@ def batched_ablation(
         tail.recapture(X_batch)
 
         if isinstance(tail, MitraTail):
-            # Mitra: activation patching — call tab2d() directly with
-            # checkpoint-free forward. predict_proba() uses checkpoint()
-            # which discards our layer modifications.
-            preds = _mitra_patched_predict(tail, chunk_deltas)
+            # Mitra uses hook-based delta injection (checkpoint-safe).
+            # chunk_deltas are (K, emb_dim) in raw embedding space.
+            # We need to expand each delta to all features (unsqueeze to 4D).
+            preds_list = []
+            for k in range(chunk_K):
+                delta_query = chunk_deltas[k:k+1].unsqueeze(1)  # (1, 1, emb_dim)
+                # Zero support delta (context unchanged)
+                n_sup = tail.captured_support[0].shape[1] if tail.captured_support else 0
+                delta_support = torch.zeros(n_sup, chunk_deltas.shape[-1],
+                                            device=chunk_deltas.device).unsqueeze(1)
+                p = tail._predict_with_delta(delta_support, delta_query)
+                preds_list.append(p)
+            preds = np.array(preds_list)
         else:
             state = tail.hidden_state.clone()
             _inject_query_deltas(tail, state, chunk_deltas)
