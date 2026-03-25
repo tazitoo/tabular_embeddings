@@ -113,7 +113,11 @@ def load_and_fit(
         from hyperfast import HyperFastClassifier
         worker_path = "/data/models/tabular_fm/hyperfast/hyperfast.ckpt"
         custom_path = worker_path if os.path.exists(worker_path) else None
-        clf = HyperFastClassifier(device=device, n_ensemble=16, custom_path=custom_path)
+        cat_indices = kwargs.get("cat_indices", [])
+        clf = HyperFastClassifier(
+            device=device, n_ensemble=16, custom_path=custom_path,
+            cat_features=cat_indices if cat_indices else None,
+        )
         clf.fit(X_context, y_context)
 
     elif key == "tabula8b":
