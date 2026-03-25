@@ -24,8 +24,7 @@ train_idx = np.array(info["train_indices"])
 test_idx = np.array(info["test_indices"])
 
 # Load raw data to identify categorical columns
-result = load_tabarena_dataset("credit-g", max_samples=10000)
-X_raw = result.X
+X_raw, y_raw, meta = load_tabarena_dataset("credit-g", max_samples=10000)
 cat_cols = X_raw.select_dtypes(include=["object", "category"]).columns.tolist()
 print(f"Raw data: {X_raw.shape}, {len(cat_cols)} categorical columns")
 print(f"Cat columns: {cat_cols}")
