@@ -199,7 +199,12 @@ def run_dataset(
         if not row_firing:
             continue
 
-        firing_importance = [(i, row_drops[i]) for i in row_firing if row_drops[i] > 0]
+        # Rank by magnitude of prediction change. The importance NPZ stores
+        # loss-based drops, but we need prediction shift magnitude instead.
+        # Recompute from the per-feature deltas during the ablation below.
+        # For now, use absolute importance as a proxy for ranking — the greedy
+        # search will select the right features.
+        firing_importance = [(i, abs(row_drops[i])) for i in row_firing if row_drops[i] != 0]
         firing_importance.sort(key=lambda x: -x[1])
         ranked = [int(feature_indices[i]) for i, _ in firing_importance[:max_steps]]
         K = len(ranked)
