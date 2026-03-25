@@ -230,40 +230,51 @@ def run_dataset(
             def dist_to_weak(p):
                 return float((p - weak_pred_r) ** 2)
 
-        # Greedy accept/reject: try each feature, keep if it moves closer
-        # to weak model, skip if it overshoots or moves away.
+        # Batched greedy: each round tests all remaining candidates in one
+        # batched forward pass, accepts the one closest to weak model.
         accepted_features = []
+        remaining = list(range(K))
         current_dist = dist_to_weak(baseline_preds_s[r])
         best_pred = baseline_preds_s[r]
 
-        for k in range(K):
-            # Build cumulative delta from accepted features + this candidate
-            candidate = accepted_features + [k]
+        while remaining:
+            # Build one candidate set per remaining feature: accepted + candidate_i
+            n_cand = len(remaining)
             with torch.no_grad():
-                h_abl = h_row.clone()
-                for j in candidate:
-                    h_abl[ranked[j]] = 0.0
-                recon = saes[strong].decode(h_abl.unsqueeze(0))
-                delta = (recon - recon_full) * data_std_t_s.unsqueeze(0)
+                h_batch = h_row.unsqueeze(0).expand(n_cand, -1).clone()
+                for c, feat_k in enumerate(remaining):
+                    for j in accepted_features:
+                        h_batch[c, ranked[j]] = 0.0
+                    h_batch[c, ranked[feat_k]] = 0.0
+                recon_batch = saes[strong].decode(h_batch)
+                deltas = (recon_batch - recon_full) * data_std_t_s.unsqueeze(0)
 
+            # One batched forward pass → n_cand predictions
             if use_mitra:
-                trial_preds = batched_ablation(tail_s, X_row, delta, max_K=max_K)
+                cand_preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
             elif use_sequential:
-                trial_preds = batched_ablation_sequential(tail_s, X_row, delta, query_idx=r)
+                cand_preds = batched_ablation_sequential(tail_s, X_row, deltas, query_idx=r)
             else:
-                trial_preds = batched_ablation(tail_s, X_row, delta, max_K=max_K)
+                cand_preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
 
-            trial_dist = dist_to_weak(trial_preds[0])
-            if trial_dist < current_dist:
-                accepted_features.append(k)
-                current_dist = trial_dist
-                best_pred = trial_preds[0]
-                if current_dist < 1e-6:
-                    break
+            # Find best candidate
+            best_c = None
+            best_c_dist = current_dist
+            for c in range(n_cand):
+                d = dist_to_weak(cand_preds[c])
+                if d < best_c_dist:
+                    best_c = c
+                    best_c_dist = d
+
+            if best_c is None:
+                break  # no candidate improves — done
+
+            accepted_features.append(remaining[best_c])
+            current_dist = best_c_dist
+            best_pred = cand_preds[best_c]
+            remaining.pop(best_c)
 
         accepted_k = len(accepted_features)
-        accepted_pred_idx = 0 if accepted_k > 0 else None
-        step_preds = np.array([best_pred]) if accepted_k > 0 else np.array([])
 
         if accepted_k > 0:
             optimal_k[r] = accepted_k
