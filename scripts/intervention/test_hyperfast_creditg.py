@@ -38,8 +38,12 @@ data = load_preprocessed("hyperfast", "credit-g", CACHE_DIR)
 print(f"X_train: {data.X_train.shape}  range: [{data.X_train.min():.1f}, {data.X_train.max():.1f}]")
 
 from hyperfast import HyperFastClassifier
+from models.model_paths import get_model_path
 
-clf1 = HyperFastClassifier(device="cuda")
+hf_path = get_model_path("hyperfast")
+print(f"HyperFast checkpoint: {hf_path}")
+
+clf1 = HyperFastClassifier(device="cuda", model_path=hf_path)
 clf1.fit(data.X_train, data.y_train)
 preds1 = clf1.predict_proba(data.X_test)
 p1 = preds1[:, 1]
@@ -58,7 +62,7 @@ all_cols = list(X_raw.columns)
 cat_indices = [all_cols.index(c) for c in cat_cols]
 print(f"cat_indices: {cat_indices}")
 
-clf2 = HyperFastClassifier(device="cuda", cat_features=cat_indices)
+clf2 = HyperFastClassifier(device="cuda", cat_features=cat_indices, model_path=hf_path)
 clf2.fit(data.X_train, data.y_train)
 preds2 = clf2.predict_proba(data.X_test)
 p2 = preds2[:, 1]
