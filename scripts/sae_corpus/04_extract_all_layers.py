@@ -283,7 +283,7 @@ def main():
                 )
 
                 fit_kwargs = {}
-                if model_key == "tabpfn" and data.cat_indices:
+                if data.cat_indices and model_key in ("tabpfn", "hyperfast"):
                     fit_kwargs["cat_indices"] = data.cat_indices
 
                 clf = load_and_fit(
