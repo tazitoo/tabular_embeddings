@@ -309,6 +309,7 @@ def capture_embeddings(
     extraction_layer: int,
     device: str,
     task: str,
+    cat_indices=None,
 ) -> Tuple[torch.Tensor, np.ndarray]:
     """Single forward pass with capture hook → (all_emb, preds).
 
@@ -338,7 +339,7 @@ def capture_embeddings(
     elif model_key == "tabdpt":
         return _capture_tabdpt(X_ctx, y_ctx, X_query, extraction_layer, device, task)
     elif model_key == "hyperfast":
-        return _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task)
+        return _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task, cat_indices=cat_indices)
     else:
         raise ValueError(f"capture_embeddings not implemented for {model_key}")
 
@@ -727,7 +728,8 @@ def _capture_tabdpt(X_ctx, y_ctx, X_query, extraction_layer, device, task):
     return all_emb, np.asarray(preds)
 
 
-def _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task):
+def _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task,
+                       cat_indices=None):
     """Capture penultimate activations using forward_main_network (same as extraction)."""
     from hyperfast.hyperfast import (
         forward_main_network, transform_data_for_main_network,
@@ -738,6 +740,8 @@ def _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task):
     extractor.load_model()
     X_ctx_clean = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0)
     y_ctx_clean = np.asarray(y_ctx, dtype=np.int64)
+    if cat_indices:
+        extractor._model.cat_features = cat_indices
     extractor._model.fit(X_ctx_clean, y_ctx_clean)
     hf_clf = extractor._model
 

@@ -1485,7 +1485,7 @@ class HyperFastTail:
 
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
-                  task="classification", device="cuda"):
+                  task="classification", device="cuda", cat_indices=None):
         """One-time setup: fit HyperFast, cache intermediates at layer L.
 
         Uses forward_main_network() from hyperfast to get penultimate
@@ -1501,6 +1501,8 @@ class HyperFastTail:
         extractor.load_model()
         X_ctx_clean = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0)
         y_ctx_clean = np.asarray(y_context, dtype=np.int64)
+        if cat_indices:
+            extractor._model.cat_features = cat_indices
         extractor._model.fit(X_ctx_clean, y_ctx_clean)
         hf_clf = extractor._model
 
@@ -1627,7 +1629,7 @@ class HyperFastTail:
 
 
 def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
-               task="classification", device="cuda"):
+               task="classification", device="cuda", cat_indices=None):
     """Factory: build the appropriate tail model for the given model key."""
     if model_key == "tabpfn":
         return TabPFNTail.from_data(
@@ -1660,6 +1662,7 @@ def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
     elif model_key == "hyperfast":
         return HyperFastTail.from_data(
             X_context, y_context, X_query, extraction_layer, task, device,
+            cat_indices=cat_indices,
         )
     else:
         raise ValueError(f"Tail model not implemented for {model_key}")

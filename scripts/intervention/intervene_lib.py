@@ -445,6 +445,18 @@ def load_dataset_context(
     return X_train, y_train, X_query, y_query, row_indices, task
 
 
+def load_cat_indices(model_key: str, dataset: str) -> list:
+    """Load categorical feature indices for models that need them (HyperFast)."""
+    if model_key != "hyperfast":
+        return []
+    from data.preprocessing import load_preprocessed, CACHE_DIR
+    try:
+        data = load_preprocessed(model_key, dataset, CACHE_DIR)
+        return data.cat_indices
+    except Exception:
+        return []
+
+
 def load_test_embeddings(model_key: str) -> Dict[str, np.ndarray]:
     """Load per-dataset test embeddings from the canonical taskaware NPZ.
 
