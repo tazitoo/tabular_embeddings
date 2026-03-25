@@ -111,6 +111,16 @@ def run_dataset(
     logger.info(f"  {strong} ({metric_name}={metric_strong:.4f}) > "
                 f"{weak} ({metric_name}={metric_weak:.4f})")
 
+    # Need norm stats for the strong model (SAE encoding + delta denormalization)
+    if dataset not in norm_stats[strong]:
+        logger.info(f"  SKIP (strong model {strong} has no norm stats for {dataset})")
+        return {
+            "strong_model": strong, "weak_model": weak,
+            "n_strong_wins": 0, "n_query": n_query,
+            "metric_strong": float(metric_strong),
+            "metric_weak": float(metric_weak), "metric_name": metric_name,
+        }
+
     baseline_loss_s = losses[strong]
     weak_loss = losses[weak]
     baseline_preds_s = preds[strong]
@@ -337,8 +347,10 @@ def main():
 
         logger.info(f"\n[{i+1}/{len(datasets)}] {ds}")
 
-        if ds not in norm_stats[model_a] or ds not in norm_stats[model_b]:
-            logger.info(f"  SKIP (missing norm stats)")
+        # Need norm stats for at least one model (the strong one, determined later).
+        # Skip only if NEITHER model has norm stats for this dataset.
+        if ds not in norm_stats[model_a] and ds not in norm_stats[model_b]:
+            logger.info(f"  SKIP (missing norm stats for both models)")
             continue
 
         try:
