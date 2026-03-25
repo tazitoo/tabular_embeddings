@@ -407,11 +407,10 @@ def _capture_tabicl_v2(X_ctx, y_ctx, X_query, extraction_layer, device, task):
     clf.fit(X_ctx, y_ctx)
     blocks = clf.model_.icl_predictor.tf_icl.blocks
 
-    # Resolve hook target: layer >= len(blocks) means post-blocks LayerNorm
-    if extraction_layer >= len(blocks):
-        hook_module = clf.model_.icl_predictor.ln
-    else:
-        hook_module = blocks[extraction_layer]
+    # TabICL-v2 extraction indices include row_output as index 0,
+    # so extraction_layer 12 = layer_11 = blocks[11], not post-blocks LN.
+    block_idx = min(extraction_layer - 1, len(blocks) - 1) if extraction_layer > 0 else 0
+    hook_module = blocks[block_idx]
 
     captured = {}
 
