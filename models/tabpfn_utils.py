@@ -21,7 +21,7 @@ os.environ["POSTHOG_DISABLED"] = "1"
 # Worker checkpoint paths (avoids HuggingFace download on GPU nodes)
 CHECKPOINT_PATHS = {
     "classification": "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-classifier-v2.5_real.ckpt",
-    "regression": "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-regressor-v2.5_default.ckpt",
+    "regression": "/data/models/tabular_fm/tabpfn/tabpfn-v2.5-regressor-v2.5_real.ckpt",
 }
 
 # TabPFN v2 checkpoints — used for TabArena validation only (same version as benchmark)
