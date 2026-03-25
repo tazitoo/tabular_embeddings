@@ -795,8 +795,13 @@ class CARTETail:
         for i, g in enumerate(X_context_graph):
             g.y = torch.tensor([y_context[i]], dtype=torch.float32)
 
-        CARTEModel = CARTERegressor if task == "regression" else CARTEClassifier
-        clf = CARTEModel(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+        if task == "regression":
+            clf = CARTERegressor(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+        else:
+            n_classes = len(np.unique(y_context))
+            loss = "categorical_crossentropy" if n_classes > 2 else "binary_crossentropy"
+            clf = CARTEClassifier(device=device, num_model=1, max_epoch=50,
+                                  disable_pbar=True, loss=loss)
         clf.fit(X_context_graph, y_context)
         torch.cuda.empty_cache()
 
@@ -2390,7 +2395,10 @@ def intervene_carte(
         g.y = torch.tensor([y_for_fit[i]], dtype=torch.float32)
 
     # Fit CARTE (single model for deterministic intervention)
-    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+    n_classes = len(np.unique(y_for_fit))
+    loss = "categorical_crossentropy" if n_classes > 2 else "binary_crossentropy"
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50,
+                          disable_pbar=True, loss=loss)
     clf.fit(X_context_graph, y_for_fit)
     torch.cuda.empty_cache()
 
@@ -3394,7 +3402,10 @@ def perrow_sweep_intervene_carte(
     for i, g in enumerate(X_context_graph):
         g.y = torch.tensor([y_context[i]], dtype=torch.float32)
 
-    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+    n_classes = len(np.unique(y_context))
+    loss = "categorical_crossentropy" if n_classes > 2 else "binary_crossentropy"
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50,
+                          disable_pbar=True, loss=loss)
     clf.fit(X_context_graph, y_context)
     torch.cuda.empty_cache()
 
