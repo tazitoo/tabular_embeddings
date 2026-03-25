@@ -195,17 +195,14 @@ def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) 
     n_true_classes = len(np.unique(y_true))
     n_pred_classes = preds.shape[1] if preds.ndim == 2 else n_true_classes
 
-    # Degenerate predictions (model outputs single class): can't compute meaningful metric
-    if n_pred_classes <= 1:
+    # Degenerate: 1D predictions (class labels instead of probabilities)
+    # or single-class output — can't compute meaningful metric
+    if preds.ndim == 1 or n_pred_classes <= 1:
         return float("-inf"), "degenerate"
 
-    # Pad predictions if model returns fewer columns than true classes
-    # (e.g. CARTE may return 2 columns for a 3-class dataset)
-    if preds.ndim == 2 and n_pred_classes < n_true_classes:
-        padded = np.zeros((len(preds), n_true_classes), dtype=preds.dtype)
-        padded[:, :n_pred_classes] = preds
-        preds = padded
-        n_pred_classes = n_true_classes
+    # Class count mismatch: model returns fewer columns than true labels
+    if n_pred_classes < n_true_classes:
+        return float("-inf"), "degenerate"
 
     if n_true_classes == 2 and n_pred_classes == 2:
         proba = preds[:, 1] if preds.ndim == 2 else preds
