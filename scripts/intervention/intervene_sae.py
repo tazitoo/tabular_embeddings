@@ -934,7 +934,9 @@ class Tabula8BTail:
         self.extraction_layer = extraction_layer
         self.n_classes = n_classes
         self.n_query = n_query
-        self.X_query = np.asarray(X_query, dtype=np.float32)
+        # Keep DataFrames as-is (Tabula-8B serializes to text, needs string columns)
+        import pandas as pd
+        self.X_query = X_query if isinstance(X_query, pd.DataFrame) else np.asarray(X_query, dtype=np.float32)
         self.task = task
         self.device = device
         # Pre-compute class token IDs for classification
