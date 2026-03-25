@@ -179,9 +179,15 @@ def run_dataset(
             gap_closed[r] = 1.0
             continue
 
-        target_loss = weak_loss[r]
-        orig_gap = target_loss - baseline_loss_s[r]
-        if orig_gap <= 0:
+        # Original distance from strong to weak prediction
+        if baseline_preds_s.ndim == 2:
+            eps = 1e-7
+            w = np.clip(weak_preds[r], eps, 1 - eps)
+            s = np.clip(baseline_preds_s[r], eps, 1 - eps)
+            orig_dist = -np.sum(w * np.log(s))  # cross-entropy(weak, strong)
+        else:
+            orig_dist = float((baseline_preds_s[r] - weak_preds[r]) ** 2)
+        if orig_dist < 1e-8:
             optimal_k[r] = 0
             gap_closed[r] = 1.0
             continue
@@ -234,24 +240,41 @@ def run_dataset(
                 deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
             step_preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
 
-        # Walk the curve, only accepting steps that increase loss
-        y_tiled = np.full(len(step_preds), y_query[r])
-        step_losses = compute_per_row_loss(y_tiled, step_preds, task)
+        # Walk the curve: accept steps that move prediction toward weak model.
+        # The goal is NOT y_true — it's the weak model's prediction.
+        weak_pred_r = weak_preds[r]
+        strong_pred_r = baseline_preds_s[r]
 
-        current_loss = baseline_loss_s[r]
+        # Distance metric: |pred - weak_pred| (scalar for regression,
+        # cross-entropy-like for classification probabilities)
+        if baseline_preds_s.ndim == 2:
+            # Classification: use KL-like distance to weak model's probabilities
+            eps = 1e-7
+            def dist_to_weak(p):
+                p = np.clip(p, eps, 1 - eps)
+                w = np.clip(weak_pred_r, eps, 1 - eps)
+                return -np.sum(w * np.log(p))  # cross-entropy(weak, pred)
+        else:
+            # Regression: squared distance to weak prediction
+            def dist_to_weak(p):
+                return float((p - weak_pred_r) ** 2)
+
+        current_dist = dist_to_weak(strong_pred_r)
         accepted_k = 0
         accepted_pred_idx = None
         for k in range(K):
-            if step_losses[k] >= current_loss:
-                current_loss = step_losses[k]
+            step_dist = dist_to_weak(step_preds[k])
+            if step_dist < current_dist:
+                # Prediction moved closer to weak model — accept
+                current_dist = step_dist
                 accepted_k = k + 1
                 accepted_pred_idx = k
-                if current_loss >= target_loss:
-                    break
+                if current_dist < 1e-6:
+                    break  # reached parity
 
         if accepted_pred_idx is not None:
             optimal_k[r] = accepted_k
-            gap_closed[r] = min(1.0, (current_loss - baseline_loss_s[r]) / orig_gap) if orig_gap > 0 else 1.0
+            gap_closed[r] = min(1.0, 1.0 - current_dist / orig_dist) if orig_dist > 0 else 1.0
             preds_intervened[r] = step_preds[accepted_pred_idx]
         else:
             optimal_k[r] = 0
