@@ -577,19 +577,11 @@ def batched_ablation(
         tail.recapture(X_batch)
 
         if isinstance(tail, MitraTail):
-            # Mitra uses hook-based delta injection (checkpoint-safe).
-            # chunk_deltas are (K, emb_dim) in raw embedding space.
-            # We need to expand each delta to all features (unsqueeze to 4D).
-            preds_list = []
-            for k in range(chunk_K):
-                delta_query = chunk_deltas[k:k+1].unsqueeze(1)  # (1, 1, emb_dim)
-                # Zero support delta (context unchanged)
-                n_sup = tail.captured_support[0].shape[1] if tail.captured_support else 0
-                delta_support = torch.zeros(n_sup, chunk_deltas.shape[-1],
-                                            device=chunk_deltas.device).unsqueeze(1)
-                p = tail._predict_with_delta(delta_support, delta_query)
-                preds_list.append(p)
-            preds = np.array(preds_list)
+            # Mitra: patched forward with delta-based intervention.
+            # chunk_deltas are (K, emb_dim) — the DIFFERENCE from ablation,
+            # not full reconstructions. _mitra_patched_predict adds the delta
+            # to the original y-token instead of replacing it.
+            preds = _mitra_patched_predict(tail, chunk_deltas)
         else:
             state = tail.hidden_state.clone()
             _inject_query_deltas(tail, state, chunk_deltas)
@@ -600,7 +592,7 @@ def batched_ablation(
     return np.concatenate(all_preds, axis=0) if len(all_preds) > 1 else all_preds[0]
 
 
-def _mitra_patched_predict(tail, recons: torch.Tensor) -> np.ndarray:
+def _mitra_patched_predict(tail, deltas: torch.Tensor) -> np.ndarray:
     """Mitra-specific: call tab2d directly with checkpoint-free forward.
 
     predict_proba() goes through trainer.predict() which uses
@@ -609,8 +601,8 @@ def _mitra_patched_predict(tail, recons: torch.Tensor) -> np.ndarray:
     1. Build batch tensors via trainer's DatasetFinetune
     2. Monkey-patch tab2d.forward to skip checkpoint
     3. Call tab2d() directly
-    4. Patch y-token at extraction layer with SAE reconstructions
-    5. Convert logits → probabilities
+    4. ADD delta to y-token at extraction layer (not replace — avoids SAE recon error)
+    5. Convert logits → predictions
     """
     import types
     import einops
@@ -669,15 +661,15 @@ def _mitra_patched_predict(tail, recons: torch.Tensor) -> np.ndarray:
             support, query__ = layer(support, query__, None, None,
                                      batch_size, padding_obs_support, padding_obs_query__, padding_features)
             if i == extraction_layer and query__.ndim == 4:
-                # Replace y-token (position 0) with SAE reconstructions
+                # ADD delta to y-token (position 0) — not replace
                 query__ = query__.clone()
-                query__[0, :, 0, :] = recons
+                query__[0, :, 0, :] += deltas
 
         query__ = self.final_layer_norm(query__)
         # If extraction_layer == n_layers, patch after final_layer_norm
         if extraction_layer >= n_layers and query__.ndim == 4:
             query__ = query__.clone()
-            query__[0, :, 0, :] = recons
+            query__[0, :, 0, :] += deltas
         query__ = self.final_layer(query__)
 
         query__, _ = einops.unpack(query__, pack_query__, 'b s * c')
