@@ -3,6 +3,10 @@
 
 Tests whether HyperFast produces continuous probabilities or discrete outputs.
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import json
 import numpy as np
 
