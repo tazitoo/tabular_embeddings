@@ -114,9 +114,12 @@ def load_and_fit(
         worker_path = "/data/models/tabular_fm/hyperfast/hyperfast.ckpt"
         custom_path = worker_path if os.path.exists(worker_path) else None
         cat_indices = kwargs.get("cat_indices", [])
+        n_features = X_context.shape[1]
         clf = HyperFastClassifier(
-            device=device, n_ensemble=16, custom_path=custom_path,
+            device=device, n_ensemble=1, optimization=None,
+            custom_path=custom_path,
             cat_features=cat_indices if cat_indices else None,
+            feature_bagging=n_features > 3000,
         )
         clf.fit(X_context, y_context)
 

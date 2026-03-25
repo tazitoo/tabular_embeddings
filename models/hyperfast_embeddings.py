@@ -32,7 +32,7 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
     def __init__(
         self,
         device: str = "cuda",
-        n_ensemble: int = 16,
+        n_ensemble: int = 1,
         weight_path: Optional[str] = None,
     ):
         super().__init__(device)
@@ -79,6 +79,7 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
         self._model = HyperFastClassifier(
             device=self.device,
             n_ensemble=self.n_ensemble,
+            optimization=None,
             custom_path=path,
         )
 
