@@ -43,7 +43,7 @@ from models.model_paths import get_model_path
 hf_path = get_model_path("hyperfast")
 print(f"HyperFast checkpoint: {hf_path}")
 
-clf1 = HyperFastClassifier(device="cuda", model_path=hf_path)
+clf1 = HyperFastClassifier(device="cuda", custom_path=hf_path)
 clf1.fit(data.X_train, data.y_train)
 preds1 = clf1.predict_proba(data.X_test)
 p1 = preds1[:, 1]
@@ -62,7 +62,7 @@ all_cols = list(X_raw.columns)
 cat_indices = [all_cols.index(c) for c in cat_cols]
 print(f"cat_indices: {cat_indices}")
 
-clf2 = HyperFastClassifier(device="cuda", cat_features=cat_indices, model_path=hf_path)
+clf2 = HyperFastClassifier(device="cuda", cat_features=cat_indices, custom_path=hf_path)
 clf2.fit(data.X_train, data.y_train)
 preds2 = clf2.predict_proba(data.X_test)
 p2 = preds2[:, 1]
