@@ -20,12 +20,11 @@ import numpy as np
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.concept_performance_diagnostic import DISPLAY_NAMES
 
-MODELS = ["tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt", "hyperfast", "carte", "tabula8b"]
+MODELS_CLS = ["tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt", "hyperfast", "carte", "tabula8b"]
+MODELS_REG = ["tabpfn", "mitra", "tabicl_v2", "tabdpt", "carte", "tabula8b"]
 SWEEP_DIR = PROJECT_ROOT / "output" / "ablation_sweep"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "figures" / "ablation_sweep"
-
-NCOLS = 4
-NROWS = 7
+SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
 
 
 def _draw_panel(ax, npz_path: Path):
@@ -65,15 +64,14 @@ def _draw_panel(ax, npz_path: Path):
     disp_w = DISPLAY_NAMES.get(weak_model, weak_model)
 
     # Scalar scores for axes
-    n_classes = preds_s.shape[1] if preds_s.ndim == 2 else 1
-    if n_classes > 1:
-        p_s = preds_s[np.arange(len(y)), y]
-        p_w = preds_w[np.arange(len(y)), y]
-        p_i = preds_i[np.arange(len(y)), y]
-    else:
-        p_s = preds_s.ravel()
-        p_w = preds_w.ravel()
-        p_i = preds_i.ravel()
+    def to_scalar(preds):
+        if preds.ndim == 2 and preds.shape[1] > 1:
+            return preds[np.arange(len(y)), y]  # P(correct class)
+        return preds.ravel()
+
+    p_s = to_scalar(preds_s)
+    p_w = to_scalar(preds_w)
+    p_i = to_scalar(preds_i)
 
     n_strong_wins = int(strong_wins.sum())
     modified = optimal_k > 0
@@ -91,11 +89,13 @@ def _draw_panel(ax, npz_path: Path):
                    edgecolors="none", zorder=4)
 
     # y=x line
-    lo, hi = 0, 1
-    if n_classes == 1:
+    is_regression = preds_s.ndim == 1 or (preds_s.ndim == 2 and preds_s.shape[1] == 1)
+    if is_regression:
         all_vals = np.concatenate([p_s, p_w, p_i])
         lo = all_vals.min() - 0.05 * (all_vals.max() - all_vals.min())
         hi = all_vals.max() + 0.05 * (all_vals.max() - all_vals.min())
+    else:
+        lo, hi = 0, 1
     ax.plot([lo, hi], [lo, hi], "k--", lw=0.5, alpha=0.4)
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
@@ -124,43 +124,27 @@ def main():
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--sweep-dir", type=Path, default=SWEEP_DIR)
     parser.add_argument("--output", type=Path, default=None)
-    parser.add_argument("--models", nargs="+", default=MODELS,
-                        help="Models to include (default: all 8)")
     args = parser.parse_args()
 
-    # Auto-detect which models have data for this dataset
-    if args.models == MODELS:
-        # Find models that appear in any pair directory for this dataset
-        active_models = set()
-        for pair_dir in args.sweep_dir.iterdir():
-            if not pair_dir.is_dir():
-                continue
-            if (pair_dir / f"{args.dataset}.npz").exists():
-                parts = pair_dir.name.split("_vs_")
-                if len(parts) == 2:
-                    active_models.update(parts)
-        # Map display names back to keys
-        from scripts.intervention.concept_performance_diagnostic import KEY_FROM_DISPLAY
-        model_list = sorted(
-            m for m in args.models
-            if m in active_models or DISPLAY_NAMES.get(m, m) in active_models
-        )
-        if not model_list:
-            model_list = args.models
+    # Determine task type from splits → pick model set
+    import json
+    splits = json.loads(SPLITS_PATH.read_text())
+    task_type = splits.get(args.dataset, {}).get("task_type", "classification")
+
+    if task_type == "regression":
+        model_list = MODELS_REG   # 6 models → C(6,2) = 15 pairs → 4×4
+        ncols = 3
     else:
-        model_list = args.models
+        model_list = MODELS_CLS   # 8 models → C(8,2) = 28 pairs → 4×7
+        ncols = 4
 
     pairs = list(combinations(model_list, 2))
     n_pairs = len(pairs)
-    ncols = min(NCOLS, n_pairs)
     nrows = (n_pairs + ncols - 1) // ncols
 
-    # Scale page height to content
-    row_height = 11.0 / 7  # ~1.57 inches per row at full 7-row layout
-    fig_height = min(11, max(3, nrows * row_height + 0.5))
+    # 8.5 x 11 for classification, 8.5 x 8 for regression
+    fig_height = 11 if task_type != "regression" else 8
     fig, axes = plt.subplots(nrows, ncols, figsize=(8.5, fig_height))
-    if n_pairs == 1:
-        axes = np.array([axes])
     axes = axes.flatten()
 
     found = 0
