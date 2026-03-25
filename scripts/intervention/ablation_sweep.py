@@ -209,75 +209,66 @@ def run_dataset(
         h_row = activations_s[r]
         X_row = X_query_s[r:r + 1]
 
-        # Compute cumulative ablations
-        if use_mitra:
-            # Use deltas (not full reconstructions) — reconstruction error cancels
-            with torch.no_grad():
-                recon_full = saes[strong].decode(h_row.unsqueeze(0))
-                h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
-                for k in range(K):
-                    for j in range(k + 1):
-                        h_batch[k, ranked[j]] = 0.0
-                recon_abl = saes[strong].decode(h_batch)
-                deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
-            step_preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
-        elif use_sequential:
-            with torch.no_grad():
-                recon_full = saes[strong].decode(h_row.unsqueeze(0))
-                h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
-                for k in range(K):
-                    for j in range(k + 1):
-                        h_batch[k, ranked[j]] = 0.0
-                recon_abl = saes[strong].decode(h_batch)
-                deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
-            step_preds = batched_ablation_sequential(tail_s, X_row, deltas, query_idx=r)
-        else:
-            with torch.no_grad():
-                recon_full = saes[strong].decode(h_row.unsqueeze(0))
-                h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
-                for k in range(K):
-                    for j in range(k + 1):
-                        h_batch[k, ranked[j]] = 0.0
-                recon_abl = saes[strong].decode(h_batch)
-                deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
-            step_preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
+        # Compute per-feature deltas (individual, not cumulative)
+        with torch.no_grad():
+            recon_full = saes[strong].decode(h_row.unsqueeze(0))
+            h_batch = h_row.unsqueeze(0).expand(K, -1).clone()
+            for k in range(K):
+                h_batch[k, ranked[k]] = 0.0  # each row zeros ONE feature
+            recon_abl = saes[strong].decode(h_batch)
+            per_feature_deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
 
-        # Walk the curve: accept steps that move prediction toward weak model.
-        # The goal is NOT y_true — it's the weak model's prediction.
+        # Distance metric: how far is prediction from weak model?
         weak_pred_r = weak_preds[r]
-        strong_pred_r = baseline_preds_s[r]
-
-        # Distance metric: |pred - weak_pred| (scalar for regression,
-        # cross-entropy-like for classification probabilities)
         if baseline_preds_s.ndim == 2:
-            # Classification: use KL-like distance to weak model's probabilities
             eps = 1e-7
             def dist_to_weak(p):
                 p = np.clip(p, eps, 1 - eps)
                 w = np.clip(weak_pred_r, eps, 1 - eps)
-                return -np.sum(w * np.log(p))  # cross-entropy(weak, pred)
+                return -np.sum(w * np.log(p))
         else:
-            # Regression: squared distance to weak prediction
             def dist_to_weak(p):
                 return float((p - weak_pred_r) ** 2)
 
-        current_dist = dist_to_weak(strong_pred_r)
-        accepted_k = 0
-        accepted_pred_idx = None
-        for k in range(K):
-            step_dist = dist_to_weak(step_preds[k])
-            if step_dist < current_dist:
-                # Prediction moved closer to weak model — accept
-                current_dist = step_dist
-                accepted_k = k + 1
-                accepted_pred_idx = k
-                if current_dist < 1e-6:
-                    break  # reached parity
+        # Greedy accept/reject: try each feature, keep if it moves closer
+        # to weak model, skip if it overshoots or moves away.
+        accepted_features = []
+        current_dist = dist_to_weak(baseline_preds_s[r])
+        best_pred = baseline_preds_s[r]
 
-        if accepted_pred_idx is not None:
+        for k in range(K):
+            # Build cumulative delta from accepted features + this candidate
+            candidate = accepted_features + [k]
+            with torch.no_grad():
+                h_abl = h_row.clone()
+                for j in candidate:
+                    h_abl[ranked[j]] = 0.0
+                recon = saes[strong].decode(h_abl.unsqueeze(0))
+                delta = (recon - recon_full) * data_std_t_s.unsqueeze(0)
+
+            if use_mitra:
+                trial_preds = batched_ablation(tail_s, X_row, delta, max_K=max_K)
+            elif use_sequential:
+                trial_preds = batched_ablation_sequential(tail_s, X_row, delta, query_idx=r)
+            else:
+                trial_preds = batched_ablation(tail_s, X_row, delta, max_K=max_K)
+
+            trial_dist = dist_to_weak(trial_preds[0])
+            if trial_dist < current_dist:
+                accepted_features.append(k)
+                current_dist = trial_dist
+                best_pred = trial_preds[0]
+                if current_dist < 1e-6:
+                    break
+
+        accepted_k = len(accepted_features)
+        accepted_pred_idx = 0 if accepted_k > 0 else None
+        step_preds = np.array([best_pred]) if accepted_k > 0 else np.array([])
+
+        if accepted_k > 0:
             optimal_k[r] = accepted_k
             gap_closed[r] = min(1.0, 1.0 - current_dist / orig_dist) if orig_dist > 0 else 1.0
-            preds_intervened[r] = step_preds[accepted_pred_idx]
+            preds_intervened[r] = best_pred
         else:
             optimal_k[r] = 0
             gap_closed[r] = 0.0
