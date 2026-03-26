@@ -443,13 +443,15 @@ class TabICLTail:
 
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
-                  device="cuda", model_path=None):
+                  device="cuda", model_path=None, checkpoint_version=None):
         """One-time setup: fit model, capture hidden state at layer L."""
         from tabicl import TabICLClassifier
 
         kwargs = dict(device=device, n_estimators=1)
         if model_path:
             kwargs["model_path"] = model_path
+        if checkpoint_version:
+            kwargs["checkpoint_version"] = checkpoint_version
         clf = TabICLClassifier(**kwargs)
         clf.fit(X_context, y_context)
 
@@ -1659,6 +1661,7 @@ def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
         return TabICLTail.from_data(
             X_context, y_context, X_query, extraction_layer, device,
             model_path=model_path,
+            checkpoint_version="tabicl-classifier-v1.1-20250506.ckpt",
         )
     elif model_key == "tabicl_v2":
         model_path = get_model_path("tabicl_v2", task=task)
