@@ -171,6 +171,7 @@ def run_dataset(
     optimal_k = np.zeros(n_query, dtype=np.int32)
     gap_closed = np.full(n_query, np.nan, dtype=np.float32)
     preds_intervened = baseline_preds_s.copy()
+    selected_features = [[] for _ in range(n_query)]  # per-row accepted feature indices
 
     t0 = time.time()
     for r in range(n_query):
@@ -230,26 +231,42 @@ def run_dataset(
             def dist_to_weak(p):
                 return float((p - weak_pred_r) ** 2)
 
-        # Batched greedy: each round tests all remaining candidates in one
-        # batched forward pass, accepts the one closest to weak model.
-        accepted_features = []
-        remaining = list(range(K))
+        # Combinatorial batching: enumerate all subsets up to size 3 from
+        # the top-N features, test them all in one batched forward pass,
+        # pick the best subset. If gap remains, repeat with next batch.
+        from itertools import combinations as combos
+
+        batch_size = min(12, K)  # top-N features per batch
         current_dist = dist_to_weak(baseline_preds_s[r])
         best_pred = baseline_preds_s[r]
+        accepted_combo = ()
+        offset = 0
 
-        while remaining:
-            # Build one candidate set per remaining feature: accepted + candidate_i
-            n_cand = len(remaining)
+        while offset < K:
+            batch_end = min(offset + batch_size, K)
+            batch_indices = list(range(offset, batch_end))
+            n_batch = len(batch_indices)
+
+            # Build all subsets: C(n,1) + C(n,2) + C(n,3)
+            all_subsets = []
+            for order in range(1, min(4, n_batch + 1)):
+                all_subsets.extend(combos(batch_indices, order))
+
+            # Each subset is combined with previously accepted features
+            n_combos = len(all_subsets)
+            if n_combos == 0:
+                break
+
             with torch.no_grad():
-                h_batch = h_row.unsqueeze(0).expand(n_cand, -1).clone()
-                for c, feat_k in enumerate(remaining):
-                    for j in accepted_features:
+                h_batch = h_row.unsqueeze(0).expand(n_combos, -1).clone()
+                for c, subset in enumerate(all_subsets):
+                    for j in accepted_combo:
                         h_batch[c, ranked[j]] = 0.0
-                    h_batch[c, ranked[feat_k]] = 0.0
+                    for j in subset:
+                        h_batch[c, ranked[j]] = 0.0
                 recon_batch = saes[strong].decode(h_batch)
                 deltas = (recon_batch - recon_full) * data_std_t_s.unsqueeze(0)
 
-            # One batched forward pass → n_cand predictions
             if use_mitra:
                 cand_preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
             elif use_sequential:
@@ -257,29 +274,32 @@ def run_dataset(
             else:
                 cand_preds = batched_ablation(tail_s, X_row, deltas, max_K=max_K)
 
-            # Find best candidate
+            # Find best subset
             best_c = None
             best_c_dist = current_dist
-            for c in range(n_cand):
+            for c in range(n_combos):
                 d = dist_to_weak(cand_preds[c])
                 if d < best_c_dist:
                     best_c = c
                     best_c_dist = d
 
-            if best_c is None:
-                break  # no candidate improves — done
+            if best_c is not None:
+                accepted_combo = tuple(accepted_combo) + all_subsets[best_c]
+                current_dist = best_c_dist
+                best_pred = cand_preds[best_c]
 
-            accepted_features.append(remaining[best_c])
-            current_dist = best_c_dist
-            best_pred = cand_preds[best_c]
-            remaining.pop(best_c)
+            # Move to next batch of features
+            offset = batch_end
 
-        accepted_k = len(accepted_features)
+        accepted_k = len(accepted_combo)
+        # Map back to global feature indices
+        selected_features_r = [ranked[j] for j in accepted_combo] if accepted_combo else []
 
         if accepted_k > 0:
             optimal_k[r] = accepted_k
             gap_closed[r] = min(1.0, 1.0 - current_dist / orig_dist) if orig_dist > 0 else 1.0
             preds_intervened[r] = best_pred
+            selected_features[r] = selected_features_r
         else:
             optimal_k[r] = 0
             gap_closed[r] = 0.0
@@ -297,6 +317,17 @@ def run_dataset(
 
     valid_k = optimal_k[strong_wins]
     valid_gc = gap_closed[strong_wins]
+
+    # Pad selected features to fixed width for NPZ storage
+    # -1 = unused slot
+    max_selected = max((len(sf) for sf in selected_features), default=0)
+    if max_selected > 0:
+        selected_arr = np.full((n_query, max_selected), -1, dtype=np.int32)
+        for r, sf in enumerate(selected_features):
+            for j, fi in enumerate(sf):
+                selected_arr[r, j] = fi
+    else:
+        selected_arr = np.array([], dtype=np.int32)
 
     return {
         "strong_model": strong,
@@ -318,6 +349,7 @@ def run_dataset(
         "metric_weak": float(metric_weak),
         "metric_name": metric_name,
         "feature_indices": feature_indices,
+        "selected_features": selected_arr,
         "y_query": y_query.astype(np.float32),
         "row_indices": row_indices.astype(np.int32),
     }
