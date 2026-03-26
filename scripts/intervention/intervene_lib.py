@@ -182,40 +182,35 @@ def load_training_mean(
 
 
 def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) -> tuple:
-    """Dataset-level metric: AUC (binary), neg_logloss (multiclass), neg_RMSE (regression).
+    """Dataset-level metric: neg_logloss (classification), neg_RMSE (regression).
 
     Returns (metric_value, metric_name) where higher is always better.
     """
-    from sklearn.metrics import roc_auc_score, log_loss
+    from sklearn.metrics import log_loss
 
     if task == "regression":
         rmse = float(np.sqrt(np.mean((preds - y_true) ** 2)))
         return -rmse, "neg_rmse"
 
-    n_true_classes = len(np.unique(y_true))
-    n_pred_classes = preds.shape[1] if preds.ndim == 2 else n_true_classes
+    # 1D predictions: some models (e.g. CARTE) return P(y=1) as a flat array
+    # for binary classification. Convert to (n, 2) probability matrix.
+    if preds.ndim == 1:
+        if np.all((preds >= 0) & (preds <= 1)):
+            preds = np.column_stack([1 - preds, preds])
+        else:
+            return float("-inf"), "degenerate"
 
-    # Degenerate: 1D predictions (class labels instead of probabilities)
-    # or single-class output — can't compute meaningful metric
-    if preds.ndim == 1 or n_pred_classes <= 1:
-        return float("-inf"), "degenerate"
+    n_pred_classes = preds.shape[1]
 
-    # Class count mismatch: model returns fewer columns than true labels
-    if n_pred_classes < n_true_classes:
+    # Single-class output — can't compute meaningful metric
+    if n_pred_classes <= 1:
         return float("-inf"), "degenerate"
 
     # Use n_pred_classes for labels — y_true may have fewer unique values
     # in a query batch, but log_loss needs labels matching prediction columns
     all_labels = np.arange(n_pred_classes)
 
-    if n_true_classes == 2 and n_pred_classes == 2:
-        proba = preds[:, 1] if preds.ndim == 2 else preds
-        try:
-            return float(roc_auc_score(y_true, proba)), "auc"
-        except ValueError:
-            return float(-log_loss(y_true, preds, labels=all_labels)), "neg_logloss"
-    else:
-        return float(-log_loss(y_true, preds, labels=all_labels)), "neg_logloss"
+    return float(-log_loss(y_true, preds, labels=all_labels)), "neg_logloss"
 
 
 def compute_per_row_loss(y_true: np.ndarray, preds: np.ndarray, task: str) -> np.ndarray:
