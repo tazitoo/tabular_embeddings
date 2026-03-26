@@ -204,14 +204,18 @@ def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) 
     if n_pred_classes < n_true_classes:
         return float("-inf"), "degenerate"
 
+    # Use n_pred_classes for labels — y_true may have fewer unique values
+    # in a query batch, but log_loss needs labels matching prediction columns
+    all_labels = np.arange(n_pred_classes)
+
     if n_true_classes == 2 and n_pred_classes == 2:
         proba = preds[:, 1] if preds.ndim == 2 else preds
         try:
             return float(roc_auc_score(y_true, proba)), "auc"
         except ValueError:
-            return float(-log_loss(y_true, preds, labels=np.arange(n_true_classes))), "neg_logloss"
+            return float(-log_loss(y_true, preds, labels=all_labels)), "neg_logloss"
     else:
-        return float(-log_loss(y_true, preds, labels=np.arange(n_true_classes))), "neg_logloss"
+        return float(-log_loss(y_true, preds, labels=all_labels)), "neg_logloss"
 
 
 def compute_per_row_loss(y_true: np.ndarray, preds: np.ndarray, task: str) -> np.ndarray:
