@@ -868,7 +868,11 @@ class CARTETail:
             hidden_state=hidden, central_indices=central_indices,
             batch=batch, n_query=n_query, task=task, device=device,
         )
-        tail.baseline_preds = np.asarray(baseline_preds)
+        baseline_preds = np.asarray(baseline_preds)
+        # CARTE returns P(y=1) as 1D for binary — normalize to (n, 2)
+        if task != "regression" and baseline_preds.ndim == 1:
+            baseline_preds = np.column_stack([1 - baseline_preds, baseline_preds])
+        tail.baseline_preds = baseline_preds
         tail.X_query_graph = X_query_graph
         return tail
 
@@ -907,7 +911,11 @@ class CARTETail:
                     preds = self.clf.predict_proba(self.X_query_graph)
         finally:
             handle.remove()
-        return np.asarray(preds)
+        preds = np.asarray(preds)
+        # CARTE returns P(y=1) as 1D for binary — normalize to (n, 2)
+        if self.task != "regression" and preds.ndim == 1:
+            preds = np.column_stack([1 - preds, preds])
+        return preds
 
     def predict(self, delta):
         """Full-batch intervention: delta shape (n_query, emb_dim)."""
