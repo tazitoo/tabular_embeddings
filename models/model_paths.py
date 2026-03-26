@@ -36,13 +36,14 @@ _REGISTRY = {
         "autogluon/mitra-regressor",
     ],
     "tabicl": [
-        _HF_CACHE / "models--jingang--TabICL-clf",
-        _HF_CACHE / "models--jingang--TabICL",
-        "jingang/TabICL",
+        _HF_CACHE / "models--jingang--TabICL-clf" / "**" / "tabicl-classifier-v1*.ckpt",
+        _HF_CACHE / "models--jingang--TabICL" / "**" / "tabicl-classifier-v1*.ckpt",
     ],
     "tabicl_v2": [
-        _HF_CACHE / "models--jingang--TabICL",
-        "jingang/TabICL",
+        _HF_CACHE / "models--jingang--TabICL" / "**" / "tabicl-classifier-v2*.ckpt",
+    ],
+    "tabicl_regressor": [
+        _HF_CACHE / "models--jingang--TabICL" / "**" / "tabicl-regressor-v2*.ckpt",
     ],
     "tabdpt": [
         _HF_CACHE / "models--Layer6--TabDPT",
@@ -85,6 +86,8 @@ def get_model_path(model_name: str, task: str = "classification") -> str:
 
 
 def _resolve(key: str) -> str:
+    import glob as _glob
+
     candidates = _REGISTRY.get(key)
     if candidates is None:
         raise KeyError(f"Unknown model: '{key}'. Known: {list(_REGISTRY.keys())}")
@@ -94,8 +97,14 @@ def _resolve(key: str) -> str:
         if isinstance(path, str) and os.sep not in path:
             last_hf_id = path
             continue
-        if Path(path).exists():
-            return str(path)
+        path_str = str(path)
+        # Glob patterns (e.g. for HF cache checkpoint discovery)
+        if "*" in path_str:
+            matches = sorted(_glob.glob(path_str, recursive=True))
+            if matches:
+                return matches[-1]  # latest version
+        elif Path(path).exists():
+            return path_str
 
     if last_hf_id is not None:
         return last_hf_id

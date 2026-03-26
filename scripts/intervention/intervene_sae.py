@@ -443,11 +443,14 @@ class TabICLTail:
 
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
-                  device="cuda"):
+                  device="cuda", model_path=None):
         """One-time setup: fit model, capture hidden state at layer L."""
         from tabicl import TabICLClassifier
 
-        clf = TabICLClassifier(device=device, n_estimators=1)
+        kwargs = dict(device=device, n_estimators=1)
+        if model_path:
+            kwargs["model_path"] = model_path
+        clf = TabICLClassifier(**kwargs)
         clf.fit(X_context, y_context)
 
         model = clf.model_
@@ -572,14 +575,20 @@ class TabICLV2Tail:
 
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
-                  task="classification", device="cuda"):
+                  task="classification", device="cuda", model_path=None):
         """One-time setup: fit model, capture hidden state at layer L."""
         if task == "regression":
             from tabicl import TabICLRegressor
-            clf = TabICLRegressor(device=device, n_estimators=1)
+            kwargs = dict(device=device, n_estimators=1)
+            if model_path:
+                kwargs["model_path"] = model_path
+            clf = TabICLRegressor(**kwargs)
         else:
             from tabicl import TabICLClassifier
-            clf = TabICLClassifier(device=device, n_estimators=1)
+            kwargs = dict(device=device, n_estimators=1)
+            if model_path:
+                kwargs["model_path"] = model_path
+            clf = TabICLClassifier(**kwargs)
 
         clf.fit(X_context, y_context)
 
@@ -1631,17 +1640,23 @@ class HyperFastTail:
 def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
                task="classification", device="cuda", cat_indices=None):
     """Factory: build the appropriate tail model for the given model key."""
+    from models.model_paths import get_model_path
+
     if model_key == "tabpfn":
         return TabPFNTail.from_data(
             X_context, y_context, X_query, extraction_layer, task, device,
         )
     elif model_key == "tabicl":
+        model_path = get_model_path("tabicl", task=task)
         return TabICLTail.from_data(
             X_context, y_context, X_query, extraction_layer, device,
+            model_path=model_path,
         )
     elif model_key == "tabicl_v2":
+        model_path = get_model_path("tabicl_v2", task=task)
         return TabICLV2Tail.from_data(
             X_context, y_context, X_query, extraction_layer, task, device,
+            model_path=model_path,
         )
     elif model_key == "carte":
         return CARTETail.from_data(
