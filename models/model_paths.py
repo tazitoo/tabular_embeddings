@@ -42,6 +42,9 @@ _REGISTRY = {
     "tabicl_v2": [
         _HF_CACHE / "models--jingang--TabICL" / "**" / "tabicl-classifier-v2*.ckpt",
     ],
+    "tabicl_v2_regressor": [
+        _HF_CACHE / "models--jingang--TabICL" / "**" / "tabicl-regressor-v2*.ckpt",
+    ],
     "tabicl_regressor": [
         _HF_CACHE / "models--jingang--TabICL" / "**" / "tabicl-regressor-v2*.ckpt",
     ],
