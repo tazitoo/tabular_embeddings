@@ -25,7 +25,7 @@ tabdpt = ["tabdpt"]
 hyperfast = ["hyperfast"]
 carte = ["carte-ai", "torch_geometric"]
 mitra = ["autogluon.tabular[mitra]"]
-tabula8b = ["transformers>=4.36", "bitsandbytes>=0.41,<0.46", "accelerate"]
+tabula8b = ["transformers>=4.36", "bitsandbytes>=0.46.1", "accelerate"]
 mothernet = ["ticl @ git+https://github.com/microsoft/ticl.git"]
 
 # All models (except mothernet which requires manual install)
@@ -38,7 +38,7 @@ models = [
     "torch_geometric",
     "autogluon.tabular[mitra]",
     "transformers>=4.36",
-    "bitsandbytes>=0.41,<0.46",
+    "bitsandbytes>=0.46.1",
     "accelerate",
 ]
 
