@@ -201,9 +201,10 @@ def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) 
             return float("-inf"), "degenerate"
 
     n_pred_classes = preds.shape[1]
+    n_true_classes = len(np.unique(y_true))
 
-    # Single-class output — can't compute meaningful metric
-    if n_pred_classes <= 1:
+    # Degenerate: single-class output or fewer prediction columns than true classes
+    if n_pred_classes <= 1 or n_pred_classes < n_true_classes:
         return float("-inf"), "degenerate"
 
     # Use n_pred_classes for labels — y_true may have fewer unique values
