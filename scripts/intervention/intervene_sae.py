@@ -1515,7 +1515,9 @@ class HyperFastTail:
         hf_clf = extractor._model
 
         n_query = len(X_query)
-        X_query_t = torch.tensor(X_query, dtype=torch.float32).to(device)
+        # Preprocess query through HyperFast's pipeline (one-hot + scaler)
+        # to match the same feature space used during fit/embedding extraction
+        X_query_t = hf_clf._preprocess_test_data(X_query).to(device)
 
         main_networks = []
         intermediates = []
@@ -1600,9 +1602,7 @@ class HyperFastTail:
         )
 
         n_query = len(X_query_new)
-        X_query_t = torch.tensor(
-            np.asarray(X_query_new, dtype=np.float32), dtype=torch.float32,
-        ).to(self.device)
+        X_query_t = self.clf._preprocess_test_data(X_query_new).to(self.device)
 
         intermediates = []
         baseline_outputs = []
