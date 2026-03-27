@@ -53,22 +53,12 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
     def _resolve_weight_path(self) -> Optional[str]:
         """Find HyperFast weights on disk."""
         import os
-        import socket
 
         if self.weight_path:
             return self.weight_path
-
-        hostname = socket.gethostname()
-        # GPU workers (hostname may or may not have numeric suffix)
-        worker_names = ("surfer", "terrax", "octo", "firelord",
-                        "surfer4", "terrax4", "octo4", "firelord4")
-        if hostname in worker_names:
-            if os.path.exists(WORKER_WEIGHT_PATH):
-                return WORKER_WEIGHT_PATH
-        # Orchestrator (galactus)
-        if os.path.exists(DEFAULT_WEIGHT_PATH):
-            return DEFAULT_WEIGHT_PATH
-
+        for path in (WORKER_WEIGHT_PATH, DEFAULT_WEIGHT_PATH):
+            if os.path.exists(path):
+                return path
         return None
 
     def load_model(self) -> None:
