@@ -71,7 +71,6 @@ class HyperFastEmbeddingExtractor(EmbeddingExtractor):
             n_ensemble=self.n_ensemble,
             optimization=None,
             custom_path=path,
-            seed=42,
         )
 
     def _discretize_targets(self, y: np.ndarray, n_bins: int = 10) -> np.ndarray:

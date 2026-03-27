@@ -120,7 +120,6 @@ def load_and_fit(
             custom_path=custom_path,
             cat_features=cat_indices if cat_indices else None,
             feature_bagging=n_features > 3000,
-            seed=42,
         )
         clf.fit(X_context, y_context)
 
