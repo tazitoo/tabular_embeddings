@@ -938,6 +938,16 @@ class CARTETail:
         import copy as _copy
         K = len(deltas)
         graph = self.X_query_graph[row_idx]
+
+        # CARTE's _generate_output does .squeeze() which collapses (1,1,n_classes) →
+        # (n_classes,) for K=1 multiclass, then softmax(axis=1) fails on 1D.
+        # Binary uses a different loss (binary_crossentropy) and is unaffected.
+        # Fix: pad to K=2 and trim the extra result afterward.
+        padded = (K == 1 and self.task != "regression")
+        if padded:
+            deltas = torch.cat([deltas, torch.zeros_like(deltas[:1])], dim=0)
+            K = 2
+
         k_graphs = [_copy.copy(graph) for _ in range(K)]
         n_nodes = graph.num_nodes
         per_graph = getattr(self, "_per_graph_hook", False)
@@ -973,6 +983,8 @@ class CARTETail:
         preds = np.atleast_1d(np.asarray(preds))
         if self.task != "regression" and preds.ndim == 1:
             preds = np.column_stack([1 - preds, preds])
+        if padded:
+            preds = preds[:1]
         return preds
 
 
