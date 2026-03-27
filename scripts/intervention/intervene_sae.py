@@ -936,17 +936,21 @@ class CARTETail:
         K = len(deltas)
         graph = self.X_query_graph[row_idx]
         k_graphs = [_copy.copy(graph) for _ in range(K)]
-        # All copies have identical structure; central node is ptr[k] = k * n_nodes
         n_nodes = graph.num_nodes
-        central_indices_k = [k * n_nodes for k in range(K)]
         deltas_dev = deltas.to(self.device)
 
         def modify_hook(module, input, output):
             out = output[0] if isinstance(output, tuple) else output
             if isinstance(out, torch.Tensor):
                 out = out.clone()
-                for k, idx in enumerate(central_indices_k):
-                    out[idx] += deltas_dev[k]
+                if out.shape[0] == K:
+                    # Per-graph output (read_out_block already pooled): index = k
+                    for k in range(K):
+                        out[k] += deltas_dev[k]
+                else:
+                    # Per-node output: central node is first node of each graph
+                    for k in range(K):
+                        out[k * n_nodes] += deltas_dev[k]
                 if isinstance(output, tuple):
                     return (out,) + output[1:]
                 return out
