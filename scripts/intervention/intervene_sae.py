@@ -841,8 +841,10 @@ class CARTETail:
         hidden = captured["hidden"]
         if hidden.shape[0] > n_query and hasattr(batch, 'ptr'):
             central_indices = [int(batch.ptr[i]) for i in range(n_query)]
+            per_graph_hook = False
         elif hidden.shape[0] == n_query:
             central_indices = list(range(n_query))
+            per_graph_hook = True
         else:
             raise ValueError(f"Cannot extract central nodes: hidden {hidden.shape}")
 
@@ -858,6 +860,7 @@ class CARTETail:
             hidden_state=hidden, central_indices=central_indices,
             batch=batch, n_query=n_query, task=task, device=device,
         )
+        tail._per_graph_hook = per_graph_hook
         baseline_preds = np.asarray(baseline_preds)
         # CARTE returns P(y=1) as 1D for binary — normalize to (n, 2)
         if task != "regression" and baseline_preds.ndim == 1:
@@ -937,18 +940,19 @@ class CARTETail:
         graph = self.X_query_graph[row_idx]
         k_graphs = [_copy.copy(graph) for _ in range(K)]
         n_nodes = graph.num_nodes
+        per_graph = getattr(self, "_per_graph_hook", False)
         deltas_dev = deltas.to(self.device)
 
         def modify_hook(module, input, output):
             out = output[0] if isinstance(output, tuple) else output
             if isinstance(out, torch.Tensor):
                 out = out.clone()
-                if out.shape[0] == K:
-                    # Per-graph output (read_out_block already pooled): index = k
+                if per_graph:
+                    # Hook fires after pooling: one vector per graph
                     for k in range(K):
                         out[k] += deltas_dev[k]
                 else:
-                    # Per-node output: central node is first node of each graph
+                    # Hook fires on per-node output: central node is first in each graph
                     for k in range(K):
                         out[k * n_nodes] += deltas_dev[k]
                 if isinstance(output, tuple):
@@ -966,7 +970,7 @@ class CARTETail:
         finally:
             handle.remove()
 
-        preds = np.asarray(preds)
+        preds = np.atleast_1d(np.asarray(preds))
         if self.task != "regression" and preds.ndim == 1:
             preds = np.column_stack([1 - preds, preds])
         return preds
