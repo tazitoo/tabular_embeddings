@@ -230,12 +230,13 @@ def run_dataset(
             recon_abl = saes[strong].decode(h_batch)
             per_feature_deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
 
-        # Distance metric: log loss on correct class (classification)
-        # or squared error (regression). Lower = closer to weak model.
+        # Distance metric: squared distance of per-row loss to the weak
+        # model's loss.  Lower = closer to matching the weak model.
         if baseline_preds_s.ndim == 2:
             eps = 1e-7
             def dist_to_weak(p):
-                return -np.log(np.clip(p[y_r], eps, 1 - eps))
+                p_loss = -np.log(np.clip(p[y_r], eps, 1 - eps))
+                return (p_loss - target_dist) ** 2
         else:
             def dist_to_weak(p):
                 return float((p - weak_preds[r]) ** 2)
@@ -306,9 +307,16 @@ def run_dataset(
 
         if accepted_k > 0:
             optimal_k[r] = accepted_k
-            gap = abs(orig_dist - target_dist)
-            moved = abs(current_dist - orig_dist)
-            gap_closed[r] = min(1.0, moved / gap) if gap > 1e-8 else 1.0
+            if baseline_preds_s.ndim == 2:
+                # Classification: signed distance in loss space
+                best_loss = -np.log(np.clip(best_pred[y_r], eps, 1 - eps))
+                gap = target_dist - orig_dist       # positive (strong < weak loss)
+                moved = best_loss - orig_dist       # positive = toward weak
+                gap_closed[r] = min(1.0, max(0.0, moved / gap)) if gap > 1e-8 else 1.0
+            else:
+                gap = abs(orig_dist - target_dist)
+                moved = abs(current_dist - orig_dist)
+                gap_closed[r] = min(1.0, moved / gap) if gap > 1e-8 else 1.0
             preds_intervened[r] = best_pred
             selected_features[r] = selected_features_r
         else:
