@@ -1302,7 +1302,7 @@ def main():
     parser.add_argument("--relabel-threshold", type=float, default=0.3)
     parser.add_argument(
         "--matching", type=str,
-        default="output/sae_feature_matching_mnn_t0.001_test.json",
+        default="output/sae_feature_matching_mnn_t0.001.json",
     )
     parser.add_argument(
         "--concepts", type=str,

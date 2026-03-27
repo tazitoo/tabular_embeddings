@@ -763,22 +763,9 @@ class CARTETail:
             df_ctx = pd.DataFrame(X_context, columns=feature_names)
             df_qry = pd.DataFrame(X_query, columns=feature_names)
 
-        # Scale numeric columns only
-        from sklearn.preprocessing import RobustScaler
+        # Let CARTE handle numeric scaling internally (PowerTransformer).
+        # Matches the embedding extractor path which also skips manual scaling.
         numeric_cols = df_ctx.select_dtypes(include=[np.number]).columns.tolist()
-        if numeric_cols:
-            # Drop constant numeric columns
-            col_std = df_ctx[numeric_cols].std()
-            nonconstant = col_std[col_std > 0].index.tolist()
-            drop_cols = [c for c in numeric_cols if c not in nonconstant]
-            if drop_cols:
-                df_ctx = df_ctx.drop(columns=drop_cols)
-                df_qry = df_qry.drop(columns=drop_cols)
-                numeric_cols = [c for c in numeric_cols if c in nonconstant]
-            if numeric_cols:
-                scaler = RobustScaler()
-                df_ctx[numeric_cols] = np.clip(scaler.fit_transform(df_ctx[numeric_cols]), -10, 10)
-                df_qry[numeric_cols] = np.clip(scaler.transform(df_qry[numeric_cols]), -10, 10)
 
         # Ensure at least one categorical column for CARTE
         cat_cols = df_ctx.select_dtypes(include=["object", "category"]).columns.tolist()
@@ -807,11 +794,11 @@ class CARTETail:
             g.y = torch.tensor([y_context[i]], dtype=torch.float32)
 
         if task == "regression":
-            clf = CARTERegressor(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+            clf = CARTERegressor(device=device, num_model=3, max_epoch=50, disable_pbar=True)
         else:
             n_classes = len(np.unique(y_context))
             loss = "categorical_crossentropy" if n_classes > 2 else "binary_crossentropy"
-            clf = CARTEClassifier(device=device, num_model=1, max_epoch=50,
+            clf = CARTEClassifier(device=device, num_model=3, max_epoch=50,
                                   disable_pbar=True, loss=loss)
         clf.fit(X_context_graph, y_context)
         torch.cuda.empty_cache()
@@ -1006,10 +993,12 @@ class Tabula8BTail:
             X_query_arr = X_query
         n_classes = len(np.unique(y_context))
 
-        # Serialize context (shared prefix)
+        # Stratified context sampling — ensure all classes represented
+        from models.tabula_embeddings import _stratified_context_indices
         max_ctx = min(32, len(X_context_arr))
+        ctx_idx = _stratified_context_indices(y_context, max_ctx)
         ctx_lines = []
-        for i in range(max_ctx):
+        for i in ctx_idx:
             if isinstance(X_context_arr, pd.DataFrame):
                 row = X_context_arr.iloc[i]
             else:
@@ -1657,11 +1646,8 @@ def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
             X_context, y_context, X_query, extraction_layer, task, device,
         )
     elif model_key == "tabicl":
-        model_path = get_model_path("tabicl", task=task)
         return TabICLTail.from_data(
             X_context, y_context, X_query, extraction_layer, device,
-            model_path=model_path,
-            checkpoint_version="tabicl-classifier-v1.1-20250506.ckpt",
         )
     elif model_key == "tabicl_v2":
         model_path = get_model_path("tabicl_v2", task=task)

@@ -82,7 +82,16 @@ def run_dataset(
             n_query = len(X_query)
 
         layer = get_extraction_layer_taskaware(m, dataset=dataset)
-        tails[m] = build_tail(m, X_train, y_train, X_query, layer, task, device)
+        cat_indices = None
+        if m == "hyperfast":
+            from data.preprocessing import load_preprocessed, CACHE_DIR
+            try:
+                pre = load_preprocessed("hyperfast", dataset, CACHE_DIR)
+                cat_indices = pre.cat_indices if pre.cat_indices else None
+            except Exception:
+                pass
+        tails[m] = build_tail(m, X_train, y_train, X_query, layer, task, device,
+                              cat_indices=cat_indices)
         preds[m] = tails[m].baseline_preds
         losses[m] = compute_per_row_loss(y_query, preds[m], task)
 
@@ -181,14 +190,16 @@ def run_dataset(
             continue
 
         # Original distance from strong to weak prediction
+        y_r = int(y_query[r])
         if baseline_preds_s.ndim == 2:
             eps = 1e-7
-            w = np.clip(weak_preds[r], eps, 1 - eps)
-            s = np.clip(baseline_preds_s[r], eps, 1 - eps)
-            orig_dist = -np.sum(w * np.log(s))  # cross-entropy(weak, strong)
+            # Per-row log loss on the correct class
+            orig_dist = -np.log(np.clip(baseline_preds_s[r, y_r], eps, 1 - eps))
+            target_dist = -np.log(np.clip(weak_preds[r, y_r], eps, 1 - eps))
         else:
             orig_dist = float((baseline_preds_s[r] - weak_preds[r]) ** 2)
-        if orig_dist < 1e-8:
+            target_dist = 0.0
+        if abs(orig_dist - target_dist) < 1e-8:
             optimal_k[r] = 0
             gap_closed[r] = 1.0
             continue
@@ -219,17 +230,15 @@ def run_dataset(
             recon_abl = saes[strong].decode(h_batch)
             per_feature_deltas = (recon_abl - recon_full) * data_std_t_s.unsqueeze(0)
 
-        # Distance metric: how far is prediction from weak model?
-        weak_pred_r = weak_preds[r]
+        # Distance metric: log loss on correct class (classification)
+        # or squared error (regression). Lower = closer to weak model.
         if baseline_preds_s.ndim == 2:
             eps = 1e-7
             def dist_to_weak(p):
-                p = np.clip(p, eps, 1 - eps)
-                w = np.clip(weak_pred_r, eps, 1 - eps)
-                return -np.sum(w * np.log(p))
+                return -np.log(np.clip(p[y_r], eps, 1 - eps))
         else:
             def dist_to_weak(p):
-                return float((p - weak_pred_r) ** 2)
+                return float((p - weak_preds[r]) ** 2)
 
         # Combinatorial batching: enumerate all subsets up to size 3 from
         # the top-N features, test them all in one batched forward pass,
@@ -297,7 +306,9 @@ def run_dataset(
 
         if accepted_k > 0:
             optimal_k[r] = accepted_k
-            gap_closed[r] = min(1.0, 1.0 - current_dist / orig_dist) if orig_dist > 0 else 1.0
+            gap = abs(orig_dist - target_dist)
+            moved = abs(current_dist - orig_dist)
+            gap_closed[r] = min(1.0, moved / gap) if gap > 1e-8 else 1.0
             preds_intervened[r] = best_pred
             selected_features[r] = selected_features_r
         else:

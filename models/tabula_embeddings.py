@@ -21,6 +21,28 @@ import torch
 from .base import EmbeddingExtractor, EmbeddingResult
 
 
+def _stratified_context_indices(y: np.ndarray, max_n: int, seed: int = 42) -> np.ndarray:
+    """Select up to max_n indices with balanced class representation."""
+    rng = np.random.RandomState(seed)
+    classes = np.unique(y)
+    if len(classes) <= 1:
+        return np.arange(min(max_n, len(y)))
+    per_class = max(1, max_n // len(classes))
+    indices = []
+    for c in classes:
+        c_idx = np.where(y == c)[0]
+        chosen = rng.choice(c_idx, size=min(per_class, len(c_idx)), replace=False)
+        indices.append(chosen)
+    indices = np.concatenate(indices)
+    # If we have room, fill remaining slots randomly from what's left
+    if len(indices) < max_n:
+        remaining = np.setdiff1d(np.arange(len(y)), indices)
+        extra = rng.choice(remaining, size=min(max_n - len(indices), len(remaining)), replace=False)
+        indices = np.concatenate([indices, extra])
+    rng.shuffle(indices)
+    return indices[:max_n]
+
+
 class TabulaEmbeddingExtractor(EmbeddingExtractor):
     """Extract embeddings from Tabula-8B LLM."""
 
@@ -128,19 +150,20 @@ class TabulaEmbeddingExtractor(EmbeddingExtractor):
         y_context = np.asarray(y_context)
         use_df = isinstance(X_context, pd.DataFrame)
 
-        # Limit context to avoid exceeding 8k token limit
+        # Stratified context sampling — ensure all classes are represented
         max_ctx = min(32, len(X_context))
+        ctx_idx = _stratified_context_indices(y_context, max_ctx)
 
         if use_df:
             ctx_text = self._serialize_context_df(
-                X_context.iloc[:max_ctx], y_context[:max_ctx]
+                X_context.iloc[ctx_idx], y_context[ctx_idx]
             )
         else:
             X_context = np.asarray(X_context, dtype=np.float32)
             X_query_np = np.asarray(X_query, dtype=np.float32)
             feature_names = [f"f{i}" for i in range(X_context.shape[1])]
             ctx_text = self._serialize_context(
-                X_context[:max_ctx], y_context[:max_ctx], feature_names
+                X_context[ctx_idx], y_context[ctx_idx], feature_names
             )
 
         embeddings = []
