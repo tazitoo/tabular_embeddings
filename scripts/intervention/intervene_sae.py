@@ -794,12 +794,13 @@ class CARTETail:
             g.y = torch.tensor([y_context[i]], dtype=torch.float32)
 
         if task == "regression":
-            clf = CARTERegressor(device=device, num_model=3, max_epoch=50, disable_pbar=True)
+            clf = CARTERegressor(device=device, num_model=1, max_epoch=50,
+                                 early_stopping_patience=10, disable_pbar=True)
         else:
             n_classes = len(np.unique(y_context))
             loss = "categorical_crossentropy" if n_classes > 2 else "binary_crossentropy"
-            clf = CARTEClassifier(device=device, num_model=3, max_epoch=50,
-                                  disable_pbar=True, loss=loss)
+            clf = CARTEClassifier(device=device, num_model=1, max_epoch=50,
+                                  early_stopping_patience=10, disable_pbar=True, loss=loss)
         clf.fit(X_context_graph, y_context)
         torch.cuda.empty_cache()
 
@@ -916,6 +917,55 @@ class CARTETail:
             delta_row.unsqueeze(0),
             central_only_indices=[(0, self.central_indices[row_idx])],
         )
+
+    def predict_row_batched(self, row_idx: int, deltas: torch.Tensor) -> np.ndarray:
+        """K ablations for row_idx in a single predict_proba call.
+
+        Tiles K copies of X_query_graph[row_idx] into one PyG batch, injects
+        a different delta at each copy's central node via hook, and runs one
+        forward pass instead of K sequential passes.
+
+        Args:
+            row_idx: index into self.X_query_graph
+            deltas: (K, emb_dim) tensor of deltas
+
+        Returns:
+            preds: (K, n_classes) or (K,) predictions
+        """
+        import copy as _copy
+        K = len(deltas)
+        graph = self.X_query_graph[row_idx]
+        k_graphs = [_copy.copy(graph) for _ in range(K)]
+        # All copies have identical structure; central node is ptr[k] = k * n_nodes
+        n_nodes = graph.num_nodes
+        central_indices_k = [k * n_nodes for k in range(K)]
+        deltas_dev = deltas.to(self.device)
+
+        def modify_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                out = out.clone()
+                for k, idx in enumerate(central_indices_k):
+                    out[idx] += deltas_dev[k]
+                if isinstance(output, tuple):
+                    return (out,) + output[1:]
+                return out
+            return output
+
+        handle = self.hook_module.register_forward_hook(modify_hook)
+        try:
+            with torch.no_grad():
+                if self.task == "regression":
+                    preds = self.clf.predict(k_graphs)
+                else:
+                    preds = self.clf.predict_proba(k_graphs)
+        finally:
+            handle.remove()
+
+        preds = np.asarray(preds)
+        if self.task != "regression" and preds.ndim == 1:
+            preds = np.column_stack([1 - preds, preds])
+        return preds
 
 
 class Tabula8BTail:

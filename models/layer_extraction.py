@@ -563,7 +563,7 @@ def _load_and_fit_carte(X_context: pd.DataFrame, y_context: np.ndarray,
     for i, g in enumerate(X_context_graph):
         g.y = torch.tensor([y_for_fit[i]], dtype=torch.float32)
 
-    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, early_stopping_patience=10, disable_pbar=True)
     clf.fit(X_context_graph, y_for_fit)
     torch.cuda.empty_cache()
 

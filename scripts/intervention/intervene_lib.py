@@ -751,7 +751,8 @@ def batched_ablation_sequential(
 ) -> np.ndarray:
     """Fallback for models without batched K-copy support.
 
-    K sequential predict_row() calls. Still benefits from fit-once.
+    For CARTETail: uses predict_row_batched() — K copies of one graph, one
+    forward pass. For other sequential models: K sequential predict_row() calls.
 
     Args:
         tail: fitted tail model
@@ -765,6 +766,10 @@ def batched_ablation_sequential(
     K = len(deltas)
     if K == 0:
         return np.array([])
+
+    # CARTETail: K-copy batched forward pass (K copies of one graph, one call)
+    if hasattr(tail, "predict_row_batched"):
+        return tail.predict_row_batched(query_idx, deltas)
 
     # Recapture if available (Mitra/HyperFast), otherwise use existing state
     if hasattr(tail, "recapture"):

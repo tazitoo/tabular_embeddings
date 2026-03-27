@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Plot all 28 pairwise ablation comparisons for one dataset on a single page.
+"""Plot all pairwise ablation comparisons for one dataset on a single page.
 
-Reads ablation_sweep NPZ files for all model pairs and tiles them into a
-7×4 grid on an 8.5×11 page. Each panel shows the strong model's predictions
-(x-axis) vs the weak model's (y-axis), with ablation arrows showing how
-removing concepts degrades the strong model toward the weak.
+Reads ablation_sweep NPZ files for all model pairs and tiles them in a grid
+on an 8.5" wide page. Classification: 15 pairs (6 models) → 5×3 grid.
+Regression: 10 pairs (5 models) → 4×3 grid (2 empty). Each panel shows
+the strong model's predictions (x-axis) vs the weak model's (y-axis), with
+ablation arrows showing how removing concepts degrades the strong model toward
+the weak.
 
 Usage:
     python -m scripts.figures.plot_ablation_grid --dataset credit-g
@@ -20,8 +22,8 @@ import numpy as np
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.concept_performance_diagnostic import DISPLAY_NAMES
 
-MODELS_CLS = ["tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt", "hyperfast", "carte", "tabula8b"]
-MODELS_REG = ["tabpfn", "mitra", "tabicl_v2", "tabdpt", "carte", "tabula8b"]
+MODELS_CLS = ["tabpfn", "mitra", "tabicl", "tabicl_v2", "tabdpt", "carte"]
+MODELS_REG = ["tabpfn", "mitra", "tabicl_v2", "tabdpt", "carte"]
 SWEEP_DIR = PROJECT_ROOT / "output" / "ablation_sweep"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "figures" / "ablation_sweep"
 SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
@@ -120,10 +122,11 @@ def _draw_empty_panel(ax, model_a: str, model_b: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot all 28 pairwise ablation comparisons for one dataset")
+        description="Plot all pairwise ablation comparisons for one dataset")
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--sweep-dir", type=Path, default=SWEEP_DIR)
-    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None,
+                        help="Output path (default: output/figures/ablation_sweep/<dataset>.pdf)")
     args = parser.parse_args()
 
     # Determine task type from splits → pick model set
@@ -132,18 +135,18 @@ def main():
     task_type = splits.get(args.dataset, {}).get("task_type", "classification")
 
     if task_type == "regression":
-        model_list = MODELS_REG   # 6 models → C(6,2) = 15 pairs → 4×4
+        model_list = MODELS_REG   # 5 models → C(5,2) = 10 pairs → 4×3 (2 empty)
         ncols = 3
     else:
-        model_list = MODELS_CLS   # 8 models → C(8,2) = 28 pairs → 4×7
-        ncols = 4
+        model_list = MODELS_CLS   # 6 models → C(6,2) = 15 pairs → 5×3
+        ncols = 3
 
     pairs = list(combinations(model_list, 2))
     n_pairs = len(pairs)
     nrows = (n_pairs + ncols - 1) // ncols
 
-    # 8.5 x 11 for classification, 8.5 x 8 for regression
-    fig_height = 11 if task_type != "regression" else 8
+    # 8.5 x 8 for classification (5 rows), 8.5 x 6.5 for regression (4 rows)
+    fig_height = 8.0 if task_type != "regression" else 6.5
     fig, axes = plt.subplots(nrows, ncols, figsize=(8.5, fig_height))
     axes = axes.flatten()
 
