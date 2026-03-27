@@ -383,7 +383,7 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-K", type=int, default=512)
-    parser.add_argument("--max-steps", type=int, default=64)
+    parser.add_argument("--max-steps", type=int, default=10000)
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
