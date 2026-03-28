@@ -119,7 +119,7 @@ def _transfer_one_direction(
     n_query = len(y_query)
 
     # Load context for target model (needed for intervene)
-    X_train_t, y_train_t, X_query_t, y_query_t, _, _ = load_dataset_context(
+    X_train_t, y_train_t, X_query_t, y_query_t, _, _, _ = load_dataset_context(
         target_model, dataset, splits,
     )
     if y_train_t.dtype == np.int32:
@@ -404,7 +404,7 @@ def run_dataset(
     # Get baseline predictions for both models
     preds = {}
     for m in (model_a, model_b):
-        X_train, y_train, X_query, y_query, row_indices, task = load_dataset_context(
+        X_train, y_train, X_query, y_query, row_indices, task, _ = load_dataset_context(
             m, dataset, splits,
         )
         if y_train.dtype == np.int32:
