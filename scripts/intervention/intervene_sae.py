@@ -763,22 +763,43 @@ class CARTETail:
             df_ctx = pd.DataFrame(X_context, columns=feature_names)
             df_qry = pd.DataFrame(X_query, columns=feature_names)
 
-        # Let CARTE handle numeric scaling internally (PowerTransformer).
-        # Matches the embedding extractor path which also skips manual scaling.
-        numeric_cols = df_ctx.select_dtypes(include=[np.number]).columns.tolist()
+        # Apply the same preprocessing as extract_carte_all_layers() in
+        # layerwise_cka_analysis.py so the tail operates in the same feature space
+        # as the extracted embeddings.
+        from sklearn.preprocessing import RobustScaler
+        num_cols = df_ctx.select_dtypes(include=["number"]).columns.tolist()
+        if num_cols:
+            # Drop near-constant columns (std < 1e-6) — PowerTransformer crashes on
+            # zero-variance columns (scipy BracketError, e.g. APSFailure.cd_000).
+            col_std = df_ctx[num_cols].std()
+            constant_cols = col_std[col_std < 1e-6].index.tolist()
+            if constant_cols:
+                df_ctx = df_ctx.drop(columns=constant_cols)
+                df_qry = df_qry.drop(columns=constant_cols)
+                num_cols = [c for c in num_cols if c not in constant_cols]
 
-        # Ensure at least one categorical column for CARTE
-        cat_cols = df_ctx.select_dtypes(include=["object", "category"]).columns.tolist()
-        if not cat_cols and numeric_cols:
-            n_bins = min(5, len(numeric_cols))
-            df_ctx["_cat"] = pd.cut(
-                df_ctx[numeric_cols[0]], bins=n_bins,
-                labels=[f"bin_{i}" for i in range(n_bins)],
-            ).astype(str)
-            df_qry["_cat"] = pd.cut(
-                df_qry[numeric_cols[0]], bins=n_bins,
-                labels=[f"bin_{i}" for i in range(n_bins)],
-            ).astype(str)
+            # RobustScaler then clip to tame extreme ranges before Yeo-Johnson
+            if num_cols:
+                scaler = RobustScaler()
+                df_ctx[num_cols] = scaler.fit_transform(df_ctx[num_cols].values)
+                df_qry[num_cols] = scaler.transform(df_qry[num_cols].values)
+                df_ctx[num_cols] = df_ctx[num_cols].clip(-10, 10)
+                df_qry[num_cols] = df_qry[num_cols].clip(-10, 10)
+                # Drop any columns still near-constant after scaling
+                post_std = df_ctx[num_cols].std()
+                bad_post = post_std[post_std.isna() | (post_std < 1e-6)].index.tolist()
+                if bad_post:
+                    df_ctx = df_ctx.drop(columns=bad_post)
+                    df_qry = df_qry.drop(columns=bad_post)
+
+        # Ensure at least one categorical column for CARTE graph construction
+        if not df_ctx.select_dtypes(include=["object"]).shape[1]:
+            first_num = df_ctx.select_dtypes(include=["number"]).columns[0]
+            n_bins = min(5, max(2, df_ctx.shape[1]))
+            df_ctx["_cat"] = pd.cut(df_ctx[first_num], bins=n_bins,
+                                    labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
+            df_qry["_cat"] = pd.cut(df_qry[first_num], bins=n_bins,
+                                    labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
 
         # Prepare targets
         y_context = np.asarray(y_context)
@@ -786,17 +807,7 @@ class CARTETail:
             y_context = y_context.astype(np.int64)
 
         t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
-        # Replace constant numeric columns with a tiny-range ramp before fit to
-        # avoid scipy BracketError in PowerTransformer._yeo_johnson_optimize().
-        # Transform-time uses the original data — transform() applies the fitted
-        # lambda arithmetically and never calls brent again.
-        df_fit = df_ctx.copy()
-        rng = np.random.default_rng(42)
-        for col in df_fit.select_dtypes("number").columns:
-            if df_fit[col].std() == 0:
-                base = float(df_fit[col].iloc[0])
-                df_fit[col] = base + rng.uniform(0, 1e-8, size=len(df_fit))
-        t2g.fit(df_fit)
+        t2g.fit(df_ctx)
         X_context_graph = t2g.transform(df_ctx)
         X_query_graph = t2g.transform(df_qry)
 
