@@ -796,10 +796,11 @@ class CARTETail:
         if not df_ctx.select_dtypes(include=["object"]).shape[1]:
             first_num = df_ctx.select_dtypes(include=["number"]).columns[0]
             n_bins = min(5, max(2, df_ctx.shape[1]))
-            df_ctx["_cat"] = pd.cut(df_ctx[first_num], bins=n_bins,
-                                    labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
-            df_qry["_cat"] = pd.cut(df_qry[first_num], bins=n_bins,
-                                    labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
+            labels = [f"bin_{i}" for i in range(n_bins)]
+            cat_ctx = pd.cut(df_ctx[first_num], bins=n_bins, labels=labels).astype(str)
+            cat_qry = pd.cut(df_qry[first_num], bins=n_bins, labels=labels).astype(str)
+            df_ctx = pd.concat([df_ctx, cat_ctx.rename("_cat")], axis=1)
+            df_qry = pd.concat([df_qry, cat_qry.rename("_cat")], axis=1)
 
         # Prepare targets
         y_context = np.asarray(y_context)
