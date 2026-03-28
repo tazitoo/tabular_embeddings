@@ -786,17 +786,17 @@ class CARTETail:
             y_context = y_context.astype(np.int64)
 
         t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
-        # Fit t2g on full training data when available so PowerTransformer sees
-        # the full distribution — avoids BracketError on datasets with constant
-        # columns in the context-capped subset.
-        if X_train_full is not None:
-            if isinstance(X_train_full, np.ndarray):
-                df_full = pd.DataFrame(X_train_full, columns=df_ctx.columns)
-            else:
-                df_full = X_train_full.reset_index(drop=True)
-            t2g.fit(df_full)
-        else:
-            t2g.fit(df_ctx)
+        # Replace constant numeric columns with a tiny-range ramp before fit to
+        # avoid scipy BracketError in PowerTransformer._yeo_johnson_optimize().
+        # Transform-time uses the original data — transform() applies the fitted
+        # lambda arithmetically and never calls brent again.
+        df_fit = df_ctx.copy()
+        rng = np.random.default_rng(42)
+        for col in df_fit.select_dtypes("number").columns:
+            if df_fit[col].std() == 0:
+                base = float(df_fit[col].iloc[0])
+                df_fit[col] = base + rng.uniform(0, 1e-8, size=len(df_fit))
+        t2g.fit(df_fit)
         X_context_graph = t2g.transform(df_ctx)
         X_query_graph = t2g.transform(df_qry)
 
