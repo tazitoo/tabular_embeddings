@@ -423,9 +423,9 @@ def load_dataset_context(
             )
         X_df, y = cached
 
-        X_train_full = X_df.iloc[train_idx].reset_index(drop=True)
+        X_train = X_df.iloc[train_idx].reset_index(drop=True)
         y_train = y[train_idx]
-        X_train, y_train = _cap_context(X_train_full, y_train, max_context, task)
+        X_train, y_train = _cap_context(X_train, y_train, max_context, task)
 
         # Query rows: absolute row_indices into original DataFrame
         X_query = X_df.iloc[row_indices].reset_index(drop=True)
@@ -436,14 +436,13 @@ def load_dataset_context(
 
         data = load_preprocessed(model_key, dataset, CACHE_DIR)
         positions = align_test_rows(holdout_indices, row_indices)
-        X_train_full = None
         X_train = data.X_train
         y_train = data.y_train
         X_train, y_train = _cap_context(X_train, y_train, max_context, task)
         X_query = data.X_test[positions]
         y_query = data.y_test[positions]
 
-    return X_train, y_train, X_query, y_query, row_indices, task, X_train_full
+    return X_train, y_train, X_query, y_query, row_indices, task
 
 
 def load_cat_indices(model_key: str, dataset: str) -> list:

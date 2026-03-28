@@ -734,7 +734,7 @@ class CARTETail:
 
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
-                  task="classification", device="cuda", X_train_full=None):
+                  task="classification", device="cuda"):
         """One-time setup: fit CARTE, capture hidden state, build batch."""
         from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
         _patch_carte_amp()
@@ -1729,8 +1729,7 @@ class HyperFastTail:
 
 
 def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
-               task="classification", device="cuda", cat_indices=None,
-               X_train_full=None):
+               task="classification", device="cuda", cat_indices=None):
     """Factory: build the appropriate tail model for the given model key."""
     from models.model_paths import get_model_path
 
@@ -1751,7 +1750,6 @@ def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
     elif model_key == "carte":
         return CARTETail.from_data(
             X_context, y_context, X_query, extraction_layer, task, device,
-            X_train_full=X_train_full,
         )
     elif model_key == "tabula8b":
         return Tabula8BTail.from_data(
