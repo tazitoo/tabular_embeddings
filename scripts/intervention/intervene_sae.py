@@ -734,7 +734,7 @@ class CARTETail:
 
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
-                  task="classification", device="cuda"):
+                  task="classification", device="cuda", X_train_full=None):
         """One-time setup: fit CARTE, capture hidden state, build batch."""
         from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
         _patch_carte_amp()
@@ -786,7 +786,17 @@ class CARTETail:
             y_context = y_context.astype(np.int64)
 
         t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
-        t2g.fit(df_ctx)
+        # Fit t2g on full training data when available so PowerTransformer sees
+        # the full distribution — avoids BracketError on datasets with constant
+        # columns in the context-capped subset.
+        if X_train_full is not None:
+            if isinstance(X_train_full, np.ndarray):
+                df_full = pd.DataFrame(X_train_full, columns=df_ctx.columns)
+            else:
+                df_full = X_train_full.reset_index(drop=True)
+            t2g.fit(df_full)
+        else:
+            t2g.fit(df_ctx)
         X_context_graph = t2g.transform(df_ctx)
         X_query_graph = t2g.transform(df_qry)
 
@@ -1707,7 +1717,8 @@ class HyperFastTail:
 
 
 def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
-               task="classification", device="cuda", cat_indices=None):
+               task="classification", device="cuda", cat_indices=None,
+               X_train_full=None):
     """Factory: build the appropriate tail model for the given model key."""
     from models.model_paths import get_model_path
 
@@ -1728,6 +1739,7 @@ def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
     elif model_key == "carte":
         return CARTETail.from_data(
             X_context, y_context, X_query, extraction_layer, task, device,
+            X_train_full=X_train_full,
         )
     elif model_key == "tabula8b":
         return Tabula8BTail.from_data(
