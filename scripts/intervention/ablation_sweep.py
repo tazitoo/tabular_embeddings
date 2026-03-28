@@ -72,7 +72,7 @@ def run_dataset(
 
     t0 = time.time()
     for m in (model_a, model_b):
-        X_train, y_train, X_query, y_q, ridx, t = load_dataset_context(m, dataset, splits)
+        X_train, y_train, X_query, y_q, ridx, t, X_train_full = load_dataset_context(m, dataset, splits)
         if y_train.dtype == np.int32:
             y_train = y_train.astype(np.int64)
         if task is None:
@@ -91,7 +91,7 @@ def run_dataset(
             except Exception:
                 pass
         tails[m] = build_tail(m, X_train, y_train, X_query, layer, task, device,
-                              cat_indices=cat_indices)
+                              cat_indices=cat_indices, X_train_full=X_train_full)
         preds[m] = tails[m].baseline_preds
         losses[m] = compute_per_row_loss(y_query, preds[m], task)
 
@@ -174,7 +174,7 @@ def run_dataset(
     use_mitra = isinstance(tail_s, MitraTail)
 
     # Load query data for the strong model (needed for batched ablation)
-    X_train_s, y_train_s, X_query_s, _, _, _ = load_dataset_context(strong, dataset, splits)
+    X_train_s, y_train_s, X_query_s, _, _, _, _ = load_dataset_context(strong, dataset, splits)
 
     # Per-row ablation search
     optimal_k = np.zeros(n_query, dtype=np.int32)
