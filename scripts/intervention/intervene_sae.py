@@ -305,11 +305,13 @@ class TabPFNTail:
 
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
-                  task="classification", device="cuda"):
+                  task="classification", device="cuda", cat_indices=None):
         """One-time setup: fit model, capture hidden state at layer L, get baseline."""
         from models.tabpfn_utils import load_tabpfn
 
         clf = load_tabpfn(task=task, device=device, n_estimators=1)
+        if cat_indices:
+            clf.categorical_features_indices = cat_indices
         clf.fit(X_context, y_context)
         model = clf.model_
         layers = model.transformer_encoder.layers
@@ -1023,7 +1025,8 @@ class Tabula8BTail:
     """
 
     def __init__(self, llm, tokenizer, llm_layers, ctx_text, feature_names,
-                 extraction_layer, n_classes, n_query, X_query, task, device):
+                 extraction_layer, n_classes, n_query, X_query, task, device,
+                 target_name="target"):
         self.llm = llm
         self.tokenizer = tokenizer
         self.llm_layers = llm_layers
@@ -1032,6 +1035,7 @@ class Tabula8BTail:
         self.extraction_layer = extraction_layer
         self.n_classes = n_classes
         self.n_query = n_query
+        self.target_name = target_name
         # Keep DataFrames as-is (Tabula-8B serializes to text, needs string columns)
         import pandas as pd
         self.X_query = X_query if isinstance(X_query, pd.DataFrame) else np.asarray(X_query, dtype=np.float32)
@@ -1046,11 +1050,19 @@ class Tabula8BTail:
 
     @classmethod
     def from_data(cls, X_context, y_context, X_query, extraction_layer,
-                  task="classification", device="cuda"):
-        """Load LLM once, serialize context, compute baselines per row."""
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+                  task="classification", device="cuda", target_name="target"):
+        """Load LLM once, serialize context, compute baselines per row.
 
+        Matches the extraction pipeline in models/layer_extraction.py:
+        - fp16 (no quantization)
+        - max 16 context rows, simple random sampling with seed=42
+        - "The {col} is {val}." text format (space-joined, sentence-case)
+        - token budget shrinking if context exceeds 4096 - 200 tokens
+        """
         import os
+        import pandas as pd
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
         model_path = "/data/models/tabula-8b"
         if not os.path.isdir(model_path):
             model_path = "mlfoundations/tabula-8b"
@@ -1058,61 +1070,79 @@ class Tabula8BTail:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        bnb_config = BitsAndBytesConfig(
-            load_in_8bit=True,
-            llm_int8_enable_fp32_cpu_offload=True,
-        )
+        # fp16 — matches extraction pipeline (no quantization)
         llm = AutoModelForCausalLM.from_pretrained(
             model_path,
-            device_map="auto",
-            quantization_config=bnb_config,
             torch_dtype=torch.float16,
+            device_map="auto",
+            low_cpu_mem_usage=True,
         )
         llm.eval()
         llm_layers = llm.model.layers
 
         y_context = np.asarray(y_context)
-
-        # Preserve DataFrames for text serialization (may contain strings)
-        import pandas as pd
+        X_context_arr = X_context
+        X_query_arr = X_query
         if isinstance(X_context, pd.DataFrame):
             feature_names = list(X_context.columns)
-            X_context_arr = X_context
-            X_query_arr = X_query
         else:
             feature_names = [f"f{i}" for i in range(X_context.shape[1])]
-            X_context_arr = X_context
-            X_query_arr = X_query
         n_classes = len(np.unique(y_context))
+        max_len = min(getattr(llm.config, "max_position_embeddings", 4096), 4096)
 
-        # Stratified context sampling — ensure all classes represented
-        from models.tabula_embeddings import _stratified_context_indices
-        max_ctx = min(32, len(X_context_arr))
-        ctx_idx = _stratified_context_indices(y_context, max_ctx)
-        ctx_lines = []
-        for i in ctx_idx:
-            if isinstance(X_context_arr, pd.DataFrame):
-                row = X_context_arr.iloc[i]
+        # Simple random sampling with seed=42, max 16 rows
+        # Matches _extract_tabula8b in models/layer_extraction.py
+        n_ctx = min(len(X_context_arr), 16)
+        rng = np.random.RandomState(42)
+        ctx_idx = (rng.choice(len(X_context_arr), n_ctx, replace=False)
+                   if n_ctx < len(X_context_arr) else np.arange(n_ctx))
+
+        def _serialize_row(row, y_val=None):
+            """'The col is val.' format — matches _serialize_row in layer_extraction.py."""
+            if isinstance(row, pd.Series):
+                items = list(row.items())
             else:
-                row = X_context_arr[i]
+                items = list(zip(feature_names, row))
             parts = []
-            for name, val in zip(feature_names, row):
+            for col, val in items:
                 try:
                     if isinstance(val, float) and np.isnan(val):
                         continue
                 except (TypeError, ValueError):
                     pass
-                parts.append(f"the {name} is {val}")
-            ctx_lines.append(", ".join(parts) + f", the target is {y_context[i]}")
-        ctx_text = "\n".join(ctx_lines)
+                parts.append(f"The {col} is {val}.")
+            text = " ".join(parts)
+            if y_val is not None:
+                text += f" The {target_name} is {y_val}."
+            return text
+
+        def _build_ctx_parts(indices):
+            parts = []
+            for i in indices:
+                row = X_context_arr.iloc[i] if isinstance(X_context_arr, pd.DataFrame) else X_context_arr[i]
+                parts.append(_serialize_row(row, y_context[i]))
+            return parts
+
+        ctx_parts = _build_ctx_parts(ctx_idx)
+        context_text = "\n".join(ctx_parts) + "\n"
+
+        # Shrink context if token budget exceeded (leave 200 tokens for query)
+        context_tokens = tokenizer.encode(context_text, add_special_tokens=True)
+        while len(context_tokens) > max_len - 200 and n_ctx > 2:
+            n_ctx = n_ctx // 2
+            ctx_idx = ctx_idx[:n_ctx]
+            ctx_parts = ctx_parts[:n_ctx]
+            context_text = "\n".join(ctx_parts) + "\n"
+            context_tokens = tokenizer.encode(context_text, add_special_tokens=True)
 
         n_query = len(X_query_arr)
 
         tail = cls(
             llm=llm, tokenizer=tokenizer, llm_layers=llm_layers,
-            ctx_text=ctx_text, feature_names=feature_names,
+            ctx_text=context_text, feature_names=feature_names,
             extraction_layer=extraction_layer, n_classes=n_classes,
             n_query=n_query, X_query=X_query_arr, task=task, device=device,
+            target_name=target_name,
         )
 
         # Compute baselines per row
@@ -1130,18 +1160,21 @@ class Tabula8BTail:
         import pandas as pd
         if isinstance(self.X_query, pd.DataFrame):
             row = self.X_query.iloc[row_idx]
+            items = list(row.items())
         else:
             row = self.X_query[row_idx]
+            items = list(zip(self.feature_names, row))
         parts = []
-        for name, val in zip(self.feature_names, row):
+        for col, val in items:
             try:
                 if isinstance(val, float) and np.isnan(val):
                     continue
             except (TypeError, ValueError):
                 pass
-            parts.append(f"the {name} is {val}")
-        query_text = ", ".join(parts)
-        full_text = f"{self.ctx_text}\n{query_text}, the target is"
+            parts.append(f"The {col} is {val}.")
+        # ctx_text ends with "\n"; query ends with target prompt
+        query_text = " ".join(parts)
+        full_text = f"{self.ctx_text}{query_text} The {self.target_name} is"
 
         inputs = self.tokenizer(
             full_text, return_tensors="pt",
@@ -1729,13 +1762,15 @@ class HyperFastTail:
 
 
 def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
-               task="classification", device="cuda", cat_indices=None):
+               task="classification", device="cuda", cat_indices=None,
+               target_name="target"):
     """Factory: build the appropriate tail model for the given model key."""
     from models.model_paths import get_model_path
 
     if model_key == "tabpfn":
         return TabPFNTail.from_data(
             X_context, y_context, X_query, extraction_layer, task, device,
+            cat_indices=cat_indices,
         )
     elif model_key == "tabicl":
         return TabICLTail.from_data(
@@ -1754,6 +1789,7 @@ def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
     elif model_key == "tabula8b":
         return Tabula8BTail.from_data(
             X_context, y_context, X_query, extraction_layer, task, device,
+            target_name=target_name,
         )
     elif model_key == "mitra":
         return MitraTail.from_data(

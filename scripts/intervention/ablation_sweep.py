@@ -62,40 +62,29 @@ def run_dataset(
     strong model's features on rows where it outperforms the weak model.
     """
 
-    # Build tails for both models → baseline predictions
-    tails = {}
-    preds = {}
-    losses = {}
-    y_query = None
-    row_indices = None
-    task = None
+    # Load cached baseline predictions from perrow_importance output.
+    # This avoids building the weak model's tail (saves GPU memory and time).
+    imp_a = np.load(IMPORTANCE_DIR / model_a / f"{dataset}.npz", allow_pickle=True)
+    imp_b = np.load(IMPORTANCE_DIR / model_b / f"{dataset}.npz", allow_pickle=True)
+    preds_a = imp_a["baseline_preds"]
+    preds_b = imp_b["baseline_preds"]
+    row_indices_a = imp_a["row_indices"]
+    row_indices_b = imp_b["row_indices"]
+    assert np.array_equal(row_indices_a, row_indices_b), (
+        f"Row index mismatch between {model_a} and {model_b} on {dataset}"
+    )
+    row_indices = row_indices_a
+    y_query = imp_a["y_query"]
+    n_query = len(y_query)
+    # Infer task from prediction shape (classification: 2D probabilities, regression: 1D)
+    task = "classification" if preds_a.ndim == 2 else "regression"
 
-    t0 = time.time()
-    for m in (model_a, model_b):
-        X_train, y_train, X_query, y_q, ridx, t = load_dataset_context(m, dataset, splits)
-        if y_train.dtype == np.int32:
-            y_train = y_train.astype(np.int64)
-        if task is None:
-            task = t
-            y_query = y_q
-            row_indices = ridx
-            n_query = len(X_query)
-
-        layer = get_extraction_layer_taskaware(m, dataset=dataset)
-        cat_indices = None
-        if m == "hyperfast":
-            from data.preprocessing import load_preprocessed, CACHE_DIR
-            try:
-                pre = load_preprocessed("hyperfast", dataset, CACHE_DIR)
-                cat_indices = pre.cat_indices if pre.cat_indices else None
-            except Exception:
-                pass
-        tails[m] = build_tail(m, X_train, y_train, X_query, layer, task, device,
-                              cat_indices=cat_indices)
-        preds[m] = tails[m].baseline_preds
-        losses[m] = compute_per_row_loss(y_query, preds[m], task)
-
-    logger.info(f"  Tails built in {time.time() - t0:.1f}s")
+    imps = {model_a: imp_a, model_b: imp_b}
+    preds = {model_a: preds_a, model_b: preds_b}
+    losses = {
+        model_a: compute_per_row_loss(y_query, preds_a, task),
+        model_b: compute_per_row_loss(y_query, preds_b, task),
+    }
 
     # Determine strong/weak from dataset-level metric (higher = better)
     metric_a, metric_name = compute_importance_metric(y_query, preds[model_a], task)
@@ -134,17 +123,30 @@ def run_dataset(
     weak_loss = losses[weak]
     baseline_preds_s = preds[strong]
     weak_preds = preds[weak]
-    tail_s = tails[strong]
 
-    # Free weak tail
-    del tails[weak]
-    torch.cuda.empty_cache()
+    # Build tail only for the strong model
+    t0 = time.time()
+    X_train_s, y_train_s, X_query_s, _, _, task_s = load_dataset_context(strong, dataset, splits)
+    if y_train_s.dtype == np.int32:
+        y_train_s = y_train_s.astype(np.int64)
+    layer_s = get_extraction_layer_taskaware(strong, dataset=dataset)
+    cat_indices = None
+    if strong in ("hyperfast", "tabpfn"):
+        from data.preprocessing import load_preprocessed, CACHE_DIR
+        try:
+            pre = load_preprocessed(strong, dataset, CACHE_DIR)
+            cat_indices = pre.cat_indices if pre.cat_indices else None
+        except Exception:
+            pass
+    target_name = splits.get(dataset, {}).get("target", "target")
+    tail_s = build_tail(strong, X_train_s, y_train_s, X_query_s, layer_s, task_s, device,
+                        cat_indices=cat_indices, target_name=target_name)
+    logger.info(f"  Strong tail ({strong}) built in {time.time() - t0:.1f}s")
 
-    # Load importance + SAE activations for the strong model
-    imp_path = IMPORTANCE_DIR / strong / f"{dataset}.npz"
-    imp = np.load(imp_path, allow_pickle=True)
-    row_feature_drops = imp["row_feature_drops"]
-    feature_indices = imp["feature_indices"]
+    # Load importance arrays for the strong model (already in imps dict)
+    imp_s = imps[strong]
+    row_feature_drops = imp_s["row_feature_drops"]
+    feature_indices = imp_s["feature_indices"]
 
     emb_s = test_embeddings[strong][dataset]
     with torch.no_grad():
@@ -172,9 +174,6 @@ def run_dataset(
 
     use_sequential = isinstance(tail_s, SEQUENTIAL_MODELS)
     use_mitra = isinstance(tail_s, MitraTail)
-
-    # Load query data for the strong model (needed for batched ablation)
-    X_train_s, y_train_s, X_query_s, _, _, _ = load_dataset_context(strong, dataset, splits)
 
     # Per-row ablation search
     optimal_k = np.zeros(n_query, dtype=np.int32)

@@ -88,16 +88,18 @@ def run_dataset(
 
     # Build tail ONCE
     cat_indices = None
-    if model_key == "hyperfast":
+    if model_key in ("hyperfast", "tabpfn"):
         from data.preprocessing import load_preprocessed, CACHE_DIR
         try:
-            pre = load_preprocessed("hyperfast", dataset, CACHE_DIR)
+            pre = load_preprocessed(model_key, dataset, CACHE_DIR)
             cat_indices = pre.cat_indices if pre.cat_indices else None
         except Exception:
             pass
+    target_name = splits.get(dataset, {}).get("target", "target")
     t0 = time.time()
     tail = build_tail(model_key, X_train, y_train, X_query,
-                      extraction_layer, task, device, cat_indices=cat_indices)
+                      extraction_layer, task, device, cat_indices=cat_indices,
+                      target_name=target_name)
     baseline_preds = tail.baseline_preds
     baseline_loss = compute_per_row_loss(y_query, baseline_preds, task)
     logger.info(f"  Tail built in {time.time() - t0:.1f}s, "
