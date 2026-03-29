@@ -76,7 +76,18 @@ def load_and_fit(
             clf.categorical_features_indices = cat_indices
         clf.fit(X_context, y_context)
 
-    elif key in ("tabicl", "tabicl_v2"):
+    elif key == "tabicl_v2":
+        from models.model_paths import get_model_path
+        model_path = get_model_path("tabicl_v2", task=task)
+        if task == "regression":
+            from tabicl import TabICLRegressor
+            clf = TabICLRegressor(device=device, n_estimators=1, model_path=model_path)
+        else:
+            from tabicl import TabICLClassifier
+            clf = TabICLClassifier(device=device, n_estimators=1, model_path=model_path)
+        clf.fit(X_context, y_context)
+
+    elif key == "tabicl":
         if task == "regression":
             from tabicl import TabICLRegressor
             clf = TabICLRegressor(device=device, n_estimators=1)

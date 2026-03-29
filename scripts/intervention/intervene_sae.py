@@ -599,11 +599,10 @@ class TabICLV2Tail:
         model = clf.model_
         blocks = model.icl_predictor.tf_icl.blocks
 
-        # TabICL-v2 layer indices include row_output as index 0, so
-        # layer_N maps to blocks[N-1] for N >= 1, and the highest block
-        # (layer_11) has extraction_layer = 12 (after row_output offset).
-        # Subtract 1 to get the block index, clamped to valid range.
-        block_idx = min(extraction_layer - 1, len(blocks) - 1) if extraction_layer > 0 else 0
+        # extraction_layer is the layer_N index from get_layer_modules(), which
+        # maps layer_N → blocks[N] directly (row_output is a separate named key,
+        # not counted as layer_0). No offset needed.
+        block_idx = min(extraction_layer, len(blocks) - 1)
         hook_module = blocks[block_idx]
 
         captured = {}
