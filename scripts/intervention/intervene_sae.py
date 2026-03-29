@@ -1513,20 +1513,17 @@ class TabDPTTail:
         return tail
 
     def _predict_with_modified_state(self, modified_state):
-        """Monkey-patch encoder to skip layers 0..L, run predict."""
-        tail_layers = list(self.encoder_layers[self.extraction_layer + 1:])
-        cached_state = modified_state
+        """Inject delta at extraction layer via hook, letting remaining layers run normally."""
+        delta = modified_state - self.hidden_state
 
-        original_forward = self.encoder_layers.forward
+        def inject_hook(module, input, output):
+            out = output[0] if isinstance(output, tuple) else output
+            if isinstance(out, torch.Tensor):
+                out = out.clone() + delta
+                return (out,) + output[1:] if isinstance(output, tuple) else out
+            return output
 
-        def tail_forward(src, mask=None, src_key_padding_mask=None, **kwargs):
-            out = cached_state
-            for layer in tail_layers:
-                out = layer(out, src_mask=mask,
-                            src_key_padding_mask=src_key_padding_mask)
-            return out
-
-        self.encoder_layers.forward = tail_forward
+        handle = self.encoder_layers[self.extraction_layer].register_forward_hook(inject_hook)
         try:
             with torch.no_grad():
                 if self.task == "regression":
@@ -1534,7 +1531,7 @@ class TabDPTTail:
                 else:
                     preds = self.clf.predict_proba(self.X_query)
         finally:
-            self.encoder_layers.forward = original_forward
+            handle.remove()
         return np.asarray(preds)
 
     def predict(self, delta):
