@@ -808,7 +808,7 @@ def run_sweep(
         raise FileNotFoundError(
             f"No prebuilt SAE training data found for '{model_name}'. "
             f"Expected: {prebuilt_dir}/{model_name}_taskaware_sae_training.npz\n"
-            f"Run: python scripts/sae_corpus/06_build_sae_training_data.py --model {model_name}"
+            f"Run: python scripts/sae_corpus/07_build_sae_training_data.py --model {model_name}"
         )
 
     train_embeddings, test_embeddings, source_datasets, optimal_layer = prebuilt

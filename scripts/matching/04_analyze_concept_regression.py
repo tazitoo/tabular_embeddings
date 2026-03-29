@@ -782,7 +782,7 @@ def collect_test_meta_features(
     if "row_indices" not in test_data:
         raise ValueError(
             "Test NPZ missing row_indices. Rebuild corpus with updated "
-            "06_build_sae_training_data.py"
+            "07_build_sae_training_data.py"
         )
     all_row_indices = test_data["row_indices"]
     samples = test_data["samples_per_dataset"]
