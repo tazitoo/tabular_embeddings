@@ -512,7 +512,7 @@ def _load_and_fit_carte(X_context: pd.DataFrame, y_context: np.ndarray,
     """
     from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
     _patch_carte_amp()
-    from carte_ai import CARTEClassifier, Table2GraphTransformer
+    from carte_ai import CARTEClassifier, CARTERegressor, Table2GraphTransformer
 
 
     ft_path = _find_fasttext_model()
@@ -561,26 +561,28 @@ def _load_and_fit_carte(X_context: pd.DataFrame, y_context: np.ndarray,
         df_context["_cat"] = pd.cut(df_context[first_num], bins=n_bins,
                                      labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
 
-    # For regression, discretize targets for CARTE's classifier interface
-    if task == "regression":
-        y_ctx = np.asarray(y_context, dtype=np.float32)
-        n_bins = min(10, len(np.unique(y_ctx)))
-        y_for_fit = pd.qcut(y_ctx, q=n_bins, labels=False, duplicates='drop').astype(np.int64)
-    else:
-        y_ctx = np.asarray(y_context)
-        if y_ctx.dtype == np.float64:
-            y_ctx = y_ctx.astype(np.int64)
-        y_for_fit = y_ctx
+    # Prepare targets
+    y_context = np.asarray(y_context)
+    if task != "regression" and y_context.dtype == np.float64:
+        y_context = y_context.astype(np.int64)
 
     t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
     t2g.fit(df_context)
     X_context_graph = t2g.transform(df_context)
 
     for i, g in enumerate(X_context_graph):
-        g.y = torch.tensor([y_for_fit[i]], dtype=torch.float32)
+        g.y = torch.tensor([y_context[i]], dtype=torch.float32)
 
-    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
-    clf.fit(X_context_graph, y_for_fit)
+    # Match CARTETail: correct model class and loss for each task type
+    if task == "regression":
+        clf = CARTERegressor(device=device, num_model=1, max_epoch=50,
+                             disable_pbar=True)
+    else:
+        n_classes = len(np.unique(y_context))
+        loss = "categorical_crossentropy" if n_classes > 2 else "binary_crossentropy"
+        clf = CARTEClassifier(device=device, num_model=1, max_epoch=50,
+                              disable_pbar=True, loss=loss)
+    clf.fit(X_context_graph, y_context)
     torch.cuda.empty_cache()
 
     # Bundle everything needed for extraction

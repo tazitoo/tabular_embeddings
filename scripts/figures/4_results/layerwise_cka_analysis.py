@@ -506,13 +506,11 @@ def extract_carte_all_layers(
     from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
     _patch_carte_amp()
 
-    from carte_ai import CARTEClassifier, Table2GraphTransformer
+    from carte_ai import CARTEClassifier, CARTERegressor, Table2GraphTransformer
 
     ft_path = _find_fasttext_model()
     if not ft_path:
         raise ValueError("FastText model not found")
-
-    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
     t2g = Table2GraphTransformer(lm_model="fasttext", fasttext_model_path=ft_path)
 
     # Convert to DataFrame if needed, preserving categoricals
@@ -524,12 +522,8 @@ def extract_carte_all_layers(
             df_context[col] = df_context[col].astype("object")
             df_query[col] = df_query[col].astype("object")
     else:
-        X_ctx_np = np.nan_to_num(
-            np.asarray(X_context, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
-        )
-        X_q_np = np.nan_to_num(
-            np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
-        )
+        X_ctx_np = np.asarray(X_context, dtype=np.float32)
+        X_q_np = np.asarray(X_query, dtype=np.float32)
         feature_names = [f"f{i}" for i in range(X_ctx_np.shape[1])]
         df_context = pd.DataFrame(X_ctx_np, columns=feature_names)
         df_query = pd.DataFrame(X_q_np, columns=feature_names)
@@ -563,16 +557,10 @@ def extract_carte_all_layers(
         df_query["_cat"] = pd.cut(df_query[first_num_col], bins=n_bins,
                                    labels=[f"bin_{i}" for i in range(n_bins)]).astype(str)
 
-    # For regression, discretize targets for CARTE's classifier interface
-    if task == "regression":
-        y_context = np.asarray(y_context, dtype=np.float32)
-        n_bins = min(10, len(np.unique(y_context)))
-        y_for_fit = pd.qcut(y_context, q=n_bins, labels=False, duplicates='drop').astype(np.int64)
-    else:
-        y_context = np.asarray(y_context)
-        if y_context.dtype == np.float64:
-            y_context = y_context.astype(np.int64)
-        y_for_fit = y_context
+    # Prepare targets
+    y_context = np.asarray(y_context)
+    if task != "regression" and y_context.dtype == np.float64:
+        y_context = y_context.astype(np.int64)
 
     # Transform to graphs
     t2g.fit(df_context)
@@ -581,10 +569,18 @@ def extract_carte_all_layers(
 
     # Attach y values
     for i, g in enumerate(X_context_graph):
-        g.y = torch.tensor([y_for_fit[i]], dtype=torch.float32)
+        g.y = torch.tensor([y_context[i]], dtype=torch.float32)
 
-    # Fit
-    clf.fit(X_context_graph, y_for_fit)
+    # Match CARTETail: correct model class and loss for each task type
+    if task == "regression":
+        clf = CARTERegressor(device=device, num_model=1, max_epoch=50,
+                             disable_pbar=True)
+    else:
+        n_classes = len(np.unique(y_context))
+        loss = "categorical_crossentropy" if n_classes > 2 else "binary_crossentropy"
+        clf = CARTEClassifier(device=device, num_model=1, max_epoch=50,
+                              disable_pbar=True, loss=loss)
+    clf.fit(X_context_graph, y_context)
     torch.cuda.empty_cache()
 
     n_query = len(X_query)
