@@ -82,13 +82,13 @@ def load_per_dataset_layers(model: str) -> dict[str, int]:
 
 
 def load_task_aware_fixed_layers(model: str) -> dict[str, int]:
-    """Compute per-architecture fixed layers from CKA depth analysis.
+    """Compute per-variant fixed layers from CKA depth analysis.
 
-    Groups datasets by number of layers (e.g. TabPFN classifier=24,
-    regressor=18), computes the mean critical layer within each group,
-    and returns a per-dataset lookup mapping to the group's optimal layer.
+    Groups datasets by (n_layers, task_type) — models with the same
+    architecture but different training objectives (e.g. CARTE classifier
+    vs regressor) may dedicate layers differently. Falls back to n_layers
+    only when splits are unavailable.
     """
-    import math
     analysis_path = DEPTH_ANALYSIS_DIR / f"layerwise_depth_analysis_{model}.json"
     if not analysis_path.exists():
         raise FileNotFoundError(
@@ -97,20 +97,28 @@ def load_task_aware_fixed_layers(model: str) -> dict[str, int]:
         )
     data = json.loads(analysis_path.read_text())
 
-    # Group by n_layers (architecture variant)
-    groups: dict[int, list] = {}
+    # Load splits to get task type per dataset
+    task_types = {}
+    if SPLITS_PATH.exists():
+        splits = json.loads(SPLITS_PATH.read_text())
+        task_types = {ds: s["task_type"] for ds, s in splits.items()}
+
+    # Group by (n_layers, task_type)
+    groups: dict[tuple, list] = {}
     for info in data.values():
         nl = info["n_layers"]
-        groups.setdefault(nl, []).append(info)
+        ds = info["dataset"]
+        tt = task_types.get(ds, "unknown")
+        groups.setdefault((nl, tt), []).append(info)
 
     # Compute optimal fixed layer per group
     lookup = {}
-    for nl, infos in sorted(groups.items()):
+    for (nl, tt), infos in sorted(groups.items()):
         crit_layers = [i["critical_layer"] for i in infos]
         optimal = int(round(np.mean(crit_layers)))
         for info in infos:
             lookup[info["dataset"]] = optimal
-        print(f"    {nl}-layer variant: {len(infos)} datasets → L{optimal} "
+        print(f"    {nl}-layer {tt}: {len(infos)} datasets → L{optimal} "
               f"(mean={np.mean(crit_layers):.1f}±{np.std(crit_layers):.1f})")
 
     return lookup
