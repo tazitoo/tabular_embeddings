@@ -534,35 +534,24 @@ def extract_carte_all_layers(
         df_context = pd.DataFrame(X_ctx_np, columns=feature_names)
         df_query = pd.DataFrame(X_q_np, columns=feature_names)
 
-    # Robust preprocessing for numeric columns to prevent PowerTransformer errors
-    from sklearn.preprocessing import RobustScaler
+    # Drop numeric columns that crash PowerTransformer (Yeo-Johnson) inside
+    # Table2GraphTransformer: near-constant columns and columns with extreme
+    # values that cause BracketError in scipy's brent optimizer.
+    from sklearn.preprocessing import PowerTransformer
     num_cols = df_context.select_dtypes(include=["number"]).columns.tolist()
+    drop_cols = []
     if num_cols:
-        # Drop near-constant numeric columns (Yeo-Johnson optimization fails
-        # when variance is too low, even after clipping). Use 1e-6 threshold
-        # to catch columns that round to zero after scaling (e.g. kddcup09).
         col_std = df_context[num_cols].std()
-        constant_cols = col_std[col_std < 1e-6].index.tolist()
-        if constant_cols:
-            df_context = df_context.drop(columns=constant_cols)
-            df_query = df_query.drop(columns=constant_cols)
-            num_cols = [c for c in num_cols if c not in constant_cols]
-
-        # RobustScaler to tame extreme ranges before Yeo-Johnson
-        if num_cols:
-            scaler = RobustScaler()
-            df_context[num_cols] = scaler.fit_transform(df_context[num_cols].values)
-            df_query[num_cols] = scaler.transform(df_query[num_cols].values)
-            # Clip remaining outliers to ±10 IQR
-            df_context[num_cols] = df_context[num_cols].clip(-10, 10)
-            df_query[num_cols] = df_query[num_cols].clip(-10, 10)
-            # Drop columns where RobustScaler produced NaN (IQR=0) or post-scale
-            # variance is still too low — these crash Yeo-Johnson inside t2g.fit()
-            post_std = df_context[num_cols].std()
-            bad_post = post_std[post_std.isna() | (post_std < 1e-6)].index.tolist()
-            if bad_post:
-                df_context = df_context.drop(columns=bad_post)
-                df_query = df_query.drop(columns=bad_post)
+        drop_cols = col_std[col_std.isna() | (col_std < 1e-6)].index.tolist()
+        remaining = [c for c in num_cols if c not in drop_cols]
+        for c in remaining:
+            try:
+                PowerTransformer().fit(df_context[[c]])
+            except Exception:
+                drop_cols.append(c)
+        if drop_cols:
+            df_context = df_context.drop(columns=drop_cols)
+            df_query = df_query.drop(columns=drop_cols)
 
     # CARTE needs at least one object-dtype column for graph construction
     has_object_cols = len(df_context.select_dtypes(include=["object"]).columns) > 0

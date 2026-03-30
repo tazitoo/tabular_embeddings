@@ -741,7 +741,6 @@ class CARTETail:
 
         from carte_ai import CARTEClassifier, CARTERegressor, Table2GraphTransformer
         from torch_geometric.data import Batch
-        from sklearn.preprocessing import RobustScaler
 
         ft_path = _find_fasttext_model()
         if not ft_path:
@@ -763,34 +762,24 @@ class CARTETail:
             df_ctx = pd.DataFrame(X_context, columns=feature_names)
             df_qry = pd.DataFrame(X_query, columns=feature_names)
 
-        # Apply the same preprocessing as extract_carte_all_layers() in
-        # layerwise_cka_analysis.py so the tail operates in the same feature space
-        # as the extracted embeddings.
-        from sklearn.preprocessing import RobustScaler
+        # Drop numeric columns that crash PowerTransformer (Yeo-Johnson) inside
+        # Table2GraphTransformer: near-constant and extreme-value columns.
+        # No additional scaling: CARTE's t2g already applies PowerTransformer.
+        from sklearn.preprocessing import PowerTransformer
         num_cols = df_ctx.select_dtypes(include=["number"]).columns.tolist()
+        drop_cols = []
         if num_cols:
-            # Drop near-constant columns (std < 1e-6) — PowerTransformer crashes on
-            # zero-variance columns (scipy BracketError, e.g. APSFailure.cd_000).
             col_std = df_ctx[num_cols].std()
-            constant_cols = col_std[col_std < 1e-6].index.tolist()
-            if constant_cols:
-                df_ctx = df_ctx.drop(columns=constant_cols)
-                df_qry = df_qry.drop(columns=constant_cols)
-                num_cols = [c for c in num_cols if c not in constant_cols]
-
-            # RobustScaler then clip to tame extreme ranges before Yeo-Johnson
-            if num_cols:
-                scaler = RobustScaler()
-                df_ctx[num_cols] = scaler.fit_transform(df_ctx[num_cols].values)
-                df_qry[num_cols] = scaler.transform(df_qry[num_cols].values)
-                df_ctx[num_cols] = df_ctx[num_cols].clip(-10, 10)
-                df_qry[num_cols] = df_qry[num_cols].clip(-10, 10)
-                # Drop any columns still near-constant after scaling
-                post_std = df_ctx[num_cols].std()
-                bad_post = post_std[post_std.isna() | (post_std < 1e-6)].index.tolist()
-                if bad_post:
-                    df_ctx = df_ctx.drop(columns=bad_post)
-                    df_qry = df_qry.drop(columns=bad_post)
+            drop_cols = col_std[col_std.isna() | (col_std < 1e-6)].index.tolist()
+            remaining = [c for c in num_cols if c not in drop_cols]
+            for c in remaining:
+                try:
+                    PowerTransformer().fit(df_ctx[[c]])
+                except Exception:
+                    drop_cols.append(c)
+            if drop_cols:
+                df_ctx = df_ctx.drop(columns=drop_cols)
+                df_qry = df_qry.drop(columns=drop_cols)
 
         # Ensure at least one categorical column for CARTE graph construction
         if not df_ctx.select_dtypes(include=["object"]).shape[1]:
@@ -817,12 +806,12 @@ class CARTETail:
 
         if task == "regression":
             clf = CARTERegressor(device=device, num_model=1, max_epoch=50,
-                                 early_stopping_patience=10, disable_pbar=True)
+                                 disable_pbar=True)
         else:
             n_classes = len(np.unique(y_context))
             loss = "categorical_crossentropy" if n_classes > 2 else "binary_crossentropy"
             clf = CARTEClassifier(device=device, num_model=1, max_epoch=50,
-                                  early_stopping_patience=10, disable_pbar=True, loss=loss)
+                                  disable_pbar=True, loss=loss)
         clf.fit(X_context_graph, y_context)
         torch.cuda.empty_cache()
 
@@ -2503,27 +2492,21 @@ def intervene_carte(
 
     from carte_ai import CARTEClassifier, Table2GraphTransformer
     from torch_geometric.data import Batch
-    from sklearn.preprocessing import RobustScaler
 
     ft_path = _find_fasttext_model()
     if not ft_path:
         raise ValueError("FastText model not found for CARTE intervention")
 
-    # Robust preprocessing (matches extraction code)
+    # Drop near-constant columns — PowerTransformer inside t2g crashes on these.
+    # No additional scaling: CARTE's Table2GraphTransformer applies PowerTransformer.
     X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
 
     col_std = X_context.std(axis=0)
-    nonconstant = col_std > 0
+    nonconstant = col_std > 1e-6
     if not nonconstant.all():
         X_context = X_context[:, nonconstant]
         X_query = X_query[:, nonconstant]
-
-    scaler = RobustScaler()
-    X_context = scaler.fit_transform(X_context)
-    X_query = scaler.transform(X_query)
-    X_context = np.clip(X_context, -10, 10)
-    X_query = np.clip(X_query, -10, 10)
 
     # Prepare targets
     if task == "regression":
@@ -3519,29 +3502,23 @@ def perrow_sweep_intervene_carte(
 
     from carte_ai import CARTEClassifier, Table2GraphTransformer
     from torch_geometric.data import Batch
-    from sklearn.preprocessing import RobustScaler
 
     ft_path = _find_fasttext_model()
     if not ft_path:
         raise ValueError("FastText model not found for CARTE per-row sweep")
 
-    # Robust preprocessing (matches extraction code)
+    # Drop near-constant columns — PowerTransformer inside t2g crashes on these.
+    # No additional scaling: CARTE's Table2GraphTransformer applies PowerTransformer.
     X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32),
                               nan=0.0, posinf=0.0, neginf=0.0)
     X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32),
                             nan=0.0, posinf=0.0, neginf=0.0)
 
     col_std = X_context.std(axis=0)
-    nonconstant = col_std > 0
+    nonconstant = col_std > 1e-6
     if not nonconstant.all():
         X_context = X_context[:, nonconstant]
         X_query = X_query[:, nonconstant]
-
-    scaler = RobustScaler()
-    X_context = scaler.fit_transform(X_context)
-    X_query = scaler.transform(X_query)
-    X_context = np.clip(X_context, -10, 10)
-    X_query = np.clip(X_query, -10, 10)
 
     y_context = np.asarray(y_context)
     if y_context.dtype == np.float64:

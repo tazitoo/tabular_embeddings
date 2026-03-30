@@ -513,7 +513,7 @@ def _load_and_fit_carte(X_context: pd.DataFrame, y_context: np.ndarray,
     from models.carte_embeddings import _patch_carte_amp, _find_fasttext_model
     _patch_carte_amp()
     from carte_ai import CARTEClassifier, Table2GraphTransformer
-    from sklearn.preprocessing import RobustScaler
+
 
     ft_path = _find_fasttext_model()
     if not ft_path:
@@ -527,27 +527,32 @@ def _load_and_fit_carte(X_context: pd.DataFrame, y_context: np.ndarray,
     for col in df_context.select_dtypes(include=["category"]).columns:
         df_context[col] = df_context[col].astype("object")
 
-    # Robust preprocessing for numeric columns (prevents PowerTransformer errors)
+    # Drop numeric columns that crash PowerTransformer (Yeo-Johnson) inside
+    # Table2GraphTransformer: near-constant columns and columns with extreme
+    # values that cause BracketError in scipy's brent optimizer.
+    # No additional scaling: CARTE's t2g already applies PowerTransformer.
+    from sklearn.preprocessing import PowerTransformer
     num_cols = df_context.select_dtypes(include=["number"]).columns.tolist()
-    scaler = None
     dropped_cols = []
     if num_cols:
         col_std = df_context[num_cols].std()
-        constant_cols = col_std[col_std < 1e-6].index.tolist()
+        constant_cols = col_std[col_std.isna() | (col_std < 1e-6)].index.tolist()
         if constant_cols:
-            df_context = df_context.drop(columns=constant_cols)
             dropped_cols.extend(constant_cols)
             num_cols = [c for c in num_cols if c not in constant_cols]
 
-        if num_cols:
-            scaler = RobustScaler()
-            df_context[num_cols] = scaler.fit_transform(df_context[num_cols].values)
-            df_context[num_cols] = df_context[num_cols].clip(-10, 10)
-            post_std = df_context[num_cols].std()
-            bad_post = post_std[post_std.isna() | (post_std < 1e-6)].index.tolist()
-            if bad_post:
-                df_context = df_context.drop(columns=bad_post)
-                dropped_cols.extend(bad_post)
+        # Pre-test each remaining column with PowerTransformer
+        pt_bad = []
+        for c in num_cols:
+            try:
+                PowerTransformer().fit(df_context[[c]])
+            except Exception:
+                pt_bad.append(c)
+        if pt_bad:
+            dropped_cols.extend(pt_bad)
+
+        if dropped_cols:
+            df_context = df_context.drop(columns=dropped_cols)
 
     # CARTE needs at least one object-dtype column for graph construction
     if len(df_context.select_dtypes(include=["object"]).columns) == 0:
@@ -574,15 +579,13 @@ def _load_and_fit_carte(X_context: pd.DataFrame, y_context: np.ndarray,
     for i, g in enumerate(X_context_graph):
         g.y = torch.tensor([y_for_fit[i]], dtype=torch.float32)
 
-    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, early_stopping_patience=10, disable_pbar=True)
+    clf = CARTEClassifier(device=device, num_model=1, max_epoch=50, disable_pbar=True)
     clf.fit(X_context_graph, y_for_fit)
     torch.cuda.empty_cache()
 
     # Bundle everything needed for extraction
     clf._carte_t2g = t2g
-    clf._carte_scaler = scaler
     clf._carte_dropped_cols = dropped_cols
-    clf._carte_num_cols = [c for c in num_cols if c not in dropped_cols]
     clf._carte_had_cat = "_cat" not in df_context.columns  # original had object cols
 
     return clf
@@ -599,9 +602,7 @@ def _extract_carte(clf, X_query: pd.DataFrame) -> dict[str, np.ndarray]:
         raise TypeError("CARTE requires DataFrame input")
 
     t2g = clf._carte_t2g
-    scaler = clf._carte_scaler
     dropped_cols = clf._carte_dropped_cols
-    num_cols = clf._carte_num_cols
 
     df_query = X_query.copy()
     for col in df_query.select_dtypes(include=["category"]).columns:
@@ -609,11 +610,6 @@ def _extract_carte(clf, X_query: pd.DataFrame) -> dict[str, np.ndarray]:
 
     if dropped_cols:
         df_query = df_query.drop(columns=[c for c in dropped_cols if c in df_query.columns])
-    if scaler is not None and num_cols:
-        valid_cols = [c for c in num_cols if c in df_query.columns]
-        if valid_cols:
-            df_query[valid_cols] = scaler.transform(df_query[valid_cols].values)
-            df_query[valid_cols] = df_query[valid_cols].clip(-10, 10)
 
     if not clf._carte_had_cat and "_cat" not in df_query.columns:
         first_num = df_query.select_dtypes(include=["number"]).columns[0]
