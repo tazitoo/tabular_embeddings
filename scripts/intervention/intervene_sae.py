@@ -599,9 +599,8 @@ class TabICLV2Tail:
         model = clf.model_
         blocks = model.icl_predictor.tf_icl.blocks
 
-        # extraction_layer is the layer_N index from get_layer_modules(), which
-        # maps layer_N → blocks[N] directly (row_output is a separate named key,
-        # not counted as layer_0). No offset needed.
+        # extraction_layer is a block index (build_tail subtracts the row_output
+        # prefix offset). Clamp to valid range.
         block_idx = min(extraction_layer, len(blocks) - 1)
         hook_module = blocks[block_idx]
 
@@ -1760,44 +1759,58 @@ class HyperFastTail:
 def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
                task="classification", device="cuda", cat_indices=None,
                target_name="target"):
-    """Factory: build the appropriate tail model for the given model key."""
+    """Factory: build the appropriate tail model for the given model key.
+
+    extraction_layer is a sorted-layer-list index from CKA analysis (via
+    get_extraction_layer_taskaware or optimal_extraction_layers.json).  For
+    models whose get_layer_modules() includes a non-block prefix entry
+    (row_output for TabICL, input_encoder for TabDPT), this index counts the
+    prefix — but the tail models index directly into blocks[]/encoder_layers[].
+    We subtract the prefix offset here so every tail receives a block index.
+    """
     from models.model_paths import get_model_path
+
+    # Models with a non-block prefix in get_layer_modules():
+    #   tabicl / tabicl_v2: row_output at index 0
+    #   tabdpt:             input_encoder at index 0
+    _PREFIX_OFFSETS = {"tabicl": 1, "tabicl_v2": 1, "tabdpt": 1}
+    block_layer = extraction_layer - _PREFIX_OFFSETS.get(model_key, 0)
 
     if model_key == "tabpfn":
         return TabPFNTail.from_data(
-            X_context, y_context, X_query, extraction_layer, task, device,
+            X_context, y_context, X_query, block_layer, task, device,
             cat_indices=cat_indices,
         )
     elif model_key == "tabicl":
         return TabICLTail.from_data(
-            X_context, y_context, X_query, extraction_layer, device,
+            X_context, y_context, X_query, block_layer, device,
         )
     elif model_key == "tabicl_v2":
         model_path = get_model_path("tabicl_v2", task=task)
         return TabICLV2Tail.from_data(
-            X_context, y_context, X_query, extraction_layer, task, device,
+            X_context, y_context, X_query, block_layer, task, device,
             model_path=model_path,
         )
     elif model_key == "carte":
         return CARTETail.from_data(
-            X_context, y_context, X_query, extraction_layer, task, device,
+            X_context, y_context, X_query, block_layer, task, device,
         )
     elif model_key == "tabula8b":
         return Tabula8BTail.from_data(
-            X_context, y_context, X_query, extraction_layer, task, device,
+            X_context, y_context, X_query, block_layer, task, device,
             target_name=target_name,
         )
     elif model_key == "mitra":
         return MitraTail.from_data(
-            X_context, y_context, X_query, extraction_layer, task, device,
+            X_context, y_context, X_query, block_layer, task, device,
         )
     elif model_key == "tabdpt":
         return TabDPTTail.from_data(
-            X_context, y_context, X_query, extraction_layer, task, device,
+            X_context, y_context, X_query, block_layer, task, device,
         )
     elif model_key == "hyperfast":
         return HyperFastTail.from_data(
-            X_context, y_context, X_query, extraction_layer, task, device,
+            X_context, y_context, X_query, block_layer, task, device,
             cat_indices=cat_indices,
         )
     else:
