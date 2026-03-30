@@ -258,76 +258,168 @@ def run_dataset(
     use_sequential = isinstance(tail_w, SEQUENTIAL_MODELS)
     use_mitra = isinstance(tail_w, MitraTail)
 
-    # Per-row transfer with greedy accept
+    # Load strong model's perrow_importance for feature ranking
+    imp_strong = np.load(IMPORTANCE_DIR / strong / f"{dataset}.npz", allow_pickle=True)
+    row_feature_drops = imp_strong["row_feature_drops"]
+    feature_indices = imp_strong["feature_indices"]
+    unmatched_set = set(unmatched)
+
+    # Fit local ridge map per row (once), compute per-feature transfer deltas
+    from sklearn.linear_model import Ridge
+
+    # Per-row combinatorial greedy search (mirrors ablation_sweep)
+    from itertools import combinations as combos
+
     optimal_k = np.zeros(n_query, dtype=np.int32)
     gap_closed = np.full(n_query, np.nan, dtype=np.float32)
-    preds_transferred = baseline_preds_w.copy()
+    preds_intervened = baseline_preds_w.copy()
 
     t0 = time.time()
     for r in range(n_query):
         if not strong_wins[r]:
             optimal_k[r] = 0
-            gap_closed[r] = 1.0  # already as good as strong
+            gap_closed[r] = 1.0
             continue
 
-        # Compute local transfer delta for this row
-        delta_target = compute_local_transfer_delta(
-            atoms_strong, atoms_weak,
-            h_strong[r], h_weak[r],
-            m_pairs, unmatched, alpha=1.0,
-        )
-        if np.abs(delta_target).max() < 1e-10:
+        # Fit local ridge from matched pairs that fire on this row
+        d_target = atoms_weak.shape[1]
+        source_contribs, target_contribs = [], []
+        for si, ti in m_pairs:
+            a_s = float(h_strong[r, si])
+            a_t = float(h_weak[r, ti])
+            if a_s > 0 and a_t > 0:
+                source_contribs.append(a_s * atoms_strong[si])
+                target_contribs.append(a_t * atoms_weak[ti])
+
+        if len(source_contribs) < 3:
             optimal_k[r] = 0
             gap_closed[r] = 0.0
             continue
 
-        # Scale to raw embedding space
-        delta_raw = torch.tensor(
-            delta_target * ds_std_w, dtype=torch.float32, device=device,
-        ).unsqueeze(0)  # (1, emb_dim)
+        reg = Ridge(alpha=1.0, fit_intercept=False)
+        reg.fit(np.stack(source_contribs), np.stack(target_contribs))
 
-        # Distance metric: how close is the prediction to the strong model?
+        # Compute per-feature transfer deltas for unmatched features that fire
+        # Rank by strong model's importance (from perrow_importance)
+        row_drops = row_feature_drops[r]
+        firing_unmatched = []
+        for i, fi in enumerate(feature_indices):
+            if fi in unmatched_set and h_strong[r, fi] > 0 and row_drops[i] > 0:
+                firing_unmatched.append((i, fi, row_drops[i]))
+
+        if not firing_unmatched:
+            optimal_k[r] = 0
+            gap_closed[r] = 0.0
+            continue
+
+        # Sort by importance (descending)
+        firing_unmatched.sort(key=lambda x: -x[2])
+
+        # Compute individual transfer deltas
+        per_feature_deltas = []
+        ranked_indices = []
+        for _, fi, _ in firing_unmatched:
+            a_s = float(h_strong[r, fi])
+            contrib_s = a_s * atoms_strong[fi]
+            contrib_t = reg.predict(contrib_s.reshape(1, -1))[0]
+            delta_raw = contrib_t * ds_std_w
+            per_feature_deltas.append(
+                torch.tensor(delta_raw, dtype=torch.float32, device=device))
+            ranked_indices.append(fi)
+
+        K = len(per_feature_deltas)
+
+        # Distance metric
         y_r = int(y_query[r])
         if baseline_preds_w.ndim == 2:
             eps = 1e-7
-            orig_dist = abs(
-                np.log(np.clip(baseline_preds_w[r, y_r], eps, 1-eps)) -
-                np.log(np.clip(strong_preds[r, y_r], eps, 1-eps))
-            )
+            target_dist = -np.log(np.clip(strong_preds[r, y_r], eps, 1 - eps))
+            orig_dist = -np.log(np.clip(baseline_preds_w[r, y_r], eps, 1 - eps))
+            def dist_to_strong(p):
+                p_loss = -np.log(np.clip(p[y_r], eps, 1 - eps))
+                return (p_loss - target_dist) ** 2
         else:
-            orig_dist = float((baseline_preds_w[r] - strong_preds[r]) ** 2)
+            def dist_to_strong(p):
+                return float((p - strong_preds[r]) ** 2)
 
-        if orig_dist < 1e-8:
+        if abs(dist_to_strong(baseline_preds_w[r])) < 1e-12:
             optimal_k[r] = 0
             gap_closed[r] = 1.0
             continue
 
-        # Inject delta (context + query) via tail
+        # Combinatorial batching (same as ablation_sweep)
+        batch_size = min(12, K)
+        current_dist = dist_to_strong(baseline_preds_w[r])
+        best_pred = baseline_preds_w[r]
+        accepted_combo = ()
+        offset = 0
         X_row = X_query_w[r:r + 1]
-        if use_mitra:
-            cand_preds = batched_intervention(
-                tail_w, X_row, delta_raw, inject_context=True)
-        elif use_sequential:
-            cand_preds = batched_intervention_sequential(
-                tail_w, X_row, delta_raw, query_idx=r)
-        else:
-            cand_preds = batched_intervention(
-                tail_w, X_row, delta_raw, inject_context=True)
 
-        # Check if transfer improved prediction toward strong
-        if baseline_preds_w.ndim == 2:
-            new_dist = abs(
-                np.log(np.clip(cand_preds[0, y_r], eps, 1-eps)) -
-                np.log(np.clip(strong_preds[r, y_r], eps, 1-eps))
-            )
-        else:
-            new_dist = float((cand_preds[0] - strong_preds[r]) ** 2)
+        while offset < K:
+            batch_end = min(offset + batch_size, K)
+            batch_indices = list(range(offset, batch_end))
+            n_batch = len(batch_indices)
 
-        if new_dist < orig_dist - 1e-8:
-            optimal_k[r] = 1
-            moved = orig_dist - new_dist
-            gap_closed[r] = min(1.0, moved / orig_dist)
-            preds_transferred[r] = cand_preds[0]
+            all_subsets = []
+            for order in range(1, min(4, n_batch + 1)):
+                all_subsets.extend(combos(batch_indices, order))
+
+            n_combos = len(all_subsets)
+            if n_combos == 0:
+                break
+
+            # Build cumulative deltas: accepted so far + each candidate subset
+            with torch.no_grad():
+                combo_deltas = []
+                for subset in all_subsets:
+                    d = torch.zeros(d_target, dtype=torch.float32, device=device)
+                    for j in accepted_combo:
+                        d += per_feature_deltas[j]
+                    for j in subset:
+                        d += per_feature_deltas[j]
+                    combo_deltas.append(d)
+                deltas_batch = torch.stack(combo_deltas)
+
+            if use_mitra:
+                cand_preds = batched_intervention(
+                    tail_w, X_row, deltas_batch, inject_context=True)
+            elif use_sequential:
+                cand_preds = batched_intervention_sequential(
+                    tail_w, X_row, deltas_batch, query_idx=r)
+            else:
+                cand_preds = batched_intervention(
+                    tail_w, X_row, deltas_batch, inject_context=True)
+
+            # Find best subset
+            best_c = None
+            best_c_dist = current_dist
+            for c in range(n_combos):
+                d = dist_to_strong(cand_preds[c])
+                if d < best_c_dist:
+                    best_c = c
+                    best_c_dist = d
+
+            if best_c is not None:
+                accepted_combo = tuple(accepted_combo) + all_subsets[best_c]
+                current_dist = best_c_dist
+                best_pred = cand_preds[best_c]
+
+            offset = batch_end
+
+        accepted_k = len(accepted_combo)
+        if accepted_k > 0:
+            optimal_k[r] = accepted_k
+            if baseline_preds_w.ndim == 2:
+                orig_loss = -np.log(np.clip(baseline_preds_w[r, y_r], eps, 1 - eps))
+                best_loss = -np.log(np.clip(best_pred[y_r], eps, 1 - eps))
+                gap = target_dist - orig_loss
+                moved = best_loss - orig_loss
+                gap_closed[r] = min(1.0, max(0.0, moved / gap)) if gap > 1e-8 else 1.0
+            else:
+                gap = abs(float((baseline_preds_w[r] - strong_preds[r]) ** 2))
+                moved = abs(current_dist - dist_to_strong(baseline_preds_w[r]))
+                gap_closed[r] = min(1.0, moved / gap) if gap > 1e-8 else 1.0
+            preds_intervened[r] = best_pred
         else:
             optimal_k[r] = 0
             gap_closed[r] = 0.0
@@ -336,14 +428,14 @@ def run_dataset(
             elapsed = time.time() - t0
             rate = (r + 1) / elapsed if elapsed > 0 else 0
             eta = (n_query - r - 1) / rate if rate > 0 else 0
-            valid = gap_closed[:r+1][strong_wins[:r+1]]
-            valid = valid[~np.isnan(valid)]
-            mean_gc = valid.mean() if len(valid) else 0
-            logger.info(f"    row {r+1}/{n_query}: mean_gap_closed={mean_gc:.3f} "
+            valid = optimal_k[:r+1][strong_wins[:r+1]]
+            mean_k = valid.mean() if len(valid) else 0
+            logger.info(f"    row {r+1}/{n_query}: mean_k={mean_k:.1f} "
                         f"({rate:.1f} rows/s, ETA {eta:.0f}s)")
 
     logger.info(f"  Done in {time.time() - t0:.1f}s")
 
+    valid_k = optimal_k[strong_wins]
     valid_gc = gap_closed[strong_wins]
     valid_gc = valid_gc[~np.isnan(valid_gc)]
 
@@ -355,11 +447,13 @@ def run_dataset(
         "strong_wins": strong_wins,
         "preds_strong": strong_preds,
         "preds_weak": baseline_preds_w,
-        "preds_transferred": preds_transferred,
+        "preds_intervened": preds_intervened,
         "baseline_loss_strong": strong_loss,
         "baseline_loss_weak": weak_loss,
         "n_query": n_query,
         "n_strong_wins": n_strong_wins,
+        "mean_optimal_k": float(valid_k.mean()) if len(valid_k) else 0.0,
+        "median_optimal_k": float(np.median(valid_k)) if len(valid_k) else 0.0,
         "mean_gap_closed": float(valid_gc.mean()) if len(valid_gc) else 0.0,
         "metric_strong": float(metric_strong),
         "metric_weak": float(metric_weak),

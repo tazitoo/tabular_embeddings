@@ -47,7 +47,7 @@ def _draw_panel(ax, npz_path: Path):
 
     preds_s = data["preds_strong"]
     preds_w = data["preds_weak"]
-    preds_i = data["preds_intervened"]
+    preds_i = data["preds_intervened"] if "preds_intervened" in data else data["preds_transferred"]
     y = data["y_query"].astype(int)
     optimal_k = data["optimal_k"]
     strong_wins = data["strong_wins"]
@@ -81,16 +81,6 @@ def _draw_panel(ax, npz_path: Path):
     valid_k = optimal_k[strong_wins & modified]
 
     # --- Draw layers ---
-    # All rows: gray with transparency
-    ax.scatter(p_s, p_w, c="#aaaaaa", s=12, alpha=0.4, edgecolors="none", zorder=2)
-
-    # Intervened positions: black dots
-    sw_mod = strong_wins & modified
-    if sw_mod.any():
-        ax.scatter(p_i[sw_mod], p_w[sw_mod], c="black", s=8, alpha=0.7,
-                   edgecolors="none", zorder=4)
-
-    # y=x line
     is_regression = preds_s.ndim == 1 or (preds_s.ndim == 2 and preds_s.shape[1] == 1)
     if is_regression:
         all_vals = np.concatenate([p_s, p_w, p_i])
@@ -98,14 +88,35 @@ def _draw_panel(ax, npz_path: Path):
         hi = all_vals.max() + 0.05 * (all_vals.max() - all_vals.min())
     else:
         lo, hi = 0, 1
+
+    # Event rate lines (base rate for classification)
+    if not is_regression:
+        event_rate = y.mean()
+        ax.axhline(event_rate, color="#cccccc", lw=0.5, ls=":", zorder=1)
+        ax.axvline(event_rate, color="#cccccc", lw=0.5, ls=":", zorder=1)
+
+    # All rows: gray with transparency
+    ax.scatter(p_s, p_w, c="#aaaaaa", s=10, alpha=0.35, edgecolors="none", zorder=2)
+
+    # Intervened positions: black, smaller
+    sw_mod = strong_wins & modified
+    if sw_mod.any():
+        ax.scatter(p_i[sw_mod], p_w[sw_mod], c="black", s=6, alpha=0.7,
+                   edgecolors="none", zorder=4)
+
+    # y=x line
     ax.plot([lo, hi], [lo, hi], "k--", lw=0.5, alpha=0.4)
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_aspect("equal", adjustable="box")
 
-    # Labels
-    k_str = f"k\u0303={np.median(valid_k):.0f}" if len(valid_k) else "—"
-    ax.set_title(f"{disp_s} \u2192 {disp_w}  ({n_intervened}/{n_strong_wins})  {k_str}",
+    # Labels: gap_closed and median k
+    gc = data["gap_closed"][strong_wins]
+    gc = gc[~np.isnan(gc)] if hasattr(gc, '__len__') else gc
+    mean_gc = float(gc.mean()) if len(gc) else 0
+    k_str = f"k\u0303={np.median(valid_k):.0f}" if len(valid_k) else "\u2014"
+    ax.set_title(f"{disp_s} \u2192 {disp_w}  ({n_intervened}/{n_strong_wins})  "
+                 f"{k_str}  gc={mean_gc:.2f}",
                  fontsize=6, pad=2)
     ax.tick_params(labelsize=4, length=2, pad=1)
 
