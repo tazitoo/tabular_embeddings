@@ -841,7 +841,7 @@ def _boost_hyperfast(X_ctx, y_ctx, X_q, y_q, sae, boost_features,
 
     extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.load_model()
-    X_ctx_clean = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0)
+    X_ctx_clean = np.asarray(X_ctx, dtype=np.float32)
     y_ctx_clean = np.asarray(y_ctx, dtype=np.int64)
     extractor._model.fit(X_ctx_clean, y_ctx_clean)
     clf = extractor._model
@@ -1360,7 +1360,7 @@ def _transplant_hyperfast(X_ctx, y_ctx, X_q, y_q, delta, extraction_layer, devic
 
     extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.load_model()
-    X_ctx_clean = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0)
+    X_ctx_clean = np.asarray(X_ctx, dtype=np.float32)
     y_ctx_clean = np.asarray(y_ctx, dtype=np.int64)
     extractor._model.fit(X_ctx_clean, y_ctx_clean)
     clf = extractor._model

@@ -447,11 +447,11 @@ def _capture_carte(X_ctx, y_ctx, X_query, extraction_layer, device, task):
     if not ft_path:
         raise ValueError("FastText model not found for CARTE capture")
 
-    X_ctx = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-    X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    X_ctx = np.asarray(X_ctx, dtype=np.float32)
+    X_query = np.asarray(X_query, dtype=np.float32)
 
-    col_std = X_ctx.std(axis=0)
-    nonconstant = col_std > 0
+    col_std = np.nanstd(X_ctx, axis=0)
+    nonconstant = col_std > 1e-6
     if not nonconstant.all():
         X_ctx = X_ctx[:, nonconstant]
         X_query = X_query[:, nonconstant]
@@ -738,7 +738,7 @@ def _capture_hyperfast(X_ctx, y_ctx, X_query, extraction_layer, device, task,
 
     extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.load_model()
-    X_ctx_clean = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0)
+    X_ctx_arr = np.asarray(X_ctx, dtype=np.float32)
     y_ctx_clean = np.asarray(y_ctx, dtype=np.int64)
     if cat_indices:
         extractor._model.cat_features = cat_indices

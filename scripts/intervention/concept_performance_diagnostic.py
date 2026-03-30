@@ -204,11 +204,11 @@ def predict_hyperfast(
 
     extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.load_model()
-    X_ctx_clean = np.nan_to_num(np.asarray(X_ctx, dtype=np.float32), nan=0.0)
-    X_q_clean = np.nan_to_num(np.asarray(X_q, dtype=np.float32), nan=0.0)
+    X_ctx_arr = np.asarray(X_ctx, dtype=np.float32)
+    X_q_arr = np.asarray(X_q, dtype=np.float32)
     y_ctx_clean = np.asarray(y_ctx, dtype=np.int64)
-    extractor._model.fit(X_ctx_clean, y_ctx_clean)
-    preds = extractor._model.predict_proba(X_q_clean)
+    extractor._model.fit(X_ctx_arr, y_ctx_clean)
+    preds = extractor._model.predict_proba(X_q_arr)
 
     return {
         "preds": np.asarray(preds),

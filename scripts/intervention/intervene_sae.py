@@ -754,13 +754,9 @@ class CARTETail:
             df_ctx = X_context.reset_index(drop=True)
             df_qry = X_query.reset_index(drop=True)
         else:
-            X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32),
-                                      nan=0.0, posinf=0.0, neginf=0.0)
-            X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32),
-                                    nan=0.0, posinf=0.0, neginf=0.0)
-            feature_names = [f"f{i}" for i in range(X_context.shape[1])]
-            df_ctx = pd.DataFrame(X_context, columns=feature_names)
-            df_qry = pd.DataFrame(X_query, columns=feature_names)
+            feature_names = [f"f{i}" for i in range(np.asarray(X_context).shape[1])]
+            df_ctx = pd.DataFrame(np.asarray(X_context, dtype=np.float32), columns=feature_names)
+            df_qry = pd.DataFrame(np.asarray(X_query, dtype=np.float32), columns=feature_names)
 
         # Drop numeric columns that crash PowerTransformer (Yeo-Johnson) inside
         # Table2GraphTransformer: near-constant and extreme-value columns.
@@ -1616,11 +1612,11 @@ class HyperFastTail:
 
         extractor = HyperFastEmbeddingExtractor(device=device)
         extractor.load_model()
-        X_ctx_clean = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0)
+        X_ctx_arr = np.asarray(X_context, dtype=np.float32)
         y_ctx_clean = np.asarray(y_context, dtype=np.int64)
         if cat_indices:
             extractor._model.cat_features = cat_indices
-        extractor._model.fit(X_ctx_clean, y_ctx_clean)
+        extractor._model.fit(X_ctx_arr, y_ctx_clean)
         hf_clf = extractor._model
 
         n_query = len(X_query)
@@ -2268,9 +2264,9 @@ def intervene_hyperfast(
 
     extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.load_model()
-    X_ctx_clean = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0)
+    X_ctx_arr = np.asarray(X_context, dtype=np.float32)
     y_ctx_clean = np.asarray(y_context, dtype=np.int64)
-    extractor._model.fit(X_ctx_clean, y_ctx_clean)
+    extractor._model.fit(X_ctx_arr, y_ctx_clean)
     clf = extractor._model
 
     n_query = len(X_query)
@@ -2447,8 +2443,7 @@ def _carte_prepare_graphs(X, feature_names, t2g, fit=False):
     """
     import pandas as pd
 
-    X = np.nan_to_num(np.asarray(X, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-    df = pd.DataFrame(X, columns=feature_names)
+    df = pd.DataFrame(np.asarray(X, dtype=np.float32), columns=feature_names)
 
     # Add synthetic categorical column (CARTE requires at least one)
     n_bins = min(5, X.shape[1])
@@ -2499,10 +2494,10 @@ def intervene_carte(
 
     # Drop near-constant columns — PowerTransformer inside t2g crashes on these.
     # No additional scaling: CARTE's Table2GraphTransformer applies PowerTransformer.
-    X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-    X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    X_context = np.asarray(X_context, dtype=np.float32)
+    X_query = np.asarray(X_query, dtype=np.float32)
 
-    col_std = X_context.std(axis=0)
+    col_std = np.nanstd(X_context, axis=0)
     nonconstant = col_std > 1e-6
     if not nonconstant.all():
         X_context = X_context[:, nonconstant]
@@ -3509,12 +3504,10 @@ def perrow_sweep_intervene_carte(
 
     # Drop near-constant columns — PowerTransformer inside t2g crashes on these.
     # No additional scaling: CARTE's Table2GraphTransformer applies PowerTransformer.
-    X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32),
-                              nan=0.0, posinf=0.0, neginf=0.0)
-    X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32),
-                            nan=0.0, posinf=0.0, neginf=0.0)
+    X_context = np.asarray(X_context, dtype=np.float32)
+    X_query = np.asarray(X_query, dtype=np.float32)
 
-    col_std = X_context.std(axis=0)
+    col_std = np.nanstd(X_context, axis=0)
     nonconstant = col_std > 1e-6
     if not nonconstant.all():
         X_context = X_context[:, nonconstant]
@@ -4267,9 +4260,9 @@ def perrow_sweep_intervene_hyperfast(
 
     extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.load_model()
-    X_ctx_clean = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0)
+    X_ctx_arr = np.asarray(X_context, dtype=np.float32)
     y_ctx_clean = np.asarray(y_context, dtype=np.int64)
-    extractor._model.fit(X_ctx_clean, y_ctx_clean)
+    extractor._model.fit(X_ctx_arr, y_ctx_clean)
     hf_clf = extractor._model
 
     n_query = len(X_query)

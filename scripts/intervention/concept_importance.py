@@ -898,10 +898,8 @@ def sweep_carte(
         raise ValueError("FastText model not found for CARTE sweep")
 
     # Robust preprocessing (matches extraction code)
-    X_context = np.nan_to_num(np.asarray(X_context, dtype=np.float32),
-                              nan=0.0, posinf=0.0, neginf=0.0)
-    X_query = np.nan_to_num(np.asarray(X_query, dtype=np.float32),
-                            nan=0.0, posinf=0.0, neginf=0.0)
+    X_context = np.asarray(X_context, dtype=np.float32)
+    X_query = np.asarray(X_query, dtype=np.float32)
 
     col_std = X_context.std(axis=0)
     nonconstant = col_std > 0
@@ -1379,9 +1377,9 @@ def sweep_hyperfast(
 
     extractor = HyperFastEmbeddingExtractor(device=device)
     extractor.load_model()
-    X_ctx_clean = np.nan_to_num(np.asarray(X_context, dtype=np.float32), nan=0.0)
+    X_ctx_arr = np.asarray(X_context, dtype=np.float32)
     y_ctx_clean = np.asarray(y_context, dtype=np.int64)
-    extractor._model.fit(X_ctx_clean, y_ctx_clean)
+    extractor._model.fit(X_ctx_arr, y_ctx_clean)
     hf_clf = extractor._model
 
     n_query = len(y_query)
