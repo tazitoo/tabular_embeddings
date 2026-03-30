@@ -15,7 +15,7 @@ Usage:
         compute_per_row_loss, compute_importance_metric,
         get_alive_features, get_feature_labels,
         load_dataset_context, align_test_rows,
-        compute_feature_deltas, batched_ablation,
+        compute_feature_deltas, batched_intervention, batched_ablation,
     )
 """
 import json
@@ -555,26 +555,29 @@ def compute_feature_reconstructions(
 # ── Batched ablation ─────────────────────────────────────────────────────────
 
 
-def batched_ablation(
+def batched_intervention(
     tail,
     X_row: np.ndarray,
     deltas: torch.Tensor,
     max_K: int = 512,
+    inject_context: bool = False,
 ) -> np.ndarray:
-    """Batched ablation: recapture with K query copies, inject deltas, predict.
+    """Batched intervention: recapture with K query copies, inject deltas, predict.
 
     Creates K copies of X_row as the query batch, recaptures hidden state
-    (1 full forward, no re-fit), injects K different deltas at query positions
-    (zero context delta), runs 1 tail pass → K predictions.
+    (1 full forward, no re-fit), injects K different deltas, runs 1 tail pass
+    → K predictions.
 
     Args:
         tail: fitted tail model with recapture() method
         X_row: (1, n_features) single query row
         deltas: (K, emb_dim) per-feature deltas in raw embedding space
         max_K: chunk size for VRAM safety
+        inject_context: if True, inject delta into context+query (transfer).
+            if False, inject into query positions only (ablation).
 
     Returns:
-        preds: (K, ...) predictions, one per ablation
+        preds: (K, ...) predictions, one per intervention
     """
     K = len(deltas)
     if K == 0:
@@ -589,14 +592,14 @@ def batched_ablation(
         tail.recapture(X_batch)
 
         if isinstance(tail, MitraTail):
-            # Mitra: patched forward with delta-based intervention.
-            # chunk_deltas are (K, emb_dim) — the DIFFERENCE from ablation,
-            # not full reconstructions. _mitra_patched_predict adds the delta
-            # to the original y-token instead of replacing it.
-            preds = _mitra_patched_predict(tail, chunk_deltas)
+            preds = _mitra_patched_predict(tail, chunk_deltas,
+                                           inject_context=inject_context)
         else:
             state = tail.hidden_state.clone()
-            _inject_query_deltas(tail, state, chunk_deltas)
+            if inject_context:
+                _inject_full_deltas(tail, state, chunk_deltas)
+            else:
+                _inject_query_deltas(tail, state, chunk_deltas)
             preds = tail._predict_with_modified_state(state)
 
         all_preds.append(preds)
@@ -604,7 +607,12 @@ def batched_ablation(
     return np.concatenate(all_preds, axis=0) if len(all_preds) > 1 else all_preds[0]
 
 
-def _mitra_patched_predict(tail, deltas: torch.Tensor) -> np.ndarray:
+# Backward compat alias
+batched_ablation = batched_intervention
+
+
+def _mitra_patched_predict(tail, deltas: torch.Tensor,
+                           inject_context: bool = False) -> np.ndarray:
     """Mitra-specific: call tab2d directly with checkpoint-free forward.
 
     predict_proba() goes through trainer.predict() which uses
@@ -676,12 +684,18 @@ def _mitra_patched_predict(tail, deltas: torch.Tensor) -> np.ndarray:
                 # ADD delta to y-token (position 0) — not replace
                 query__ = query__.clone()
                 query__[0, :, 0, :] += deltas
+                if inject_context:
+                    support = support.clone()
+                    support[0, :, 0, :] += deltas[:support.shape[1]]
 
         query__ = self.final_layer_norm(query__)
         # If extraction_layer == n_layers, patch after final_layer_norm
         if extraction_layer >= n_layers and query__.ndim == 4:
             query__ = query__.clone()
             query__[0, :, 0, :] += deltas
+            if inject_context:
+                support = support.clone()
+                support[0, :, 0, :] += deltas[:support.shape[1]]
         query__ = self.final_layer(query__)
 
         query__, _ = einops.unpack(query__, pack_query__, 'b s * c')
@@ -736,14 +750,56 @@ def _inject_query_deltas(tail, state: torch.Tensor, deltas: torch.Tensor):
 
     elif isinstance(tail, (HyperFastTail, CARTETail, Tabula8BTail)):
         raise NotImplementedError(
-            f"{type(tail).__name__}: use batched_ablation_sequential() instead"
+            f"{type(tail).__name__}: use batched_intervention_sequential() instead"
         )
 
     else:
         raise TypeError(f"Unknown tail type: {type(tail)}")
 
 
-def batched_ablation_sequential(
+def _inject_full_deltas(tail, state: torch.Tensor, deltas: torch.Tensor):
+    """Inject deltas into cached hidden state at ALL positions (context + query).
+
+    Used for transfer: the delta must affect both context and query so that
+    attention-based models propagate the transferred concept through the full
+    sequence. Each of K deltas is broadcast across all sequence positions.
+    """
+    K = len(deltas)
+
+    if isinstance(tail, TabPFNTail):
+        # state: (1, seq, K, emb) — seq = context + query batch
+        seq_len = state.shape[1]
+        for k in range(K):
+            state[0, :seq_len, k, :] += deltas[k].unsqueeze(0)
+
+    elif isinstance(tail, (TabICLTail, TabICLV2Tail)):
+        # state: (1, seq, emb) — seq = context + query batch
+        seq_len = state.shape[1]
+        for k in range(K):
+            state[:, :seq_len, :] += deltas[k].unsqueeze(0).unsqueeze(0)
+
+    elif isinstance(tail, TabDPTTail):
+        # state: (seq, emb) or (seq, 1, emb)
+        seq_len = state.shape[0]
+        for k in range(K):
+            if state.ndim == 3:
+                state[:seq_len] += deltas[k].unsqueeze(0).unsqueeze(1)
+            else:
+                state[:seq_len] += deltas[k].unsqueeze(0)
+
+    elif isinstance(tail, MitraTail):
+        raise NotImplementedError("Mitra: handled in batched_intervention() directly")
+
+    elif isinstance(tail, (HyperFastTail, CARTETail, Tabula8BTail)):
+        raise NotImplementedError(
+            f"{type(tail).__name__}: use batched_intervention_sequential() instead"
+        )
+
+    else:
+        raise TypeError(f"Unknown tail type: {type(tail)}")
+
+
+def batched_intervention_sequential(
     tail,
     X_row: np.ndarray,
     deltas: torch.Tensor,
@@ -782,3 +838,7 @@ def batched_ablation_sequential(
         preds_list.append(preds[query_idx:query_idx + 1])
 
     return np.concatenate(preds_list, axis=0)
+
+
+# Backward compat alias
+batched_ablation_sequential = batched_intervention_sequential
