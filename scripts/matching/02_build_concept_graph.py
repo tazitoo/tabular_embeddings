@@ -235,7 +235,7 @@ def main():
     )
     parser.add_argument(
         "--mnn-path", type=str,
-        default="output/sae_feature_matching_mnn_t0.001_n500.json",
+        default="output/sae_feature_matching_mnn_t0.001.json",
     )
     parser.add_argument(
         "--baseline-path", type=str,
