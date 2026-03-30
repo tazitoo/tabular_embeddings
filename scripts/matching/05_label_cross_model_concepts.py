@@ -330,20 +330,51 @@ def format_group_prompt(
         "",
     ]
 
-    # Primary evidence: contrastive examples from the member with the most
-    # non-zero activating examples (ties broken by R²)
+    # Primary evidence: contrastive examples from multiple members across
+    # different models and datasets to show the universal pattern.
     def _example_quality(m):
         ex = m.get("examples", {})
         n_active = sum(1 for r in ex.get("top", []) if r.get("activation", 0) > 0)
         return (n_active, m.get("r2", 0))
 
-    best_member = max(agg["per_member"], key=_example_quality)
-    examples = best_member.get("examples", {})
-    if examples:
-        lines.append(f"CONTRASTIVE EXAMPLES (from {best_member['model']} #{best_member['feature_idx']}):")
-        lines.extend(_format_examples(examples))
+    # Select up to 3 members from different models, preferring those with
+    # the most non-zero activating examples.
+    members_with_examples = [m for m in agg["per_member"]
+                             if m.get("examples", {}).get("top")]
+    members_with_examples.sort(key=_example_quality, reverse=True)
+
+    selected = []
+    seen_models = set()
+    for m in members_with_examples:
+        if m["model"] not in seen_models:
+            selected.append(m)
+            seen_models.add(m["model"])
+            if len(selected) >= 3:
+                break
+
+    # Merge examples: 2 top-activating + 2 contrast from each member,
+    # tagging each with its source model.
+    if selected:
+        sources = [f"{m['model']} #{m['feature_idx']}" for m in selected]
+        lines.append(f"CONTRASTIVE EXAMPLES (from {', '.join(sources)}):")
+        merged_top = []
+        merged_contrast = []
+        per_member_top = max(2, 5 // len(selected))
+        per_member_contrast = max(2, 5 // len(selected))
+        for m in selected:
+            ex = m.get("examples", {})
+            for row in ex.get("top", [])[:per_member_top]:
+                row = dict(row)
+                row["_source"] = f"{m['model']} #{m['feature_idx']}"
+                merged_top.append(row)
+            for row in ex.get("contrast", [])[:per_member_contrast]:
+                row = dict(row)
+                row["_source"] = f"{m['model']} #{m['feature_idx']}"
+                merged_contrast.append(row)
+        merged = {"top": merged_top, "contrast": merged_contrast}
+        lines.extend(_format_examples(merged))
         if dataset_context:
-            lines.extend(_format_dataset_context(examples, dataset_context))
+            lines.extend(_format_dataset_context(merged, dataset_context))
 
     # Secondary guidance: probe statistics
     consensus = [(n, d["count"], d["mean_coeff"])
@@ -382,12 +413,13 @@ def format_group_prompt(
     lines.append("")
 
     # Domain context
-    if domain_lookup and examples:
+    if domain_lookup and selected:
         ds_names = set()
-        for ex in examples.get("top", []) + examples.get("contrast", []):
-            ds = ex.get("dataset")
-            if ds:
-                ds_names.add(ds)
+        for m in selected:
+            for ex in m.get("examples", {}).get("top", []) + m.get("examples", {}).get("contrast", []):
+                ds = ex.get("dataset")
+                if ds:
+                    ds_names.add(ds)
         if ds_names:
             domain_parts = [f"{ds} ({domain_lookup.get(ds, 'Unknown')})"
                             for ds in sorted(ds_names)]
