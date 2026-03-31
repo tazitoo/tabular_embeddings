@@ -300,33 +300,33 @@ def run_dataset(
         reg.fit(np.stack(source_contribs), np.stack(target_contribs))
 
         # Compute per-feature transfer deltas for unmatched features that fire
-        # Find unmatched features that fire on this row with positive importance
-        # (features that help the strong model predict well are the best transfer candidates)
+        # Find unmatched features that fire on this row, rank by abs(importance)
+        # Sign in strong model's space doesn't predict sign after ridge map
         row_drops = row_feature_drops[r]
         firing_unmatched = []
         for i, fi in enumerate(feature_indices):
-            if fi in unmatched_set and h_strong[r, fi] > 0 and row_drops[i] > 0:
-                firing_unmatched.append((i, fi, row_drops[i]))
+            if fi in unmatched_set and h_strong[r, fi] > 0:
+                firing_unmatched.append((i, fi, abs(row_drops[i])))
 
         if not firing_unmatched:
             optimal_k[r] = 0
             gap_closed[r] = 0.0
             continue
 
-        # Sort by importance (descending)
+        # Sort by importance magnitude (descending)
         firing_unmatched.sort(key=lambda x: -x[2])
 
-        # Compute individual transfer deltas
+        # Compute individual transfer deltas — both +delta and -delta
+        # since the ridge map may get the direction wrong
         per_feature_deltas = []
-        ranked_indices = []
         for _, fi, _ in firing_unmatched:
             a_s = float(h_strong[r, fi])
             contrib_s = a_s * atoms_strong[fi]
             contrib_t = reg.predict(contrib_s.reshape(1, -1))[0]
             delta_raw = contrib_t * ds_std_w
-            per_feature_deltas.append(
-                torch.tensor(delta_raw, dtype=torch.float32, device=device))
-            ranked_indices.append(fi)
+            delta_t = torch.tensor(delta_raw, dtype=torch.float32, device=device)
+            per_feature_deltas.append(delta_t)    # +direction
+            per_feature_deltas.append(-delta_t)   # -direction (flipped)
 
         K = len(per_feature_deltas)
 
