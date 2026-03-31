@@ -7,7 +7,7 @@ for delta injection. The only difference is:
 
   - Delta source: virtual atoms mapped from the source model's unmatched
     features into the target model's embedding space (not SAE feature zeroing).
-  - Injection mode: full-sequence (context + query) via inject_context=True,
+  - Injection mode: full-sequence (context + query) via inject_context=False,
     so attention-based models propagate the transferred concept.
   - Direction: forward only (strong→weak). For each row where the strong model
     outperforms the weak, transfer strong's unique concepts into the weak model.
@@ -316,17 +316,15 @@ def run_dataset(
         # Sort by importance magnitude (descending)
         firing_unmatched.sort(key=lambda x: -x[2])
 
-        # Compute individual transfer deltas — both +delta and -delta
-        # since the ridge map may get the direction wrong
+        # Compute individual transfer deltas
         per_feature_deltas = []
         for _, fi, _ in firing_unmatched:
             a_s = float(h_strong[r, fi])
             contrib_s = a_s * atoms_strong[fi]
             contrib_t = reg.predict(contrib_s.reshape(1, -1))[0]
             delta_raw = contrib_t * ds_std_w
-            delta_t = torch.tensor(delta_raw, dtype=torch.float32, device=device)
-            per_feature_deltas.append(delta_t)    # +direction
-            per_feature_deltas.append(-delta_t)   # -direction (flipped)
+            per_feature_deltas.append(
+                torch.tensor(delta_raw, dtype=torch.float32, device=device))
 
         K = len(per_feature_deltas)
 
@@ -383,13 +381,13 @@ def run_dataset(
 
             if use_mitra:
                 cand_preds = batched_intervention(
-                    tail_w, X_row, deltas_batch, inject_context=True)
+                    tail_w, X_row, deltas_batch, inject_context=False)
             elif use_sequential:
                 cand_preds = batched_intervention_sequential(
                     tail_w, X_row, deltas_batch, query_idx=r)
             else:
                 cand_preds = batched_intervention(
-                    tail_w, X_row, deltas_batch, inject_context=True)
+                    tail_w, X_row, deltas_batch, inject_context=False)
 
             # Find best subset
             best_c = None
