@@ -300,7 +300,8 @@ def run_dataset(
         reg.fit(np.stack(source_contribs), np.stack(target_contribs))
 
         # Compute per-feature transfer deltas for unmatched features that fire
-        # Rank by strong model's importance (from perrow_importance)
+        # Find unmatched features that fire on this row with positive importance
+        # (features that help the strong model predict well are the best transfer candidates)
         row_drops = row_feature_drops[r]
         firing_unmatched = []
         for i, fi in enumerate(feature_indices):
