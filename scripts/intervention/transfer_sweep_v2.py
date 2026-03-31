@@ -411,13 +411,15 @@ def run_dataset(
             if baseline_preds_w.ndim == 2:
                 orig_loss = -np.log(np.clip(baseline_preds_w[r, y_r], eps, 1 - eps))
                 best_loss = -np.log(np.clip(best_pred[y_r], eps, 1 - eps))
-                gap = target_dist - orig_loss
-                moved = best_loss - orig_loss
+                # gap is positive: weak loss (high) - strong loss (low)
+                gap = orig_loss - target_dist
+                # moved is positive: weak loss - intervened loss (improved)
+                moved = orig_loss - best_loss
                 gap_closed[r] = min(1.0, max(0.0, moved / gap)) if gap > 1e-8 else 1.0
             else:
-                gap = abs(float((baseline_preds_w[r] - strong_preds[r]) ** 2))
-                moved = abs(current_dist - dist_to_strong(baseline_preds_w[r]))
-                gap_closed[r] = min(1.0, moved / gap) if gap > 1e-8 else 1.0
+                orig_dist_sq = float((baseline_preds_w[r] - strong_preds[r]) ** 2)
+                best_dist_sq = float((best_pred - strong_preds[r]) ** 2)
+                gap_closed[r] = min(1.0, max(0.0, 1.0 - best_dist_sq / orig_dist_sq)) if orig_dist_sq > 1e-12 else 1.0
             preds_intervened[r] = best_pred
         else:
             optimal_k[r] = 0
