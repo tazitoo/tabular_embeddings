@@ -48,6 +48,36 @@ SELECTED_PARAMS = {
         "archetypal_n": 512,
         "archetypal_relaxation": 0.6950379195220894,
     },
+    "tabicl": {
+        "trial": 29,
+        "expansion": 4,
+        "sparsity_penalty": 0.0007423816641646234,
+        "learning_rate": 8.423668005698826e-05,
+        "topk": 256,
+        "archetypal_temp": 0.2580488578046695,
+        "archetypal_n": 512,
+        "archetypal_relaxation": 0.7220216414656098,
+    },
+    "tabicl_v2": {
+        "trial": 29,
+        "expansion": 4,
+        "sparsity_penalty": 0.00032521618213540205,
+        "learning_rate": 8.423668005698826e-05,
+        "topk": 256,
+        "archetypal_temp": 0.06643408066084037,
+        "archetypal_n": 512,
+        "archetypal_relaxation": 0.34535969625859775,
+    },
+    "tabdpt": {
+        "trial": 13,
+        "expansion": 4,
+        "sparsity_penalty": 0.009759858149775247,
+        "learning_rate": 0.0003404220148189038,
+        "topk": 128,
+        "archetypal_temp": 0.22039732738806497,
+        "archetypal_n": 1000,
+        "archetypal_relaxation": 0.026728089405926442,
+    },
 }
 
 
