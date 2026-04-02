@@ -457,6 +457,12 @@ def main():
         action="store_true",
         help="Compute cross-model null: trained-A vs random-B for all pairs.",
     )
+    parser.add_argument(
+        "--sweep-dir",
+        type=str,
+        default=None,
+        help="Override SAE checkpoint directory (default: sae_tabarena_sweep_round{N})",
+    )
     args = parser.parse_args()
 
     if args.output is None:
@@ -467,7 +473,7 @@ def main():
             f".json"
         )
 
-    sweep_dir = sae_sweep_dir(args.round)
+    sweep_dir = Path(args.sweep_dir) if args.sweep_dir else sae_sweep_dir(args.round)
 
     # Discover models with checkpoints and load train+test embeddings
     models = {}
