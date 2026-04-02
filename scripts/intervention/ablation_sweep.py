@@ -87,17 +87,19 @@ def run_dataset(
     device: str,
     max_K: int,
     max_steps: int,
+    importance_dir: Path = None,
 ) -> dict:
     """Cross-model ablation for one dataset.
 
     Determines strong/weak from dataset-level metric, then ablates the
     strong model's features on rows where it outperforms the weak model.
     """
+    imp_dir = importance_dir if importance_dir else IMPORTANCE_DIR
 
     # Load cached baseline predictions from perrow_importance output.
     # This avoids building the weak model's tail (saves GPU memory and time).
-    imp_a = np.load(IMPORTANCE_DIR / model_a / f"{dataset}.npz", allow_pickle=True)
-    imp_b = np.load(IMPORTANCE_DIR / model_b / f"{dataset}.npz", allow_pickle=True)
+    imp_a = np.load(imp_dir / model_a / f"{dataset}.npz", allow_pickle=True)
+    imp_b = np.load(imp_dir / model_b / f"{dataset}.npz", allow_pickle=True)
     preds_a = imp_a["baseline_preds"]
     preds_b = imp_b["baseline_preds"]
     row_indices_a = imp_a["row_indices"]
@@ -423,6 +425,12 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-K", type=int, default=512)
     parser.add_argument("--max-steps", type=int, default=10000)
+    parser.add_argument("--sae-dir", type=Path, default=None,
+                        help="SAE checkpoint directory (default: sweep round10)")
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Output directory (default: output/ablation_sweep)")
+    parser.add_argument("--importance-dir", type=Path, default=None,
+                        help="Per-row importance directory (default: output/perrow_importance)")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -431,11 +439,13 @@ def main():
     splits = json.loads(SPLITS_PATH.read_text())
 
     # Load SAEs and norm stats for both models
+    sae_dir = args.sae_dir if args.sae_dir else None
     saes = {}
     norm_stats = {}
     test_embeddings = {}
     for m in (model_a, model_b):
-        sae, _ = load_sae(m, device=args.device)
+        sae, _ = load_sae(m, device=args.device,
+                          **({"sae_dir": sae_dir} if sae_dir else {}))
         sae.eval()
         saes[m] = sae
         norm_stats[m] = load_norm_stats_matching(m)
@@ -449,8 +459,9 @@ def main():
         logger.info(f"  {key}: {len(unmatched[key])} unmatched features")
 
     # Find datasets where both models have importance data
-    ds_a = set(d.stem for d in (IMPORTANCE_DIR / model_a).glob("*.npz"))
-    ds_b = set(d.stem for d in (IMPORTANCE_DIR / model_b).glob("*.npz"))
+    imp_dir = args.importance_dir if args.importance_dir else IMPORTANCE_DIR
+    ds_a = set(d.stem for d in (imp_dir / model_a).glob("*.npz"))
+    ds_b = set(d.stem for d in (imp_dir / model_b).glob("*.npz"))
     available = sorted(ds_a & ds_b)
 
     if args.datasets:
@@ -458,7 +469,7 @@ def main():
     else:
         datasets = available
 
-    out_dir = OUTPUT_DIR / pair_name
+    out_dir = (args.output_dir if args.output_dir else OUTPUT_DIR) / pair_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Ablation sweep: {model_a} vs {model_b}")
@@ -484,6 +495,7 @@ def main():
                 model_a, model_b, ds,
                 saes, splits, norm_stats, test_embeddings,
                 unmatched, args.device, args.max_K, args.max_steps,
+                importance_dir=imp_dir,
             )
             np.savez_compressed(str(out_path), **result)
 

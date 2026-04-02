@@ -178,12 +178,18 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-K", type=int, default=512)
+    parser.add_argument("--sae-dir", type=Path, default=None,
+                        help="SAE checkpoint directory (default: sweep round10)")
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Output directory (default: output/perrow_importance)")
     args = parser.parse_args()
 
     splits = json.loads(SPLITS_PATH.read_text())
 
     # Load SAE once
-    sae, config = load_sae(args.model, device=args.device)
+    sae_dir = args.sae_dir if args.sae_dir else None
+    sae, config = load_sae(args.model, device=args.device,
+                           **({"sae_dir": sae_dir} if sae_dir else {}))
     sae.eval()
     norm_stats = load_norm_stats_matching(args.model)
 
@@ -193,7 +199,7 @@ def main():
     if args.datasets:
         datasets = [d for d in datasets if d in args.datasets]
 
-    out_dir = OUTPUT_DIR / args.model
+    out_dir = (args.output_dir if args.output_dir else OUTPUT_DIR) / args.model
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Per-row importance: {args.model}")
