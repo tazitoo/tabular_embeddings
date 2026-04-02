@@ -32,6 +32,7 @@ from scripts.intervention.intervene_lib import (
     compute_per_row_loss, compute_importance_metric,
     batched_ablation, batched_ablation_sequential,
     MitraTail, SEQUENTIAL_MODELS,
+    get_alive_features, MODEL_KEY_TO_LABEL_KEY, DEFAULT_CONCEPT_LABELS,
 )
 from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 
@@ -44,6 +45,36 @@ IMPORTANCE_DIR = PROJECT_ROOT / "output" / "perrow_importance"
 SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
 
 
+def get_unmatched_features(source_model: str, target_model: str,
+                           concept_labels_path=None):
+    """Get source features NOT matched to the target model.
+
+    A feature is "matched" if it appears in a concept group that also contains
+    at least one feature from the target model.  Everything else is unmatched —
+    these are the features unique to the source model.
+    """
+    if concept_labels_path is None:
+        concept_labels_path = DEFAULT_CONCEPT_LABELS
+
+    with open(concept_labels_path) as f:
+        data = json.load(f)
+
+    src_key = MODEL_KEY_TO_LABEL_KEY.get(source_model, source_model)
+    tgt_key = MODEL_KEY_TO_LABEL_KEY.get(target_model, target_model)
+
+    matched_source = set()
+    for group in data.get("concept_groups", {}).values():
+        members = group.get("members", [])
+        models_in_group = set(m for m, _ in members)
+        if src_key in models_in_group and tgt_key in models_in_group:
+            for m, f in members:
+                if m == src_key:
+                    matched_source.add(f)
+
+    all_source = set(get_alive_features(source_model, concept_labels_path))
+    return sorted(all_source - matched_source)
+
+
 def run_dataset(
     model_a: str,
     model_b: str,
@@ -52,6 +83,7 @@ def run_dataset(
     splits: dict,
     norm_stats: dict,
     test_embeddings: dict,
+    unmatched: dict,
     device: str,
     max_K: int,
     max_steps: int,
@@ -148,6 +180,13 @@ def run_dataset(
     row_feature_drops = imp_s["row_feature_drops"]
     feature_indices = imp_s["feature_indices"]
 
+    # Only ablate features unmatched to the weak model
+    pair_key = f"{strong}__{weak}"
+    unmatched_set = set(unmatched.get(pair_key, []))
+    n_total_features = len(feature_indices)
+    n_unmatched_features = sum(1 for fi in feature_indices if int(fi) in unmatched_set)
+    logger.info(f"  Unmatched features: {n_unmatched_features}/{n_total_features}")
+
     emb_s = test_embeddings[strong][dataset]
     with torch.no_grad():
         emb_t = torch.tensor(emb_s, dtype=torch.float32, device=device)
@@ -203,10 +242,10 @@ def run_dataset(
             gap_closed[r] = 1.0
             continue
 
-        # Rank this row's firing features by importance
+        # Rank this row's firing UNMATCHED features by importance
         row_drops = row_feature_drops[r]
         row_firing = [i for i, fi in enumerate(feature_indices)
-                      if firing_mask_s[r, fi]]
+                      if firing_mask_s[r, fi] and int(fi) in unmatched_set]
         if not row_firing:
             continue
 
@@ -401,6 +440,13 @@ def main():
         norm_stats[m] = load_norm_stats_matching(m)
         test_embeddings[m] = load_test_embeddings(m)
 
+    # Load unmatched features for both directions
+    unmatched = {}
+    for source, target in [(model_a, model_b), (model_b, model_a)]:
+        key = f"{source}__{target}"
+        unmatched[key] = get_unmatched_features(source, target)
+        logger.info(f"  {key}: {len(unmatched[key])} unmatched features")
+
     # Find datasets where both models have importance data
     ds_a = set(d.stem for d in (IMPORTANCE_DIR / model_a).glob("*.npz"))
     ds_b = set(d.stem for d in (IMPORTANCE_DIR / model_b).glob("*.npz"))
@@ -436,7 +482,7 @@ def main():
             result = run_dataset(
                 model_a, model_b, ds,
                 saes, splits, norm_stats, test_embeddings,
-                args.device, args.max_K, args.max_steps,
+                unmatched, args.device, args.max_K, args.max_steps,
             )
             np.savez_compressed(str(out_path), **result)
 
