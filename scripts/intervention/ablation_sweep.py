@@ -46,13 +46,18 @@ SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfa
 
 
 def get_unmatched_features(source_model: str, target_model: str,
-                           concept_labels_path=None):
+                           concept_labels_path=None, matching_file=None):
     """Get source features NOT matched to the target model.
 
-    A feature is "matched" if it appears in a concept group that also contains
-    at least one feature from the target model.  Everything else is unmatched —
-    these are the features unique to the source model.
+    Two modes:
+      1. concept_labels_path (default): reads concept groups from the labeling
+         pipeline. A feature is "matched" if it shares a group with the target.
+      2. matching_file: reads directly from the raw MNN matching JSON. Uses the
+         pre-computed unmatched_a/unmatched_b lists. No labeling required.
     """
+    if matching_file is not None:
+        return _unmatched_from_matching_file(source_model, target_model, matching_file)
+
     if concept_labels_path is None:
         concept_labels_path = DEFAULT_CONCEPT_LABELS
 
@@ -73,6 +78,31 @@ def get_unmatched_features(source_model: str, target_model: str,
 
     all_source = set(get_alive_features(source_model, concept_labels_path))
     return sorted(all_source - matched_source)
+
+
+def _unmatched_from_matching_file(source_model: str, target_model: str,
+                                  matching_file):
+    """Extract unmatched features from a raw MNN matching JSON.
+
+    The matching file uses display names (TabPFN, Mitra, etc.) as pair keys.
+    """
+    with open(matching_file) as f:
+        data = json.load(f)
+
+    src_key = MODEL_KEY_TO_LABEL_KEY.get(source_model, source_model)
+    tgt_key = MODEL_KEY_TO_LABEL_KEY.get(target_model, target_model)
+
+    # Try both orderings: A__B and B__A
+    pair_key = f"{src_key}__{tgt_key}"
+    if pair_key in data["pairs"]:
+        return sorted(data["pairs"][pair_key]["unmatched_a"])
+
+    pair_key = f"{tgt_key}__{src_key}"
+    if pair_key in data["pairs"]:
+        return sorted(data["pairs"][pair_key]["unmatched_b"])
+
+    raise KeyError(f"No matching pair found for {src_key} vs {tgt_key} "
+                   f"in {matching_file}")
 
 
 def run_dataset(
@@ -431,6 +461,9 @@ def main():
                         help="Output directory (default: output/ablation_sweep)")
     parser.add_argument("--importance-dir", type=Path, default=None,
                         help="Per-row importance directory (default: output/perrow_importance)")
+    parser.add_argument("--matching-file", type=Path, default=None,
+                        help="Raw matching JSON for unmatched features "
+                             "(default: use concept labels)")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -455,7 +488,8 @@ def main():
     unmatched = {}
     for source, target in [(model_a, model_b), (model_b, model_a)]:
         key = f"{source}__{target}"
-        unmatched[key] = get_unmatched_features(source, target)
+        unmatched[key] = get_unmatched_features(
+            source, target, matching_file=args.matching_file)
         logger.info(f"  {key}: {len(unmatched[key])} unmatched features")
 
     # Find datasets where both models have importance data
