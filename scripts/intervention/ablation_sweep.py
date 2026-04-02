@@ -247,6 +247,7 @@ def run_dataset(
         row_firing = [i for i, fi in enumerate(feature_indices)
                       if firing_mask_s[r, fi] and int(fi) in unmatched_set]
         if not row_firing:
+            gap_closed[r] = 0.0
             continue
 
         # Rank by importance (positive = feature helps model predict well).
@@ -401,7 +402,7 @@ def run_dataset(
         "n_strong_wins": n_strong_wins,
         "mean_optimal_k": float(valid_k.mean()) if len(valid_k) else 0.0,
         "median_optimal_k": float(np.median(valid_k)) if len(valid_k) else 0.0,
-        "mean_gap_closed": float(valid_gc.mean()) if len(valid_gc) else 0.0,
+        "mean_gap_closed": float(np.nanmean(valid_gc)) if len(valid_gc) else 0.0,
         "metric_strong": float(metric_strong),
         "metric_weak": float(metric_weak),
         "metric_name": metric_name,
