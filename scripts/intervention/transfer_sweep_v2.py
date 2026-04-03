@@ -80,9 +80,9 @@ def get_matched_pairs(source_model: str, target_model: str,
         src_feats = [f for m, f in members if m == src_key]
         tgt_feats = [f for m, f in members if m == tgt_key]
         if src_feats and tgt_feats:
-            for sf in src_feats:
-                for tf in tgt_feats:
-                    pairs.append((sf, tf))
+            # One representative pair per group (first source × first target).
+            # The concept map needs unique directions, not all pairwise combos.
+            pairs.append((src_feats[0], tgt_feats[0]))
 
     return pairs
 
