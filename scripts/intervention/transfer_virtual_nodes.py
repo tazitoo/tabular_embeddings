@@ -211,6 +211,7 @@ def filter_landmarks(
     # Remove landmarks still below threshold after sign correction
     keep = loo_cosines >= min_cosine
     n_removed = int((~keep).sum())
+    removed_indices = [i for i in range(n) if not keep[i]]
 
     logger.info(
         "Landmark filtering: %d/%d kept, %d flipped, %d removed (min_cosine=%.2f)",
@@ -225,7 +226,7 @@ def filter_landmarks(
 
     quality = {
         "loo_cosines": loo_cosines,
-        "removed": removed,
+        "removed": removed_indices,
         "flipped": flipped_pairs,
         "n_input": n,
         "n_kept": int(keep.sum()),

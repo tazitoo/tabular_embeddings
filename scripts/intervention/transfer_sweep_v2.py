@@ -228,9 +228,12 @@ def run_dataset(
     logger.info(f"  Weak tail ({weak}) built in {time.time() - t0:.1f}s")
 
     # Get decoder atoms and SAE activations for both models
+    t1 = time.time()
     atoms_strong = extract_decoder_atoms(saes[strong]).numpy()
     atoms_weak = extract_decoder_atoms(saes[weak]).numpy()
+    logger.info(f"  Decoder atoms extracted in {time.time() - t1:.2f}s")
 
+    t1 = time.time()
     with torch.no_grad():
         emb_s = torch.tensor(test_embeddings[strong][dataset],
                              dtype=torch.float32, device=device)
@@ -238,6 +241,7 @@ def run_dataset(
         emb_w = torch.tensor(test_embeddings[weak][dataset],
                              dtype=torch.float32, device=device)
         h_weak = saes[weak].encode(emb_w).cpu().numpy()
+    logger.info(f"  SAE encode in {time.time() - t1:.2f}s")
 
     ds_mean_w, ds_std_w = norm_stats[weak][dataset]
     data_std_t_w = torch.tensor(ds_std_w, dtype=torch.float32, device=device)
@@ -272,12 +276,14 @@ def run_dataset(
     matched_tgt_atoms = atoms_weak[matched_tgt_indices]
 
     # Filter landmarks: sign-correct and remove low-quality pairs
+    t1 = time.time()
     filt_src, filt_tgt, filt_pairs, quality = filter_landmarks(
         matched_src_atoms, matched_tgt_atoms, m_pairs,
         min_cosine=0.0, alpha=1.0,
     )
     logger.info(f"  Landmark filtering: {quality['n_kept']}/{quality['n_input']} kept"
-                f" (mean LOO cosine={quality.get('mean_cosine', 0):.3f})")
+                f" (mean LOO cosine={quality.get('mean_cosine', 0):.3f})"
+                f" in {time.time() - t1:.2f}s")
 
     if len(filt_pairs) < 5:
         logger.info(f"  SKIP (too few landmarks after filtering: {len(filt_pairs)})")
@@ -288,9 +294,11 @@ def run_dataset(
             "metric_weak": float(metric_weak), "metric_name": metric_name,
         }
 
+    t1 = time.time()
     M_global, r2_global = fit_concept_map(filt_src, filt_tgt, alpha=1.0)
     logger.info(f"  Global concept map: {filt_src.shape[0]} pairs, "
-                f"R²={r2_global:.3f}, M shape={M_global.shape}")
+                f"R²={r2_global:.3f}, M shape={M_global.shape}"
+                f" in {time.time() - t1:.2f}s")
 
     # Pre-compute magnitude correction: median target/source norm ratio
     # from matched pairs, for calibrating virtual atom norms

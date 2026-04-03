@@ -589,12 +589,18 @@ def batched_intervention(
         chunk_K = len(chunk_deltas)
 
         X_batch = np.tile(X_row, (chunk_K, 1))
-        tail.recapture(X_batch)
 
         if isinstance(tail, MitraTail):
+            # MitraTail: _mitra_patched_predict does its own full forward pass
+            # with delta injection, so recapture (another full forward) is
+            # redundant.  Just update X_query so the patched forward sees the
+            # right query batch.
+            tail.X_query = X_batch
+            tail.n_query = chunk_K
             preds = _mitra_patched_predict(tail, chunk_deltas,
                                            inject_context=inject_context)
         else:
+            tail.recapture(X_batch)
             state = tail.hidden_state.clone()
             if inject_context:
                 _inject_full_deltas(tail, state, chunk_deltas)
