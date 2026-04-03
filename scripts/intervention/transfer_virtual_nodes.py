@@ -171,67 +171,51 @@ def filter_landmarks(
             },
         )
 
-    # Make a mutable copy — we may flip some target atoms
-    target_atoms = matched_target_atoms.copy()
-
+    # Pass 1: LOO on original targets to determine sign flips.
+    # Do NOT modify target_atoms during the loop — cascading flips
+    # make later iterations see inconsistent training data.
     loo_cosines = np.zeros(n)
-    flipped = []  # indices that were sign-corrected
 
+    # Fit one global ridge to get LOO predictions efficiently
+    reg = Ridge(alpha=alpha, fit_intercept=False)
+    reg.fit(matched_source_atoms, matched_target_atoms)
+
+    # LOO approximation: for ridge regression, the LOO prediction can be
+    # computed from the full-data fit using the hat matrix. For simplicity
+    # and correctness, we do N explicit LOO fits but on the ORIGINAL
+    # (un-flipped) targets.
     for i in range(n):
         mask = np.ones(n, dtype=bool)
         mask[i] = False
-        X_train = matched_source_atoms[mask]
-        Y_train = target_atoms[mask]
-
-        reg = Ridge(alpha=alpha, fit_intercept=False)
-        reg.fit(X_train, Y_train)
-
-        pred = reg.predict(matched_source_atoms[i : i + 1])[0]
-        actual = target_atoms[i]
+        reg_loo = Ridge(alpha=alpha, fit_intercept=False)
+        reg_loo.fit(matched_source_atoms[mask], matched_target_atoms[mask])
+        pred = reg_loo.predict(matched_source_atoms[i : i + 1])[0]
+        actual = matched_target_atoms[i]
 
         norm_pred = np.linalg.norm(pred)
         norm_actual = np.linalg.norm(actual)
         if norm_pred > 0 and norm_actual > 0:
-            cos = np.dot(pred, actual) / (norm_pred * norm_actual)
-        else:
-            cos = 0.0
+            loo_cosines[i] = np.dot(pred, actual) / (norm_pred * norm_actual)
 
-        # Sign-flip correction: if cosine is negative, the concept may be
-        # encoded in the opposite direction (|r| matching lost the sign).
-        # Flip the target atom and check if it helps.
-        if cos < 0:
-            cos_flipped = -cos  # cos(pred, -actual) = -cos(pred, actual)
+    # Pass 2: apply sign corrections based on LOO cosines
+    target_atoms = matched_target_atoms.copy()
+    flipped = []
+    for i in range(n):
+        if loo_cosines[i] < 0:
+            cos_flipped = -loo_cosines[i]
             if cos_flipped >= min_cosine:
                 target_atoms[i] = -target_atoms[i]
-                cos = cos_flipped
+                loo_cosines[i] = cos_flipped
                 flipped.append(i)
-                logger.info(
-                    "  sign-flipped %s → %s (cosine %.3f → %.3f)",
-                    matched_pairs[i][0], matched_pairs[i][1], -cos_flipped, cos,
-                )
 
-        loo_cosines[i] = cos
-
-    # Remove landmarks that are still below threshold after sign correction
+    # Remove landmarks still below threshold after sign correction
     keep = loo_cosines >= min_cosine
-    removed = [
-        (matched_pairs[i], float(loo_cosines[i]))
-        for i in range(n)
-        if not keep[i]
-    ]
+    n_removed = int((~keep).sum())
 
-    if removed or flipped:
-        logger.info(
-            "Landmark filtering: %d/%d kept, %d flipped, %d removed (min_cosine=%.2f)",
-            int(keep.sum()), n, len(flipped), len(removed), min_cosine,
-        )
-        for pair, cos in removed:
-            logger.info("  removed %s → %s (LOO cosine=%.3f)", pair[0], pair[1], cos)
-    else:
-        logger.info(
-            "Landmark filtering: all %d pairs pass (min_cosine=%.2f, min=%.3f)",
-            n, min_cosine, float(loo_cosines.min()),
-        )
+    logger.info(
+        "Landmark filtering: %d/%d kept, %d flipped, %d removed (min_cosine=%.2f)",
+        int(keep.sum()), n, len(flipped), n_removed, min_cosine,
+    )
 
     filtered_source = matched_source_atoms[keep]
     filtered_target = target_atoms[keep]
