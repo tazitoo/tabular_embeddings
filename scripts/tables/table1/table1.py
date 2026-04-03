@@ -18,20 +18,20 @@ import numpy as np
 from scripts._project_root import PROJECT_ROOT
 
 from analysis.similarity import centered_kernel_alignment
-from scripts.compare_sae_cross_model import find_common_datasets
+from scripts.sae.compare_sae_cross_model import find_common_datasets
 
 # ── Model configuration ─────────────────────────────────────────────────────
+# (display_name, dir_name, extraction_layer_key)
 MODEL_CONFIGS = [
-    ("TabPFN", "tabpfn_layer16_ctx600"),
-    ("CARTE", "carte_layer1_ctx600"),
-    ("TabICL", "tabicl_layer10_ctx600"),
-    ("TabDPT", "tabdpt_layer14_ctx600"),
-    ("Mitra", "mitra_layer12_ctx600"),
-    ("HyperFast", "hyperfast_layer2_ctx600"),
-    ("Tabula-8B", "tabula8b_layer21_ctx600"),
+    ("TabPFN", "tabpfn", "layer_18"),
+    ("Mitra", "mitra", "layer_11"),
+    ("TabICL", "tabicl", "layer_9"),
+    ("TabICL-v2", "tabicl_v2", "layer_11"),
+    ("TabDPT", "tabdpt", "layer_13"),
+    ("CARTE", "carte", "layer_2"),
 ]
 
-EMB_BASE = PROJECT_ROOT / "output" / "embeddings" / "tabarena"
+EMB_BASE = PROJECT_ROOT / "output" / "sae_training_round9" / "embeddings"
 MAX_PER_DATASET = 500
 SEED = 42
 
@@ -41,12 +41,16 @@ OUTPUT_TEX = Path(__file__).parent / "cka_table.tex"
 def load_embeddings(
     emb_dir: Path,
     dataset: str,
+    layer_key: str,
     max_per_dataset: int = MAX_PER_DATASET,
 ) -> np.ndarray:
-    """Load embeddings for a single dataset, subsampling with a fixed seed."""
+    """Load embeddings for a single dataset at a specific layer."""
+    # Try both naming conventions
     path = emb_dir / f"tabarena_{dataset}.npz"
+    if not path.exists():
+        path = emb_dir / f"{dataset}.npz"
     data = np.load(path, allow_pickle=True)
-    emb = data["embeddings"].astype(np.float32)
+    emb = data[layer_key].astype(np.float32)
     if len(emb) > max_per_dataset:
         np.random.seed(SEED)
         idx = np.random.choice(len(emb), max_per_dataset, replace=False)
@@ -56,6 +60,7 @@ def load_embeddings(
 
 def compute_cka_matrix(
     emb_dirs: Dict[str, Path],
+    layer_keys: Dict[str, str],
     model_names: List[str],
     datasets: List[str],
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -78,7 +83,7 @@ def compute_cka_matrix(
         # Load all model embeddings for this dataset
         embs = {}
         for name in model_names:
-            embs[name] = load_embeddings(emb_dirs[name], ds)
+            embs[name] = load_embeddings(emb_dirs[name], ds, layer_keys[name])
 
         # Align sample counts (should already match from same dataset)
         n_samples = min(e.shape[0] for e in embs.values())
@@ -160,13 +165,15 @@ def generate_latex_table(
 def main():
     # ── Resolve embedding directories ────────────────────────────────────
     emb_dirs: Dict[str, Path] = {}
+    layer_keys: Dict[str, str] = {}
     model_names: List[str] = []
-    for display_name, dir_name in MODEL_CONFIGS:
+    for display_name, dir_name, layer_key in MODEL_CONFIGS:
         emb_dir = EMB_BASE / dir_name
         if not emb_dir.exists():
             print(f"Warning: missing {emb_dir}, skipping {display_name}")
             continue
         emb_dirs[display_name] = emb_dir
+        layer_keys[display_name] = layer_key
         model_names.append(display_name)
 
     if len(model_names) < 2:
@@ -175,13 +182,23 @@ def main():
 
     # ── Find common datasets ─────────────────────────────────────────────
     print("Finding common datasets...")
-    common_datasets = find_common_datasets(emb_dirs)
+    # find_common_datasets expects tabarena_*.npz; handle both conventions
+    dataset_sets = []
+    for name, emb_dir in emb_dirs.items():
+        datasets = set(
+            f.stem.replace("tabarena_", "")
+            for f in emb_dir.glob("*.npz")
+            if f.stem != "layer_names"
+        )
+        print(f"  {name}: {len(datasets)} datasets")
+        dataset_sets.append(datasets)
+    common_datasets = sorted(set.intersection(*dataset_sets))
     print(f"\nUsing {len(common_datasets)} common datasets\n")
 
     # ── Compute CKA matrix ───────────────────────────────────────────────
     print("Computing pairwise CKA (per-dataset, then averaged)...")
     mean_matrix, std_matrix = compute_cka_matrix(
-        emb_dirs, model_names, common_datasets
+        emb_dirs, layer_keys, model_names, common_datasets
     )
 
     # ── Print summary to stdout ──────────────────────────────────────────
