@@ -340,6 +340,11 @@ def run_dataset(
     gap_closed = np.full(n_query, np.nan, dtype=np.float32)
     preds_intervened = baseline_preds_w.copy()
 
+    # Track per-feature acceptance across all rows
+    from collections import Counter
+    feature_tried = Counter()    # fi -> n_rows where it was a candidate
+    feature_accepted = Counter() # fi -> n_rows where it was accepted
+
     t0 = time.time()
     for r in range(n_query):
         if not strong_wins[r]:
@@ -365,15 +370,17 @@ def run_dataset(
         # Compute individual transfer deltas using pre-computed virtual atoms
         # Try both +delta and -delta (cross-correlation uses |r|, sign may flip)
         per_feature_deltas = []
+        delta_to_feature = []  # maps delta index -> (feature_idx, sign)
         for _, fi, _ in firing_unmatched:
             a_s = float(h_strong[r, fi])
             virtual_atom = virtual_atoms_cache[fi]
             delta_raw = a_s * virtual_atom * ds_std_w
-            # Add both +delta and -delta as separate candidates
             per_feature_deltas.append(
                 torch.tensor(delta_raw, dtype=torch.float32, device=device))
+            delta_to_feature.append((fi, +1))
             per_feature_deltas.append(
                 torch.tensor(-delta_raw, dtype=torch.float32, device=device))
+            delta_to_feature.append((fi, -1))
 
         K = len(per_feature_deltas)
 
@@ -454,6 +461,16 @@ def run_dataset(
 
             offset = batch_end
 
+        # Track which features were tried and accepted
+        tried_features = set(fi for _, fi, _ in firing_unmatched)
+        accepted_features_r = set(
+            delta_to_feature[j][0] for j in accepted_combo
+        ) if accepted_combo else set()
+        for fi in tried_features:
+            feature_tried[fi] += 1
+        for fi in accepted_features_r:
+            feature_accepted[fi] += 1
+
         accepted_k = len(accepted_combo)
         if accepted_k > 0:
             optimal_k[r] = accepted_k
@@ -521,6 +538,12 @@ def run_dataset(
         "n_landmarks": int(len(filt_pairs)),
         "n_virtual_atoms": int(len(virtual_atoms_cache)),
         "acceptance_rate": float(acceptance_rate),
+        # Per-feature acceptance: which concepts transferred successfully
+        # Arrays of (feature_idx, n_tried, n_accepted) for post-analysis
+        "feature_acceptance": np.array(
+            [(fi, feature_tried[fi], feature_accepted[fi])
+             for fi in sorted(feature_tried.keys())],
+            dtype=np.int32) if feature_tried else np.array([], dtype=np.int32),
     }
 
 
