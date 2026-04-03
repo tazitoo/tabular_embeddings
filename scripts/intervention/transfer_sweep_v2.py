@@ -489,6 +489,12 @@ def run_dataset(
     valid_gc = gap_closed[strong_wins]
     valid_gc = valid_gc[~np.isnan(valid_gc)]
 
+    # Acceptance rate: rows with k>0 among strong-wins
+    n_accepted = int((optimal_k[strong_wins] > 0).sum())
+    acceptance_rate = n_accepted / max(n_strong_wins, 1)
+    logger.info(f"  Acceptance rate: {n_accepted}/{n_strong_wins} "
+                f"({acceptance_rate:.0%}), mean_gc={float(valid_gc.mean()) if len(valid_gc) else 0:.3f}")
+
     return {
         "strong_model": strong,
         "weak_model": weak,
@@ -510,6 +516,11 @@ def run_dataset(
         "metric_name": metric_name,
         "y_query": y_query.astype(np.float32),
         "row_indices": row_indices_a.astype(np.int32),
+        # Transfer diagnostics
+        "concept_map_r2": float(r2_global),
+        "n_landmarks": int(len(filt_pairs)),
+        "n_virtual_atoms": int(len(virtual_atoms_cache)),
+        "acceptance_rate": float(acceptance_rate),
     }
 
 
