@@ -29,6 +29,8 @@ MODEL_CONFIGS = [
     ("TabICL-v2", "tabicl_v2", "layer_11"),
     ("TabDPT", "tabdpt", "layer_13"),
     ("CARTE", "carte", "layer_2"),
+    ("HyperFast", "hyperfast", "layer_1"),
+    ("Tabula-8B", "tabula8b", "layer_13"),
 ]
 
 EMB_BASE = PROJECT_ROOT / "output" / "sae_training_round9" / "embeddings"
