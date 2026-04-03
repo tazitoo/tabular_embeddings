@@ -24,7 +24,7 @@ from scripts.sae.compare_sae_cross_model import find_common_datasets
 # (display_name, dir_name, extraction_layer_key)
 MODEL_CONFIGS = [
     ("TabPFN", "tabpfn", "layer_18"),
-    ("Mitra", "mitra", "layer_11"),
+    ("Mitra", "mitra", "final_norm"),
     ("TabICL", "tabicl", "layer_9"),
     ("TabICL-v2", "tabicl_v2", "layer_11"),
     ("TabDPT", "tabdpt", "layer_13"),
