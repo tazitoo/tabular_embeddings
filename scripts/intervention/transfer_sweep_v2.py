@@ -43,7 +43,8 @@ from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 from scripts.intervention.transfer_virtual_nodes import (
     extract_decoder_atoms,
     load_cross_correlations,
-    compute_local_transfer_delta,
+    fit_concept_map,
+    filter_landmarks,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -264,8 +265,65 @@ def run_dataset(
     feature_indices = imp_strong["feature_indices"]
     unmatched_set = set(unmatched)
 
-    # Fit local ridge map per row (once), compute per-feature transfer deltas
-    from sklearn.linear_model import Ridge
+    # Fit GLOBAL concept map on all matched decoder atom pairs (well-determined)
+    matched_src_indices = [si for si, _ in m_pairs]
+    matched_tgt_indices = [ti for _, ti in m_pairs]
+    matched_src_atoms = atoms_strong[matched_src_indices]
+    matched_tgt_atoms = atoms_weak[matched_tgt_indices]
+
+    # Filter landmarks: sign-correct and remove low-quality pairs
+    filt_src, filt_tgt, filt_pairs, quality = filter_landmarks(
+        matched_src_atoms, matched_tgt_atoms, m_pairs,
+        min_cosine=0.0, alpha=1.0,
+    )
+    logger.info(f"  Landmark filtering: {quality['n_kept']}/{quality['n_input']} kept"
+                f" (mean LOO cosine={quality.get('mean_cosine', 0):.3f})")
+
+    if len(filt_pairs) < 5:
+        logger.info(f"  SKIP (too few landmarks after filtering: {len(filt_pairs)})")
+        return {
+            "strong_model": strong, "weak_model": weak,
+            "n_strong_wins": n_strong_wins, "n_query": n_query,
+            "metric_strong": float(metric_strong),
+            "metric_weak": float(metric_weak), "metric_name": metric_name,
+        }
+
+    M_global, r2_global = fit_concept_map(filt_src, filt_tgt, alpha=1.0)
+    logger.info(f"  Global concept map: {filt_src.shape[0]} pairs, "
+                f"R²={r2_global:.3f}, M shape={M_global.shape}")
+
+    # Pre-compute magnitude correction: median target/source norm ratio
+    # from matched pairs, for calibrating virtual atom norms
+    src_norms_matched = np.linalg.norm(filt_src, axis=1)
+    tgt_norms_matched = np.linalg.norm(filt_tgt, axis=1)
+    valid_norms = (src_norms_matched > 1e-8) & (tgt_norms_matched > 1e-8)
+    if valid_norms.sum() > 0:
+        norm_ratios = tgt_norms_matched[valid_norms] / src_norms_matched[valid_norms]
+        median_norm_ratio = float(np.median(norm_ratios))
+    else:
+        median_norm_ratio = 1.0
+
+    d_target = atoms_weak.shape[1]
+
+    # Pre-compute virtual atoms for ALL unmatched features using the global map
+    # For each unmatched feature: virtual_atom = M @ unit_atom_strong, then scale
+    virtual_atoms_cache = {}
+    for fi in unmatched:
+        atom_s = atoms_strong[fi]
+        atom_norm = np.linalg.norm(atom_s)
+        if atom_norm < 1e-8:
+            continue
+        unit_atom_s = atom_s / atom_norm
+        # Apply global map to unit vector, then scale by magnitude correction
+        virtual_dir = unit_atom_s @ M_global.T  # (d_target,)
+        vdir_norm = np.linalg.norm(virtual_dir)
+        if vdir_norm < 1e-8:
+            continue
+        # Normalize direction, then apply magnitude: source_norm * median_ratio
+        virtual_atom = (virtual_dir / vdir_norm) * atom_norm * median_norm_ratio
+        virtual_atoms_cache[fi] = virtual_atom
+
+    logger.info(f"  Pre-computed {len(virtual_atoms_cache)}/{len(unmatched)} virtual atoms")
 
     # Per-row combinatorial greedy search (mirrors ablation_sweep)
     from itertools import combinations as combos
@@ -281,31 +339,11 @@ def run_dataset(
             gap_closed[r] = 1.0
             continue
 
-        # Fit local ridge from matched pairs that fire on this row
-        d_target = atoms_weak.shape[1]
-        source_contribs, target_contribs = [], []
-        for si, ti in m_pairs:
-            a_s = float(h_strong[r, si])
-            a_t = float(h_weak[r, ti])
-            if a_s > 0 and a_t > 0:
-                source_contribs.append(a_s * atoms_strong[si])
-                target_contribs.append(a_t * atoms_weak[ti])
-
-        if len(source_contribs) < 3:
-            optimal_k[r] = 0
-            gap_closed[r] = 0.0
-            continue
-
-        reg = Ridge(alpha=1.0, fit_intercept=False)
-        reg.fit(np.stack(source_contribs), np.stack(target_contribs))
-
-        # Compute per-feature transfer deltas for unmatched features that fire
         # Find unmatched features that fire on this row, rank by abs(importance)
-        # Sign in strong model's space doesn't predict sign after ridge map
         row_drops = row_feature_drops[r]
         firing_unmatched = []
         for i, fi in enumerate(feature_indices):
-            if fi in unmatched_set and h_strong[r, fi] > 0:
+            if fi in unmatched_set and h_strong[r, fi] > 0 and fi in virtual_atoms_cache:
                 firing_unmatched.append((i, fi, abs(row_drops[i])))
 
         if not firing_unmatched:
@@ -316,15 +354,18 @@ def run_dataset(
         # Sort by importance magnitude (descending)
         firing_unmatched.sort(key=lambda x: -x[2])
 
-        # Compute individual transfer deltas
+        # Compute individual transfer deltas using pre-computed virtual atoms
+        # Try both +delta and -delta (cross-correlation uses |r|, sign may flip)
         per_feature_deltas = []
         for _, fi, _ in firing_unmatched:
             a_s = float(h_strong[r, fi])
-            contrib_s = a_s * atoms_strong[fi]
-            contrib_t = reg.predict(contrib_s.reshape(1, -1))[0]
-            delta_raw = contrib_t * ds_std_w
+            virtual_atom = virtual_atoms_cache[fi]
+            delta_raw = a_s * virtual_atom * ds_std_w
+            # Add both +delta and -delta as separate candidates
             per_feature_deltas.append(
                 torch.tensor(delta_raw, dtype=torch.float32, device=device))
+            per_feature_deltas.append(
+                torch.tensor(-delta_raw, dtype=torch.float32, device=device))
 
         K = len(per_feature_deltas)
 
