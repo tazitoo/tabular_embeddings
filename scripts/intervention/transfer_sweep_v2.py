@@ -45,6 +45,7 @@ from scripts.intervention.transfer_virtual_nodes import (
     load_cross_correlations,
     fit_concept_map,
     filter_landmarks,
+    compute_local_virtual_atoms,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -128,6 +129,7 @@ def run_dataset(
     device: str,
     max_steps: int,
     min_cosine: float = 0.0,
+    use_local_map: bool = False,
 ) -> dict:
     """Transfer strong model's unique concepts into weak model for one dataset.
 
@@ -295,44 +297,57 @@ def run_dataset(
             "metric_weak": float(metric_weak), "metric_name": metric_name,
         }
 
-    t1 = time.time()
-    M_global, r2_global = fit_concept_map(filt_src, filt_tgt, alpha=1.0)
-    logger.info(f"  Global concept map: {filt_src.shape[0]} pairs, "
-                f"R²={r2_global:.3f}, M shape={M_global.shape}"
-                f" in {time.time() - t1:.2f}s")
-
-    # Pre-compute magnitude correction: median target/source norm ratio
-    # from matched pairs, for calibrating virtual atom norms
-    src_norms_matched = np.linalg.norm(filt_src, axis=1)
-    tgt_norms_matched = np.linalg.norm(filt_tgt, axis=1)
-    valid_norms = (src_norms_matched > 1e-8) & (tgt_norms_matched > 1e-8)
-    if valid_norms.sum() > 0:
-        norm_ratios = tgt_norms_matched[valid_norms] / src_norms_matched[valid_norms]
-        median_norm_ratio = float(np.median(norm_ratios))
-    else:
-        median_norm_ratio = 1.0
-
     d_target = atoms_weak.shape[1]
 
-    # Pre-compute virtual atoms for ALL unmatched features using the global map
-    # For each unmatched feature: virtual_atom = M @ unit_atom_strong, then scale
-    virtual_atoms_cache = {}
-    for fi in unmatched:
-        atom_s = atoms_strong[fi]
-        atom_norm = np.linalg.norm(atom_s)
-        if atom_norm < 1e-8:
-            continue
-        unit_atom_s = atom_s / atom_norm
-        # Apply global map to unit vector, then scale by magnitude correction
-        virtual_dir = unit_atom_s @ M_global.T  # (d_target,)
-        vdir_norm = np.linalg.norm(virtual_dir)
-        if vdir_norm < 1e-8:
-            continue
-        # Normalize direction, then apply magnitude: source_norm * median_ratio
-        virtual_atom = (virtual_dir / vdir_norm) * atom_norm * median_norm_ratio
-        virtual_atoms_cache[fi] = virtual_atom
+    if use_local_map:
+        # Local K-nearest-neighbor maps per unmatched feature
+        t1 = time.time()
+        virtual_dirs, virtual_scales = compute_local_virtual_atoms(
+            atoms_strong, atoms_weak, filt_pairs, unmatched,
+            n_neighbors=8, alpha=1.0,
+        )
+        virtual_atoms_cache = {}
+        for u, fi in enumerate(unmatched):
+            if np.linalg.norm(virtual_dirs[u]) > 1e-8:
+                virtual_atoms_cache[fi] = virtual_dirs[u] * virtual_scales[u]
+        r2_global = 0.0  # not applicable for local maps
+        logger.info(f"  Local virtual atoms (K=8): "
+                    f"{len(virtual_atoms_cache)}/{len(unmatched)} computed"
+                    f" in {time.time() - t1:.2f}s")
+    else:
+        # Global concept map
+        t1 = time.time()
+        M_global, r2_global = fit_concept_map(filt_src, filt_tgt, alpha=1.0)
+        logger.info(f"  Global concept map: {filt_src.shape[0]} pairs, "
+                    f"R²={r2_global:.3f}, M shape={M_global.shape}"
+                    f" in {time.time() - t1:.2f}s")
 
-    logger.info(f"  Pre-computed {len(virtual_atoms_cache)}/{len(unmatched)} virtual atoms")
+        # Pre-compute magnitude correction: median target/source norm ratio
+        src_norms_matched = np.linalg.norm(filt_src, axis=1)
+        tgt_norms_matched = np.linalg.norm(filt_tgt, axis=1)
+        valid_norms = (src_norms_matched > 1e-8) & (tgt_norms_matched > 1e-8)
+        if valid_norms.sum() > 0:
+            norm_ratios = tgt_norms_matched[valid_norms] / src_norms_matched[valid_norms]
+            median_norm_ratio = float(np.median(norm_ratios))
+        else:
+            median_norm_ratio = 1.0
+
+        # Pre-compute virtual atoms using the global map
+        virtual_atoms_cache = {}
+        for fi in unmatched:
+            atom_s = atoms_strong[fi]
+            atom_norm = np.linalg.norm(atom_s)
+            if atom_norm < 1e-8:
+                continue
+            unit_atom_s = atom_s / atom_norm
+            virtual_dir = unit_atom_s @ M_global.T
+            vdir_norm = np.linalg.norm(virtual_dir)
+            if vdir_norm < 1e-8:
+                continue
+            virtual_atom = (virtual_dir / vdir_norm) * atom_norm * median_norm_ratio
+            virtual_atoms_cache[fi] = virtual_atom
+
+        logger.info(f"  Pre-computed {len(virtual_atoms_cache)}/{len(unmatched)} virtual atoms")
 
     # Per-row combinatorial greedy search (mirrors ablation_sweep)
     from itertools import combinations as combos
@@ -561,6 +576,8 @@ def main():
                         help="Min LOO cosine to keep landmark pairs (default: 0.0)")
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="Output directory (default: output/transfer_sweep_v2)")
+    parser.add_argument("--local-map", action="store_true",
+                        help="Use per-feature local K-NN maps instead of global ridge")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -624,6 +641,7 @@ def main():
                 saes, splits, norm_stats, test_embeddings,
                 matched_pairs, unmatched_features,
                 args.device, args.max_steps, args.min_cosine,
+                args.local_map,
             )
             np.savez_compressed(str(out_path), **result)
 
