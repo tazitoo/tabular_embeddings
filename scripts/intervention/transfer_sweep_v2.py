@@ -127,6 +127,7 @@ def run_dataset(
     unmatched_features: dict,
     device: str,
     max_steps: int,
+    min_cosine: float = 0.0,
 ) -> dict:
     """Transfer strong model's unique concepts into weak model for one dataset.
 
@@ -279,7 +280,7 @@ def run_dataset(
     t1 = time.time()
     filt_src, filt_tgt, filt_pairs, quality = filter_landmarks(
         matched_src_atoms, matched_tgt_atoms, m_pairs,
-        min_cosine=0.0, alpha=1.0,
+        min_cosine=min_cosine, alpha=1.0,
     )
     logger.info(f"  Landmark filtering: {quality['n_kept']}/{quality['n_input']} kept"
                 f" (mean LOO cosine={quality.get('mean_cosine', 0):.3f})"
@@ -556,6 +557,8 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-steps", type=int, default=64)
+    parser.add_argument("--min-cosine", type=float, default=0.0,
+                        help="Min LOO cosine to keep landmark pairs (default: 0.0)")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -618,7 +621,7 @@ def main():
                 model_a, model_b, ds,
                 saes, splits, norm_stats, test_embeddings,
                 matched_pairs, unmatched_features,
-                args.device, args.max_steps,
+                args.device, args.max_steps, args.min_cosine,
             )
             np.savez_compressed(str(out_path), **result)
 
