@@ -516,12 +516,31 @@ def run_dataset(
                 cand_preds = batched_intervention(
                     tail_w, X_row, deltas_batch, inject_context=False)
 
-            # Find best subset
+            # Find best subset (reject overshoots past the strong model)
             best_c = None
             best_c_dist = current_dist
             for c in range(n_combos):
                 d = dist_to_strong(cand_preds[c])
                 if d < best_c_dist:
+                    # Overshoot check: prediction should stay between
+                    # baseline weak and strong, not go past strong
+                    if baseline_preds_w.ndim == 2:
+                        p_intervened = cand_preds[c][y_r]
+                        p_strong = strong_preds[r, y_r]
+                        p_weak = baseline_preds_w[r, y_r]
+                        # Reject if intervened overshot past strong
+                        if p_weak < p_strong and p_intervened > p_strong:
+                            continue
+                        if p_weak > p_strong and p_intervened < p_strong:
+                            continue
+                    else:
+                        p_intervened = float(cand_preds[c])
+                        p_strong = float(strong_preds[r])
+                        p_weak = float(baseline_preds_w[r])
+                        if p_weak < p_strong and p_intervened > p_strong:
+                            continue
+                        if p_weak > p_strong and p_intervened < p_strong:
+                            continue
                     best_c = c
                     best_c_dist = d
 
