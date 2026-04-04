@@ -130,6 +130,7 @@ def run_dataset(
     max_steps: int,
     min_cosine: float = 0.0,
     use_local_map: bool = False,
+    use_adaptive_local: bool = False,
 ) -> dict:
     """Transfer strong model's unique concepts into weak model for one dataset.
 
@@ -300,7 +301,7 @@ def run_dataset(
     d_target = atoms_weak.shape[1]
 
     if use_local_map:
-        # Local K-nearest-neighbor maps per unmatched feature
+        # Local K-nearest-neighbor maps per unmatched feature (fixed K=8)
         t1 = time.time()
         virtual_dirs, virtual_scales = compute_local_virtual_atoms(
             atoms_strong, atoms_weak, filt_pairs, unmatched,
@@ -310,10 +311,64 @@ def run_dataset(
         for u, fi in enumerate(unmatched):
             if np.linalg.norm(virtual_dirs[u]) > 1e-8:
                 virtual_atoms_cache[fi] = virtual_dirs[u] * virtual_scales[u]
-        r2_global = 0.0  # not applicable for local maps
+        r2_global = 0.0
         logger.info(f"  Local virtual atoms (K=8): "
                     f"{len(virtual_atoms_cache)}/{len(unmatched)} computed"
                     f" in {time.time() - t1:.2f}s")
+    elif use_adaptive_local:
+        # Adaptive local maps: include all neighbors with |cosine| > threshold
+        from sklearn.metrics.pairwise import cosine_similarity
+        from sklearn.linear_model import Ridge as _Ridge
+
+        t1 = time.time()
+        noise_floor = 0.20  # mean random SAE cosine
+        sim_threshold = 2.0 * noise_floor  # 0.40
+
+        matched_src_indices = [si for si, _ in filt_pairs]
+        matched_tgt_indices = [ti for _, ti in filt_pairs]
+        matched_src_atoms = atoms_strong[matched_src_indices]
+        matched_tgt_atoms = atoms_weak[matched_tgt_indices]
+
+        src_norms = np.linalg.norm(matched_src_atoms, axis=1, keepdims=True)
+        tgt_norms = np.linalg.norm(matched_tgt_atoms, axis=1, keepdims=True)
+        src_norms[src_norms < 1e-8] = 1.0
+        tgt_norms[tgt_norms < 1e-8] = 1.0
+        matched_src_unit = matched_src_atoms / src_norms
+        matched_tgt_unit = matched_tgt_atoms / tgt_norms
+
+        virtual_atoms_cache = {}
+        neighbor_counts = []
+        for fi in unmatched:
+            atom_s = atoms_strong[fi]
+            atom_norm = np.linalg.norm(atom_s)
+            if atom_norm < 1e-8:
+                continue
+            query_unit = (atom_s / atom_norm).reshape(1, -1)
+
+            sims = cosine_similarity(query_unit, matched_src_unit)[0]
+            mask = np.abs(sims) >= sim_threshold
+            K = int(mask.sum())
+            if K < 3:
+                continue
+            neighbor_counts.append(K)
+
+            idx = np.where(mask)[0]
+            reg = _Ridge(alpha=1.0, fit_intercept=False)
+            reg.fit(matched_src_unit[idx], matched_tgt_unit[idx])
+            direction = reg.predict(query_unit)[0]
+            dir_norm = np.linalg.norm(direction)
+            if dir_norm < 1e-8:
+                continue
+
+            local_ratios = tgt_norms[idx].ravel() / src_norms[idx].ravel()
+            scale = float(np.median(local_ratios)) * atom_norm
+            virtual_atoms_cache[fi] = (direction / dir_norm) * scale
+
+        r2_global = 0.0
+        mean_k = np.mean(neighbor_counts) if neighbor_counts else 0
+        logger.info(f"  Adaptive local atoms (threshold={sim_threshold:.2f}): "
+                    f"{len(virtual_atoms_cache)}/{len(unmatched)} computed, "
+                    f"mean K={mean_k:.1f} in {time.time() - t1:.2f}s")
     else:
         # Global concept map
         t1 = time.time()
@@ -578,6 +633,8 @@ def main():
                         help="Output directory (default: output/transfer_sweep_v2)")
     parser.add_argument("--local-map", action="store_true",
                         help="Use per-feature local K-NN maps instead of global ridge")
+    parser.add_argument("--local-map-adaptive", action="store_true",
+                        help="Use adaptive local maps (neighbors with cosine > 2x noise floor)")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -641,7 +698,7 @@ def main():
                 saes, splits, norm_stats, test_embeddings,
                 matched_pairs, unmatched_features,
                 args.device, args.max_steps, args.min_cosine,
-                args.local_map,
+                args.local_map, args.local_map_adaptive,
             )
             np.savez_compressed(str(out_path), **result)
 
