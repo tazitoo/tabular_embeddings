@@ -559,6 +559,8 @@ def main():
     parser.add_argument("--max-steps", type=int, default=64)
     parser.add_argument("--min-cosine", type=float, default=0.0,
                         help="Min LOO cosine to keep landmark pairs (default: 0.0)")
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Output directory (default: output/transfer_sweep_v2)")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -598,7 +600,7 @@ def main():
     else:
         datasets = available
 
-    out_dir = OUTPUT_DIR / pair_name
+    out_dir = (args.output_dir if args.output_dir else OUTPUT_DIR) / pair_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Transfer sweep: {model_a} vs {model_b}")
