@@ -88,31 +88,23 @@ def get_matched_pairs(source_model: str, target_model: str,
     return pairs
 
 
+from scripts.intervention.ablation_sweep import (  # noqa: E402
+    get_unmatched_features as _get_unmatched_from_ablation,
+)
+
+
 def get_unmatched_features(source_model: str, target_model: str,
-                           concept_labels_path=None):
-    """Get source features NOT matched to the target model."""
-    from scripts.intervention.intervene_lib import (
-        get_alive_features, MODEL_KEY_TO_LABEL_KEY, DEFAULT_CONCEPT_LABELS,
+                           concept_labels_path=None, matching_file=None):
+    """Get source features NOT matched to the target model.
+
+    Delegates to ablation_sweep.get_unmatched_features which supports
+    both concept_labels_path and matching_file modes.
+    """
+    return _get_unmatched_from_ablation(
+        source_model, target_model,
+        concept_labels_path=concept_labels_path,
+        matching_file=matching_file,
     )
-    if concept_labels_path is None:
-        concept_labels_path = DEFAULT_CONCEPT_LABELS
-
-    with open(concept_labels_path) as f:
-        data = json.load(f)
-
-    src_key = MODEL_KEY_TO_LABEL_KEY.get(source_model, source_model)
-    tgt_key = MODEL_KEY_TO_LABEL_KEY.get(target_model, target_model)
-
-    matched_source = set()
-    for group in data.get("concept_groups", {}).values():
-        members = group.get("members", [])
-        models_in_group = set(m for m, _ in members)
-        if src_key in models_in_group and tgt_key in models_in_group:
-            for m, f in members:
-                if m == src_key:
-                    matched_source.add(f)
-
-    all_source = set(get_alive_features(source_model, concept_labels_path))
     return sorted(all_source - matched_source)
 
 
@@ -131,6 +123,7 @@ def run_dataset(
     min_cosine: float = 0.0,
     use_local_map: bool = False,
     use_adaptive_local: bool = False,
+    importance_dir: Path = None,
 ) -> dict:
     """Transfer strong model's unique concepts into weak model for one dataset.
 
@@ -141,9 +134,10 @@ def run_dataset(
     4. Compute per-row local transfer deltas
     5. Greedy accept/reject per row
     """
+    imp_dir = importance_dir if importance_dir else IMPORTANCE_DIR
     # Load cached baseline predictions from perrow_importance
-    imp_a = np.load(IMPORTANCE_DIR / model_a / f"{dataset}.npz", allow_pickle=True)
-    imp_b = np.load(IMPORTANCE_DIR / model_b / f"{dataset}.npz", allow_pickle=True)
+    imp_a = np.load(imp_dir / model_a / f"{dataset}.npz", allow_pickle=True)
+    imp_b = np.load(imp_dir / model_b / f"{dataset}.npz", allow_pickle=True)
     preds_a = imp_a["baseline_preds"]
     preds_b = imp_b["baseline_preds"]
     row_indices_a = imp_a["row_indices"]
@@ -268,7 +262,7 @@ def run_dataset(
     use_mitra = isinstance(tail_w, MitraTail)
 
     # Load strong model's perrow_importance for feature ranking
-    imp_strong = np.load(IMPORTANCE_DIR / strong / f"{dataset}.npz", allow_pickle=True)
+    imp_strong = np.load(imp_dir / strong / f"{dataset}.npz", allow_pickle=True)
     row_feature_drops = imp_strong["row_feature_drops"]
     feature_indices = imp_strong["feature_indices"]
     unmatched_set = set(unmatched)
@@ -654,6 +648,12 @@ def main():
                         help="Use per-feature local K-NN maps instead of global ridge")
     parser.add_argument("--local-map-adaptive", action="store_true",
                         help="Use adaptive local maps (neighbors with cosine > 2x noise floor)")
+    parser.add_argument("--sae-dir", type=Path, default=None,
+                        help="SAE checkpoint directory (default: sweep round10)")
+    parser.add_argument("--importance-dir", type=Path, default=None,
+                        help="Per-row importance directory (default: output/perrow_importance)")
+    parser.add_argument("--matching-file", type=Path, default=None,
+                        help="Raw matching JSON for unmatched features")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -662,11 +662,13 @@ def main():
     splits = json.loads(SPLITS_PATH.read_text())
 
     # Load SAEs, norm stats, test embeddings for both models
+    sae_dir = args.sae_dir if args.sae_dir else None
     saes = {}
     norm_stats = {}
     test_embeddings = {}
     for m in (model_a, model_b):
-        sae, _ = load_sae(m, device=args.device)
+        sae, _ = load_sae(m, device=args.device,
+                          **({"sae_dir": sae_dir} if sae_dir else {}))
         sae.eval()
         saes[m] = sae
         norm_stats[m] = load_norm_stats_matching(m)
@@ -678,14 +680,16 @@ def main():
     for source, target in [(model_a, model_b), (model_b, model_a)]:
         key = f"{source}_to_{target}"
         m_pairs = get_matched_pairs(source, target)
-        unmatched = get_unmatched_features(source, target)
+        unmatched = get_unmatched_features(
+            source, target, matching_file=args.matching_file)
         matched_pairs[key] = m_pairs
         unmatched_features[key] = unmatched
         logger.info(f"  {key}: {len(m_pairs)} matched pairs, {len(unmatched)} unmatched")
 
     # Find datasets where both models have importance data
-    ds_a = set(d.stem for d in (IMPORTANCE_DIR / model_a).glob("*.npz"))
-    ds_b = set(d.stem for d in (IMPORTANCE_DIR / model_b).glob("*.npz"))
+    imp_dir = args.importance_dir if args.importance_dir else IMPORTANCE_DIR
+    ds_a = set(d.stem for d in (imp_dir / model_a).glob("*.npz"))
+    ds_b = set(d.stem for d in (imp_dir / model_b).glob("*.npz"))
     available = sorted(ds_a & ds_b)
 
     if args.datasets:
@@ -718,6 +722,7 @@ def main():
                 matched_pairs, unmatched_features,
                 args.device, args.max_steps, args.min_cosine,
                 args.local_map, args.local_map_adaptive,
+                importance_dir=imp_dir,
             )
             np.savez_compressed(str(out_path), **result)
 
