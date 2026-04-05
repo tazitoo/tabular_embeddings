@@ -773,6 +773,7 @@ def main():
     # Match all pairs
     pairs = {}
     summary = {}
+    is_tiered = args.method in ("tiered", "tiered_m2o")
     for name_a, name_b in combinations(model_names, 2):
         pair_key = f"{name_a}__{name_b}"
         print(f"\nMatching: {pair_key}")
@@ -808,11 +809,11 @@ def main():
         result.pop("indices_b", None)
 
         # Apply noise floor filter
-        is_tiered = args.method in ("tiered", "tiered_m2o")
         if noise_thresholds is not None and not is_tiered:
             filtered, n_removed = filter_matches_by_noise_floor(
                 result["matches"], name_a, name_b, noise_thresholds,
             )
+            result["n_removed_noise_floor"] = n_removed
             if n_removed > 0:
                 matched_a = {m["idx_a"] for m in filtered}
                 matched_b = {m["idx_b"] for m in filtered}
@@ -822,7 +823,6 @@ def main():
                 result["unmatched_a"] = sorted(all_a - matched_a)
                 result["unmatched_b"] = sorted(all_b - matched_b)
                 result["n_matched"] = len(filtered)
-                result["n_removed_noise_floor"] = n_removed
                 result["mean_match_r"] = (
                     float(np.mean([m["r"] for m in filtered])) if filtered else 0.0
                 )
