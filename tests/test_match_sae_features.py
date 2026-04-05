@@ -20,6 +20,9 @@ from scripts.match_sae_features import (
     match_model_pair,
     match_mutual_nearest_neighbors,
 )
+import importlib as _importlib
+_mnn_mod = _importlib.import_module("scripts.matching.01_match_sae_concepts_mnn")
+filter_matches_by_noise_floor = _mnn_mod.filter_matches_by_noise_floor
 
 
 # ── TestGetAliveMask ───────────────────────────────────────────────────────
@@ -28,25 +31,25 @@ from scripts.match_sae_features import (
 class TestGetAliveMask:
     def test_correct_shape(self):
         acts = np.array([[0.5, 0.0, 0.3], [0.0, 0.0, 0.1]])
-        mask = get_alive_mask(acts, threshold=0.001)
+        mask = get_alive_mask(acts)
         assert mask.shape == (3,)
 
     def test_dead_features_excluded(self):
         acts = np.array([[0.5, 0.0, 0.3], [0.2, 0.0, 0.0]])
-        mask = get_alive_mask(acts, threshold=0.001)
+        mask = get_alive_mask(acts)
         assert mask[0] is np.True_
         assert mask[1] is np.False_
         assert mask[2] is np.True_
 
-    def test_threshold_sensitivity(self):
+    def test_any_positive_is_alive(self):
+        """With TopK, any activation > 0 means the feature fired."""
         acts = np.array([[0.01, 0.001, 0.0005]])
-        assert get_alive_mask(acts, threshold=0.005).sum() == 1  # only 0.01
-        assert get_alive_mask(acts, threshold=0.0005).sum() == 2  # 0.01 and 0.001
-        assert get_alive_mask(acts, threshold=0.0001).sum() == 3  # all
+        mask = get_alive_mask(acts)
+        assert mask.sum() == 3  # all > 0
 
     def test_all_dead(self):
         acts = np.zeros((10, 5))
-        mask = get_alive_mask(acts, threshold=0.001)
+        mask = get_alive_mask(acts)
         assert mask.sum() == 0
 
 
@@ -345,3 +348,47 @@ class TestMatchModelPair:
         b_vals = [m["idx_b"] for m in result["matches"]]
         assert len(set(a_vals)) == len(a_vals)
         assert len(set(b_vals)) == len(b_vals)
+
+
+# ── TestFilterMatchesByNoiseFloor ──────────────────────────────────────────
+
+
+class TestFilterMatchesByNoiseFloor:
+    def test_filters_below_threshold(self):
+        matches = [
+            {"idx_a": 0, "idx_b": 0, "r": 0.5},
+            {"idx_a": 1, "idx_b": 1, "r": 0.1},  # below noise floor
+            {"idx_a": 2, "idx_b": 2, "r": 0.3},
+        ]
+        thresholds = {("A", "B"): 0.2, ("B", "A"): 0.15}
+        filtered, n_removed = filter_matches_by_noise_floor(
+            matches, "A", "B", thresholds
+        )
+        assert n_removed == 1
+        assert len(filtered) == 2
+        assert all(m["r"] >= 0.2 for m in filtered)
+
+    def test_uses_max_of_both_directions(self):
+        """Effective threshold is max(A->B, B->A) since both must pass."""
+        matches = [
+            {"idx_a": 0, "idx_b": 0, "r": 0.25},  # above A->B but below B->A
+        ]
+        thresholds = {("A", "B"): 0.2, ("B", "A"): 0.3}
+        filtered, n_removed = filter_matches_by_noise_floor(
+            matches, "A", "B", thresholds
+        )
+        assert n_removed == 1
+        assert len(filtered) == 0
+
+    def test_missing_baseline_keeps_all(self):
+        matches = [{"idx_a": 0, "idx_b": 0, "r": 0.05}]
+        filtered, n_removed = filter_matches_by_noise_floor(
+            matches, "A", "B", {}
+        )
+        assert n_removed == 0
+        assert len(filtered) == 1
+
+    def test_empty_matches(self):
+        filtered, n_removed = filter_matches_by_noise_floor([], "A", "B", {})
+        assert n_removed == 0
+        assert filtered == []
