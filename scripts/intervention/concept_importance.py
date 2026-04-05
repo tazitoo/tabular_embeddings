@@ -1972,7 +1972,7 @@ def print_causal_chain(chain_results: List[Dict], dataset_name: str) -> None:
 
 # ── Pairwise concept bookkeeping ─────────────────────────────────────────────
 
-DEFAULT_MNN_PATH = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_t0.001_n500.json"
+DEFAULT_MNN_PATH = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_floor_p90.json"
 DEFAULT_CORR_DIR = PROJECT_ROOT / "output" / "sae_cross_correlations"
 
 

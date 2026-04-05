@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Output paths
 DEFAULT_PERF_CSV = PROJECT_ROOT / "output" / "model_performance.csv"
 DEFAULT_FINGERPRINT_DIR = PROJECT_ROOT / "output" / "concept_fingerprints"
-DEFAULT_MNN_PATH = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_t0.001_n500.json"
+DEFAULT_MNN_PATH = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_floor_p90.json"
 DEFAULT_DIAGNOSTIC_PATH = PROJECT_ROOT / "output" / "concept_performance_diagnostic.json"
 DEFAULT_FIGURES_DIR = PROJECT_ROOT / "output" / "figures"
 
