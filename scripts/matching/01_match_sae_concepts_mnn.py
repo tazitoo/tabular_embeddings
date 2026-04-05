@@ -44,6 +44,55 @@ from scripts.matching.utils import (  # noqa: E402, F401
 )
 
 
+def load_noise_floor_thresholds(
+    baseline_path: Path, percentile_key: str = "p90"
+) -> Dict[Tuple[str, str], float]:
+    """Load per-pair per-direction noise floor thresholds.
+
+    Returns:
+        Dict mapping (trained_model, random_model) -> threshold.
+    """
+    with open(baseline_path) as f:
+        data = json.load(f)
+
+    thresholds = {}
+    for pair_key, stats in data["pairs"].items():
+        parts = pair_key.split("__trained_vs_")
+        if len(parts) != 2:
+            continue
+        model_a = parts[0]
+        model_b = parts[1].replace("__random", "")
+        thresholds[(model_a, model_b)] = stats[percentile_key]
+    return thresholds
+
+
+def filter_matches_by_noise_floor(
+    matches: list,
+    name_a: str,
+    name_b: str,
+    thresholds: Dict[Tuple[str, str], float],
+) -> Tuple[list, int]:
+    """Drop MNN matches below per-pair direction-specific noise floor.
+
+    Both directions must pass: r >= threshold(A->B) AND r >= threshold(B->A).
+    Since MNN matches are bidirectional and have a single r value, the effective
+    threshold is max(threshold(A->B), threshold(B->A)).
+
+    Returns:
+        (filtered_matches, n_removed)
+    """
+    t_ab = thresholds.get((name_a, name_b))
+    t_ba = thresholds.get((name_b, name_a))
+
+    if t_ab is None or t_ba is None:
+        print(f"  WARNING: no noise floor for {name_a}<->{name_b}, keeping all matches")
+        return matches, 0
+
+    threshold = max(t_ab, t_ba)
+    filtered = [m for m in matches if m["r"] >= threshold]
+    return filtered, len(matches) - len(filtered)
+
+
 # ── Cross-correlation ──────────────────────────────────────────────────────
 
 
@@ -425,10 +474,17 @@ def main():
         help="Matching method (default: mnn)",
     )
     parser.add_argument(
-        "--alive-threshold",
-        type=float,
-        default=0.001,
-        help="Min max-activation to consider a feature alive (default: 0.001)",
+        "--baseline-path",
+        type=str,
+        default="output/sae_cross_model_random_baseline.json",
+        help="Cross-model random baseline JSON for noise floor thresholds",
+    )
+    parser.add_argument(
+        "--percentile",
+        type=str,
+        default="p90",
+        choices=["p90", "p95"],
+        help="Percentile from random baseline to use as noise floor (default: p90)",
     )
     parser.add_argument(
         "--models",
@@ -469,9 +525,18 @@ def main():
         args.output = (
             f"output/sae_feature_matching"
             f"_{args.method}"
-            f"_t{args.alive_threshold}"
+            f"_floor_{args.percentile}"
             f".json"
         )
+
+    baseline_file = PROJECT_ROOT / args.baseline_path
+    noise_thresholds = None
+    if baseline_file.exists():
+        noise_thresholds = load_noise_floor_thresholds(baseline_file, args.percentile)
+        print(f"Noise floor: {args.percentile} from {baseline_file.name} "
+              f"({len(noise_thresholds)} directed pairs)")
+    else:
+        print(f"WARNING: no baseline at {baseline_file}, skipping noise floor filter")
 
     sweep_dir = Path(args.sweep_dir) if args.sweep_dir else sae_sweep_dir(args.round)
 
@@ -578,7 +643,6 @@ def main():
                 "mode": "random_baseline",
                 "n_models": len(pairs),
                 "method": args.method,
-                "alive_threshold": args.alive_threshold,
                 "split": "test",
             },
             "pairs": pairs,
@@ -587,7 +651,7 @@ def main():
         if args.output == (
             f"output/sae_feature_matching"
             f"_{args.method}"
-            f"_t{args.alive_threshold}"
+            f"_floor_{args.percentile}"
             f".json"
         ):
             args.output = args.output.replace(".json", "_random_baseline.json")
@@ -694,7 +758,7 @@ def main():
         if args.output == (
             f"output/sae_feature_matching"
             f"_{args.method}"
-            f"_t{args.alive_threshold}"
+            f"_floor_{args.percentile}"
             f".json"
         ):
             args.output = "output/sae_cross_model_random_baseline.json"
@@ -743,6 +807,27 @@ def main():
         result.pop("indices_a", None)
         result.pop("indices_b", None)
 
+        # Apply noise floor filter
+        is_tiered = args.method in ("tiered", "tiered_m2o")
+        if noise_thresholds is not None and not is_tiered:
+            filtered, n_removed = filter_matches_by_noise_floor(
+                result["matches"], name_a, name_b, noise_thresholds,
+            )
+            if n_removed > 0:
+                matched_a = {m["idx_a"] for m in filtered}
+                matched_b = {m["idx_b"] for m in filtered}
+                all_a = set(result.get("unmatched_a", [])) | {m["idx_a"] for m in result["matches"]}
+                all_b = set(result.get("unmatched_b", [])) | {m["idx_b"] for m in result["matches"]}
+                result["matches"] = filtered
+                result["unmatched_a"] = sorted(all_a - matched_a)
+                result["unmatched_b"] = sorted(all_b - matched_b)
+                result["n_matched"] = len(filtered)
+                result["n_removed_noise_floor"] = n_removed
+                result["mean_match_r"] = (
+                    float(np.mean([m["r"] for m in filtered])) if filtered else 0.0
+                )
+                print(f"  noise floor: removed {n_removed}, kept {len(filtered)}")
+
         pairs[pair_key] = result
 
         frac_a = result["n_matched"] / max(result["n_alive_a"], 1)
@@ -777,7 +862,8 @@ def main():
             "n_models": len(models),
             "n_datasets": len(datasets),
             "method": args.method,
-            "alive_threshold": args.alive_threshold,
+            "noise_floor_percentile": args.percentile,
+            "noise_floor_baseline": args.baseline_path,
             "split": "test",
             "models": model_names,
         },
