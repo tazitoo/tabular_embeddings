@@ -6,7 +6,6 @@ For each alive feature in each model, finds its best correlate across all
 partner models and classifies it as:
   - mnn: mutual nearest neighbor match AND above pair-specific threshold
   - threshold: best correlate exceeds pair-specific p90 random baseline
-  - mnn_below_threshold: MNN match but below pair threshold
   - unmatched: no correlate above noise floor in any partner
 
 Thresholds are per-pair and per-direction, derived from cross-model
@@ -169,8 +168,6 @@ def build_feature_graph(
             has_mnn = key in mnn_matches
             if has_mnn and above_any_threshold:
                 tier = "mnn"
-            elif has_mnn:
-                tier = "mnn_below_threshold"
             elif above_any_threshold:
                 tier = "threshold"
             else:
@@ -235,7 +232,7 @@ def main():
     )
     parser.add_argument(
         "--mnn-path", type=str,
-        default="output/sae_feature_matching_mnn_t0.001.json",
+        default="output/sae_feature_matching_mnn_floor_p90.json",
     )
     parser.add_argument(
         "--baseline-path", type=str,
@@ -282,18 +279,17 @@ def main():
     print(f"  {'TOTAL':<25s} {total:>6d}")
 
     print(f"\nPer-model breakdown:")
-    print(f"{'Model':<12s} {'Alive':>6s} {'MNN':>6s} {'MNN<t':>6s} {'Thresh':>7s} {'Unmatch':>8s} {'Match%':>7s}")
-    print("-" * 60)
+    print(f"{'Model':<12s} {'Alive':>6s} {'MNN':>6s} {'Thresh':>7s} {'Unmatch':>8s} {'Match%':>7s}")
+    print("-" * 52)
     for model in sorted(result["model_alive_counts"].keys()):
         alive = result["model_alive_counts"][model]
         tc = result["model_tier_counts"].get(model, {})
         mnn = tc.get("mnn", 0)
-        mnn_below = tc.get("mnn_below_threshold", 0)
         thresh = tc.get("threshold", 0)
         unmatched = tc.get("unmatched", 0)
         matched = mnn + thresh
         pct = matched / alive * 100 if alive else 0
-        print(f"{model:<12s} {alive:>6d} {mnn:>6d} {mnn_below:>6d} {thresh:>7d} {unmatched:>8d} {pct:>6.1f}%")
+        print(f"{model:<12s} {alive:>6d} {mnn:>6d} {thresh:>7d} {unmatched:>8d} {pct:>6.1f}%")
 
     # Save
     out_path = PROJECT_ROOT / args.output
