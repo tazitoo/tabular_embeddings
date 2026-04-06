@@ -106,7 +106,10 @@ def main():
 
         alive = alive_counts.get(display, 0)
         tc = tier_counts.get(display, {})
-        matched = tc.get("mnn", 0) + tc.get("threshold", 0)
+        # Matched = MNN tier only (mutual nearest neighbor above noise floor).
+        # The "threshold" tier has a best correlate above the floor but no MNN
+        # partner — these are one-sided similarities, not shared concepts.
+        matched = tc.get("mnn", 0)
         matched_pct = matched / alive * 100 if alive else 0
 
         print(f"{display}: emb_dim={emb_dim}, alive={alive}, "
