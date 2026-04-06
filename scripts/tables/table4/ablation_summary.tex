@@ -1,20 +1,20 @@
 \begin{table}[h]
 \centering
 \small
-\caption{Mean gap closed when ablating unmatched concepts, sorted by explanatory power. $N$ is the number of datasets where the model is strong.}
+\caption{Mean gap closed when ablating unmatched concepts, sorted by explanatory power. $N$ is the number of datasets where the model is strong. $K$ is the mean number of concepts ablated to close the gap.}
 \label{tab:ablation_summary}
-\begin{tabular}{lrrr}
+\begin{tabular}{lrll}
 \toprule
-Model (when strong) & N datasets & Mean gc & Median gc \\
+Model (when strong) & $N$ & Mean gc & Mean $K$ \\
 \midrule
-TabPFN & 144 & 0.976 & 0.997 \\
-TabICL-v2 & 179 & 0.975 & 0.991 \\
-TabICL & 110 & 0.880 & 0.979 \\
-TabDPT & 119 & 0.840 & 0.903 \\
-Mitra & 108 & 0.655 & 0.683 \\
-CARTE & 29 & 0.540 & 0.640 \\
+TabPFN & 144 & 0.98 $\pm$ 0.07 & 8.5 $\pm$ 4.0 \\
+TabICL-v2 & 179 & 0.97 $\pm$ 0.04 & 4.7 $\pm$ 2.6 \\
+TabICL & 110 & 0.88 $\pm$ 0.18 & 4.1 $\pm$ 1.5 \\
+TabDPT & 119 & 0.84 $\pm$ 0.18 & 2.8 $\pm$ 1.2 \\
+Mitra & 108 & 0.65 $\pm$ 0.19 & 3.1 $\pm$ 1.4 \\
+CARTE & 29 & 0.54 $\pm$ 0.30 & 12.1 $\pm$ 4.2 \\
 \midrule
-Overall & 689 & 0.868 & 0.961 \\
+Overall & 689 & 0.87 $\pm$ 0.20 & 5.1 $\pm$ 3.6 \\
 \bottomrule
 \end{tabular}
 \end{table}
