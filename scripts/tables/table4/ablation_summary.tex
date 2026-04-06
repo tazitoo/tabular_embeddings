@@ -1,20 +1,20 @@
 \begin{table}[h]
 \centering
 \small
-\caption{Mean gap closed when ablating unmatched concepts, sorted by explanatory power. $N$ is the number of datasets where the model is strong. $K$ is the mean number of concepts ablated to close the gap.}
+\caption{Ablation results by strong model, sorted by number of comparisons. $N$ = comparisons where the model is strong. \emph{gc} = mean gap closed. $\Delta$ = trained $-$ random baseline (net learned signal). $K$ = mean concepts ablated.}
 \label{tab:ablation_summary}
-\begin{tabular}{lrll}
+\begin{tabular}{lrlll}
 \toprule
-Model (when strong) & $N$ & Mean gc & Mean $K$ \\
+Model (when strong) & $N$ & gc & $\Delta$ (gc $-$ random) & $K$ \\
 \midrule
-TabPFN & 144 & 0.98 $\pm$ 0.07 & 8.5 $\pm$ 4.0 \\
-TabICL-v2 & 179 & 0.97 $\pm$ 0.04 & 4.7 $\pm$ 2.6 \\
-TabICL & 110 & 0.88 $\pm$ 0.18 & 4.1 $\pm$ 1.5 \\
-TabDPT & 119 & 0.84 $\pm$ 0.18 & 2.8 $\pm$ 1.2 \\
-Mitra & 108 & 0.65 $\pm$ 0.19 & 3.1 $\pm$ 1.4 \\
-CARTE & 29 & 0.54 $\pm$ 0.30 & 12.1 $\pm$ 4.2 \\
+TabICL-v2 & 179 & 0.97 $\pm$ 0.04 & 0.30 $\pm$ 0.24 & 4.7 $\pm$ 2.6 \\
+TabPFN & 144 & 0.98 $\pm$ 0.07 & 0.69 $\pm$ 0.17 & 8.5 $\pm$ 4.0 \\
+TabDPT & 119 & 0.84 $\pm$ 0.18 & 0.40 $\pm$ 0.16 & 2.8 $\pm$ 1.2 \\
+TabICL & 110 & 0.88 $\pm$ 0.18 & 0.37 $\pm$ 0.20 & 4.1 $\pm$ 1.5 \\
+Mitra & 108 & 0.65 $\pm$ 0.19 & 0.35 $\pm$ 0.20 & 3.1 $\pm$ 1.4 \\
+CARTE & 29 & 0.54 $\pm$ 0.30 & 0.32 $\pm$ 0.32 & 12.1 $\pm$ 4.2 \\
 \midrule
-Overall & 689 & 0.87 $\pm$ 0.20 & 5.1 $\pm$ 3.6 \\
+Overall & 689 & 0.87 $\pm$ 0.20 & 0.42 $\pm$ 0.25 & 5.1 $\pm$ 3.6 \\
 \bottomrule
 \end{tabular}
 \end{table}
