@@ -1,7 +1,7 @@
 \begin{table}[h]
 \centering
 \small
-\caption{Per-model SAE summary. \emph{Alive}: concepts with activation $>$0 on at least one test row. \emph{Matched}: fraction in a concept group with another model (above p90 noise floor). \emph{Unmatched \%FVE}: variance in unmatched concepts---the ceiling for ablation.}
+\caption{Per-model SAE summary. \emph{Alive}: concepts that fire on at least one test row. \emph{MNN \%}: mutual nearest neighbor matches above the per-pair p90 noise floor. \emph{Threshold \%}: additional features with a best correlate above the noise floor (one-sided). \emph{Unmatched \%FVE}: activation variance in unmatched concepts---the ceiling for ablation.}
 \label{tab:matching_summary}
 \setlength{\tabcolsep}{5pt}
 \begin{tabular}{lcccccc}
@@ -10,7 +10,8 @@
 \midrule
 Emb dim & 192 & 512 & 512 & 512 & 768 & 300 \\
 Alive & 634 & 1,686 & 1,553 & 2,004 & 2,436 & 1,085 \\
-Matched \% & 28.4 & 43.4 & 27.8 & 33.1 & 39.9 & 34.6 \\
+MNN \% & 28.4 & 43.4 & 27.8 & 33.1 & 39.9 & 34.6 \\
+Threshold \% & 22.6 & 36.4 & 58.7 & 41.0 & 45.4 & 46.5 \\
 Unmatched \%FVE & 64.6 & 8.6 & 0.9 & 20.1 & 28.3 & 23.0 \\
 \bottomrule
 \end{tabular}

@@ -106,14 +106,13 @@ def main():
 
         alive = alive_counts.get(display, 0)
         tc = tier_counts.get(display, {})
-        # Matched = MNN tier only (mutual nearest neighbor above noise floor).
-        # The "threshold" tier has a best correlate above the floor but no MNN
-        # partner — these are one-sided similarities, not shared concepts.
-        matched = tc.get("mnn", 0)
-        matched_pct = matched / alive * 100 if alive else 0
+        mnn = tc.get("mnn", 0)
+        thresh = tc.get("threshold", 0)
+        mnn_pct = mnn / alive * 100 if alive else 0
+        thresh_pct = thresh / alive * 100 if alive else 0
 
         print(f"{display}: emb_dim={emb_dim}, alive={alive}, "
-              f"matched={matched} ({matched_pct:.1f}%), "
+              f"MNN={mnn} ({mnn_pct:.1f}%), threshold={thresh} ({thresh_pct:.1f}%), "
               f"unmatched={len(unmatched_by_model[display])}")
 
         fve = compute_unmatched_fve(
@@ -124,7 +123,8 @@ def main():
         rows[display] = {
             "emb_dim": emb_dim,
             "alive": alive,
-            "matched_pct": matched_pct,
+            "mnn_pct": mnn_pct,
+            "thresh_pct": thresh_pct,
             "unmatched_fve": fve,
         }
 
@@ -134,10 +134,12 @@ def main():
     lines.append(r"\centering")
     lines.append(r"\small")
     lines.append(
-        r"\caption{Per-model SAE summary. \emph{Alive}: concepts with activation "
-        r"$>$0 on at least one test row. \emph{Matched}: fraction in a concept "
-        r"group with another model (above p90 noise floor). \emph{Unmatched \%FVE}: "
-        r"variance in unmatched concepts---the ceiling for ablation.}"
+        r"\caption{Per-model SAE summary. \emph{Alive}: concepts that fire on at "
+        r"least one test row. \emph{MNN \%}: mutual nearest neighbor matches above "
+        r"the per-pair p90 noise floor. \emph{Threshold \%}: additional features "
+        r"with a best correlate above the noise floor (one-sided). "
+        r"\emph{Unmatched \%FVE}: activation variance in unmatched "
+        r"concepts---the ceiling for ablation.}"
     )
     lines.append(r"\label{tab:matching_summary}")
     lines.append(r"\setlength{\tabcolsep}{5pt}")
@@ -154,9 +156,13 @@ def main():
     vals = [f"{rows[m]['alive']:,}" if m in rows else "---" for m in MODELS]
     lines.append("Alive & " + " & ".join(vals) + r" \\")
 
-    # Matched %
-    vals = [f"{rows[m]['matched_pct']:.1f}" if m in rows else "---" for m in MODELS]
-    lines.append(r"Matched \% & " + " & ".join(vals) + r" \\")
+    # MNN %
+    vals = [f"{rows[m]['mnn_pct']:.1f}" if m in rows else "---" for m in MODELS]
+    lines.append(r"MNN \% & " + " & ".join(vals) + r" \\")
+
+    # Threshold %
+    vals = [f"{rows[m]['thresh_pct']:.1f}" if m in rows else "---" for m in MODELS]
+    lines.append(r"Threshold \% & " + " & ".join(vals) + r" \\")
 
     # Unmatched %FVE
     vals = [f"{rows[m]['unmatched_fve']:.1f}" if m in rows else "---" for m in MODELS]
