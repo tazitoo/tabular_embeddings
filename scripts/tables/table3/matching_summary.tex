@@ -1,0 +1,17 @@
+\begin{table}[h]
+\centering
+\small
+\caption{Per-model SAE summary. \emph{Alive}: concepts with activation $>$0 on at least one test row. \emph{Matched}: fraction in a concept group with another model (above p90 noise floor). \emph{Unmatched \%FVE}: variance in unmatched concepts---the ceiling for ablation.}
+\label{tab:matching_summary}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lcccccc}
+\toprule
+ & TabPFN & Mitra & TabICL & TabICL-v2 & TabDPT & CARTE \\
+\midrule
+Emb dim & 192 & 512 & 512 & 512 & 768 & 300 \\
+Alive & 634 & 1,686 & 1,553 & 2,004 & 2,436 & 1,085 \\
+Matched \% & 50.9 & 79.7 & 86.5 & 74.1 & 85.3 & 81.1 \\
+Unmatched \%FVE & 64.6 & 8.6 & 0.9 & 20.1 & 28.3 & 23.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
