@@ -182,11 +182,14 @@ def load_training_mean(
 
 
 def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) -> tuple:
-    """Dataset-level metric: neg_logloss (classification), neg_RMSE (regression).
+    """Dataset-level metric for strong/weak determination.
+
+    Classification: AUC (matching TabArena evaluation protocol).
+    Regression: neg_RMSE.
 
     Returns (metric_value, metric_name) where higher is always better.
     """
-    from sklearn.metrics import log_loss
+    from sklearn.metrics import roc_auc_score
 
     if task == "regression":
         rmse = float(np.sqrt(np.mean((preds - y_true) ** 2)))
@@ -207,11 +210,21 @@ def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) 
     if n_pred_classes <= 1 or n_pred_classes < n_true_classes:
         return float("-inf"), "degenerate"
 
-    # Use n_pred_classes for labels — y_true may have fewer unique values
-    # in a query batch, but log_loss needs labels matching prediction columns
-    all_labels = np.arange(n_pred_classes)
+    # Need at least 2 classes in y_true to compute AUC
+    if n_true_classes < 2:
+        return float("-inf"), "degenerate"
 
-    return float(-log_loss(y_true, preds, labels=all_labels)), "neg_logloss"
+    try:
+        if n_pred_classes == 2:
+            # Binary: AUC on P(y=1)
+            auc = roc_auc_score(y_true, preds[:, 1])
+        else:
+            # Multi-class: one-vs-rest AUC
+            auc = roc_auc_score(y_true, preds, multi_class="ovr",
+                                labels=np.arange(n_pred_classes))
+        return float(auc), "auc"
+    except ValueError:
+        return float("-inf"), "degenerate"
 
 
 def compute_per_row_loss(y_true: np.ndarray, preds: np.ndarray, task: str) -> np.ndarray:
