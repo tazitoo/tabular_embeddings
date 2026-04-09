@@ -61,6 +61,37 @@ from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
 # ── Data loading ──────────────────────────────────────────────────────────
 
 
+def _load_pmi_cache() -> dict:
+    """Load per-row PMI cache from output/pmi_cache/.
+
+    Returns:
+        {dataset_name: {"row_pmi": np.ndarray, "stats": dict}} or empty dict.
+    """
+    import numpy as np
+
+    pmi_dir = PROJECT_ROOT / "output" / "pmi_cache"
+    summary_path = pmi_dir / "pmi_summary.json"
+    if not summary_path.exists():
+        print("  No PMI cache found — prompts will omit PMI annotations")
+        return {}
+
+    with open(summary_path) as f:
+        summary = json.load(f)
+
+    cache = {}
+    for ds_name, stats in summary.items():
+        npz_path = pmi_dir / f"{ds_name}.npz"
+        if npz_path.exists():
+            data = np.load(npz_path, allow_pickle=True)
+            cache[ds_name] = {
+                "row_pmi": data["row_pmi"],
+                "stats": stats,
+            }
+
+    print(f"  Loaded PMI cache: {len(cache)} datasets")
+    return cache
+
+
 def load_concept_data(
     concepts: dict, top_k: int = 5
 ) -> Tuple[Dict[str, Dict[int, dict]], dict]:
@@ -219,25 +250,24 @@ def aggregate_group_probes(
 SYSTEM_PROMPT = """\
 You are an expert at analyzing tabular data patterns. You are labeling \
 universal concepts found by Sparse Autoencoders (SAEs) trained on different \
-tabular foundation models. Each SAE feature should be MONOSEMANTIC — encoding \
-exactly one coherent meaning. A "concept group" means features from multiple \
-independent models that activate on the same data rows, indicating they detect \
-the same underlying tabular pattern.
+tabular foundation models. A "concept group" means features from multiple \
+independent models that activate on the same data rows, indicating they \
+detect the same underlying tabular pattern.
 
-You will see:
-- Contrastive examples: raw data rows where the feature fires strongly vs \
-nearby rows where it stays silent. This is the PRIMARY evidence — look for \
-patterns in the actual column values that distinguish activating from \
-non-activating rows.
-- Statistical hints: probe regression coefficients summarizing row-level \
-properties. These are secondary guidance to confirm your interpretation.
-- Dataset context: meta-features describing each dataset.
+You will see contrastive examples: raw data rows where the feature fires \
+strongly vs nearby rows where it stays silent. Your job is to identify \
+the single coherent pattern in the RAW DATA VALUES that distinguishes \
+activating from non-activating rows. Look at the actual column values — \
+their magnitudes, types (numeric vs categorical vs binary), sparsity, \
+spread, and relationships within each row.
 
-Describe the single coherent data pattern this concept encodes. Focus on \
-abstract structural properties (magnitude, sparsity, distribution shape, \
-outlier status, etc.) — not domain-specific semantics. Never reference \
-column names (col0, col3) or probe names (numeric_std, frac_zeros) in \
-your output."""
+Each row may also show a PMI (pointwise mutual information) score — this \
+measures how predictive that row's feature values are of its target class. \
+High PMI means the feature values strongly predict the target; low or \
+negative PMI means the values are surprising for that class.
+
+Describe the pattern you see in the data, not in embedding space. Never \
+reference column names (col0, col3) in your output."""
 
 
 def _format_raw_row(raw: dict, max_cols: int = 12) -> str:
@@ -252,8 +282,16 @@ def _format_raw_row(raw: dict, max_cols: int = 12) -> str:
     return "  " + ", ".join(parts)
 
 
-def _format_examples(examples: dict, n: int = 5) -> List[str]:
-    """Format contrastive examples (top-activating vs nearest inactive)."""
+def _format_examples(
+    examples: dict, n: int = 8, pmi_cache: dict = None,
+) -> List[str]:
+    """Format contrastive examples (top-activating vs nearest inactive).
+
+    Args:
+        examples: {top: [...], contrast: [...]} with dataset, activation, raw, row_idx.
+        n: Max examples per side.
+        pmi_cache: {dataset: {row_pmi: array, stats: dict}} for row-level PMI annotation.
+    """
     lines = []
     top = examples.get("top", [])[:n]
     contrast = examples.get("contrast", [])[:n]
@@ -263,7 +301,8 @@ def _format_examples(examples: dict, n: int = 5) -> List[str]:
         for ex in top:
             ds = ex.get("dataset", "?")
             act = ex.get("activation", 0)
-            lines.append(f"  [{ds}] activation={act:.1f}")
+            pmi_str = _format_pmi(ex, pmi_cache)
+            lines.append(f"  [{ds}] activation={act:.1f}{pmi_str}")
             if "raw" in ex:
                 lines.append(_format_raw_row(ex["raw"]))
         lines.append("")
@@ -273,12 +312,30 @@ def _format_examples(examples: dict, n: int = 5) -> List[str]:
         for ex in contrast:
             ds = ex.get("dataset", "?")
             act = ex.get("activation", 0)
-            lines.append(f"  [{ds}] activation={act:.1f}")
+            pmi_str = _format_pmi(ex, pmi_cache)
+            lines.append(f"  [{ds}] activation={act:.1f}{pmi_str}")
             if "raw" in ex:
                 lines.append(_format_raw_row(ex["raw"]))
         lines.append("")
 
     return lines
+
+
+def _format_pmi(ex: dict, pmi_cache: dict = None) -> str:
+    """Format PMI annotation for a single example row."""
+    if not pmi_cache:
+        return ""
+    ds = ex.get("dataset")
+    row_idx = ex.get("row_idx")
+    if ds is None or row_idx is None or ds not in pmi_cache:
+        return ""
+    cache = pmi_cache[ds]
+    row_pmi = cache["row_pmi"]
+    stats = cache["stats"]
+    if row_idx >= len(row_pmi):
+        return ""
+    pmi_val = float(row_pmi[row_idx])
+    return f", PMI={pmi_val:.3f} (dataset range: [{stats['p10']:.3f}, {stats['p90']:.3f}])"
 
 
 def _format_dataset_context(
@@ -314,19 +371,20 @@ def _format_dataset_context(
 
 def format_group_prompt(
     group_id: int, agg: dict, dataset_context: dict = None,
-    domain_lookup: dict = None,
+    pmi_cache: dict = None,
 ) -> str:
     """Format prompt for a matched concept group.
 
-    Structure: contrastive examples first (primary evidence), then probe
-    statistics as secondary guidance, then monosemantic framing.
+    Structure: contrastive examples (primary evidence), dataset context,
+    then labeling instruction. No probe statistics or per-member detail —
+    the label must be derived from the raw data patterns visible in the
+    contrastive examples.
     """
     n_members = len(agg['per_member'])
     lines = [
         f"=== Concept Group {group_id} ===",
         f"Models: {agg['n_models']}/8 ({', '.join(agg['models'])})",
         f"Members: {n_members} features",
-        f"Mean R² (probe-explained): {agg['mean_r2']:.3f}",
         "",
     ]
 
@@ -337,7 +395,7 @@ def format_group_prompt(
         n_active = sum(1 for r in ex.get("top", []) if r.get("activation", 0) > 0)
         return (n_active, m.get("r2", 0))
 
-    # Select up to 3 members from different models, preferring those with
+    # Select up to 4 members from different models, preferring those with
     # the most non-zero activating examples.
     members_with_examples = [m for m in agg["per_member"]
                              if m.get("examples", {}).get("top")]
@@ -349,18 +407,18 @@ def format_group_prompt(
         if m["model"] not in seen_models:
             selected.append(m)
             seen_models.add(m["model"])
-            if len(selected) >= 3:
+            if len(selected) >= 4:
                 break
 
-    # Merge examples: 2 top-activating + 2 contrast from each member,
-    # tagging each with its source model.
+    # Merge examples: aim for ~8 top-activating + ~8 contrast, spread
+    # across members for cross-model/cross-dataset diversity.
     if selected:
         sources = [f"{m['model']} #{m['feature_idx']}" for m in selected]
         lines.append(f"CONTRASTIVE EXAMPLES (from {', '.join(sources)}):")
         merged_top = []
         merged_contrast = []
-        per_member_top = max(2, 5 // len(selected))
-        per_member_contrast = max(2, 5 // len(selected))
+        per_member_top = max(2, 8 // len(selected))
+        per_member_contrast = max(2, 8 // len(selected))
         for m in selected:
             ex = m.get("examples", {})
             for row in ex.get("top", [])[:per_member_top]:
@@ -372,74 +430,29 @@ def format_group_prompt(
                 row["_source"] = f"{m['model']} #{m['feature_idx']}"
                 merged_contrast.append(row)
         merged = {"top": merged_top, "contrast": merged_contrast}
-        lines.extend(_format_examples(merged))
+        lines.extend(_format_examples(merged, n=8, pmi_cache=pmi_cache))
         if dataset_context:
             lines.extend(_format_dataset_context(merged, dataset_context))
 
-    # Secondary guidance: probe statistics
-    consensus = [(n, d["count"], d["mean_coeff"])
-                 for n, d in agg["probe_votes"].items() if d["count"] >= 2]
-    consensus.sort(key=lambda x: (-x[1], -abs(x[2])))
-    if consensus:
-        lines.append("STATISTICAL GUIDANCE (probe correlations — explain ~20% of variance):")
-        lines.append("These are partial hints, not the full story. Use them to check your")
-        lines.append("interpretation of the contrastive examples above, not as primary evidence.")
-        for name, count, mc in consensus[:8]:
-            sign = "+" if mc > 0 else "-"
-            lines.append(f"  {name}: {count}/{n_members} members, coeff={sign}{abs(mc):.3f}")
-        lines.append("")
-
-    # Per-member detail
-    lines.append("PER-MEMBER DETAIL:")
-    for m in agg["per_member"][:10]:
-        probes_str = ", ".join(f"{p[0]}({p[1]:+.2f})" for p in m["top_probes"][:4])
-        lines.append(f"  {m['model']} #{m['feature_idx']} (R²={m['r2']:.2f}): {probes_str}")
-    lines.append("")
-
-    # Monosemantic framing
+    # Framing — concise
     lines.append(
-        "The rows above come from a Sparse Autoencoder (SAE) feature — a single "
-        "learned concept that should be MONOSEMANTIC (encoding exactly one coherent "
-        "meaning). The \"top-activating\" rows are where this concept fires most "
-        "strongly; the \"non-activating\" rows are nearby data points where it "
+        f"This concept was independently discovered by {agg['n_models']} different "
+        "tabular foundation models. The top-activating rows are where it fires "
+        "most strongly; the non-activating rows are nearby data points where it "
         "stays silent."
     )
     lines.append("")
     lines.append(
-        f"This concept was independently discovered by {agg['n_models']} different "
-        "tabular foundation models, confirming it captures something real and "
-        "universal — not a model artifact."
-    )
-    lines.append("")
-
-    # Domain context
-    if domain_lookup and selected:
-        ds_names = set()
-        for m in selected:
-            for ex in m.get("examples", {}).get("top", []) + m.get("examples", {}).get("contrast", []):
-                ds = ex.get("dataset")
-                if ds:
-                    ds_names.add(ds)
-        if ds_names:
-            domain_parts = [f"{ds} ({domain_lookup.get(ds, 'Unknown')})"
-                            for ds in sorted(ds_names)]
-            lines.append(f"The contrastive examples come from: {', '.join(domain_parts)}")
-            lines.append("")
-
-    lines.append(
-        "In 1-2 sentences, describe the single coherent monosemantic meaning this "
-        "SAE concept encodes. What is the one specific data pattern that causes it "
+        "In 1-2 sentences, describe the single coherent data pattern this concept "
+        "encodes. What is the one specific pattern in the raw data that causes it "
         "to fire? Focus on what makes activating rows concretely different from "
         "their non-activating neighbors."
     )
     lines.append("")
     lines.append(
-        "IMPORTANT: The concept is UNIVERSAL — it fires across multiple models and "
-        "domains. Describe the abstract structural pattern, not the domain-specific "
-        "interpretation. Never cite column names (col0, col3, etc.) or probe names "
-        "(numeric_std, frac_zeros, etc.) in your description — the output should "
-        "read as a natural, technically oriented sentence that a data scientist "
-        "would understand without seeing the raw data."
+        "IMPORTANT: Describe the pattern visible in the RAW DATA VALUES above — "
+        "not embedding-space properties. The concept is universal across models "
+        "and domains. Never cite column names (col0, col3, etc.) in your output."
     )
     return "\n".join(lines)
 
@@ -501,7 +514,7 @@ def run_phase1(
     min_r: float,
     max_group_size: int,
     dataset_context: dict = None,
-    domain_lookup: dict = None,
+    pmi_cache: dict = None,
 ) -> dict:
     """Phase 1: Build tier-1 (MNN) graph, find components, generate prompts."""
     print("\n── Phase 1: MNN concept groups ──")
@@ -530,7 +543,7 @@ def run_phase1(
             continue
 
         prompt = format_group_prompt(i, agg, dataset_context=dataset_context,
-                                            domain_lookup=domain_lookup)
+                                            pmi_cache=pmi_cache)
 
         concept_groups[str(i)] = {
             "members": [[m, f] for m, f in members],
@@ -601,7 +614,7 @@ def run_phase2(
     relabel_threshold: float,
     corr_dir: Optional[Path] = None,
     dataset_context: dict = None,
-    domain_lookup: dict = None,
+    pmi_cache: dict = None,
 ) -> dict:
     """Phase 2: Extend groups using cross-correlation direct assignment."""
     print("\n── Phase 2: Extending groups via cross-correlation ──")
@@ -774,7 +787,7 @@ def run_phase2(
         members = [(m_a, f_a), (m_b, f_b)]
         agg = aggregate_group_probes(members, probe_lookup)
         prompt = format_group_prompt(int(gid), agg, dataset_context=dataset_context,
-                                            domain_lookup=domain_lookup)
+                                            pmi_cache=pmi_cache)
 
         concept_groups[gid] = {
             "members": [[m, f] for m, f in members],
@@ -862,7 +875,7 @@ def run_phase2(
             )
             group["prompt"] = format_group_prompt(
                 int(gid), agg, dataset_context=dataset_context,
-                domain_lookup=domain_lookup
+                pmi_cache=pmi_cache
             )
             group["n_models"] = agg["n_models"]
             group["mean_r2"] = agg["mean_r2"]
@@ -1077,12 +1090,8 @@ def split_megagroup(
         print(f"No concept regression at {concepts_path} — running without probes")
         probe_lookup, dataset_context = {}, {}
 
-    # Load domain lookup for prompts
-    domain_path = PROJECT_ROOT / "data" / "tabarena_domains.json"
-    domain_lookup = {}
-    if domain_path.exists():
-        with open(domain_path) as f:
-            domain_lookup = json.load(f).get("dataset_domain", {})
+    # Load PMI cache for row-level annotations in prompts
+    pmi_cache = _load_pmi_cache()
 
     group = data["concept_groups"][group_id]
     members = [tuple(m) for m in group["members"]]
@@ -1204,7 +1213,7 @@ def split_megagroup(
         prompt = format_group_prompt(
             next_id + i, agg,
             dataset_context=dataset_context,
-            domain_lookup=domain_lookup,
+            pmi_cache=pmi_cache,
         )
         data["concept_groups"][gid] = {
             "members": [[m, f] for m, f in comm_members],
@@ -1390,13 +1399,8 @@ def main():
         print(f"No concept regression found at {args.concepts} — running without probes")
         probe_lookup, dataset_context = {}, {}
 
-    # Load dataset-to-domain mapping for prompt context
-    domain_path = PROJECT_ROOT / "data" / "tabarena_domains.json"
-    domain_lookup = {}
-    if domain_path.exists():
-        with open(domain_path) as f:
-            domain_lookup = json.load(f).get("dataset_domain", {})
-        print(f"  Loaded {len(domain_lookup)} dataset-to-domain mappings")
+    # Load PMI cache for row-level annotations in prompts
+    pmi_cache = _load_pmi_cache()
 
     out_path = PROJECT_ROOT / args.output
     result = None
@@ -1406,7 +1410,7 @@ def main():
             result = run_phase1(
                 matching, probe_lookup, args.min_r,
                 args.max_group_size, dataset_context=dataset_context,
-                domain_lookup=domain_lookup,
+                pmi_cache=pmi_cache,
             )
         elif phase == 2:
             if result is None:
@@ -1419,14 +1423,14 @@ def main():
                     result = run_phase1(
                         matching, probe_lookup, args.min_r,
                         args.max_group_size, dataset_context=dataset_context,
-                        domain_lookup=domain_lookup,
+                        pmi_cache=pmi_cache,
                     )
             result = run_phase2(
                 result, matching, probe_lookup, args.min_r,
                 args.max_group_size, args.relabel_threshold,
                 corr_dir=PROJECT_ROOT / args.corr_dir,
                 dataset_context=dataset_context,
-                domain_lookup=domain_lookup,
+                pmi_cache=pmi_cache,
             )
         elif phase == 3:
             if result is None:

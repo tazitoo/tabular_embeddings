@@ -27,15 +27,18 @@ def extract_pymfe_features(
     y: np.ndarray,
     task: str,
     max_samples_complexity: int = 1000,
+    cat_cols=None,
 ) -> dict:
     """
     Extract PyMFE meta-features for one dataset.
 
     Args:
-        X: Feature matrix (n_samples, n_features), numeric only.
+        X: Feature matrix (n_samples, n_features). May contain mixed types
+           (object dtype for categoricals) if cat_cols is provided.
         y: Target vector.
         task: 'classification' or 'regression'.
         max_samples_complexity: Subsample limit for complexity features (O(n²) cost).
+        cat_cols: List of integer column indices that are categorical, or None.
 
     Returns:
         {feature_name: float_value} with NaN/inf replaced by 0.0.
@@ -52,7 +55,7 @@ def extract_pymfe_features(
     for group in groups:
         try:
             mfe = MFE(groups=[group], suppress_warnings=True)
-            mfe.fit(X, y)
+            mfe.fit(X, y, cat_cols=cat_cols)
             names, values = mfe.extract()
             for n, v in zip(names, values):
                 if isinstance(v, (int, float, np.integer, np.floating)):
@@ -83,7 +86,10 @@ def extract_pymfe_features(
         signal.alarm(120)
         try:
             mfe = MFE(groups=['complexity'], suppress_warnings=True)
-            mfe.fit(X_c, y_c)
+            # Complexity features need numeric data — use cat_cols so PyMFE
+            # encodes categoricals internally via transform_cat='gray'
+            cat_cols_c = cat_cols  # same column indices apply to subsampled X
+            mfe.fit(X_c, y_c, cat_cols=cat_cols_c)
             names, values = mfe.extract()
             for n, v in zip(names, values):
                 if isinstance(v, (int, float, np.integer, np.floating)):
@@ -142,11 +148,25 @@ def main():
                 continue
 
             X, y, _ = result
-            # PyMFE expects numeric arrays
-            X = np.asarray(X, dtype=np.float64)
+
+            # Identify categorical columns from raw dtypes before conversion
+            cat_cols = None
+            if hasattr(X, 'dtypes'):
+                cat_cols = [
+                    i for i, dt in enumerate(X.dtypes)
+                    if dt == object or str(dt) == 'category' or str(dt) == 'str'
+                ]
+                if not cat_cols:
+                    cat_cols = None
+                X_arr = X.values
+            else:
+                X_arr = np.asarray(X)
+
             y = np.asarray(y)
 
-            features = extract_pymfe_features(X, y, info['task'])
+            features = extract_pymfe_features(
+                X_arr, y, info['task'], cat_cols=cat_cols,
+            )
             cache[ds_name] = features
             elapsed = time.time() - t0
             print(f"{len(features)} features in {elapsed:.1f}s")
