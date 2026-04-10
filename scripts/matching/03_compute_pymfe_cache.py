@@ -28,6 +28,7 @@ def extract_pymfe_features(
     task: str,
     max_samples_complexity: int = 1000,
     cat_cols=None,
+    fast: bool = False,
 ) -> dict:
     """
     Extract PyMFE meta-features for one dataset.
@@ -39,15 +40,16 @@ def extract_pymfe_features(
         task: 'classification' or 'regression'.
         max_samples_complexity: Subsample limit for complexity features (O(n²) cost).
         cat_cols: List of integer column indices that are categorical, or None.
+        fast: If True, skip complexity/landmarking/model-based groups.
 
     Returns:
         {feature_name: float_value} with NaN/inf replaced by 0.0.
     """
     from pymfe.mfe import MFE
 
-    # Gate groups by task type: landmarking and model-based require classification
+    # Gate groups by task type and speed preference
     groups = ['general', 'statistical', 'info-theory']
-    if task == 'classification':
+    if not fast and task == 'classification':
         groups += ['landmarking', 'model-based']
 
     all_features = {}
@@ -66,6 +68,9 @@ def extract_pymfe_features(
         except Exception as e:
             print(f"      Warning: group '{group}' failed: {e}")
             continue
+
+    if fast:
+        return all_features
 
     # Complexity features separately: subsample (O(n²) graph computations)
     # and enforce a timeout since graph metrics can hang on some datasets
@@ -122,6 +127,10 @@ def main():
         "--max-samples", type=int, default=10000,
         help="Max samples per dataset for PyMFE extraction",
     )
+    parser.add_argument(
+        "--fast", action="store_true",
+        help="Skip complexity, landmarking, model-based groups (much faster)",
+    )
     args = parser.parse_args()
 
     dataset_names = args.datasets or list(TABARENA_DATASETS.keys())
@@ -166,6 +175,7 @@ def main():
 
             features = extract_pymfe_features(
                 X_arr, y, info['task'], cat_cols=cat_cols,
+                fast=args.fast,
             )
             cache[ds_name] = features
             elapsed = time.time() - t0
