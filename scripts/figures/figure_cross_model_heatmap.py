@@ -227,7 +227,7 @@ def make_figure(
     # Derive scale bands from data keys (e.g. "[0,256)", "[256,512)", ...)
     ref_bands = list(all_band_coverage[model_names[0]].keys())
     n_bands = len(ref_bands)
-    band_labels = [f"S{i+1}\n{ref_bands[i]}" for i in range(n_bands)]
+    band_labels = [f"b{i}\n{ref_bands[i]}" for i in range(n_bands)]
 
     # Build data matrices: one per model
     matrices = {}
@@ -315,7 +315,7 @@ def make_figure(
     fig.suptitle("Concept Coverage by Matryoshka Scale Band Across Models",
                  fontsize=15, fontweight='bold', y=0.98)
     fig.text(0.5, 0.01,
-             "Scale bands: S1 = coarsest (32 features), S5 = finest (remainder). "
+             "Bands: b0 = coarsest (32 features), b4 = finest (remainder). "
              "Color = max |Cohen's d| for features in that band.",
              ha='center', fontsize=9, style='italic')
 

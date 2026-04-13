@@ -54,7 +54,7 @@ CATEGORY_COLORS = {
 CATEGORY_ORDER = ["Complexity", "Model-Based", "General",
                   "Info-Theory", "Statistical", "Landmarking"]
 
-BAND_LABELS = ["S1", "S2", "S3", "S4", "S5"]
+BAND_LABELS = ["b0", "b1", "b2", "b3", "b4"]
 
 
 def _save_fig(fig, output_path: Path):

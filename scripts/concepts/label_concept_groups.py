@@ -45,8 +45,8 @@ GROUPS_PATH = PROJECT_ROOT / "output" / f"cross_model_concept_labels_round{DEFAU
 CONCEPTS_PATH = PROJECT_ROOT / "output" / f"sae_concept_analysis_round{DEFAULT_SAE_ROUND}.json"
 LABELING_DIR = PROJECT_ROOT / "output" / "concept_labeling"
 
-BATCH_SIZE = 100  # groups per batch
-CHUNK_SIZE = 50   # groups per agent chunk (batch files are ~500KB, too large for agents)
+BATCH_SIZE = 50   # groups per batch (smaller for reliable agent processing)
+CHUNK_SIZE = 25   # groups per agent chunk
 
 
 # ── Confidence scoring ───────────────────────────────────────────────────
@@ -225,13 +225,15 @@ def cmd_label(args):
 
 AGENT_PROMPT_TEMPLATE = """\
 You are labeling concept groups from a Sparse Autoencoder analysis of tabular
-foundation models. Each group below contains a prompt with contrastive examples
-(rows where the feature fires vs nearby rows where it stays silent) and
-statistical hints.
+foundation models. Each group contains contrastive examples: raw data rows where
+the feature fires strongly vs nearby rows where it stays silent. Each row also
+shows PMI (target predictiveness), surprise (value rarity), and compression
+contribution (inter-row novelty) with dataset ranges.
 
 For EACH group, write a concise label describing the single coherent data pattern
-the concept encodes. Focus on abstract structural properties (magnitude, sparsity,
-distribution shape, outlier status, etc.) — not domain-specific semantics.
+visible in the RAW DATA VALUES. Do not cite specific column names, specific
+numeric values, or dataset names. Describe the abstract structural pattern
+(magnitude, sparsity, scale heterogeneity, categorical uniformity, etc.).
 
 {few_shot}
 Read the file: {chunk_path}

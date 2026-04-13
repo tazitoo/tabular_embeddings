@@ -50,7 +50,7 @@ def band_labels_from_config(config, sep=' ') -> List[str]:
         boundaries.append(config.hidden_dim)
     labels = []
     for bi in range(len(boundaries) - 1):
-        labels.append(f"S{bi+1}{sep}[{boundaries[bi]},{boundaries[bi+1]})")
+        labels.append(f"b{bi}{sep}[{boundaries[bi]},{boundaries[bi+1]})")
     return labels
 
 
@@ -222,7 +222,7 @@ def make_figure(
     # Figure: 2 rows x 3 cols — Overall + 5 bands
     panels = [(-1, overall_sim)] + band_sims
     if band_labels is None:
-        band_labels = [f"S{i+1}" for i in range(len(all_presence))]
+        band_labels = [f"b{i}" for i in range(len(all_presence))]
     panel_titles = ['Overall'] + [band_labels[bi] for bi, _ in band_sims]
 
     fig, axes = plt.subplots(
