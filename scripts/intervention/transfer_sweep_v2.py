@@ -326,6 +326,9 @@ def run_dataset(
         }
         r2_global = 0.0
         d_target = atoms_weak.shape[1]
+        # Stand-in so the result dict's len(filt_pairs) reports the cache's
+        # landmark count. Not used for anything else in the cache-loading path.
+        filt_pairs = [()] * int(cache["n_landmarks"])
         logger.info(
             f"  Loaded {len(virtual_atoms_cache)} virtual atoms from "
             f"{cache_file.name} in {time.time() - t1:.2f}s"
