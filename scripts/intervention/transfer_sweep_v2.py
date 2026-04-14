@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = PROJECT_ROOT / "output" / "transfer_sweep_v2"
 IMPORTANCE_DIR = PROJECT_ROOT / "output" / "perrow_importance"
+DEFAULT_MATCHING_FILE = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_floor_p90.json"
 
 SUPPORTED_MODELS = [
     "tabpfn", "tabicl", "tabicl_v2", "mitra",
@@ -61,14 +62,48 @@ SUPPORTED_MODELS = [
 
 
 def get_matched_pairs(source_model: str, target_model: str,
-                      concept_labels_path=None):
-    """Get MNN-matched (source_idx, target_idx) pairs from concept groups."""
+                      concept_labels_path=None, matching_file=None):
+    """Get MNN-matched (source_idx, target_idx) pairs.
+
+    Two modes:
+      1. matching_file (default): read raw MNN edges directly from the pairwise
+         matching JSON. Every returned pair is a noise-floor-verified MNN edge.
+      2. concept_labels_path: legacy path that reads concept groups from the
+         labeling pipeline and picks one representative (first-src × first-tgt)
+         per group. Representative pairs can be non-MNN if community detection
+         grouped features transitively. Kept for backward compatibility.
+
+    The default (matching_file=DEFAULT_MATCHING_FILE, a noise-floor-filtered
+    MNN JSON) produces cleaner landmarks than concept_groups. Callers that
+    explicitly want the old behavior must pass matching_file=None AND
+    concept_labels_path=... .
+    """
     from scripts.intervention.intervene_lib import (
         MODEL_KEY_TO_LABEL_KEY, DEFAULT_CONCEPT_LABELS,
     )
-    if concept_labels_path is None:
-        concept_labels_path = DEFAULT_CONCEPT_LABELS
 
+    # When neither override is set, use the default MNN matching file.
+    if matching_file is None and concept_labels_path is None:
+        matching_file = DEFAULT_MATCHING_FILE
+
+    if matching_file is not None:
+        with open(matching_file) as f:
+            data = json.load(f)
+        src_key = MODEL_KEY_TO_LABEL_KEY.get(source_model, source_model)
+        tgt_key = MODEL_KEY_TO_LABEL_KEY.get(target_model, target_model)
+        pairs_dict = data["pairs"]
+        fwd_key = f"{src_key}__{tgt_key}"
+        rev_key = f"{tgt_key}__{src_key}"
+        if fwd_key in pairs_dict:
+            return [(m["idx_a"], m["idx_b"]) for m in pairs_dict[fwd_key]["matches"]]
+        elif rev_key in pairs_dict:
+            # File stores target first; flip so the returned tuples are
+            # (source_idx, target_idx) as callers expect.
+            return [(m["idx_b"], m["idx_a"]) for m in pairs_dict[rev_key]["matches"]]
+        else:
+            return []
+
+    # Legacy concept-groups path.
     with open(concept_labels_path) as f:
         data = json.load(f)
 
@@ -81,8 +116,6 @@ def get_matched_pairs(source_model: str, target_model: str,
         src_feats = [f for m, f in members if m == src_key]
         tgt_feats = [f for m, f in members if m == tgt_key]
         if src_feats and tgt_feats:
-            # One representative pair per group (first source × first target).
-            # The concept map needs unique directions, not all pairwise combos.
             pairs.append((src_feats[0], tgt_feats[0]))
 
     return pairs
@@ -124,6 +157,7 @@ def run_dataset(
     use_local_map: bool = False,
     use_adaptive_local: bool = False,
     importance_dir: Path = None,
+    virtual_atoms_cache_dir: Path = None,
 ) -> dict:
     """Transfer strong model's unique concepts into weak model for one dataset.
 
@@ -267,136 +301,174 @@ def run_dataset(
     feature_indices = imp_strong["feature_indices"]
     unmatched_set = set(unmatched)
 
-    # Fit GLOBAL concept map on all matched decoder atom pairs (well-determined)
-    matched_src_indices = [si for si, _ in m_pairs]
-    matched_tgt_indices = [ti for _, ti in m_pairs]
-    matched_src_atoms = atoms_strong[matched_src_indices]
-    matched_tgt_atoms = atoms_weak[matched_tgt_indices]
-
-    # Filter landmarks: sign-correct and remove low-quality pairs
-    t1 = time.time()
-    filt_src, filt_tgt, filt_pairs, quality = filter_landmarks(
-        matched_src_atoms, matched_tgt_atoms, m_pairs,
-        min_cosine=min_cosine, alpha=1.0,
-    )
-    logger.info(f"  Landmark filtering: {quality['n_kept']}/{quality['n_input']} kept"
-                f" (mean LOO cosine={quality.get('mean_cosine', 0):.3f})"
-                f" in {time.time() - t1:.2f}s")
-
-    if len(filt_pairs) < 5:
-        logger.info(f"  SKIP (too few landmarks after filtering: {len(filt_pairs)})")
-        return {
-            "strong_model": strong, "weak_model": weak,
-            "n_strong_wins": n_strong_wins, "n_query": n_query,
-            "metric_strong": float(metric_strong),
-            "metric_weak": float(metric_weak), "metric_name": metric_name,
+    # Build virtual_atoms_cache either from disk (cache-loading path) or by
+    # fitting a landmark map at runtime (the original three branches).
+    if virtual_atoms_cache_dir is not None:
+        # Cache-loading fast path: skip filter_landmarks and all map branches.
+        t1 = time.time()
+        cache_file = Path(virtual_atoms_cache_dir) / f"{strong}_to_{weak}.npz"
+        if not cache_file.exists():
+            logger.info(f"  SKIP (cache file missing: {cache_file})")
+            return {
+                "strong_model": strong, "weak_model": weak,
+                "n_strong_wins": n_strong_wins, "n_query": n_query,
+                "metric_strong": float(metric_strong),
+                "metric_weak": float(metric_weak), "metric_name": metric_name,
+            }
+        cache = np.load(cache_file, allow_pickle=True)
+        vatoms = cache["virtual_atoms"]
+        feature_ids = cache["feature_ids"]
+        computed_mask = cache["computed_mask"]
+        virtual_atoms_cache = {
+            int(feature_ids[i]): vatoms[i].astype(np.float32)
+            for i in range(len(feature_ids))
+            if computed_mask[i]
         }
-
-    d_target = atoms_weak.shape[1]
-
-    if use_local_map:
-        # Local K-nearest-neighbor maps per unmatched feature (fixed K=8)
-        t1 = time.time()
-        virtual_dirs, virtual_scales = compute_local_virtual_atoms(
-            atoms_strong, atoms_weak, filt_pairs, unmatched,
-            n_neighbors=8, alpha=1.0,
-        )
-        virtual_atoms_cache = {}
-        for u, fi in enumerate(unmatched):
-            if np.linalg.norm(virtual_dirs[u]) > 1e-8:
-                virtual_atoms_cache[fi] = virtual_dirs[u] * virtual_scales[u]
         r2_global = 0.0
-        logger.info(f"  Local virtual atoms (K=8): "
-                    f"{len(virtual_atoms_cache)}/{len(unmatched)} computed"
-                    f" in {time.time() - t1:.2f}s")
-    elif use_adaptive_local:
-        # Adaptive local maps: include all neighbors with |cosine| > threshold
-        from sklearn.metrics.pairwise import cosine_similarity
-        from sklearn.linear_model import Ridge as _Ridge
-
-        t1 = time.time()
-        noise_floor = 0.20  # mean random SAE cosine
-        sim_threshold = 2.0 * noise_floor  # 0.40
-
-        matched_src_indices = [si for si, _ in filt_pairs]
-        matched_tgt_indices = [ti for _, ti in filt_pairs]
+        d_target = atoms_weak.shape[1]
+        logger.info(
+            f"  Loaded {len(virtual_atoms_cache)} virtual atoms from "
+            f"{cache_file.name} in {time.time() - t1:.2f}s"
+        )
+        if len(virtual_atoms_cache) == 0:
+            logger.info(f"  SKIP (empty virtual atoms cache)")
+            return {
+                "strong_model": strong, "weak_model": weak,
+                "n_strong_wins": n_strong_wins, "n_query": n_query,
+                "metric_strong": float(metric_strong),
+                "metric_weak": float(metric_weak), "metric_name": metric_name,
+            }
+    else:
+        # Fit GLOBAL concept map on all matched decoder atom pairs (well-determined)
+        matched_src_indices = [si for si, _ in m_pairs]
+        matched_tgt_indices = [ti for _, ti in m_pairs]
         matched_src_atoms = atoms_strong[matched_src_indices]
         matched_tgt_atoms = atoms_weak[matched_tgt_indices]
 
-        src_norms = np.linalg.norm(matched_src_atoms, axis=1, keepdims=True)
-        tgt_norms = np.linalg.norm(matched_tgt_atoms, axis=1, keepdims=True)
-        src_norms[src_norms < 1e-8] = 1.0
-        tgt_norms[tgt_norms < 1e-8] = 1.0
-        matched_src_unit = matched_src_atoms / src_norms
-        matched_tgt_unit = matched_tgt_atoms / tgt_norms
-
-        virtual_atoms_cache = {}
-        neighbor_counts = []
-        for fi in unmatched:
-            atom_s = atoms_strong[fi]
-            atom_norm = np.linalg.norm(atom_s)
-            if atom_norm < 1e-8:
-                continue
-            query_unit = (atom_s / atom_norm).reshape(1, -1)
-
-            sims = cosine_similarity(query_unit, matched_src_unit)[0]
-            mask = np.abs(sims) >= sim_threshold
-            K = int(mask.sum())
-            if K < 3:
-                continue
-            neighbor_counts.append(K)
-
-            idx = np.where(mask)[0]
-            reg = _Ridge(alpha=1.0, fit_intercept=False)
-            reg.fit(matched_src_unit[idx], matched_tgt_unit[idx])
-            direction = reg.predict(query_unit)[0]
-            dir_norm = np.linalg.norm(direction)
-            if dir_norm < 1e-8:
-                continue
-
-            local_ratios = tgt_norms[idx].ravel() / src_norms[idx].ravel()
-            scale = float(np.median(local_ratios)) * atom_norm
-            virtual_atoms_cache[fi] = (direction / dir_norm) * scale
-
-        r2_global = 0.0
-        mean_k = np.mean(neighbor_counts) if neighbor_counts else 0
-        logger.info(f"  Adaptive local atoms (threshold={sim_threshold:.2f}): "
-                    f"{len(virtual_atoms_cache)}/{len(unmatched)} computed, "
-                    f"mean K={mean_k:.1f} in {time.time() - t1:.2f}s")
-    else:
-        # Global concept map
+        # Filter landmarks: sign-correct and remove low-quality pairs
         t1 = time.time()
-        M_global, r2_global = fit_concept_map(filt_src, filt_tgt, alpha=1.0)
-        logger.info(f"  Global concept map: {filt_src.shape[0]} pairs, "
-                    f"R²={r2_global:.3f}, M shape={M_global.shape}"
+        filt_src, filt_tgt, filt_pairs, quality = filter_landmarks(
+            matched_src_atoms, matched_tgt_atoms, m_pairs,
+            min_cosine=min_cosine, alpha=1.0,
+        )
+        logger.info(f"  Landmark filtering: {quality['n_kept']}/{quality['n_input']} kept"
+                    f" (mean LOO cosine={quality.get('mean_cosine', 0):.3f})"
                     f" in {time.time() - t1:.2f}s")
 
-        # Pre-compute magnitude correction: median target/source norm ratio
-        src_norms_matched = np.linalg.norm(filt_src, axis=1)
-        tgt_norms_matched = np.linalg.norm(filt_tgt, axis=1)
-        valid_norms = (src_norms_matched > 1e-8) & (tgt_norms_matched > 1e-8)
-        if valid_norms.sum() > 0:
-            norm_ratios = tgt_norms_matched[valid_norms] / src_norms_matched[valid_norms]
-            median_norm_ratio = float(np.median(norm_ratios))
+        if len(filt_pairs) < 5:
+            logger.info(f"  SKIP (too few landmarks after filtering: {len(filt_pairs)})")
+            return {
+                "strong_model": strong, "weak_model": weak,
+                "n_strong_wins": n_strong_wins, "n_query": n_query,
+                "metric_strong": float(metric_strong),
+                "metric_weak": float(metric_weak), "metric_name": metric_name,
+            }
+
+        d_target = atoms_weak.shape[1]
+
+        if use_local_map:
+            # Local K-nearest-neighbor maps per unmatched feature (fixed K=8)
+            t1 = time.time()
+            virtual_dirs, virtual_scales = compute_local_virtual_atoms(
+                atoms_strong, atoms_weak, filt_pairs, unmatched,
+                n_neighbors=8, alpha=1.0,
+            )
+            virtual_atoms_cache = {}
+            for u, fi in enumerate(unmatched):
+                if np.linalg.norm(virtual_dirs[u]) > 1e-8:
+                    virtual_atoms_cache[fi] = virtual_dirs[u] * virtual_scales[u]
+            r2_global = 0.0
+            logger.info(f"  Local virtual atoms (K=8): "
+                        f"{len(virtual_atoms_cache)}/{len(unmatched)} computed"
+                        f" in {time.time() - t1:.2f}s")
+        elif use_adaptive_local:
+            # Adaptive local maps: include all neighbors with |cosine| > threshold
+            from sklearn.metrics.pairwise import cosine_similarity
+            from sklearn.linear_model import Ridge as _Ridge
+
+            t1 = time.time()
+            noise_floor = 0.20  # mean random SAE cosine
+            sim_threshold = 2.0 * noise_floor  # 0.40
+
+            matched_src_indices = [si for si, _ in filt_pairs]
+            matched_tgt_indices = [ti for _, ti in filt_pairs]
+            matched_src_atoms = atoms_strong[matched_src_indices]
+            matched_tgt_atoms = atoms_weak[matched_tgt_indices]
+
+            src_norms = np.linalg.norm(matched_src_atoms, axis=1, keepdims=True)
+            tgt_norms = np.linalg.norm(matched_tgt_atoms, axis=1, keepdims=True)
+            src_norms[src_norms < 1e-8] = 1.0
+            tgt_norms[tgt_norms < 1e-8] = 1.0
+            matched_src_unit = matched_src_atoms / src_norms
+            matched_tgt_unit = matched_tgt_atoms / tgt_norms
+
+            virtual_atoms_cache = {}
+            neighbor_counts = []
+            for fi in unmatched:
+                atom_s = atoms_strong[fi]
+                atom_norm = np.linalg.norm(atom_s)
+                if atom_norm < 1e-8:
+                    continue
+                query_unit = (atom_s / atom_norm).reshape(1, -1)
+
+                sims = cosine_similarity(query_unit, matched_src_unit)[0]
+                mask = np.abs(sims) >= sim_threshold
+                K = int(mask.sum())
+                if K < 3:
+                    continue
+                neighbor_counts.append(K)
+
+                idx = np.where(mask)[0]
+                reg = _Ridge(alpha=1.0, fit_intercept=False)
+                reg.fit(matched_src_unit[idx], matched_tgt_unit[idx])
+                direction = reg.predict(query_unit)[0]
+                dir_norm = np.linalg.norm(direction)
+                if dir_norm < 1e-8:
+                    continue
+
+                local_ratios = tgt_norms[idx].ravel() / src_norms[idx].ravel()
+                scale = float(np.median(local_ratios)) * atom_norm
+                virtual_atoms_cache[fi] = (direction / dir_norm) * scale
+
+            r2_global = 0.0
+            mean_k = np.mean(neighbor_counts) if neighbor_counts else 0
+            logger.info(f"  Adaptive local atoms (threshold={sim_threshold:.2f}): "
+                        f"{len(virtual_atoms_cache)}/{len(unmatched)} computed, "
+                        f"mean K={mean_k:.1f} in {time.time() - t1:.2f}s")
         else:
-            median_norm_ratio = 1.0
+            # Global concept map
+            t1 = time.time()
+            M_global, r2_global = fit_concept_map(filt_src, filt_tgt, alpha=1.0)
+            logger.info(f"  Global concept map: {filt_src.shape[0]} pairs, "
+                        f"R²={r2_global:.3f}, M shape={M_global.shape}"
+                        f" in {time.time() - t1:.2f}s")
 
-        # Pre-compute virtual atoms using the global map
-        virtual_atoms_cache = {}
-        for fi in unmatched:
-            atom_s = atoms_strong[fi]
-            atom_norm = np.linalg.norm(atom_s)
-            if atom_norm < 1e-8:
-                continue
-            unit_atom_s = atom_s / atom_norm
-            virtual_dir = unit_atom_s @ M_global.T
-            vdir_norm = np.linalg.norm(virtual_dir)
-            if vdir_norm < 1e-8:
-                continue
-            virtual_atom = (virtual_dir / vdir_norm) * atom_norm * median_norm_ratio
-            virtual_atoms_cache[fi] = virtual_atom
+            # Pre-compute magnitude correction: median target/source norm ratio
+            src_norms_matched = np.linalg.norm(filt_src, axis=1)
+            tgt_norms_matched = np.linalg.norm(filt_tgt, axis=1)
+            valid_norms = (src_norms_matched > 1e-8) & (tgt_norms_matched > 1e-8)
+            if valid_norms.sum() > 0:
+                norm_ratios = tgt_norms_matched[valid_norms] / src_norms_matched[valid_norms]
+                median_norm_ratio = float(np.median(norm_ratios))
+            else:
+                median_norm_ratio = 1.0
 
-        logger.info(f"  Pre-computed {len(virtual_atoms_cache)}/{len(unmatched)} virtual atoms")
+            # Pre-compute virtual atoms using the global map
+            virtual_atoms_cache = {}
+            for fi in unmatched:
+                atom_s = atoms_strong[fi]
+                atom_norm = np.linalg.norm(atom_s)
+                if atom_norm < 1e-8:
+                    continue
+                unit_atom_s = atom_s / atom_norm
+                virtual_dir = unit_atom_s @ M_global.T
+                vdir_norm = np.linalg.norm(virtual_dir)
+                if vdir_norm < 1e-8:
+                    continue
+                virtual_atom = (virtual_dir / vdir_norm) * atom_norm * median_norm_ratio
+                virtual_atoms_cache[fi] = virtual_atom
+
+            logger.info(f"  Pre-computed {len(virtual_atoms_cache)}/{len(unmatched)} virtual atoms")
 
     # Per-row combinatorial greedy search (mirrors ablation_sweep)
     from itertools import combinations as combos
@@ -652,8 +724,16 @@ def main():
                         help="SAE checkpoint directory (default: sweep round10)")
     parser.add_argument("--importance-dir", type=Path, default=None,
                         help="Per-row importance directory (default: output/perrow_importance)")
-    parser.add_argument("--matching-file", type=Path, default=None,
-                        help="Raw matching JSON for unmatched features")
+    parser.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE,
+                        help="Raw MNN matching JSON used for BOTH matched landmark pairs "
+                             "and unmatched features. Default is the noise-floor-filtered "
+                             "mnn_floor_p90 file.")
+    parser.add_argument("--virtual-atoms-cache-dir", type=Path, default=None,
+                        help="If set, load pre-built virtual atoms from this directory "
+                             "(one npz per pair direction, named {source}_to_{target}.npz) "
+                             "and skip the filter_landmarks + map-build steps entirely. "
+                             "Used by the R²-to-gc translation test against caches built "
+                             "by scripts.analysis.build_transfer_caches.")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -679,7 +759,7 @@ def main():
     unmatched_features = {}
     for source, target in [(model_a, model_b), (model_b, model_a)]:
         key = f"{source}_to_{target}"
-        m_pairs = get_matched_pairs(source, target)
+        m_pairs = get_matched_pairs(source, target, matching_file=args.matching_file)
         unmatched = get_unmatched_features(
             source, target, matching_file=args.matching_file)
         matched_pairs[key] = m_pairs
@@ -723,6 +803,7 @@ def main():
                 args.device, args.max_steps, args.min_cosine,
                 args.local_map, args.local_map_adaptive,
                 importance_dir=imp_dir,
+                virtual_atoms_cache_dir=args.virtual_atoms_cache_dir,
             )
             np.savez_compressed(str(out_path), **result)
 
