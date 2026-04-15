@@ -480,6 +480,18 @@ def run_dataset(
     gap_closed = np.full(n_query, np.nan, dtype=np.float32)
     preds_intervened = baseline_preds_w.copy()
 
+    # Per-step diagnostics: for every row, record the prediction after
+    # every accepted greedy step and which features were added at that step.
+    # Each step may add 1-3 features (the subset-size upper bound in the
+    # combinatorial search). Unused positions are NaN / -1.
+    MAX_STEPS = 20
+    pred_shape_suffix = baseline_preds_w.shape[1:]  # () for regression, (C,) for cls
+    step_preds = np.full((n_query, MAX_STEPS) + pred_shape_suffix,
+                         np.nan, dtype=np.float32)
+    step_features = np.full((n_query, MAX_STEPS, 3), -1, dtype=np.int32)
+    step_sizes = np.zeros((n_query, MAX_STEPS), dtype=np.int8)
+    selected_features = np.full((n_query, MAX_STEPS * 3), -1, dtype=np.int32)
+
     # Track per-feature acceptance across all rows
     from collections import Counter
     feature_tried = Counter()    # fi -> n_rows where it was a candidate
@@ -549,6 +561,7 @@ def run_dataset(
         accepted_combo = ()
         offset = 0
         X_row = X_query_w[r:r + 1]
+        step_idx = 0  # per-row step counter for step_preds/step_features
 
         while offset < K:
             batch_end = min(offset + batch_size, K)
@@ -614,11 +627,27 @@ def run_dataset(
                     best_c_dist = d
 
             if best_c is not None:
-                accepted_combo = tuple(accepted_combo) + all_subsets[best_c]
+                accepted_subset = all_subsets[best_c]
+                accepted_combo = tuple(accepted_combo) + accepted_subset
                 current_dist = best_c_dist
                 best_pred = cand_preds[best_c]
 
+                # Record per-step state (cap at MAX_STEPS)
+                if step_idx < MAX_STEPS:
+                    step_preds[r, step_idx] = best_pred
+                    step_sizes[r, step_idx] = len(accepted_subset)
+                    for si, j in enumerate(accepted_subset[:3]):
+                        step_features[r, step_idx, si] = delta_to_feature[j][0]
+                step_idx += 1
+
             offset = batch_end
+
+        # Flat ordered list of accepted feature indices (LOO-ranked, filtered
+        # to accepted, with duplicates possible if both +/- directions of the
+        # same feature were accepted).
+        flat = [delta_to_feature[j][0] for j in accepted_combo]
+        for i, fi in enumerate(flat[:selected_features.shape[1]]):
+            selected_features[r, i] = fi
 
         # Track which features were tried and accepted
         tried_features = set(fi for _, fi, _ in firing_unmatched)
@@ -697,6 +726,13 @@ def run_dataset(
         "n_landmarks": int(len(filt_pairs)),
         "n_virtual_atoms": int(len(virtual_atoms_cache)),
         "acceptance_rate": float(acceptance_rate),
+        # Per-step diagnostics: predictions and accepted features after each
+        # greedy batch step. Enables post-hoc computation of true per-step
+        # |Δpred| decay. See comment above the loop for layout.
+        "step_preds": step_preds,
+        "step_features": step_features,
+        "step_sizes": step_sizes,
+        "selected_features": selected_features,
         # Per-feature acceptance: which concepts transferred successfully
         # Arrays of (feature_idx, n_tried, n_accepted) for post-analysis
         "feature_acceptance": np.array(
