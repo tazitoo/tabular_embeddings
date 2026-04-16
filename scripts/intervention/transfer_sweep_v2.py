@@ -255,6 +255,8 @@ def run_dataset(
         except Exception:
             pass
     target_name = splits.get(dataset, {}).get("target", "target")
+    torch.manual_seed(42)
+    np.random.seed(42)
     tail_w = build_tail(weak, X_train_w, y_train_w, X_query_w, layer_w, task_w, device,
                         cat_indices=cat_indices, target_name=target_name)
     logger.info(f"  Weak tail ({weak}) built in {time.time() - t0:.1f}s")
@@ -492,6 +494,11 @@ def run_dataset(
     step_sizes = np.zeros((n_query, MAX_STEPS), dtype=np.int8)
     selected_features = np.full((n_query, MAX_STEPS * 3), -1, dtype=np.int32)
 
+    # Per-feature predictions: cumulative injection one feature at a time
+    MAX_FEAT_STEPS = 20
+    feature_preds = np.full((n_query, MAX_FEAT_STEPS) + pred_shape_suffix,
+                            np.nan, dtype=np.float32)
+
     # Track per-feature acceptance across all rows
     from collections import Counter
     feature_tried = Counter()    # fi -> n_rows where it was a candidate
@@ -700,6 +707,27 @@ def run_dataset(
                 best_dist_sq = float((best_pred - strong_preds[r]) ** 2)
                 gap_closed[r] = min(1.0, max(0.0, 1.0 - best_dist_sq / orig_dist_sq)) if orig_dist_sq > 1e-12 else 1.0
             preds_intervened[r] = best_pred
+
+            # Per-feature replay: inject virtual atoms one at a time
+            cum_delta = torch.zeros(1, d_target, dtype=torch.float32, device=device)
+            seen_fi = set()
+            fi_idx = 0
+            for j in accepted_combo:
+                fi = delta_to_feature[j][0]
+                if fi in seen_fi:
+                    continue
+                seen_fi.add(fi)
+                if fi_idx >= MAX_FEAT_STEPS:
+                    break
+                cum_delta += per_feature_deltas[j].unsqueeze(0)
+                if use_mitra:
+                    fp = batched_intervention(tail_w, X_row, cum_delta)
+                elif use_sequential:
+                    fp = batched_intervention_sequential(tail_w, X_row, cum_delta, query_idx=r)
+                else:
+                    fp = batched_intervention(tail_w, X_row, cum_delta)
+                feature_preds[r, fi_idx] = fp[0]
+                fi_idx += 1
         else:
             optimal_k[r] = 0
             gap_closed[r] = 0.0
@@ -757,6 +785,7 @@ def run_dataset(
         "step_preds": step_preds,
         "step_features": step_features,
         "step_sizes": step_sizes,
+        "feature_preds": feature_preds,
         "selected_features": selected_features,
         # Per-feature acceptance: which concepts transferred successfully
         # Arrays of (feature_idx, n_tried, n_accepted) for post-analysis

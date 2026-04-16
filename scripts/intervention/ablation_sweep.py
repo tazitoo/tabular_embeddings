@@ -183,6 +183,8 @@ def run_dataset(
         except Exception:
             pass
     target_name = splits.get(dataset, {}).get("target", "target")
+    torch.manual_seed(42)
+    np.random.seed(42)
     tail_s = build_tail(strong, X_train_s, y_train_s, X_query_s, layer_s, task_s, device,
                         cat_indices=cat_indices, target_name=target_name)
     logger.info(f"  Strong tail ({strong}) built in {time.time() - t0:.1f}s")
@@ -239,6 +241,11 @@ def run_dataset(
                          np.nan, dtype=np.float32)
     step_features = np.full((n_query, MAX_STEPS, 3), -1, dtype=np.int32)
     step_sizes = np.zeros((n_query, MAX_STEPS), dtype=np.int8)
+
+    # Per-feature predictions: cumulative removal one feature at a time
+    MAX_FEAT_STEPS = 20
+    feature_preds = np.full((n_query, MAX_FEAT_STEPS) + pred_shape_suffix,
+                            np.nan, dtype=np.float32)
 
     t0 = time.time()
     for r in range(n_query):
@@ -412,6 +419,21 @@ def run_dataset(
                 gap_closed[r] = min(1.0, moved / gap) if gap > 1e-8 else 1.0
             preds_intervened[r] = best_pred
             selected_features[r] = selected_features_r
+
+            # Per-feature replay: zero features one at a time, predict
+            h_replay = h_row.clone()
+            for fi, feat in enumerate(selected_features_r[:MAX_FEAT_STEPS]):
+                h_replay[feat] = 0.0
+                with torch.no_grad():
+                    recon_r = saes[strong].decode(h_replay.unsqueeze(0))
+                    delta_r = (recon_r - recon_full) * data_std_t_s.unsqueeze(0)
+                if use_mitra:
+                    fp = batched_ablation(tail_s, X_row, delta_r, max_K=max_K)
+                elif use_sequential:
+                    fp = batched_ablation_sequential(tail_s, X_row, delta_r, query_idx=r)
+                else:
+                    fp = batched_ablation(tail_s, X_row, delta_r, max_K=max_K)
+                feature_preds[r, fi] = fp[0]
         else:
             optimal_k[r] = 0
             gap_closed[r] = 0.0
@@ -465,6 +487,7 @@ def run_dataset(
         "step_preds": step_preds,
         "step_features": step_features,
         "step_sizes": step_sizes,
+        "feature_preds": feature_preds,
         "y_query": y_query.astype(np.float32),
         "row_indices": row_indices.astype(np.int32),
     }
