@@ -39,7 +39,7 @@ from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = PROJECT_ROOT / "output" / "ablation_sweep"
+OUTPUT_DIR = PROJECT_ROOT / "output" / "ablation_sweep_tols"
 IMPORTANCE_DIR = PROJECT_ROOT / "output" / "perrow_importance"
 
 SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
@@ -118,6 +118,8 @@ def run_dataset(
     max_K: int,
     max_steps: int,
     importance_dir: Path = None,
+    gc_tolerance: float = 0.99,
+    min_gap: float = 0.01,
 ) -> dict:
     """Cross-model ablation for one dataset.
 
@@ -252,6 +254,14 @@ def run_dataset(
     preds_intervened = baseline_preds_s.copy()
     selected_features = [[] for _ in range(n_query)]  # per-row accepted feature indices
 
+    # Per-step diagnostics (mirrors transfer_sweep_v2 layout)
+    MAX_STEPS = 20
+    pred_shape_suffix = baseline_preds_s.shape[1:] if baseline_preds_s.ndim > 1 else ()
+    step_preds = np.full((n_query, MAX_STEPS) + pred_shape_suffix,
+                         np.nan, dtype=np.float32)
+    step_features = np.full((n_query, MAX_STEPS, 3), -1, dtype=np.int32)
+    step_sizes = np.zeros((n_query, MAX_STEPS), dtype=np.int8)
+
     t0 = time.time()
     for r in range(n_query):
         if not strong_wins[r]:
@@ -259,14 +269,26 @@ def run_dataset(
             gap_closed[r] = 1.0
             continue
 
+        # Skip rows where models effectively agree on this prediction
+        if baseline_preds_s.ndim == 2:
+            y_r = int(y_query[r])
+            pred_gap = abs(float(baseline_preds_s[r, y_r] - weak_preds[r, y_r]))
+        else:
+            denom = abs(float(baseline_preds_s[r]))
+            pred_gap = abs(float(baseline_preds_s[r] - weak_preds[r])) / denom if denom > 1e-8 else 0.0
+        if pred_gap < min_gap:
+            optimal_k[r] = 0
+            gap_closed[r] = 1.0
+            continue
+
         # Original distance from strong to weak prediction
-        y_r = int(y_query[r])
         if baseline_preds_s.ndim == 2:
             eps = 1e-7
             # Per-row log loss on the correct class
             orig_dist = -np.log(np.clip(baseline_preds_s[r, y_r], eps, 1 - eps))
             target_dist = -np.log(np.clip(weak_preds[r, y_r], eps, 1 - eps))
         else:
+            y_r = int(y_query[r])
             orig_dist = float((baseline_preds_s[r] - weak_preds[r]) ** 2)
             target_dist = 0.0
         if abs(orig_dist - target_dist) < 1e-8:
@@ -322,6 +344,7 @@ def run_dataset(
         best_pred = baseline_preds_s[r]
         accepted_combo = ()
         offset = 0
+        step_idx = 0
 
         while offset < K:
             batch_end = min(offset + batch_size, K)
@@ -365,9 +388,30 @@ def run_dataset(
                     best_c_dist = d
 
             if best_c is not None:
-                accepted_combo = tuple(accepted_combo) + all_subsets[best_c]
+                accepted_subset = all_subsets[best_c]
+                accepted_combo = tuple(accepted_combo) + accepted_subset
                 current_dist = best_c_dist
                 best_pred = cand_preds[best_c]
+
+                if step_idx < MAX_STEPS:
+                    step_preds[r, step_idx] = best_pred
+                    step_sizes[r, step_idx] = len(accepted_subset)
+                    for si, j in enumerate(accepted_subset[:3]):
+                        step_features[r, step_idx, si] = ranked[j]
+                step_idx += 1
+
+                # Early stop: check if gc crossed tolerance
+                if baseline_preds_s.ndim == 2:
+                    best_loss = -np.log(np.clip(best_pred[y_r], eps, 1 - eps))
+                    gap = target_dist - orig_dist
+                    moved = best_loss - orig_dist
+                    gc_now = min(1.0, max(0.0, moved / gap)) if gap > 1e-8 else 1.0
+                else:
+                    gap_total = abs(orig_dist - target_dist)
+                    moved_total = abs(current_dist - orig_dist)
+                    gc_now = min(1.0, moved_total / gap_total) if gap_total > 1e-8 else 1.0
+                if gc_now >= gc_tolerance:
+                    break
 
             # Move to next batch of features
             offset = batch_end
@@ -440,6 +484,9 @@ def run_dataset(
         "metric_name": metric_name,
         "feature_indices": feature_indices,
         "selected_features": selected_arr,
+        "step_preds": step_preds,
+        "step_features": step_features,
+        "step_sizes": step_sizes,
         "y_query": y_query.astype(np.float32),
         "row_indices": row_indices.astype(np.int32),
     }
@@ -464,6 +511,14 @@ def main():
     parser.add_argument("--matching-file", type=Path, default=None,
                         help="Raw matching JSON for unmatched features "
                              "(default: use concept labels)")
+    parser.add_argument("--gc-tolerance", type=float, default=0.99,
+                        help="Stop greedy search per row once gap_closed "
+                             "reaches this threshold (default: 0.99)")
+    parser.add_argument("--min-gap", type=float, default=0.01,
+                        help="Skip rows where models agree within this threshold. "
+                             "Classification: |P_strong(y) - P_weak(y)|. "
+                             "Regression: |pred_strong - pred_weak| / |pred_strong|. "
+                             "(default: 0.01)")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -530,6 +585,8 @@ def main():
                 saes, splits, norm_stats, test_embeddings,
                 unmatched, args.device, args.max_K, args.max_steps,
                 importance_dir=imp_dir,
+                gc_tolerance=args.gc_tolerance,
+                min_gap=args.min_gap,
             )
             np.savez_compressed(str(out_path), **result)
 

@@ -158,6 +158,8 @@ def run_dataset(
     use_adaptive_local: bool = False,
     importance_dir: Path = None,
     virtual_atoms_cache_dir: Path = None,
+    gc_tolerance: float = 0.99,
+    min_gap: float = 0.01,
 ) -> dict:
     """Transfer strong model's unique concepts into weak model for one dataset.
 
@@ -504,6 +506,18 @@ def run_dataset(
             gap_closed[r] = 1.0
             continue
 
+        # Skip rows where models effectively agree on this prediction
+        if baseline_preds_w.ndim == 2:
+            y_r_gap = int(y_query[r])
+            pred_gap = abs(float(strong_preds[r, y_r_gap] - baseline_preds_w[r, y_r_gap]))
+        else:
+            denom = abs(float(strong_preds[r]))
+            pred_gap = abs(float(strong_preds[r] - baseline_preds_w[r])) / denom if denom > 1e-8 else 0.0
+        if pred_gap < min_gap:
+            optimal_k[r] = 0
+            gap_closed[r] = 1.0
+            continue
+
         # Find unmatched features that fire on this row, rank by abs(importance)
         row_drops = row_feature_drops[r]
         firing_unmatched = []
@@ -640,6 +654,19 @@ def run_dataset(
                         step_features[r, step_idx, si] = delta_to_feature[j][0]
                 step_idx += 1
 
+                # Early stop: check if gc crossed tolerance
+                if baseline_preds_w.ndim == 2:
+                    best_loss = -np.log(np.clip(best_pred[y_r], eps, 1 - eps))
+                    gap = orig_dist - target_dist
+                    moved = orig_dist - best_loss
+                    gc_now = min(1.0, max(0.0, moved / gap)) if gap > 1e-8 else 1.0
+                else:
+                    orig_dist_sq = float((baseline_preds_w[r] - strong_preds[r]) ** 2)
+                    best_dist_sq = float((best_pred - strong_preds[r]) ** 2)
+                    gc_now = min(1.0, max(0.0, 1.0 - best_dist_sq / orig_dist_sq)) if orig_dist_sq > 1e-12 else 1.0
+                if gc_now >= gc_tolerance:
+                    break
+
             offset = batch_end
 
         # Flat ordered list of accepted feature indices (LOO-ranked, filtered
@@ -773,6 +800,14 @@ def main():
                              "and skip the filter_landmarks + map-build steps entirely. "
                              "Used by the R²-to-gc translation test against caches built "
                              "by scripts.analysis.build_transfer_caches.")
+    parser.add_argument("--gc-tolerance", type=float, default=0.99,
+                        help="Stop greedy search per row once gap_closed "
+                             "reaches this threshold (default: 0.99)")
+    parser.add_argument("--min-gap", type=float, default=0.01,
+                        help="Skip rows where models agree within this threshold. "
+                             "Classification: |P_strong(y) - P_weak(y)|. "
+                             "Regression: |pred_strong - pred_weak| / |pred_strong|. "
+                             "(default: 0.01)")
     args = parser.parse_args()
 
     model_a, model_b = sorted(args.models)
@@ -843,6 +878,8 @@ def main():
                 args.local_map, args.local_map_adaptive,
                 importance_dir=imp_dir,
                 virtual_atoms_cache_dir=args.virtual_atoms_cache_dir,
+                gc_tolerance=args.gc_tolerance,
+                min_gap=args.min_gap,
             )
             np.savez_compressed(str(out_path), **result)
 
