@@ -32,7 +32,7 @@ from scripts.intervention.intervene_lib import (
     compute_per_row_loss, compute_importance_metric,
     batched_ablation, batched_ablation_sequential,
     MitraTail, SEQUENTIAL_MODELS,
-    get_alive_features, MODEL_KEY_TO_LABEL_KEY, DEFAULT_CONCEPT_LABELS,
+    MODEL_KEY_TO_LABEL_KEY,
 )
 from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 
@@ -41,43 +41,21 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = PROJECT_ROOT / "output" / "ablation_sweep_tols"
 IMPORTANCE_DIR = PROJECT_ROOT / "output" / "perrow_importance"
+DEFAULT_MATCHING_FILE = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_floor_p90.json"
 
 SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
 
 
 def get_unmatched_features(source_model: str, target_model: str,
-                           concept_labels_path=None, matching_file=None):
+                           matching_file=None):
     """Get source features NOT matched to the target model.
 
-    Two modes:
-      1. concept_labels_path (default): reads concept groups from the labeling
-         pipeline. A feature is "matched" if it shares a group with the target.
-      2. matching_file: reads directly from the raw MNN matching JSON. Uses the
-         pre-computed unmatched_a/unmatched_b lists. No labeling required.
+    Reads directly from the MNN matching JSON. Uses the pre-computed
+    unmatched_a/unmatched_b lists.
     """
-    if matching_file is not None:
-        return _unmatched_from_matching_file(source_model, target_model, matching_file)
-
-    if concept_labels_path is None:
-        concept_labels_path = DEFAULT_CONCEPT_LABELS
-
-    with open(concept_labels_path) as f:
-        data = json.load(f)
-
-    src_key = MODEL_KEY_TO_LABEL_KEY.get(source_model, source_model)
-    tgt_key = MODEL_KEY_TO_LABEL_KEY.get(target_model, target_model)
-
-    matched_source = set()
-    for group in data.get("concept_groups", {}).values():
-        members = group.get("members", [])
-        models_in_group = set(m for m, _ in members)
-        if src_key in models_in_group and tgt_key in models_in_group:
-            for m, f in members:
-                if m == src_key:
-                    matched_source.add(f)
-
-    all_source = set(get_alive_features(source_model, concept_labels_path))
-    return sorted(all_source - matched_source)
+    if matching_file is None:
+        matching_file = DEFAULT_MATCHING_FILE
+    return _unmatched_from_matching_file(source_model, target_model, matching_file)
 
 
 def _unmatched_from_matching_file(source_model: str, target_model: str,
@@ -508,9 +486,9 @@ def main():
                         help="Output directory (default: output/ablation_sweep)")
     parser.add_argument("--importance-dir", type=Path, default=None,
                         help="Per-row importance directory (default: output/perrow_importance)")
-    parser.add_argument("--matching-file", type=Path, default=None,
-                        help="Raw matching JSON for unmatched features "
-                             "(default: use concept labels)")
+    parser.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE,
+                        help="MNN matching JSON for unmatched features "
+                             "(default: mnn_floor_p90)")
     parser.add_argument("--gc-tolerance", type=float, default=0.99,
                         help="Stop greedy search per row once gap_closed "
                              "reaches this threshold (default: 0.99)")
