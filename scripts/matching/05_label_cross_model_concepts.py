@@ -61,34 +61,69 @@ from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
 # ── Data loading ──────────────────────────────────────────────────────────
 
 
-def _load_pmi_cache() -> dict:
-    """Load per-row PMI cache from output/pmi_cache/.
+def _load_row_caches() -> dict:
+    """Load all per-row caches (PMI, surprise, compression).
 
     Returns:
-        {dataset_name: {"row_pmi": np.ndarray, "stats": dict}} or empty dict.
+        {dataset_name: {
+            "pmi": {"values": ndarray, "stats": dict} or None,
+            "surprise": {"values": ndarray, "stats": dict} or None,
+            "compression": {"values": ndarray, "stats": dict} or None,
+        }}
     """
     import numpy as np
 
-    pmi_dir = PROJECT_ROOT / "output" / "pmi_cache"
-    summary_path = pmi_dir / "pmi_summary.json"
-    if not summary_path.exists():
-        print("  No PMI cache found — prompts will omit PMI annotations")
-        return {}
-
-    with open(summary_path) as f:
-        summary = json.load(f)
-
     cache = {}
-    for ds_name, stats in summary.items():
-        npz_path = pmi_dir / f"{ds_name}.npz"
-        if npz_path.exists():
-            data = np.load(npz_path, allow_pickle=True)
-            cache[ds_name] = {
-                "row_pmi": data["row_pmi"],
-                "stats": stats,
-            }
 
-    print(f"  Loaded PMI cache: {len(cache)} datasets")
+    # PMI
+    pmi_dir = PROJECT_ROOT / "output" / "pmi_cache"
+    pmi_summary = pmi_dir / "pmi_summary.json"
+    n_pmi = 0
+    if pmi_summary.exists():
+        with open(pmi_summary) as f:
+            summary = json.load(f)
+        for ds, stats in summary.items():
+            npz = pmi_dir / f"{ds}.npz"
+            if npz.exists():
+                cache.setdefault(ds, {})["pmi"] = {
+                    "values": np.load(npz, allow_pickle=True)["row_pmi"],
+                    "stats": stats,
+                }
+                n_pmi += 1
+
+    # Surprise
+    surp_dir = PROJECT_ROOT / "output" / "surprise_cache"
+    surp_summary = surp_dir / "surprise_summary.json"
+    n_surp = 0
+    if surp_summary.exists():
+        with open(surp_summary) as f:
+            summary = json.load(f)
+        for ds, stats in summary.items():
+            npz = surp_dir / f"{ds}.npz"
+            if npz.exists():
+                cache.setdefault(ds, {})["surprise"] = {
+                    "values": np.load(npz, allow_pickle=True)["row_surprise"],
+                    "stats": stats,
+                }
+                n_surp += 1
+
+    # Compression
+    comp_dir = PROJECT_ROOT / "output" / "compression_cache"
+    comp_summary = comp_dir / "compression_summary.json"
+    n_comp = 0
+    if comp_summary.exists():
+        with open(comp_summary) as f:
+            summary = json.load(f)
+        for ds, stats in summary.items():
+            npz = comp_dir / f"{ds}.npz"
+            if npz.exists():
+                cache.setdefault(ds, {})["compression"] = {
+                    "values": np.load(npz, allow_pickle=True)["compression_contribution"],
+                    "stats": stats,
+                }
+                n_comp += 1
+
+    print(f"  Row caches: PMI={n_pmi}, surprise={n_surp}, compression={n_comp} datasets")
     return cache
 
 
@@ -261,10 +296,13 @@ activating from non-activating rows. Look at the actual column values — \
 their magnitudes, types (numeric vs categorical vs binary), sparsity, \
 spread, and relationships within each row.
 
-Each row may also show a PMI (pointwise mutual information) score — this \
-measures how predictive that row's feature values are of its target class. \
-High PMI means the feature values strongly predict the target; low or \
-negative PMI means the values are surprising for that class.
+Each row may show these row-level statistics (with dataset [p10..p90] range):
+- PMI (pointwise mutual information): how predictive this row's values are \
+of its target class. High = strongly predictive, low/negative = surprising.
+- surprise: how rare this combination of values is in the dataset \
+(self-information from marginals). High = unusual values.
+- compressΔ: how many bytes this row adds to the gzip-compressed dataset \
+(LOO compression). High = novel/incompressible, low = redundant/typical.
 
 Describe the pattern you see in the data, not in embedding space. Never \
 reference column names (col0, col3) in your output."""
@@ -283,14 +321,14 @@ def _format_raw_row(raw: dict, max_cols: int = 12) -> str:
 
 
 def _format_examples(
-    examples: dict, n: int = 8, pmi_cache: dict = None,
+    examples: dict, n: int = 8, row_caches: dict = None,
 ) -> List[str]:
     """Format contrastive examples (top-activating vs nearest inactive).
 
     Args:
         examples: {top: [...], contrast: [...]} with dataset, activation, raw, row_idx.
         n: Max examples per side.
-        pmi_cache: {dataset: {row_pmi: array, stats: dict}} for row-level PMI annotation.
+        row_caches: {dataset: {row_pmi: array, stats: dict}} for row-level PMI annotation.
     """
     lines = []
     top = examples.get("top", [])[:n]
@@ -301,7 +339,7 @@ def _format_examples(
         for ex in top:
             ds = ex.get("dataset", "?")
             act = ex.get("activation", 0)
-            pmi_str = _format_pmi(ex, pmi_cache)
+            pmi_str = _format_row_stats(ex, row_caches)
             lines.append(f"  [{ds}] activation={act:.1f}{pmi_str}")
             if "raw" in ex:
                 lines.append(_format_raw_row(ex["raw"]))
@@ -312,7 +350,7 @@ def _format_examples(
         for ex in contrast:
             ds = ex.get("dataset", "?")
             act = ex.get("activation", 0)
-            pmi_str = _format_pmi(ex, pmi_cache)
+            pmi_str = _format_row_stats(ex, row_caches)
             lines.append(f"  [{ds}] activation={act:.1f}{pmi_str}")
             if "raw" in ex:
                 lines.append(_format_raw_row(ex["raw"]))
@@ -321,21 +359,35 @@ def _format_examples(
     return lines
 
 
-def _format_pmi(ex: dict, pmi_cache: dict = None) -> str:
-    """Format PMI annotation for a single example row."""
-    if not pmi_cache:
+def _format_row_stats(ex: dict, row_caches: dict = None) -> str:
+    """Format row-level statistical annotations for a single example row."""
+    if not row_caches:
         return ""
     ds = ex.get("dataset")
     row_idx = ex.get("row_idx")
-    if ds is None or row_idx is None or ds not in pmi_cache:
+    if ds is None or row_idx is None or ds not in row_caches:
         return ""
-    cache = pmi_cache[ds]
-    row_pmi = cache["row_pmi"]
-    stats = cache["stats"]
-    if row_idx >= len(row_pmi):
+    ds_cache = row_caches[ds]
+    parts = []
+    for key, label, fmt in [
+        ("pmi", "PMI", ".3f"),
+        ("surprise", "surprise", ".2f"),
+        ("compression", "compressΔ", ".0f"),
+    ]:
+        entry = ds_cache.get(key)
+        if entry is None:
+            continue
+        vals = entry["values"]
+        stats = entry["stats"]
+        if row_idx >= len(vals):
+            continue
+        v = float(vals[row_idx])
+        lo = stats["p10"]
+        hi = stats["p90"]
+        parts.append(f"{label}={v:{fmt}} [{lo:{fmt}}..{hi:{fmt}}]")
+    if not parts:
         return ""
-    pmi_val = float(row_pmi[row_idx])
-    return f", PMI={pmi_val:.3f} (dataset range: [{stats['p10']:.3f}, {stats['p90']:.3f}])"
+    return ", " + ", ".join(parts)
 
 
 def _format_dataset_context(
@@ -371,7 +423,7 @@ def _format_dataset_context(
 
 def format_group_prompt(
     group_id: int, agg: dict, dataset_context: dict = None,
-    pmi_cache: dict = None,
+    row_caches: dict = None,
 ) -> str:
     """Format prompt for a matched concept group.
 
@@ -430,7 +482,7 @@ def format_group_prompt(
                 row["_source"] = f"{m['model']} #{m['feature_idx']}"
                 merged_contrast.append(row)
         merged = {"top": merged_top, "contrast": merged_contrast}
-        lines.extend(_format_examples(merged, n=8, pmi_cache=pmi_cache))
+        lines.extend(_format_examples(merged, n=8, row_caches=row_caches))
         if dataset_context:
             lines.extend(_format_dataset_context(merged, dataset_context))
 
@@ -483,7 +535,8 @@ def format_individual_prompt(
 
 def format_signature_prompt(
     signature: str, count: int, example_probes: list,
-    rep_examples: dict = None, dataset_context: dict = None
+    rep_examples: dict = None, dataset_context: dict = None,
+    row_caches: dict = None,
 ) -> str:
     """Format prompt for a probe-signature cluster of unmatched features."""
     lines = [
@@ -497,7 +550,7 @@ def format_signature_prompt(
     lines.append("")
 
     if rep_examples:
-        lines.extend(_format_examples(rep_examples))
+        lines.extend(_format_examples(rep_examples, row_caches=row_caches))
         if dataset_context:
             lines.extend(_format_dataset_context(rep_examples, dataset_context))
 
@@ -514,7 +567,7 @@ def run_phase1(
     min_r: float,
     max_group_size: int,
     dataset_context: dict = None,
-    pmi_cache: dict = None,
+    row_caches: dict = None,
 ) -> dict:
     """Phase 1: Build tier-1 (MNN) graph, find components, generate prompts."""
     print("\n── Phase 1: MNN concept groups ──")
@@ -543,7 +596,7 @@ def run_phase1(
             continue
 
         prompt = format_group_prompt(i, agg, dataset_context=dataset_context,
-                                            pmi_cache=pmi_cache)
+                                            row_caches=row_caches)
 
         concept_groups[str(i)] = {
             "members": [[m, f] for m, f in members],
@@ -614,7 +667,7 @@ def run_phase2(
     relabel_threshold: float,
     corr_dir: Optional[Path] = None,
     dataset_context: dict = None,
-    pmi_cache: dict = None,
+    row_caches: dict = None,
 ) -> dict:
     """Phase 2: Extend groups using cross-correlation direct assignment."""
     print("\n── Phase 2: Extending groups via cross-correlation ──")
@@ -787,7 +840,7 @@ def run_phase2(
         members = [(m_a, f_a), (m_b, f_b)]
         agg = aggregate_group_probes(members, probe_lookup)
         prompt = format_group_prompt(int(gid), agg, dataset_context=dataset_context,
-                                            pmi_cache=pmi_cache)
+                                            row_caches=row_caches)
 
         concept_groups[gid] = {
             "members": [[m, f] for m, f in members],
@@ -875,7 +928,7 @@ def run_phase2(
             )
             group["prompt"] = format_group_prompt(
                 int(gid), agg, dataset_context=dataset_context,
-                pmi_cache=pmi_cache
+                row_caches=row_caches
             )
             group["n_models"] = agg["n_models"]
             group["mean_r2"] = agg["mean_r2"]
@@ -901,6 +954,7 @@ def run_phase3(
     probe_lookup: Dict[str, Dict[int, dict]],
     r2_threshold: float,
     dataset_context: dict = None,
+    row_caches: dict = None,
 ) -> dict:
     """Phase 3: Cluster unmatched features by probe signature, generate prompts."""
     print("\n── Phase 3: Unmatched features ──")
@@ -940,6 +994,7 @@ def run_phase3(
         prompt = format_signature_prompt(
             sig, len(members), rep_probes,
             rep_examples=rep_examples, dataset_context=dataset_context,
+            row_caches=row_caches,
         )
 
         for model, feat_idx, feat_data in members:
@@ -1091,7 +1146,7 @@ def split_megagroup(
         probe_lookup, dataset_context = {}, {}
 
     # Load PMI cache for row-level annotations in prompts
-    pmi_cache = _load_pmi_cache()
+    row_caches = _load_row_caches()
 
     group = data["concept_groups"][group_id]
     members = [tuple(m) for m in group["members"]]
@@ -1213,7 +1268,7 @@ def split_megagroup(
         prompt = format_group_prompt(
             next_id + i, agg,
             dataset_context=dataset_context,
-            pmi_cache=pmi_cache,
+            row_caches=row_caches,
         )
         data["concept_groups"][gid] = {
             "members": [[m, f] for m, f in comm_members],
@@ -1400,7 +1455,7 @@ def main():
         probe_lookup, dataset_context = {}, {}
 
     # Load PMI cache for row-level annotations in prompts
-    pmi_cache = _load_pmi_cache()
+    row_caches = _load_row_caches()
 
     out_path = PROJECT_ROOT / args.output
     result = None
@@ -1410,7 +1465,7 @@ def main():
             result = run_phase1(
                 matching, probe_lookup, args.min_r,
                 args.max_group_size, dataset_context=dataset_context,
-                pmi_cache=pmi_cache,
+                row_caches=row_caches,
             )
         elif phase == 2:
             if result is None:
@@ -1423,14 +1478,14 @@ def main():
                     result = run_phase1(
                         matching, probe_lookup, args.min_r,
                         args.max_group_size, dataset_context=dataset_context,
-                        pmi_cache=pmi_cache,
+                        row_caches=row_caches,
                     )
             result = run_phase2(
                 result, matching, probe_lookup, args.min_r,
                 args.max_group_size, args.relabel_threshold,
                 corr_dir=PROJECT_ROOT / args.corr_dir,
                 dataset_context=dataset_context,
-                pmi_cache=pmi_cache,
+                row_caches=row_caches,
             )
         elif phase == 3:
             if result is None:
@@ -1444,6 +1499,7 @@ def main():
             phase3 = run_phase3(
                 result, probe_lookup, args.r2_threshold,
                 dataset_context=dataset_context,
+                row_caches=row_caches,
             )
             result["unmatched_features"] = phase3["unmatched_features"]
             result["metadata"]["phase"] = 3
