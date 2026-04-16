@@ -127,15 +127,13 @@ from scripts.intervention.ablation_sweep import (  # noqa: E402
 
 
 def get_unmatched_features(source_model: str, target_model: str,
-                           concept_labels_path=None, matching_file=None):
+                           matching_file=None, **kwargs):
     """Get source features NOT matched to the target model.
 
-    Delegates to ablation_sweep.get_unmatched_features which supports
-    both concept_labels_path and matching_file modes.
+    Delegates to ablation_sweep.get_unmatched_features (MNN matching).
     """
     return _get_unmatched_from_ablation(
         source_model, target_model,
-        concept_labels_path=concept_labels_path,
         matching_file=matching_file,
     )
     return sorted(all_source - matched_source)
