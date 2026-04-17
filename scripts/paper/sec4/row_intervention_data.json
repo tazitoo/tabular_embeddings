@@ -1,0 +1,159 @@
+{
+  "dataset": "credit-g",
+  "pair": "carte_vs_mitra",
+  "row": 325,
+  "strong_model": "mitra",
+  "weak_model": "carte",
+  "p_strong": 0.9399133324623108,
+  "p_weak": 0.7731378078460693,
+  "ablation": {
+    "features": [
+      92,
+      6,
+      11
+    ],
+    "step_preds": [
+      0.9012902975082397,
+      0.8401474952697754,
+      0.788007378578186
+    ]
+  },
+  "transfer": {
+    "features": [
+      92,
+      86,
+      36
+    ],
+    "step_preds": [
+      0.9327401518821716,
+      0.9369226694107056,
+      0.9395419359207153
+    ]
+  },
+  "pool": [
+    {
+      "feature": 92,
+      "importance": 0.03712564334273338
+    },
+    {
+      "feature": 6,
+      "importance": 0.016497235745191574
+    },
+    {
+      "feature": 11,
+      "importance": 0.0025147758424282074
+    },
+    {
+      "feature": 46,
+      "importance": 0.0005878396332263947
+    },
+    {
+      "feature": 54,
+      "importance": -0.005163282155990601
+    },
+    {
+      "feature": 66,
+      "importance": -0.009110495448112488
+    },
+    {
+      "feature": 542,
+      "importance": -0.01145419105887413
+    },
+    {
+      "feature": 96,
+      "importance": -0.011584959924221039
+    },
+    {
+      "feature": 106,
+      "importance": -0.011879093945026398
+    },
+    {
+      "feature": 70,
+      "importance": -0.012189310044050217
+    },
+    {
+      "feature": 238,
+      "importance": -0.012517832219600677
+    },
+    {
+      "feature": 427,
+      "importance": -0.012612268328666687
+    },
+    {
+      "feature": 89,
+      "importance": -0.01303887739777565
+    },
+    {
+      "feature": 8,
+      "importance": -0.01315397396683693
+    },
+    {
+      "feature": 144,
+      "importance": -0.013193406164646149
+    },
+    {
+      "feature": 823,
+      "importance": -0.014477930963039398
+    },
+    {
+      "feature": 90,
+      "importance": -0.014756154268980026
+    },
+    {
+      "feature": 61,
+      "importance": -0.015014063566923141
+    },
+    {
+      "feature": 210,
+      "importance": -0.015725471079349518
+    },
+    {
+      "feature": 33,
+      "importance": -0.015954170376062393
+    },
+    {
+      "feature": 23,
+      "importance": -0.016017332673072815
+    },
+    {
+      "feature": 905,
+      "importance": -0.016063883900642395
+    },
+    {
+      "feature": 543,
+      "importance": -0.016385842114686966
+    },
+    {
+      "feature": 436,
+      "importance": -0.016691725701093674
+    },
+    {
+      "feature": 402,
+      "importance": -0.017034798860549927
+    },
+    {
+      "feature": 1934,
+      "importance": -0.017264261841773987
+    },
+    {
+      "feature": 36,
+      "importance": -0.018100127577781677
+    },
+    {
+      "feature": 1986,
+      "importance": -0.018593307584524155
+    },
+    {
+      "feature": 115,
+      "importance": -0.019121892750263214
+    },
+    {
+      "feature": 101,
+      "importance": -0.0192754864692688
+    },
+    {
+      "feature": 86,
+      "importance": -0.028392523527145386
+    }
+  ]
+}
