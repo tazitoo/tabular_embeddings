@@ -183,8 +183,8 @@ def run_dataset(
         except Exception:
             pass
     target_name = splits.get(dataset, {}).get("target", "target")
-    torch.manual_seed(42)
-    np.random.seed(42)
+    torch.manual_seed(13)
+    np.random.seed(13)
     tail_s = build_tail(strong, X_train_s, y_train_s, X_query_s, layer_s, task_s, device,
                         cat_indices=cat_indices, target_name=target_name)
     logger.info(f"  Strong tail ({strong}) built in {time.time() - t0:.1f}s")

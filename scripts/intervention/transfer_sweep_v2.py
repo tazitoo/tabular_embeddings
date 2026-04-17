@@ -255,8 +255,8 @@ def run_dataset(
         except Exception:
             pass
     target_name = splits.get(dataset, {}).get("target", "target")
-    torch.manual_seed(42)
-    np.random.seed(42)
+    torch.manual_seed(13)
+    np.random.seed(13)
     tail_w = build_tail(weak, X_train_w, y_train_w, X_query_w, layer_w, task_w, device,
                         cat_indices=cat_indices, target_name=target_name)
     logger.info(f"  Weak tail ({weak}) built in {time.time() - t0:.1f}s")
