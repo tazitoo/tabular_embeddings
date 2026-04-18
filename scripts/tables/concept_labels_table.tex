@@ -1,0 +1,15 @@
+\begin{table}[h]
+\centering
+\small
+\caption{Final SAE concept labels produced by the judge-gated labeling pipeline (\texttt{PROMPT\_ORDER=A}, all-opus agents). Each label is the judge's synthesis after round-by-round refinement against held-out contrastive rows. Validator column (when shown) is held-out accuracy / f1 on 50 held-out rows per feature.}
+\label{tab:concept_labels}
+\begin{tabular}{l c p{9.5cm} l}
+\toprule
+TFM & Concept & Label & Validator \\
+\midrule
+Mitra & $f_{6}$ & Activating rows place tail-mass values (rare categorical codes or extreme-percentile numerics) on a localized column subset while contrasts hold baseline-frequency values at those positions. & acc 0.66, f1 0.69 \\
+Mitra & $f_{11}$ & Activating rows present a stable shape-level fingerprint on a localized column subset paired with confident predictions; contrasts share the skeleton but break one component. & acc 0.66, f1 0.67 \\
+Mitra & $f_{36}$ & Activating rows densely cover a broad column block at mid-band percentiles or rare-frequency categorical levels; contrasts thin out or push isolated positions to extreme tails. & acc 0.68, f1 0.68 \\
+\bottomrule
+\end{tabular}
+\end{table}
