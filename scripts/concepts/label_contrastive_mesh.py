@@ -262,6 +262,19 @@ class ContrastiveMeshPipeline:
             f"peer's {PEER_SAMPLE_N_CON} sampled contrast rows:\n{samples['con']}"
         )
 
+    @staticmethod
+    def _claim_text(c) -> str:
+        """Render a claim as either '[certainty] claim' or plain string.
+
+        Accepts both the new {claim, certainty} dict shape and legacy
+        plain-string claims in old state files.
+        """
+        if isinstance(c, dict):
+            cert = c.get("certainty", "").strip()
+            claim = c.get("claim", "").strip()
+            return f"[{cert}] {claim}" if cert else claim
+        return str(c)
+
     def _judge_feedback_block(self, ds: str, round_num: int) -> str:
         """Render the judge's previous-round feedback for one dataset.
 
@@ -285,7 +298,7 @@ class ContrastiveMeshPipeline:
             items = items or []
             if not items:
                 return "  (none)"
-            return "\n".join(f"  - {x}" for x in items)
+            return "\n".join(f"  - {self._claim_text(x)}" for x in items)
         return (
             f"JUDGE FEEDBACK ON '{ds}' (from round {round_num - 1})\n"
             f"overall verdict: {v.get('verdict')}\n"
@@ -294,7 +307,7 @@ class ContrastiveMeshPipeline:
             f"supported claims:\n{_fmt_list(per_ds.get('supported_claims'))}\n"
             f"unsupported claims:\n{_fmt_list(per_ds.get('unsupported_claims'))}\n"
             f"contradicted claims:\n{_fmt_list(per_ds.get('contradicted_claims'))}\n"
-            f"missing signal: {per_ds.get('missing_signal', '') or '(none)'}\n"
+            f"missing signal: {self._claim_text(per_ds.get('missing_signal')) or '(none)'}\n"
             f"portability risk: {pr_str}\n"
             f"suggested revision: {per_ds.get('suggested_revision', '') or '(none)'}\n"
         )
@@ -435,13 +448,45 @@ class ContrastiveMeshPipeline:
 
         return {"act": _to_csv(act_rows), "con": _to_csv(con_rows)}
 
+    def _prior_rounds_history_block(self, ds: str, up_to_round: int) -> str:
+        """Render prior-round judge observations for one dataset, for stability judging.
+
+        Shows the agent's past labels and the judge's past supported /
+        unsupported / contradicted claims across rounds 1..up_to_round-1,
+        so the current judge can mark claims as stable-across-rounds vs
+        one-round observations.
+        """
+        if up_to_round <= 1 or not self.judge_verdicts:
+            return ""
+        ds_i = self.datasets.index(ds)
+        lines = [f"PRIOR-ROUND OBSERVATIONS for '{ds}' (rounds 1 .. {up_to_round - 1}):"]
+        for r_idx in range(up_to_round - 1):
+            if r_idx >= len(self.judge_verdicts):
+                break
+            prior_label = self.rounds[r_idx][ds_i] if r_idx < len(self.rounds) else ""
+            pd_block = (self.judge_verdicts[r_idx].get("per_dataset") or {}).get(ds, {})
+            sup = pd_block.get("supported_claims") or []
+            unsup = pd_block.get("unsupported_claims") or []
+            contr = pd_block.get("contradicted_claims") or []
+            lines.append(f"  round {r_idx + 1}:")
+            lines.append(f"    label: \"{prior_label}\"")
+            if sup:
+                lines.append(f"    supported: {'; '.join(self._claim_text(c) for c in sup)}")
+            if unsup:
+                lines.append(f"    unsupported: {'; '.join(self._claim_text(c) for c in unsup)}")
+            if contr:
+                lines.append(f"    contradicted: {'; '.join(self._claim_text(c) for c in contr)}")
+        return "\n".join(lines)
+
     def judge_prompt(self, round_num: Optional[int] = None) -> str:
         """Build a judge prompt over the current (or specified) round's labels.
 
-        The judge sees each agent's label plus the 1 activating + 1 contrast
-        row sampled for that agent's dataset at this round. The judge does
-        NOT see the full CSVs — by design — so it verifies each label's
-        claims against fresh samples rather than becoming the synthesizer.
+        The judge sees each agent's label plus sampled activating + contrast
+        rows. The judge does NOT see the full CSVs — by design — so it
+        verifies each label's claims against fresh samples rather than
+        becoming the synthesizer. From round 2 on, the judge also sees
+        PRIOR-ROUND observations per dataset to tag claim certainty
+        (local observation / emerging pattern / stable cross-round pattern).
         """
         if round_num is None:
             round_num = len(self.rounds)
@@ -453,12 +498,16 @@ class ContrastiveMeshPipeline:
             samples = self._sample_rows_for(
                 round_num, ds, JUDGE_SAMPLE_N_ACT, JUDGE_SAMPLE_N_CON, purpose="judge",
             )
-            sections.append(
+            history = self._prior_rounds_history_block(ds, round_num)
+            section = (
                 f"=== {ds} ===\n"
                 f"label: \"{lab}\"\n\n"
                 f"sampled activating rows ({JUDGE_SAMPLE_N_ACT}):\n{samples['act']}\n"
                 f"sampled contrast rows ({JUDGE_SAMPLE_N_CON}):\n{samples['con']}"
             )
+            if history:
+                section += f"\n\n{history}"
+            sections.append(section)
         data_block = "\n\n".join(sections)
         remaining = MAX_ROUNDS - round_num
         ds_list = ", ".join(f'"{ds}"' for ds in self.datasets)
@@ -505,13 +554,26 @@ class ContrastiveMeshPipeline:
             "  * Describe values by percentile / frequency / sign / count / density / spread,\n"
             "    not by domain meaning.\n"
             "  * Forbidden in supported_claims / unsupported_claims / contradicted_claims /\n"
-            "    missing_signal / suggested_revision: any column name (e.g. 'GET_ACCOUNTS',\n"
-            "    'Income', 'Kidhome', 'Education', 'Debtor', 'admission_grade', 'splice junction',\n"
-            "    'Year_Birth'), any domain term, any hard-coded index like 'position +1'. Use\n"
-            "    structural phrasing instead ('a rare-frequency binary column', 'one numeric\n"
-            "    column at the low tail', 'an adjacent categorical position').\n"
+            "    missing_signal / suggested_revision: any column name, any domain term, any\n"
+            "    hard-coded index like 'position +1'. Use structural phrasing instead.\n"
             "If you find yourself about to reference a specific column or domain, restate the\n"
             "observation as a structural / statistical property.\n\n"
+            "EVIDENCE CALIBRATION — tag every claim with a certainty level\n"
+            "Each claim in supported_claims / unsupported_claims / contradicted_claims /\n"
+            "missing_signal must be an object {\"claim\": str, \"certainty\": str} where\n"
+            "certainty is one of:\n"
+            "  * 'local observation' — visible only in this round's sampled pair; one-shot evidence.\n"
+            "  * 'emerging pattern'  — observed this round and plausibly aligns with prior-round\n"
+            "                         observations, but not yet confirmed across >=2 rounds.\n"
+            "  * 'stable cross-round pattern' — same direction of claim appears in supported_claims\n"
+            "                         across >=2 rounds' fresh samples (consult PRIOR-ROUND\n"
+            "                         OBSERVATIONS above).\n"
+            "Use sample-specific numeric anchors (e.g. exact percentile values like 'p85', 'p100',\n"
+            "exact frequencies like 'freq 0.07') ONLY when repeated rounds' samples keep selecting\n"
+            "that value — otherwise use range language ('extreme upper-tail values',\n"
+            "'rare-prevalence levels', 'low-frequency categorical levels'). A single sample\n"
+            "contradicting a number does NOT establish a new number as the true mechanism; it only\n"
+            "invalidates the old one.\n\n"
             "OUTPUT FORMAT (strict)\n"
             "Output a single fenced JSON block (```json ... ```). Nothing before or after the "
             "fence. Schema:\n\n"
@@ -524,18 +586,21 @@ class ContrastiveMeshPipeline:
             f"    // one entry for each of: {ds_list}\n"
             '    "<dataset>": {\n'
             '      "verdict": "accept" | "revise" | "split",\n'
-            '      "supported_claims":   ["clause clearly backed by act vs con rows", ...],\n'
-            '      "unsupported_claims": ["clause too broad / vague / not visible in the sample", ...],\n'
-            '      "contradicted_claims":["clause false for at least this dataset", ...],\n'
-            '      "missing_signal":     "<sharper distinction you see in the rows but the label missed, or empty>",\n'
+            '      "supported_claims":   [{"claim": str, "certainty": "local observation"|"emerging pattern"|"stable cross-round pattern"}, ...],\n'
+            '      "unsupported_claims": [{"claim": str, "certainty": ...}, ...],\n'
+            '      "contradicted_claims":[{"claim": str, "certainty": ...}, ...],\n'
+            '      "missing_signal":     {"claim": str, "certainty": ...} | null,\n'
             '      "portability_risk":   {"level": "low"|"medium"|"high", "justification": "<short>"},\n'
-            '      "suggested_revision": "<one tighter sentence or a short edit instruction>"\n'
+            '      "suggested_revision": "<one tighter sentence or a short edit instruction — shape-only>"\n'
             '    }\n'
             '  }\n'
             '}\n'
             "```\n"
-            "Verdicts: 'accept' = claims hold; 'revise' = tighten per suggested_revision; "
-            "'split' = the label is conflating two distinct regimes that should be stated separately."
+            "Verdicts: 'accept' = claims hold across sampled pairs (prefer 'stable cross-round' or "
+            "'emerging' certainty backing the verdict); 'revise' = tighten per suggested_revision; "
+            "'split' = the label is conflating two distinct regimes that should be stated separately.\n"
+            "An 'accept' verdict should NOT rest on 'local observation' claims alone — that is a\n"
+            "one-sample agreement, not a durable pattern."
         )
 
     @staticmethod

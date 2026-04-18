@@ -291,8 +291,19 @@ def _pick_near(sorted_idx, sorted_acts, target_val, k, used, rng):
 
 
 def _classify_column(series: pd.Series) -> str:
-    """Classify column as 'numeric', 'binary', or 'categorical'."""
-    if pd.api.types.is_categorical_dtype(series) or series.dtype == object:
+    """Classify column as 'numeric', 'binary', or 'categorical'.
+
+    String-typed columns (including pandas `string[pyarrow]` / `ArrowStringArray`
+    used by newer TabArena cache builds) must bucket as categorical; they are
+    neither `object` dtype nor `CategoricalDtype`, so the older check
+    `is_categorical_dtype(series) or series.dtype == object` silently missed
+    them and they were then annotated with `(pXX)` percentiles from an
+    alphabetical sort — garbage.
+    """
+    if (isinstance(series.dtype, pd.CategoricalDtype)
+            or series.dtype == object
+            or pd.api.types.is_string_dtype(series)
+            or pd.api.types.is_bool_dtype(series)):
         return "categorical"
     try:
         n_unique = int(series.nunique(dropna=True))
