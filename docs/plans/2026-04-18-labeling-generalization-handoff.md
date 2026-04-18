@@ -33,41 +33,74 @@ contrastive CSVs + validator CSVs
 | Agent model | all opus (round-1, ring, judge, validator) |
 | Feature-level CSV regen | requires `_classify_column` fix for pandas string dtype (commit `ed2106e`) |
 
+Prompt / evaluator provenance:
+- `PROMPT_ORDER` is implemented in `scripts/concepts/label_contrastive_mesh.py` via env var `PROMPT_ORDER`; prompt-family ordering is assembled in `_assemble(...)`.
+- Worker prompts (`round1_prompt`, `ring_prompt`) should stay on **A** for this sweep. Do not mix prompt families across features within this generalization run.
+- Validator prompt already includes the anti-bias instruction from `docs/labeling_pipeline.md`: judge each row independently; do not assume any particular number of rows should fire in a dataset.
+- Use the first judge `done` verdict as the stopping point. Do **not** continue to round 5 just because `MAX_ROUNDS=5`.
+
+Resume invariants:
+- Keep validator CSVs / truth files fixed for a given feature; do not regenerate mid-sweep.
+- Keep validator model and wording fixed; otherwise scores are not comparable to `f_11` / `f_6`.
+- Snapshot `f{feat}_label.json`, `f{feat}_mesh_state.json`, and the validator metrics immediately after `record-validator`.
+- Treat cross-feature mean / spread as the real comparison target; single-feature deltas of ~0.1 can be noise.
+
 ## Results so far
 
 | Feature | Rounds to `done` | Per-dataset verdicts at done | micro / macro / f1 | Final label |
 |---------|------------------|------------------------------|--------------------|-------------|
 | **f_11** | 4 (judge done r4) | 5 accept | **0.660 / 0.660 / 0.667** | "Activating rows concentrate a localized column subset at its modal or rare co-firing signature with confident-correct predictions, while contrasts break the localization or spread into extreme tails." |
 | **f_6**  | 4 (judge done r4) | 4 accept, 1 revise | **0.660 / 0.660 / 0.691** | "Activating rows place tail-mass values (rare categorical codes or extreme-percentile numerics) on a localized column subset while contrasts hold baseline-frequency values at those positions." |
+| **f_36** | 3 (judge done r3) | 4 accept, 1 revise | **0.680 / 0.680 / 0.680** | "Activating rows densely cover a broad column block at mid-band percentiles or rare-frequency categorical levels; contrasts thin out or push isolated positions to extreme tails." |
 
 Per-dataset accuracies:
 
 **f_11:** hazelnut 0.80, NATICUSdroid 0.80, students 0.60, Marketing 0.60, splice 0.50.
 **f_6:** HR 0.70, NATICUS 0.70, churn 0.70, credit_card 0.70, in_vehicle 0.50.
+**f_36:** kddcup09 0.80, SDSS17 0.80, taiwanese 0.70, Marketing 0.60, Diabetes130US 0.50.
+
+Running aggregate over completed features:
+- mean micro accuracy = **0.667**
+- mean macro accuracy = **0.667**
+- mean f1 = **0.679**
+- `n=3` completed features (`f_11`, `f_6`, `f_36`)
 
 State + label snapshots on disk:
-- `output/contrastive_examples/mitra/f11_{label,mesh_state}_A.json`
-- `output/contrastive_examples/mitra/f6_{label,mesh_state}_A.json`
+- `output/contrastive_examples/mitra/f11_label_A.json`
+- `output/contrastive_examples/mitra/f11_mesh_state_A.json`
+- `output/contrastive_examples/mitra/f6_label_A.json`
+- `output/contrastive_examples/mitra/f6_mesh_state_A.json`
+- `output/contrastive_examples/mitra/f36_label_A.json`
+- `output/contrastive_examples/mitra/f36_mesh_state_A.json`
+
+Paper-draft note:
+- These two labels are good enough to use as draft placeholders in the paper while the remaining three features run.
+- Once `f_36`, `f_86`, `f_92` finish, prefer a 5-feature writeup with representative examples rather than over-focusing on `f_11`.
 
 ## Pending concepts
 
 | Feature | Datasets | Status |
 |---------|----------|--------|
-| **f_36** | Diabetes130US, kddcup09_appetency, Marketing_Campaign, SDSS17, taiwanese_bankruptcy_prediction | validator CSVs built (`output/contrastive_examples/mitra/f36_validator_*.csv` + `f36_validator_truth.json`); pipeline NOT yet run |
 | **f_86** | diamonds, miami_housing, physiochemical_protein, superconductivity, wine_quality (all regression) | validator CSVs built; pipeline NOT yet run |
 | **f_92** | APSFailure, NATICUSdroid, SDSS17, hiva_agnostic, splice | validator CSVs built; pipeline NOT yet run |
 
 Each remaining feature needs:
 
-1. `python -m scripts.concepts.label_contrastive_mesh --model mitra --feat <N> reset`
-2. `init` → dispatch 5 round-1 opus agents in parallel (per existing pattern)
+1. `python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat <N> reset`
+2. `init` → dispatch 5 round-1 opus agents in parallel; save agent outputs to a JSON list in dataset order from `datasets_used`
 3. Record labels → `show-judge` → dispatch judge (opus) → `record-judge`
 4. If judge returns `continue`: `show-round --round k+1` → dispatch → record → judge → repeat until `done` or r5
 5. `save-label`
 6. `show-validator` → dispatch validator (opus) → `record-validator`
-7. Snapshot: `cp f{N}_label.json f{N}_label_A.json` and same for state
+7. Snapshot: copy `f{N}_label.json` to `f{N}_label_A.json` and `f{N}_mesh_state.json` to `f{N}_mesh_state_A.json`
 
 Expected: per previous two features, ~4–5 rounds, done at r4, ~25 agent calls per feature.
+
+Notes on dispatch / files:
+- Round prompt dumps are written to `/tmp/f${FEAT}_r{k}.txt`; these are useful for postmortem label-evolution inspection.
+- Validator prompt dumps are written to `/tmp/f${FEAT}_val.txt`; validator raw response should be saved to `/tmp/f${FEAT}_val_resp.txt`.
+- `record` expects a JSON list of labels in `datasets_used` order, not a dataset→label mapping.
+- `record-judge` / `record-validator` expect the raw fenced-JSON model response, not a manually extracted object.
 
 ## Next steps (in priority order)
 
@@ -85,21 +118,35 @@ Expected: per previous two features, ~4–5 rounds, done at r4, ~25 agent calls 
 - f_11's `splice` dataset had pre-fix `_classify_column` bug that emitted garbage `(pXX)` on pandas string dtype. All contrastive + validator CSVs have been regenerated since the fix (commit `ed2106e`), so results from this session are on corrected data.
 - Validator is held-out (rows not in contrastive CSVs), but 5+5 per dataset is small; variance is real. Per-dataset acc swings of ±0.1 across orderings on the same feature are within noise; cross-feature means are the comparable quantity.
 - Agents occasionally leak domain terms (e.g., splice → "CAG-GG", "pyrimidine"). The judge is instructed to flag these and usually does. We have not yet built an automatic linter.
+- `f_86` is regression-only; do not be surprised if its validator behavior differs from the classification-heavy features. Record it faithfully before changing knobs.
+- If a future session uses a different shell environment where `python` is absent, use `python3` consistently for the CLI commands below.
 
 ## Commands to resume
 
 ```bash
 # For each remaining feature N in {36, 86, 92}:
 FEAT=N
-python -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT reset
-PROMPT_ORDER=A python -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT init > /tmp/f${FEAT}_r1.txt
+python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT reset
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT init > /tmp/f${FEAT}_r1.txt
 
-# dispatch 5 opus agents in parallel (one per dataset); collect labels; record; judge; iterate.
+# dispatch 5 opus agents in parallel (one per dataset); collect labels in dataset order; save JSON list to /tmp/f${FEAT}_r1_labels.json
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT record --labels-file /tmp/f${FEAT}_r1_labels.json
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT show-judge > /tmp/f${FEAT}_judge_r1.txt
+# dispatch judge; save raw fenced JSON to /tmp/f${FEAT}_judge_r1_resp.txt, then:
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT record-judge --response-file /tmp/f${FEAT}_judge_r1_resp.txt
 
-PROMPT_ORDER=A python -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT save-label
-PROMPT_ORDER=A python -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT show-validator > /tmp/f${FEAT}_val.txt
+# if judge says continue, repeat for round k:
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT show-round --round K > /tmp/f${FEAT}_rK.txt
+# dispatch 5 opus agents; save JSON list to /tmp/f${FEAT}_rK_labels.json
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT record --labels-file /tmp/f${FEAT}_rK_labels.json
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT show-judge > /tmp/f${FEAT}_judge_rK.txt
+# dispatch judge; save raw fenced JSON to /tmp/f${FEAT}_judge_rK_resp.txt, then:
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT record-judge --response-file /tmp/f${FEAT}_judge_rK_resp.txt
+
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT save-label
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT show-validator > /tmp/f${FEAT}_val.txt
 # dispatch validator agent, save response, then:
-PROMPT_ORDER=A python -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT record-validator --response-file /tmp/f${FEAT}_val_resp.txt
+PROMPT_ORDER=A python3 -m scripts.concepts.label_contrastive_mesh --model mitra --feat $FEAT record-validator --response-file /tmp/f${FEAT}_val_resp.txt
 
 # snapshot
 cp output/contrastive_examples/mitra/f${FEAT}_label.json output/contrastive_examples/mitra/f${FEAT}_label_A.json
