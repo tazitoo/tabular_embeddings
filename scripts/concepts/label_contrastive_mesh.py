@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -46,6 +47,26 @@ PEER_SAMPLE_N_ACT = 3
 PEER_SAMPLE_N_CON = 3
 JUDGE_SAMPLE_N_ACT = 2
 JUDGE_SAMPLE_N_CON = 2
+
+# Section ordering for round1_prompt and ring_prompt. Env override: PROMPT_ORDER.
+#   A — evidence before instructions (current baseline).
+#       header | preprocessing | data | task | shape-only | contrast-discipline | output
+#   B — task and constraints first, then evidence.
+#       header | task | output | shape-only | contrast-discipline | preprocessing | data
+#   C — evidence, contrast discipline, shape-only, then task and output last.
+#       header | preprocessing | data | contrast-discipline | shape-only | task | output
+# Ring rounds also include peer-evidence + judge-feedback blocks; those ride with
+# "data" in all three orders.
+PROMPT_ORDER: str = os.environ.get("PROMPT_ORDER", "A").upper()
+_PROMPT_ORDER_SEQUENCES = {
+    "A": ["header", "preprocessing", "data", "peer", "judge_feedback", "task", "shape", "contrast", "output"],
+    "B": ["header", "task", "output", "shape", "contrast", "preprocessing", "data", "peer", "judge_feedback"],
+    "C": ["header", "preprocessing", "data", "peer", "judge_feedback", "contrast", "shape", "task", "output"],
+}
+if PROMPT_ORDER not in _PROMPT_ORDER_SEQUENCES:
+    raise ValueError(
+        f"PROMPT_ORDER={PROMPT_ORDER!r} not one of {list(_PROMPT_ORDER_SEQUENCES)}"
+    )
 
 _NOMIC_MODEL = None
 
@@ -186,20 +207,11 @@ class ContrastiveMeshPipeline:
             f"  contrast rows: {len(con)}"
         )
 
-    def round1_prompt(self, ds: str) -> str:
+    # ── Shared section builders (for round1 and ring prompts) ──────────
+
+    @staticmethod
+    def _shape_only_block() -> str:
         return (
-            f"You are labeling SAE feature f_{self.feat_idx} for a tabular foundation model.\n"
-            f"This is round 1 of ring-consensus mesh labeling; you are the agent for '{ds}'.\n\n"
-            f"{self._preprocessing_block()}\n\n"
-            f"{self._dataset_block(ds, full_csv=True)}\n\n"
-            "TASK\n"
-            "The CSV has a 'band' column: 'top' (highest activations), 'p90' (~90th percentile\n"
-            "of activating rows), 'p80' (~80th percentile), or 'contrast' (feature does NOT fire).\n"
-            "Each cell is annotated with its marginal position in the SAE training split:\n"
-            "  - numeric: 'value (pXX)' means XX-th percentile\n"
-            "  - categorical/binary: 'value (freq Y.YY)' means that category/value occurs at rate Y.YY\n"
-            "The dataset header shows the training-split target base rates. Compare the target\n"
-            "values seen in the activating rows to the base rate to judge target enrichment.\n\n"
             "CRITICAL INSTRUCTION — describe SHAPE and STATISTICAL FINGERPRINT only:\n"
             "  * IGNORE column names and the domain meaning they suggest.\n"
             "  * IGNORE column ordering. The pattern should be invariant under permutation of columns.\n"
@@ -209,7 +221,12 @@ class ContrastiveMeshPipeline:
             "  * Describe distributional properties: do activating rows concentrate at high/low/mid\n"
             "    percentiles? At rare/common categorical levels? Across many columns or a narrow\n"
             "    subset? With tight or dispersed within-row spread of percentiles?\n"
-            "  * Do NOT mention specific column names or domain terms.\n\n"
+            "  * Do NOT mention specific column names or domain terms."
+        )
+
+    @staticmethod
+    def _contrast_discipline_block() -> str:
+        return (
             "CONTRAST DISCIPLINE — include only distinguishing properties:\n"
             "  * Before adding ANY property to the label, verify activating rows DIFFER from\n"
             "    contrast rows on it — in any combination of inputs (percentile positions,\n"
@@ -220,12 +237,54 @@ class ContrastiveMeshPipeline:
             "    and must not appear in the label.\n"
             "  * Keep looking — properties can combine (an interaction between two inputs; a\n"
             "    pred_class × target pair; a percentile × prediction-confidence joint regime).\n"
-            "    Exhaust the combinations before concluding anything is shared.\n\n"
-            "Note whether the pattern holds at p80/p90 too, or only at top activations.\n\n"
+            "    Exhaust the combinations before concluding anything is shared."
+        )
+
+    @staticmethod
+    def _output_block() -> str:
+        return (
             f"Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words) "
             "describing the structural / distributional fingerprint. No column names. No domain terms. "
             "No preamble, no explanation."
         )
+
+    @staticmethod
+    def _assemble(blocks: dict, order: str) -> str:
+        """Join non-empty blocks in the sequence defined by PROMPT_ORDER."""
+        seq = _PROMPT_ORDER_SEQUENCES[order]
+        parts = []
+        for key in seq:
+            block = blocks.get(key)
+            if block:
+                parts.append(block.rstrip())
+        return "\n\n".join(parts).strip()
+
+    def round1_prompt(self, ds: str) -> str:
+        header = (
+            f"You are labeling SAE feature f_{self.feat_idx} for a tabular foundation model.\n"
+            f"This is round 1 of ring-consensus mesh labeling; you are the agent for '{ds}'."
+        )
+        task = (
+            "TASK\n"
+            "The CSV has a 'band' column: 'top' (highest activations), 'p90' (~90th percentile\n"
+            "of activating rows), 'p80' (~80th percentile), or 'contrast' (feature does NOT fire).\n"
+            "Each cell is annotated with its marginal position in the SAE training split:\n"
+            "  - numeric: 'value (pXX)' means XX-th percentile\n"
+            "  - categorical/binary: 'value (freq Y.YY)' means that category/value occurs at rate Y.YY\n"
+            "The dataset header shows the training-split target base rates. Compare the target\n"
+            "values seen in the activating rows to the base rate to judge target enrichment.\n"
+            "Note whether the pattern holds at p80/p90 too, or only at top activations."
+        )
+        blocks = {
+            "header": header,
+            "preprocessing": self._preprocessing_block(),
+            "data": self._dataset_block(ds, full_csv=True),
+            "task": task,
+            "shape": self._shape_only_block(),
+            "contrast": self._contrast_discipline_block(),
+            "output": self._output_block(),
+        }
+        return self._assemble(blocks, PROMPT_ORDER)
 
     def _peer_evidence_block(self, peer_ds: str, round_num: int) -> str:
         """Render peer evidence as header + 3 activating + 3 contrast rows.
@@ -317,46 +376,51 @@ class ContrastiveMeshPipeline:
         )
 
     def ring_prompt(self, ds: str, peer_ds: str, peer_label: str, round_num: int) -> str:
-        own_feedback = self._judge_feedback_block(ds, round_num)
-        peer_feedback = self._judge_feedback_block(peer_ds, round_num)
-        feedback_sections = ""
-        if own_feedback or peer_feedback:
-            feedback_sections = (
-                (f"\n{own_feedback}" if own_feedback else "") +
-                (f"\n{peer_feedback}" if peer_feedback else "") +
-                "\n"
-            )
-        return (
+        header = (
             f"You are the agent for '{ds}', labeling SAE feature f_{self.feat_idx}.\n"
-            f"This is round {round_num} of ring-consensus mesh labeling.\n\n"
-            f"{self._preprocessing_block()}\n\n"
-            f"YOUR DATA ROWS\n{self._dataset_block(ds, full_csv=True)}\n\n"
+            f"This is round {round_num} of ring-consensus mesh labeling."
+        )
+        data = f"YOUR DATA ROWS\n{self._dataset_block(ds, full_csv=True)}"
+        peer_block = (
             f"PEER EVIDENCE (from '{peer_ds}')\n"
             f"  peer's current label: \"{peer_label}\"\n\n"
-            f"{self._peer_evidence_block(peer_ds, round_num)}\n"
-            f"{feedback_sections}\n"
+            f"{self._peer_evidence_block(peer_ds, round_num)}"
+        )
+        own_feedback = self._judge_feedback_block(ds, round_num)
+        peer_feedback = self._judge_feedback_block(peer_ds, round_num)
+        feedback_block = ""
+        if own_feedback or peer_feedback:
+            parts = []
+            if own_feedback:
+                parts.append(own_feedback.rstrip())
+            if peer_feedback:
+                parts.append(peer_feedback.rstrip())
+            feedback_block = "\n\n".join(parts)
+        task = (
             "TASK\n"
             "Revise your label in light of the peer's hypothesis and the judge's feedback above.\n"
             "Address unsupported / contradicted claims; incorporate the missing signal if the "
             "evidence supports it; apply the suggested revision unless your data contradicts it.\n"
-            "CRITICAL: describe SHAPE and STATISTICAL FINGERPRINT only.\n"
-            "  * IGNORE column names and ordering. The pattern must be invariant under column\n"
-            "    permutation and renaming.\n"
-            "  * Describe distributional / structural properties (density, spread, co-variation,\n"
-            "    magnitude regime, clustering).\n"
-            "  * No column names. No domain terms.\n\n"
-            "If the peer's shape-level pattern also fits your activating rows, merge framings.\n"
-            "If your data contradicts theirs at the shape level, hold your ground but sharpen.\n\n"
-            "CONTRAST DISCIPLINE — include only distinguishing properties:\n"
-            "  * Before adding ANY property to the label, verify activating rows DIFFER from\n"
-            "    contrast rows on it — in any combination of inputs, labels, or predictions.\n"
-            "  * Properties shared between activating and contrast are NOT feature-level signals.\n"
-            "  * Keep looking — properties can combine (interactions, joint regimes). Exhaust the\n"
-            "    combinations; don't settle for a weak claim.\n\n"
-            "Goal: a label expressible in structural terms that fits both datasets.\n\n"
+            "If the peer's shape-level pattern also fits your activating rows, merge framings. "
+            "If your data contradicts theirs at the shape level, hold your ground but sharpen.\n"
+            "Goal: a label expressible in structural terms that fits both datasets."
+        )
+        output = (
             f"Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words). "
             "No prefix, no explanation."
         )
+        blocks = {
+            "header": header,
+            "preprocessing": self._preprocessing_block(),
+            "data": data,
+            "peer": peer_block,
+            "judge_feedback": feedback_block,
+            "task": task,
+            "shape": self._shape_only_block(),
+            "contrast": self._contrast_discipline_block(),
+            "output": output,
+        }
+        return self._assemble(blocks, PROMPT_ORDER)
 
     def round_prompts(self, round_num: int) -> list[str]:
         n = len(self.datasets)

@@ -209,16 +209,43 @@ but the resulting meta-label is too abstract to classify held-out rows above
 chance. The validator catches this gap: without it, the judge's `done` verdict
 would silently anchor a 52%-predictive label as the answer.
 
+## PROMPT_ORDER sweep (2026-04-18)
+
+Section ordering in round-1 and ring prompts is configurable via the
+`PROMPT_ORDER` environment variable (A / B / C). We ran the full pipeline on
+mitra/f_11 for each, using the same validator CSVs and opus for all agent
+calls.
+
+| Order | Section order (round-1) | Done at | micro / macro / f1 | Per-dataset acc |
+|-------|-------------------------|---------|--------------------|-----------------|
+| **A** (default) | evidence → task → shape → contrast → output | r5 (continue) | **0.660 / 0.660 / 0.667** | hazelnut 0.80, NATICUS 0.80, students 0.60, Marketing 0.60, splice 0.50 |
+| B | task → output → shape → contrast → evidence | r3 (done) | 0.500 / 0.500 / 0.419 | hazelnut 0.60, NATICUS 0.40, students 0.60, Marketing 0.60, splice 0.30 |
+| C | evidence → contrast → shape → task → output | r4 (done) | 0.560 / 0.560 / 0.542 | hazelnut 0.60, NATICUS 0.40, students 0.60, Marketing 0.50, splice 0.70 |
+
+**Observations.**
+- A (current default) is strongest by 10–16 pts of validator accuracy. Evidence first, instructions last.
+- B (task + output up front, evidence at the end) is worst. B triggered an earlier judge `done` (round 3), but the label that gets saved is less predictive — the judge is easier to satisfy when labels sound coherent but data arrives late.
+- C (contrast discipline before shape-only, task/output last) is middle. Putting the contrast instruction closer to evidence doesn't help; agents over-emphasize contrast-shape claims that don't generalize.
+- **Earlier `done` does not correlate with higher validator accuracy** — it's a cheaper-but-worse signal.
+- `students_dropout` is the most label-forgiving dataset (0.60 in all three). `NATICUSdroid` and `splice` swing by 0.4 pts across orderings.
+
+**Final labels per ordering:**
+- **A:** "Activating rows present a stable shape-level fingerprint on a localized column subset paired with confident predictions; contrasts share the skeleton but break one component."
+- **B:** "Activating rows concentrate structural mass on a localized column subset via rare-level co-firing, tight mid-band percentiles, or adjacent-position identity runs absent in contrasts."
+- **C:** "Activating rows place a small column subset within a coordinated localized band while remaining cells sit at majority-prevalence or mid-range; contrasts disperse that subset toward wider, rarer, or extreme positions."
+
+Decision: **keep `PROMPT_ORDER=A` as default.** B and C retained as options for future sweeps.
+
 ## HP tuning baseline
 
-Use the validator accuracy triple `(micro, macro, f1) = (0.520, 0.520, 0.556)`
-as the comparison point when sweeping knobs. Knobs worth trying next:
+Use `(micro, macro, f1) = (0.660, 0.660, 0.667)` — PROMPT_ORDER=A, all opus — as the baseline when sweeping one knob at a time. Knobs worth trying next:
 
 | Knob | Current | Candidates |
 |------|---------|------------|
 | `MAX_ROUNDS` | 5 | 8, 10 |
 | `PEER_SAMPLE_N_ACT/CON` | 3/3 | 5/5, 2/2 |
 | `JUDGE_SAMPLE_N_ACT/CON` | 2/2 | 3/3, 5/5 |
+| `PROMPT_ORDER` | A | B, C (both worse on f_11; hold as options for other features) |
 | Round-1 prompt | shape-only + contrast discipline | add "label will be validated on held-out rows" priming |
 | Judge accept criterion | `stable cross-round` backing | also require falsifiable numeric bounds |
 | Agent model mix | all opus | haiku round-1 + opus ring + opus judge |
