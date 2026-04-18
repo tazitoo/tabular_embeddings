@@ -499,6 +499,128 @@ def build_contrastive(model, feat_idx, dataset, sae, test_embs, splits,
     return {"rows": rows, "target_summary": target_summary}
 
 
+def build_validator_examples(
+    model: str,
+    feat_idx: int,
+    n_act: int = 5,
+    n_con: int = 5,
+    device: str = "cpu",
+) -> dict:
+    """Build held-out validator CSVs + truth file for one (model, feat).
+
+    Samples n_act activating + n_con non-activating rows per dataset from the
+    SAE test set, *excluding* row_idx values already used in the contrastive
+    CSVs. Writes per-dataset CSVs (stripped of label/band/activation/row_idx
+    giveaways) and a truth JSON with {row_id -> fires: bool} for grading.
+    """
+    from scripts.intervention.intervene_lib import load_sae as _load_sae
+    from data.extended_loader import load_tabarena_dataset
+
+    out_dir = OUTPUT_DIR / model
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    sae, _ = _load_sae(model, device=device)
+    test_embs = load_test_embeddings(model)
+    splits = json.loads(SPLITS_PATH.read_text())
+
+    truth: dict = {}
+    written: list = []
+
+    # Discover which datasets this feature has contrastive CSVs for.
+    model_dir = OUTPUT_DIR / model
+    csv_glob = sorted(model_dir.glob(f"f{feat_idx}_*.csv"))
+    ds_to_csv = {}
+    for p in csv_glob:
+        stem = p.stem  # f{feat}_{dataset}
+        if stem.startswith(f"f{feat_idx}_validator_"):
+            continue  # skip any prior validator CSV
+        ds = stem[len(f"f{feat_idx}_"):]
+        if ds in test_embs:
+            ds_to_csv[ds] = p
+
+    if not ds_to_csv:
+        raise FileNotFoundError(
+            f"No contrastive CSVs for f_{feat_idx} in {model_dir}. "
+            "Run the contrastive builder first."
+        )
+
+    for ds, contrastive_csv in ds_to_csv.items():
+        emb = test_embs[ds]
+        used_row_idx = set(int(r) for r in pd.read_csv(contrastive_csv).row_idx.tolist())
+
+        with torch.no_grad():
+            emb_t = torch.tensor(emb, dtype=torch.float32, device=device)
+            acts = sae.encode(emb_t)
+        feat_acts = acts[:, feat_idx].cpu().numpy()
+
+        active_pos = np.where(feat_acts > 0)[0]
+        inactive_pos = np.where(feat_acts == 0)[0]
+        held_act = np.array([i for i in active_pos if int(i) not in used_row_idx])
+        held_con = np.array([i for i in inactive_pos if int(i) not in used_row_idx])
+
+        rng = np.random.default_rng(seed=(42 + feat_idx) * 1000 + hash(ds) % (2**31))
+        n_act_take = min(n_act, len(held_act))
+        n_con_take = min(n_con, len(held_con))
+        picked_act = rng.choice(held_act, size=n_act_take, replace=False) if n_act_take else np.array([], dtype=int)
+        picked_con = rng.choice(held_con, size=n_con_take, replace=False) if n_con_take else np.array([], dtype=int)
+
+        ds_splits = splits.get(ds)
+        if not ds_splits:
+            continue
+        train_idx = ds_splits.get("train_indices", ds_splits.get("train"))
+        loaded = load_tabarena_dataset(ds, max_samples=999999)
+        if loaded is None:
+            continue
+        X, y = loaded[0], loaded[1]
+        sae_row_indices = _sae_test_row_indices(model, ds)
+        if sae_row_indices is None or len(sae_row_indices) != len(emb):
+            continue
+        X_test = X.iloc[sae_row_indices].reset_index(drop=True)
+        y_test = np.asarray(y)[sae_row_indices]
+        X_train = X.iloc[train_idx].reset_index(drop=True)
+        marginals = _compute_marginals(X_train)
+        preds = load_baseline_predictions(model, ds)
+
+        rows = []
+        ds_truth: dict = {}
+        for positions, is_active in [(picked_act, True), (picked_con, False)]:
+            for ri in positions:
+                ri = int(ri)
+                row_id = f"r{len(rows):03d}"
+                row = {"row_id": row_id}
+                row.update(_pred_annotations(ri, preds))
+                row["target"] = float(y_test[ri])
+                for col in X_test.columns:
+                    row[col] = _annotate_value(col, X_test.iloc[ri][col], marginals)
+                rows.append(row)
+                ds_truth[row_id] = bool(is_active)
+
+        # Shuffle so the validator can't infer class from row order
+        shuffle_rng = np.random.default_rng(seed=777 + feat_idx)
+        order = list(range(len(rows)))
+        shuffle_rng.shuffle(order)
+        rows = [rows[i] for i in order]
+        # Re-assign opaque row_ids after shuffle so they run 0..N-1 in display order
+        new_truth = {}
+        for new_i, r in enumerate(rows):
+            old_id = r["row_id"]
+            new_id = f"r{new_i:03d}"
+            r["row_id"] = new_id
+            new_truth[new_id] = ds_truth[old_id]
+        ds_truth = new_truth
+
+        out_path = out_dir / f"f{feat_idx}_validator_{ds}.csv"
+        pd.DataFrame(rows).to_csv(out_path, index=False)
+        truth[ds] = ds_truth
+        written.append(out_path)
+        print(f"  {ds}: {len(picked_act)} act + {len(picked_con)} con -> {out_path.name}")
+
+    truth_path = out_dir / f"f{feat_idx}_validator_truth.json"
+    truth_path.write_text(json.dumps(truth, indent=2))
+    print(f"Wrote {len(written)} validator CSVs + {truth_path.name}")
+    return truth
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -507,7 +629,20 @@ def main():
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--max-datasets", type=int, default=5)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--validator", action="store_true",
+                        help="Build validator (held-out) CSVs instead of contrastive examples")
+    parser.add_argument("--n-act", type=int, default=5,
+                        help="Number of held-out activating rows per dataset (--validator mode)")
+    parser.add_argument("--n-con", type=int, default=5,
+                        help="Number of held-out non-activating rows per dataset (--validator mode)")
     args = parser.parse_args()
+
+    if args.validator:
+        if not args.features:
+            parser.error("--validator requires --features")
+        for feat in args.features:
+            build_validator_examples(args.model, feat, args.n_act, args.n_con, args.device)
+        return
 
     splits = json.loads(SPLITS_PATH.read_text())
     sae, _ = load_sae(args.model, device=args.device)

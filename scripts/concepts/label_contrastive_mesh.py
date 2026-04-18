@@ -94,6 +94,7 @@ class ContrastiveMeshPipeline:
         self.similarities: list[float] = []
         self.judge_verdicts: list[dict] = []  # [{"verdict": "done"|"continue", "note": str}, ...]
         self.synthesis: Optional[str] = None
+        self.validator_results: Optional[dict] = None
         self._load_state_if_exists()
 
     # ── State persistence ──────────────────────────────────────────────
@@ -107,6 +108,7 @@ class ContrastiveMeshPipeline:
         self.similarities = data.get("similarities", [])
         self.judge_verdicts = data.get("judge_verdicts", [])
         self.synthesis = data.get("synthesis")
+        self.validator_results = data.get("validator_results")
 
     def _save_state(self):
         self._state_path.write_text(json.dumps({
@@ -117,6 +119,7 @@ class ContrastiveMeshPipeline:
             "similarities": self.similarities,
             "judge_verdicts": self.judge_verdicts,
             "synthesis": self.synthesis,
+            "validator_results": self.validator_results,
         }, indent=2))
 
     def reset(self):
@@ -124,6 +127,7 @@ class ContrastiveMeshPipeline:
         self.similarities = []
         self.judge_verdicts = []
         self.synthesis = None
+        self.validator_results = None
         if self._state_path.exists():
             self._state_path.unlink()
 
@@ -671,6 +675,162 @@ class ContrastiveMeshPipeline:
             return True
         return len(self.rounds) >= MAX_ROUNDS
 
+    # ── Held-out validator ─────────────────────────────────────────────
+    def _validator_csv_paths(self) -> dict:
+        return {
+            ds: self._model_dir / f"f{self.feat_idx}_validator_{ds}.csv"
+            for ds in self.datasets
+        }
+
+    def _validator_truth(self) -> dict:
+        p = self._model_dir / f"f{self.feat_idx}_validator_truth.json"
+        if not p.exists():
+            return {}
+        return json.loads(p.read_text())
+
+    def validator_prompt(self) -> str:
+        """Prompt a judge-independent validator with held-out rows + final label.
+
+        The validator sees the final label and, per dataset, an opaque
+        shuffled list of held-out rows (the contrastive / judge rows are
+        excluded). It outputs a binary fires/doesn't-fire prediction per
+        row, which we grade against a stored truth file.
+        """
+        lab = self.final_label()
+        if not lab:
+            raise RuntimeError("No final label to validate")
+        paths = self._validator_csv_paths()
+        present = {ds: p.read_text() for ds, p in paths.items() if p.exists()}
+        if not present:
+            raise RuntimeError(
+                f"No validator CSVs under {self._model_dir}. Run: python -m "
+                f"scripts.concepts.build_contrastive_examples --validator "
+                f"--model {self.model} --features {self.feat_idx}"
+            )
+        data_block = "\n\n".join(
+            f"=== {ds} ===\n{csv}" for ds, csv in present.items()
+        )
+        return (
+            f"You are the validator for SAE feature f_{self.feat_idx} "
+            f"({self.preprocessing.get('model', self.model)}).\n"
+            "The labeling agents and the judge did NOT see these rows. Your job is to "
+            "predict, per row, whether it activates the concept described by the FINAL "
+            "LABEL below. Binary output only.\n\n"
+            f"FINAL LABEL\n\"{lab}\"\n\n"
+            f"{self._preprocessing_block()}\n\n"
+            "Row cells: numeric 'value (pXX)' = training percentile; categorical 'value "
+            "(freq Y.YY)' = training prevalence. Each row carries pred_class/pred_conf/"
+            "pred_correct (classification) or pred_value/pred_abs_err (regression). "
+            "Rows are shuffled; you cannot infer class from ordering.\n\n"
+            f"{data_block}\n\n"
+            "TASK\n"
+            "For each row_id in each dataset, classify the row into one of two categories "
+            "based solely on whether it fits the FINAL LABEL's structural claims:\n"
+            "  * \"fires\"         — the row matches the label's description of activating rows.\n"
+            "  * \"does_not_fire\" — the row does not match that description.\n"
+            "Judge each row independently. Do not assume any particular number of rows should "
+            "fire in a dataset — the true count could be 0, all, or anything in between, and "
+            "counting toward a balanced expectation biases the result. Base each decision only "
+            "on whether that specific row fits the label.\n"
+            "No reasoning, no hedging, no extra fields — row_id and prediction only.\n\n"
+            "OUTPUT FORMAT (strict)\n"
+            "Single fenced ```json``` block. Nothing before or after.\n\n"
+            "```json\n"
+            "{\n"
+            '  "per_dataset": {\n'
+            '    "<dataset>": [\n'
+            '      {"row_id": "r000", "prediction": "fires"},\n'
+            '      {"row_id": "r001", "prediction": "does_not_fire"}\n'
+            '    ]\n'
+            '  }\n'
+            '}\n'
+            "```"
+        )
+
+    def record_validator_response(self, response: dict) -> dict:
+        """Grade validator predictions against the stored truth file."""
+        truth = self._validator_truth()
+        if not truth:
+            raise RuntimeError(
+                "No validator truth file; regenerate validator CSVs first."
+            )
+        per_ds_resp = response.get("per_dataset") or {}
+        missing_ds = [ds for ds in truth if ds not in per_ds_resp]
+        if missing_ds:
+            raise ValueError(f"Validator response missing datasets: {missing_ds}")
+
+        def _decode(p_entry):
+            """Accept 'fires'/'does_not_fire' (current) or bool (legacy)."""
+            val = p_entry.get("prediction", p_entry.get("predicted_fires"))
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                s = val.strip().lower()
+                if s in ("fires", "fire", "activates", "activating"):
+                    return True
+                if s in ("does_not_fire", "does not fire", "no", "inactive", "not_firing"):
+                    return False
+            raise ValueError(f"Cannot decode prediction value: {val!r}")
+
+        per_ds_stats: dict = {}
+        tot_tp = tot_fp = tot_tn = tot_fn = 0
+        for ds, ds_truth in truth.items():
+            preds_list = per_ds_resp.get(ds) or []
+            preds = {p.get("row_id"): _decode(p) for p in preds_list}
+            missing_rows = set(ds_truth.keys()) - set(preds.keys())
+            if missing_rows:
+                raise ValueError(
+                    f"Validator response for {ds} missing row_ids: {sorted(missing_rows)}"
+                )
+            tp = fp = tn = fn = 0
+            for row_id, actual in ds_truth.items():
+                pred = preds[row_id]
+                if actual and pred: tp += 1
+                elif actual and not pred: fn += 1
+                elif (not actual) and pred: fp += 1
+                else: tn += 1
+            total = tp + fp + tn + fn
+            per_ds_stats[ds] = {
+                "total": total,
+                "correct": tp + tn,
+                "accuracy": (tp + tn) / total if total else 0.0,
+                "precision": tp / (tp + fp) if (tp + fp) else None,
+                "recall": tp / (tp + fn) if (tp + fn) else None,
+                "tp": tp, "fp": fp, "tn": tn, "fn": fn,
+            }
+            tot_tp += tp; tot_fp += fp; tot_tn += tn; tot_fn += fn
+
+        tot_total = tot_tp + tot_fp + tot_tn + tot_fn
+        micro_acc = (tot_tp + tot_tn) / tot_total if tot_total else 0.0
+        micro_prec = tot_tp / (tot_tp + tot_fp) if (tot_tp + tot_fp) else None
+        micro_rec = tot_tp / (tot_tp + tot_fn) if (tot_tp + tot_fn) else None
+        f1 = None
+        if micro_prec and micro_rec and (micro_prec + micro_rec):
+            f1 = 2 * micro_prec * micro_rec / (micro_prec + micro_rec)
+        # Macro-average: mean of per-dataset accuracies (prevents one big dataset dominating)
+        macro_acc = (
+            sum(s["accuracy"] for s in per_ds_stats.values()) / len(per_ds_stats)
+            if per_ds_stats else 0.0
+        )
+        overall = {
+            "total": tot_total,
+            "correct": tot_tp + tot_tn,
+            "accuracy": micro_acc,            # micro (row-weighted)
+            "accuracy_macro": macro_acc,      # macro (dataset-weighted)
+            "precision": micro_prec,
+            "recall": micro_rec,
+            "f1": f1,
+            "tp": tot_tp, "fp": tot_fp, "tn": tot_tn, "fn": tot_fn,
+        }
+        self.validator_results = {
+            "overall": overall,
+            "per_dataset": per_ds_stats,
+            "note": (response.get("overall_note") or "").strip(),
+            "label_graded": self.final_label(),
+        }
+        self._save_state()
+        return self.validator_results
+
     def converged(self) -> bool:
         return bool(self.similarities) and self.similarities[-1] >= CONVERGENCE_THRESHOLD
 
@@ -826,6 +986,7 @@ class ContrastiveMeshPipeline:
             "judge_verdicts": self.judge_verdicts,
             "similarity_history": self.similarities,
             "labels_per_round": self.rounds,
+            "validator_results": self.validator_results,
         }, indent=2))
         return output_path
 
@@ -870,6 +1031,10 @@ def _cli():
     rec_judge = sub.add_parser("record-judge", help="Record the judge's structured response for the latest round")
     rec_judge.add_argument("--response-file", type=Path, required=True,
                             help="Path to judge's raw output (with fenced ```json block)")
+
+    sub.add_parser("show-validator", help="Print the validator prompt (held-out rows vs final label)")
+    rec_val = sub.add_parser("record-validator", help="Grade the validator's response against the truth file")
+    rec_val.add_argument("--response-file", type=Path, required=True)
 
     args = parser.parse_args()
     pipe = ContrastiveMeshPipeline(args.model, args.feat)
@@ -925,6 +1090,27 @@ def _cli():
         for ds, pd_block in v["per_dataset"].items():
             print(f"  [{ds}] {pd_block.get('verdict', '?')}")
         print(f"Done: {pipe.is_done()}   Rounds: {len(pipe.rounds)}/{MAX_ROUNDS}")
+    elif args.cmd == "show-validator":
+        print(pipe.validator_prompt())
+    elif args.cmd == "record-validator":
+        raw = args.response_file.read_text()
+        parsed = ContrastiveMeshPipeline._extract_json(raw)
+        result = pipe.record_validator_response(parsed)
+        o = result["overall"]
+        # Headline metric for HP sweeps: micro accuracy + macro + f1
+        prec_str = f"{o['precision']:.3f}" if o['precision'] is not None else "--"
+        rec_str  = f"{o['recall']:.3f}"    if o['recall']    is not None else "--"
+        f1_str   = f"{o['f1']:.3f}"        if o['f1']        is not None else "--"
+        print(f"HEADLINE  accuracy(micro)={o['accuracy']:.3f}  "
+              f"accuracy(macro)={o['accuracy_macro']:.3f}  f1={f1_str}")
+        print(f"          {o['correct']}/{o['total']} correct  "
+              f"precision={prec_str}  recall={rec_str}")
+        print()
+        for ds, s in result["per_dataset"].items():
+            prec = f"{s['precision']:.2f}" if s['precision'] is not None else "--"
+            rec = f"{s['recall']:.2f}" if s['recall'] is not None else "--"
+            print(f"  [{ds}] acc={s['accuracy']:.2f} ({s['correct']}/{s['total']}) "
+                  f"prec={prec} rec={rec}")
 
 
 if __name__ == "__main__":
