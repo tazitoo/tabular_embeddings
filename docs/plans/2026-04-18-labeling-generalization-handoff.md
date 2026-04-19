@@ -71,15 +71,35 @@ Running aggregate over completed features (n=5):
 
 ### f_86 note
 
-The f_86 cross-dataset label is polarity-inverted for 2 of the 5
-regression datasets (protein, diamonds both scored 0/10). The label
-describes the upper-tail-concentration behavior seen in
-superconductivity/miami but protein's activating rows are the opposite
-shape (most numerics low, one column anchored high). Treat the f_86
-label as unusable for downstream work until either (a) the pipeline is
-extended to handle polarity flips in the cross-dataset synthesizer, or
-(b) the label is replaced manually. This is a pipeline limitation, not
-a research finding.
+Initial f_86 label was polarity-inverted for protein + diamonds
+(0/10 each). Added `next_round_pairings` to the judge schema (commit
+`e0ffb63`): judge dynamically pairs contradicting datasets in the
+next ring round, so agents reconcile face-to-face rather than the
+synthesizer papering over direction conflicts. Re-ran f_86 on the
+pairing-enabled pipeline:
+
+| dataset | pre-pairing | with pairings |
+|---|---|---|
+| diamonds | 0.00 | **0.70** |
+| physiochemical_protein | 0.00 | **0.60** |
+| miami_housing | 0.20 | 0.30 |
+| wine_quality | 0.60 | 0.40 |
+| superconductivity | 0.20 | 0.20 |
+| **overall** | **0.20** | **0.44** (+0.24) |
+
+New label (polarity-agnostic): *"Activating rows concentrate most axes
+in one coherent percentile band with one or two axes pushed to the
+opposite tail, while contrast rows scatter across dispersed mid-range
+positions without that bulk-plus-outlier co-firing."*
+
+Judge used pairings as designed: round 1 paired protein↔supercon (the
+polarity conflict); round 2 paired diamonds↔protein and
+wine↔supercon (struggling datasets with accepted ones); round 3 done
+with 4 accepts + 1 revise. Snapshots at
+`output/contrastive_examples/mitra/f86_{label,mesh_state}_Apairing.json`.
+
+Next: re-run f_92 with pairings and see if the APSFailure polarity
+mismatch resolves similarly.
 
 State + label snapshots on disk:
 - `output/contrastive_examples/mitra/f11_label_A.json`
