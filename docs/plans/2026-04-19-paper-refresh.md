@@ -130,7 +130,7 @@ cp /Users/brian/src/tabular_embedding_paper/tables/*.tex \
    output/paper_refresh_baseline_2026-04-19/tables/
 cp -r /Users/brian/src/tabular_embedding_paper/figures \
    output/paper_refresh_baseline_2026-04-19/
-cp scripts/tables/table4/ablation_summary.tex \
+cp scripts/tables/ablation_summary/ablation_summary.tex \
    output/paper_refresh_baseline_2026-04-19/tables/section4_summary_pre.tex
 ```
 

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Table 4: Mean gap closed when ablating unmatched concepts, by strong model.
+Section 4 ablation summary: mean gap closed when ablating unmatched
+concepts, by strong model. Rendered as Table 2 in the paper draft.
 
 Reads all ablation sweep NPZ files, groups by which model is "strong"
 (the one being ablated), and reports mean/median gap_closed.
 
 Usage:
-    python -m scripts.tables.table4.table4
+    python -m scripts.tables.ablation_summary.ablation_summary
 """
 
 import json
