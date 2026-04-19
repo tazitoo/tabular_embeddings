@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.paper._paper_repo import paper_figure_path
 
 ABLATION_DIR = PROJECT_ROOT / "output" / "ablation_sweep_tols"
 TRANSFER_DIR = PROJECT_ROOT / "output" / "transfer_global_mnnp90_trained_tols"
@@ -196,10 +197,13 @@ def main():
 
     output = args.output or OUTPUT_DIR / "intervention_example_3panel.pdf"
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=200, bbox_inches="tight")
-    fig.savefig(output.with_suffix(".png"), dpi=200, bbox_inches="tight")
+    paper_output = paper_figure_path("4_results", "intervention_example_3panel.pdf")
+
+    for path in (output, paper_output):
+        fig.savefig(path, dpi=200, bbox_inches="tight")
+        print(f"Saved {path}")
+
     plt.close()
-    print(f"Saved {output} and .png")
 
 
 if __name__ == "__main__":
