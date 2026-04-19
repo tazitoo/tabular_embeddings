@@ -98,8 +98,43 @@ wine↔supercon (struggling datasets with accepted ones); round 3 done
 with 4 accepts + 1 revise. Snapshots at
 `output/contrastive_examples/mitra/f86_{label,mesh_state}_Apairing.json`.
 
-Next: re-run f_92 with pairings and see if the APSFailure polarity
-mismatch resolves similarly.
+### f_92 with pairings
+
+Re-ran f_92 with the pairing-enabled pipeline.
+
+| dataset | pre-pairing | with pairings |
+|---|---|---|
+| SDSS17 | 0.50 | 0.60 |
+| NATICUSdroid | 0.50 | 0.40 |
+| splice | 0.50 | 0.50 |
+| APSFailure | 0.10 | **0.40** |
+| hiva_agnostic | 0.50 | 0.60 |
+| **overall** | **0.42** | **0.50** (+0.08) |
+
+APSFailure (the previously-near-inverted dataset) recovered from 1/10
+to 4/10. Overall modest +0.08 gain, less dramatic than f_86's +0.24.
+
+Judge converged faster: done at **round 2** (vs round 3 baseline).
+11 agent calls total vs ~25 for pre-pairing run. The pairing
+mechanism both resolves polarity and reduces work.
+
+Final label (polarity-agnostic): *"Activating rows depart from the
+typical row profile by an extreme aggregate input-statistic (broad
+upper-tail percentile co-firing or atypical minority-level flag
+density across a column subset) with confident-correct predictions,
+while contrast rows sit nearer baseline density on the same axes."*
+
+Judge used 4 pairings in round 1: NATICUSdroid↔hiva_agnostic (binary
+density conflict), SDSS17↔APSFailure (single-column vs broad
+co-firing numeric). The binary reconciliation was unexpected: the
+r1 judge thought hiva's polarity was literally reversed, but when
+the hiva agent inspected its own rows in r2 it confirmed the same
+direction as NATICUSdroid (activating = fewer minority flags). The
+paired agents can override the judge's r1 reading with their own
+evidence.
+
+Snapshots at
+`output/contrastive_examples/mitra/f92_{label,mesh_state}_Apairing.json`.
 
 State + label snapshots on disk:
 - `output/contrastive_examples/mitra/f11_label_A.json`
