@@ -175,14 +175,19 @@ def plot_model_evidence(model_key: str, display_name: str, batch_data: dict,
     first = batch_data[datasets[0]]
     n_layers = first['n_layers']
 
-    # Collect profiles and critical depths
+    # Collect profiles and critical depths; skip datasets whose profile length
+    # differs from n_layers (e.g. TabPFN classifier=24 vs regressor=18).
     profiles = []
     critical_depths = []
     critical_layers = []
     for ds_name, r in batch_data.items():
-        profiles.append(np.array(r['l0_cka_profile']))
+        profile = np.array(r['l0_cka_profile'])
+        if len(profile) != n_layers:
+            continue
+        profiles.append(profile)
         critical_depths.append(r['critical_depth_frac'])
         critical_layers.append(r['critical_layer'])
+    n_datasets = len(profiles)  # update to filtered count
 
     mean_profile = np.mean(profiles, axis=0)
     mean_critical = np.mean(critical_depths)
@@ -841,9 +846,41 @@ def plot_combined_all_models():
     plt.close()
 
 
+def copy_paper_figures():
+    """Copy the 9 paper-bound PDFs into the paper repo's A_appendix folder.
+
+    Intentionally narrow: this script generates extra figures that only live
+    in output/; only the ones referenced in the paper get copied.
+    """
+    import shutil
+    from scripts.paper._paper_repo import paper_figure_path
+
+    model_keys = [
+        "carte", "hyperfast", "mitra", "mitra_regressor",
+        "tabdpt", "tabicl", "tabpfn", "tabula8b",
+    ]
+    mappings = [
+        (OUTPUT_DIR / f"layerwise_cka_appendix_{m}.pdf",
+         paper_figure_path("A_appendix", f"layerwise_cka_appendix_{m}.pdf"))
+        for m in model_keys
+    ]
+    mappings.append((
+        OUTPUT_DIR / "layerwise_depth_all_models_combined.pdf",
+        paper_figure_path("A_appendix", "layerwise_depth_all_models_combined.pdf"),
+    ))
+
+    for src, dst in mappings:
+        if not src.exists():
+            print(f"SKIP (missing): {src}")
+            continue
+        shutil.copyfile(src, dst)
+        print(f"Copied → {dst}")
+
+
 if __name__ == "__main__":
     plot_appendix_figure()
     plot_compact_figure()
     plot_model_comparison()
     plot_all_model_appendix_figures()
     plot_combined_all_models()
+    copy_paper_figures()
