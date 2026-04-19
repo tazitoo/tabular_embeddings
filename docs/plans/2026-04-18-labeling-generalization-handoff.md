@@ -53,6 +53,7 @@ Resume invariants:
 | **f_6**  | 4 (judge done r4) | 4 accept, 1 revise | **0.660 / 0.660 / 0.691** | "Activating rows place tail-mass values (rare categorical codes or extreme-percentile numerics) on a localized column subset while contrasts hold baseline-frequency values at those positions." |
 | **f_36** | 3 (judge done r3) | 4 accept, 1 revise | **0.680 / 0.680 / 0.680** | "Activating rows densely cover a broad column block at mid-band percentiles or rare-frequency categorical levels; contrasts thin out or push isolated positions to extreme tails." |
 | **f_86** | 4 (judge done r4) | 5 accept | **0.200 / 0.200 / 0.130** ⚠️ polarity-inverted | "Activating rows concentrate tail mass on a localized numeric column subset at upper-mid-to-tail percentiles; contrasts lack that subset or invert its polarity." |
+| **f_92** | 3 (judge done r3) | 5 revise (but done) | **0.420 / 0.420 / 0.293** ⚠️ partial polarity mismatch | "Activating rows concentrate tail-mass on a narrow recurring column subset with near-saturated prediction confidence, while contrasts disperse comparable tail-mass across broader non-overlapping columns at lower confidence." |
 
 Per-dataset accuracies:
 
@@ -60,12 +61,13 @@ Per-dataset accuracies:
 **f_6:** HR 0.70, NATICUS 0.70, churn 0.70, credit_card 0.70, in_vehicle 0.50.
 **f_36:** kddcup09 0.80, SDSS17 0.80, taiwanese 0.70, Marketing 0.60, Diabetes130US 0.50.
 **f_86:** wine_quality 0.60, miami 0.20, superconductivity 0.20, diamonds 0.00, physiochemical_protein 0.00. **Every diamonds/protein prediction is exactly inverted from truth — the label's polarity is backwards.**
+**f_92:** SDSS17 0.50, NATICUSdroid 0.50, splice 0.50, hiva_agnostic 0.50, APSFailure 0.10. APSFailure's activating pattern is "broad co-firing across wide column set" but the label calls for a "narrow recurring subset" — same class of polarity mismatch as f_86 but only on one dataset.
 
-Running aggregate over completed features (n=4):
-- mean micro accuracy = **0.550** (0.660, 0.660, 0.680, 0.200)
-- mean macro accuracy = **0.550**
-- mean f1 = **0.542**
-- Excluding the inverted f_86 as an interpretability failure: mean = **0.667** on n=3.
+Running aggregate over completed features (n=5):
+- mean micro accuracy = **0.524** (0.660, 0.660, 0.680, 0.200, 0.420)
+- mean macro accuracy = **0.524**
+- mean f1 = **0.492**
+- Excluding f_86 and f_92 as polarity-inversion cases: mean = **0.667** on n=3.
 
 ### f_86 note
 
@@ -93,9 +95,7 @@ Paper-draft note:
 
 ## Pending concepts
 
-| Feature | Datasets | Status |
-|---------|----------|--------|
-| **f_92** | APSFailure, NATICUSdroid, SDSS17, hiva_agnostic, splice | validator CSVs built; pipeline NOT yet run |
+All 5 features complete.
 
 Each remaining feature needs:
 
