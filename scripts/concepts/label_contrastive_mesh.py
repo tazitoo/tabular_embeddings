@@ -41,10 +41,8 @@ CONTRASTIVE_DIR = PROJECT_ROOT / "output" / "contrastive_examples"
 CONVERGENCE_THRESHOLD = 0.80  # diagnostic only; judge decides when to stop
 MAX_ROUNDS = 5
 LABEL_WORDS_MIN, LABEL_WORDS_MAX = 10, 25
-LABEL_FORMAT: str = os.environ.get("LABEL_FORMAT", "sentence").lower()
-_LABEL_FORMATS = {"sentence", "rules"}
-if LABEL_FORMAT not in _LABEL_FORMATS:
-    raise ValueError(f"LABEL_FORMAT={LABEL_FORMAT!r} not one of {sorted(_LABEL_FORMATS)}")
+VALID_LABEL_FORMATS = {"sentence", "rules"}
+DEFAULT_LABEL_FORMAT = "sentence"
 NOMIC_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
 JUDGE_SAMPLE_SEED = 13
 PEER_SAMPLE_N_ACT = 3
@@ -54,7 +52,7 @@ JUDGE_SAMPLE_N_CON = 2
 RINGLITE_SELF_SAMPLE_N_ACT = 3
 RINGLITE_SELF_SAMPLE_N_CON = 3
 
-# Section ordering for round1_prompt and ring_prompt. Env override: PROMPT_ORDER.
+# Section ordering for round1_prompt and ring_prompt. Set via `init --prompt-order`.
 #   A — evidence before instructions (current baseline).
 #       header | preprocessing | data | task | shape-only | contrast-discipline | output
 #   B — task and constraints first, then evidence.
@@ -63,21 +61,27 @@ RINGLITE_SELF_SAMPLE_N_CON = 3
 #       header | preprocessing | data | contrast-discipline | shape-only | task | output
 # Ring rounds also include peer-evidence + judge-feedback blocks; those ride with
 # "data" in all three orders.
-PROMPT_ORDER: str = os.environ.get("PROMPT_ORDER", "A").upper()
-_PROMPT_ORDER_SEQUENCES = {
+PROMPT_ORDER_SEQUENCES = {
     "A": ["header", "preprocessing", "data", "peer", "judge_feedback", "task", "shape", "contrast", "output"],
     "B": ["header", "task", "output", "shape", "contrast", "preprocessing", "data", "peer", "judge_feedback"],
     "C": ["header", "preprocessing", "data", "peer", "judge_feedback", "contrast", "shape", "task", "output"],
 }
-if PROMPT_ORDER not in _PROMPT_ORDER_SEQUENCES:
-    raise ValueError(
-        f"PROMPT_ORDER={PROMPT_ORDER!r} not one of {list(_PROMPT_ORDER_SEQUENCES)}"
-    )
+VALID_PROMPT_ORDERS = set(PROMPT_ORDER_SEQUENCES)
+DEFAULT_PROMPT_ORDER = "A"
 
-ARCH: str = os.environ.get("ARCH", "baseline").lower()
-_ARCH_MODES = {"baseline", "ringlite", "ringlite_freeze"}
-if ARCH not in _ARCH_MODES:
-    raise ValueError(f"ARCH={ARCH!r} not one of {sorted(_ARCH_MODES)}")
+VALID_ARCHES = {"baseline", "ringlite", "ringlite_freeze"}
+DEFAULT_ARCH = "baseline"
+
+VALID_PAIRINGS = {"on", "off"}
+DEFAULT_PAIRINGS = "on"
+
+_PREDICTION_COLUMNS = {
+    "pred_class",
+    "pred_conf",
+    "pred_correct",
+    "pred_value",
+    "pred_abs_err",
+}
 
 _NOMIC_MODEL = None
 
@@ -112,14 +116,25 @@ class ContrastiveMeshPipeline:
     model: str
     feat_idx: int
     contrastive_dir: Path = CONTRASTIVE_DIR
+    arch: str = DEFAULT_ARCH
+    prompt_order: str = DEFAULT_PROMPT_ORDER
+    label_format: str = DEFAULT_LABEL_FORMAT
+    pairings_mode: str = DEFAULT_PAIRINGS
 
     def __post_init__(self):
+        # Validate any explicitly-passed knob values; state overrides on resume.
+        if self.arch not in VALID_ARCHES:
+            raise ValueError(f"arch={self.arch!r} not one of {sorted(VALID_ARCHES)}")
+        if self.prompt_order not in VALID_PROMPT_ORDERS:
+            raise ValueError(f"prompt_order={self.prompt_order!r} not one of {sorted(VALID_PROMPT_ORDERS)}")
+        if self.label_format not in VALID_LABEL_FORMATS:
+            raise ValueError(f"label_format={self.label_format!r} not one of {sorted(VALID_LABEL_FORMATS)}")
+        if self.pairings_mode not in VALID_PAIRINGS:
+            raise ValueError(f"pairings_mode={self.pairings_mode!r} not one of {sorted(VALID_PAIRINGS)}")
         self._model_dir = self.contrastive_dir / self.model
         ctx_path = self._model_dir / f"f{self.feat_idx}_context.json"
         self.feat_context = json.loads(ctx_path.read_text())
         self.datasets: list[str] = self.feat_context["datasets_used"]
-        self.arch = ARCH
-        self.label_format = LABEL_FORMAT
         self.preprocessing = self.feat_context["preprocessing"]
         self.csv_paths = {ds: self._model_dir / f"f{self.feat_idx}_{ds}.csv"
                           for ds in self.datasets}
@@ -133,29 +148,17 @@ class ContrastiveMeshPipeline:
 
     # ── State persistence ──────────────────────────────────────────────
     def _load_state_if_exists(self):
+        """When a state file exists, its knob values override the constructor
+        defaults so subcommands after `init` always reflect the init config."""
         if not self._state_path.exists():
             return
         data = json.loads(self._state_path.read_text())
         if data.get("feat_idx") != self.feat_idx or data.get("model") != self.model:
             return
-        saved_arch = data.get("arch", "baseline")
-        saved_label_format = data.get("label_format", "sentence")
-        if self.arch != saved_arch and (
-            data.get("rounds") or data.get("judge_verdicts") or data.get("synthesis")
-        ):
-            raise ValueError(
-                f"State file {self._state_path} was created with ARCH={saved_arch!r}, "
-                f"but current ARCH={self.arch!r}. Reset the feature state or resume with "
-                f"the matching architecture mode."
-            )
-        if self.label_format != saved_label_format and (
-            data.get("rounds") or data.get("judge_verdicts") or data.get("synthesis")
-        ):
-            raise ValueError(
-                f"State file {self._state_path} was created with LABEL_FORMAT={saved_label_format!r}, "
-                f"but current LABEL_FORMAT={self.label_format!r}. Reset the feature state or resume "
-                f"with the matching label format."
-            )
+        self.arch = data.get("arch", DEFAULT_ARCH)
+        self.prompt_order = data.get("prompt_order", DEFAULT_PROMPT_ORDER)
+        self.label_format = data.get("label_format", DEFAULT_LABEL_FORMAT)
+        self.pairings_mode = data.get("pairings_mode", DEFAULT_PAIRINGS)
         self.rounds = data.get("rounds", [])
         self.similarities = data.get("similarities", [])
         self.judge_verdicts = data.get("judge_verdicts", [])
@@ -167,7 +170,9 @@ class ContrastiveMeshPipeline:
             "model": self.model,
             "feat_idx": self.feat_idx,
             "arch": self.arch,
+            "prompt_order": self.prompt_order,
             "label_format": self.label_format,
+            "pairings_mode": self.pairings_mode,
             "datasets": self.datasets,
             "rounds": self.rounds,
             "similarities": self.similarities,
@@ -196,6 +201,14 @@ class ContrastiveMeshPipeline:
             f"Implication: {pp.get('implication', '?')}"
         )
 
+    @staticmethod
+    def _drop_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
+        cols = [c for c in df.columns if c not in _PREDICTION_COLUMNS]
+        return df.loc[:, cols]
+
+    def _prompt_csv_text(self, df: pd.DataFrame) -> str:
+        return self._drop_prediction_columns(df).to_csv(index=False)
+
     def _dataset_block(self, ds: str, *, full_csv: bool) -> str:
         meta = self.feat_context["dataset_stats"].get(ds, {})
         target = meta.get("target_summary") or {}
@@ -216,16 +229,11 @@ class ContrastiveMeshPipeline:
                 f"p25={target.get('p25')}, p50={target.get('p50')}, p75={target.get('p75')}"
             )
         if full_csv:
-            csv_text = self.csv_paths[ds].read_text()
+            csv_text = self._prompt_csv_text(pd.read_csv(self.csv_paths[ds]))
             note = (
                 "Each numeric cell is annotated as 'value (pXX)' = pXX percentile in the SAE "
                 "training split. Each categorical/binary cell is 'value (freq Y.YY)' = prevalence "
                 "of that value in training.\n"
-                "Each row also carries the model's prediction on that row:\n"
-                "  - classification: pred_class, pred_conf (max softmax prob), pred_correct (bool)\n"
-                "  - regression:     pred_value, pred_abs_err (|pred - target|)\n"
-                "Use these to judge whether the feature fires on confident-correct, "
-                "confident-wrong, or uncertain rows.\n"
             )
             return f"{header}\n\n{note}\nContrastive CSV ({self.csv_paths[ds].name}):\n{csv_text}"
         df = pd.read_csv(self.csv_paths[ds])
@@ -272,8 +280,6 @@ class ContrastiveMeshPipeline:
         note = (
             "Numeric cells: 'value (pXX)' = pXX percentile in training.\n"
             "Categorical cells: 'value (freq Y.YY)' = training prevalence.\n"
-            "Prediction columns: pred_class/pred_conf/pred_correct (classification) or\n"
-            "pred_value/pred_abs_err (regression).\n"
             "These rows are a normalized evidence packet for this round, not the full CSV.\n"
         )
         return (
@@ -322,19 +328,17 @@ class ContrastiveMeshPipeline:
             "CONTRAST DISCIPLINE — include only distinguishing properties:\n"
             "  * Before adding ANY property to the label, verify activating rows DIFFER from\n"
             "    contrast rows on it — in any combination of inputs (percentile positions,\n"
-            "    categorical frequencies, within-row spread, column-subset co-firing), labels\n"
-            "    (target values, base-rate enrichment), or predictions (pred_class, pred_conf,\n"
-            "    pred_correct / pred_value, pred_abs_err).\n"
+            "    categorical frequencies, within-row spread, column-subset co-firing), or labels\n"
+            "    (target values, base-rate enrichment).\n"
             "  * Properties shared between activating and contrast are NOT feature-level signals\n"
             "    and must not appear in the label.\n"
             "  * Keep looking — properties can combine (an interaction between two inputs; a\n"
-            "    pred_class × target pair; a percentile × prediction-confidence joint regime).\n"
+            "    target × percentile pair; a within-row spread × rarity regime).\n"
             "    Exhaust the combinations before concluding anything is shared."
         )
 
-    @staticmethod
-    def _output_block() -> str:
-        if LABEL_FORMAT == "rules":
+    def _output_block(self) -> str:
+        if self.label_format == "rules":
             return (
                 "Output ONLY the rule set. No preamble, no explanation.\n"
                 "Format exactly as plain text:\n"
@@ -355,8 +359,8 @@ class ContrastiveMeshPipeline:
 
     @staticmethod
     def _assemble(blocks: dict, order: str) -> str:
-        """Join non-empty blocks in the sequence defined by PROMPT_ORDER."""
-        seq = _PROMPT_ORDER_SEQUENCES[order]
+        """Join non-empty blocks in the sequence defined by prompt_order."""
+        seq = PROMPT_ORDER_SEQUENCES[order]
         parts = []
         for key in seq:
             block = blocks.get(key)
@@ -389,12 +393,12 @@ class ContrastiveMeshPipeline:
             "contrast": self._contrast_discipline_block(),
             "output": self._output_block(),
         }
-        if LABEL_FORMAT == "rules":
+        if self.label_format == "rules":
             blocks["task"] += (
                 "\nReturn a monosemantic necessary-and-sufficient rule set, not a polished sentence."
             )
             blocks["shape"] = f"{self._shape_only_block()}\n\n{self._rules_block()}"
-        return self._assemble(blocks, PROMPT_ORDER)
+        return self._assemble(blocks, self.prompt_order)
 
     def _peer_evidence_block(self, peer_ds: str, round_num: int) -> str:
         """Render peer evidence as header + 3 activating + 3 contrast rows.
@@ -498,12 +502,12 @@ class ContrastiveMeshPipeline:
             feedback_block = "\n\n".join(parts)
         task = (
             "TASK\n"
-            f"Revise your {'rule set' if LABEL_FORMAT == 'rules' else 'label'} in light of the peer's hypothesis and the judge's feedback above.\n"
+            f"Revise your {'rule set' if self.label_format == 'rules' else 'label'} in light of the peer's hypothesis and the judge's feedback above.\n"
             "Address unsupported / contradicted claims; incorporate the missing signal if the "
             "evidence supports it; apply the suggested revision unless your data contradicts it.\n"
             "If the peer's shape-level pattern also fits your activating rows, merge framings. "
             "If your data contradicts theirs at the shape level, hold your ground but sharpen.\n"
-            f"Goal: a {'necessary-and-sufficient rule set' if LABEL_FORMAT == 'rules' else 'label'} expressible in structural terms that fits both datasets."
+            f"Goal: a {'necessary-and-sufficient rule set' if self.label_format == 'rules' else 'label'} expressible in structural terms that fits both datasets."
         )
         output = self._output_block()
         blocks = {
@@ -517,9 +521,9 @@ class ContrastiveMeshPipeline:
             "contrast": self._contrast_discipline_block(),
             "output": output,
         }
-        if LABEL_FORMAT == "rules":
+        if self.label_format == "rules":
             blocks["shape"] = f"{self._shape_only_block()}\n\n{self._rules_block()}"
-        return self._assemble(blocks, PROMPT_ORDER)
+        return self._assemble(blocks, self.prompt_order)
 
     def round_prompts(self, round_num: int) -> list[str]:
         n = len(self.datasets)
@@ -660,7 +664,7 @@ class ContrastiveMeshPipeline:
         def _to_csv(rows):
             if not rows:
                 return ""
-            return pd.DataFrame(rows).to_csv(index=False)
+            return self._prompt_csv_text(pd.DataFrame(rows))
 
         return {"act": _to_csv(act_rows), "con": _to_csv(con_rows)}
 
@@ -735,22 +739,20 @@ class ContrastiveMeshPipeline:
             "randomly sampled one activating row + one contrast row from its own contrastive CSV.\n"
             "Row cells are annotated: numeric 'value (pXX)' = percentile in training; "
             "categorical 'value (freq Y.YY)' = training prevalence.\n"
-            "Rows include the model's prediction columns (pred_class/pred_conf/pred_correct or "
-            "pred_value/pred_abs_err).\n\n"
+            "Rows do not include downstream prediction columns.\n\n"
             f"{data_block}\n\n"
             "TASK\n"
-            f"For each dataset independently, check whether the agent's {'rule set' if LABEL_FORMAT == 'rules' else 'label'} claims distinguish "
+            f"For each dataset independently, check whether the agent's {'rule set' if self.label_format == 'rules' else 'label'} claims distinguish "
             "that dataset's activating row from its contrast row — in any combination of inputs "
-            "(percentile positions, categorical frequencies), labels (target), or predictions "
-            "(pred_class/pred_conf/pred_correct or pred_value/pred_abs_err).\n"
+            "(percentile positions, categorical frequencies), or labels (target).\n"
             "A claim survives only if it separates the two rows.\n\n"
-            f"Then decide whether the {len(self.datasets)} per-dataset {'rule sets' if LABEL_FORMAT == 'rules' else 'labels'} share a cross-dataset distinguishing pattern the "
+            f"Then decide whether the {len(self.datasets)} per-dataset {'rule sets' if self.label_format == 'rules' else 'labels'} share a cross-dataset distinguishing pattern the "
             "sampled rows corroborate. If so, the overall verdict is 'done'; otherwise 'continue' "
             f"(rounds remaining: {remaining}).\n\n"
-            f"FINAL CONSENSUS {'RULE SET' if LABEL_FORMAT == 'rules' else 'LABEL'}\n"
+            f"FINAL CONSENSUS {'RULE SET' if self.label_format == 'rules' else 'LABEL'}\n"
             "If overall_verdict is 'done', OR this is the final round "
             f"({'YES' if remaining == 0 else 'no'}), you must also write a 'final_label' — "
-            f"{'a plain-text RULE SET with bullets under a \"RULE SET\" header' if LABEL_FORMAT == 'rules' else f'a single-sentence consensus label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words)'} "
+            f"{'a plain-text RULE SET with bullets under a \"RULE SET\" header' if self.label_format == 'rules' else f'a single-sentence consensus label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words)'} "
             "that describes what distinguishes activating from contrast rows across the datasets, in "
             "shape-only language. You have watched the agents revise for up to 5 rounds, you have "
             "sampled fresh evidence each round, and you have the cross-dataset view; this is "
@@ -767,7 +769,7 @@ class ContrastiveMeshPipeline:
             "    final rule set should still avoid meta-commentary.\n"
             "Otherwise omit the 'final_label' field.\n\n"
             "SHAPE-ONLY DISCIPLINE FOR YOUR OUTPUT\n"
-            f"The agents are required to write shape-level {'rule sets' if LABEL_FORMAT == 'rules' else 'labels'} only — no column names, no\n"
+            f"The agents are required to write shape-level {'rule sets' if self.label_format == 'rules' else 'labels'} only — no column names, no\n"
             "domain terms. Your feedback and suggestions must follow the same rule so agents\n"
             "can apply them directly.\n"
             "  * Refer to columns as 'a specific numeric column', 'a column subset', 'adjacent\n"
@@ -819,32 +821,39 @@ class ContrastiveMeshPipeline:
             '      "contradicted_claims":[{"claim": str, "certainty": ...}, ...],\n'
             '      "missing_signal":     {"claim": str, "certainty": ...} | null,\n'
             '      "portability_risk":   {"level": "low"|"medium"|"high", "justification": "<short>"},\n'
-            f'      "suggested_revision": "<{"one tighter rule set or a short edit instruction" if LABEL_FORMAT == "rules" else "one tighter sentence or a short edit instruction"} — shape-only>"\n'
+            f'      "suggested_revision": "<{"one tighter rule set or a short edit instruction" if self.label_format == "rules" else "one tighter sentence or a short edit instruction"} — shape-only>"\n'
             '    }\n'
-            '  },\n'
-            '  "next_round_pairings": {\n'
-            '    // OPTIONAL. Overrides the default ring-rotation peer assignment for\n'
-            '    // the next round. Use this when per-dataset claims contradict on the\n'
-            '    // same structural axis (e.g. an "activating = high" claim in one\n'
-            '    // dataset vs "activating = low" in another). Pair the minority-\n'
-            '    // direction agent with a majority-direction peer so both can reconcile\n'
-            '    // in front of evidence. Omit for datasets that should keep the default\n'
-            '    // rotation. If overall_verdict is "done", omit this field entirely.\n'
-            '    "<dataset>": "<peer_dataset>"\n'
-            '  }\n'
+            '  }'
+            + (
+                ',\n'
+                '  "next_round_pairings": {\n'
+                '    // OPTIONAL. Overrides the default ring-rotation peer assignment for\n'
+                '    // the next round. Use this when per-dataset claims contradict on the\n'
+                '    // same structural axis (e.g. an "activating = high" claim in one\n'
+                '    // dataset vs "activating = low" in another). Pair the minority-\n'
+                '    // direction agent with a majority-direction peer so both can reconcile\n'
+                '    // in front of evidence. Omit for datasets that should keep the default\n'
+                '    // rotation. If overall_verdict is "done", omit this field entirely.\n'
+                '    "<dataset>": "<peer_dataset>"\n'
+                '  }\n'
+                if self.pairings_mode == "on" else "\n"
+            ) +
             '}\n'
             "```\n"
             "Verdicts: 'accept' = claims hold across sampled pairs (prefer 'stable cross-round' or "
             "'emerging' certainty backing the verdict); 'revise' = tighten per suggested_revision; "
             "'split' = the label is conflating two distinct regimes that should be stated separately.\n"
             "An 'accept' verdict should NOT rest on 'local observation' claims alone — that is a\n"
-            "one-sample agreement, not a durable pattern.\n\n"
-            "PAIRING GUIDANCE: if per-dataset supported_claims (or the round-1 labels above) "
-            "contradict each other on direction / polarity (e.g. 'activating = upper-tail' in "
-            "one dataset vs 'activating = low-tail' in another), prefer using "
-            "`next_round_pairings` to pair those datasets together. One round of face-to-face "
-            "evidence usually resolves whether they are the same concept surface-inverted "
-            "(merge to a polarity-agnostic description) or genuinely split (two sub-concepts)."
+            "one-sample agreement, not a durable pattern."
+            + (
+                "\n\nPAIRING GUIDANCE: if per-dataset supported_claims (or the round-1 labels above) "
+                "contradict each other on direction / polarity (e.g. 'activating = upper-tail' in "
+                "one dataset vs 'activating = low-tail' in another), prefer using "
+                "`next_round_pairings` to pair those datasets together. One round of face-to-face "
+                "evidence usually resolves whether they are the same concept surface-inverted "
+                "(merge to a polarity-agnostic description) or genuinely split (two sub-concepts)."
+                if self.pairings_mode == "on" else ""
+            )
         )
 
     @staticmethod
@@ -901,14 +910,15 @@ class ContrastiveMeshPipeline:
                 f"final_label required when verdict='done' or final round "
                 f"(round {round_just_judged} of {MAX_ROUNDS}) but was missing/empty."
             )
-        pairings_in = response.get("next_round_pairings") or {}
         pairings: dict = {}
-        if isinstance(pairings_in, dict):
-            for ds, peer in pairings_in.items():
-                if ds == peer:
-                    continue  # agent can't be its own peer
-                if ds in self.datasets and peer in self.datasets:
-                    pairings[ds] = peer
+        if self.pairings_mode == "on":
+            pairings_in = response.get("next_round_pairings") or {}
+            if isinstance(pairings_in, dict):
+                for ds, peer in pairings_in.items():
+                    if ds == peer:
+                        continue  # agent can't be its own peer
+                    if ds in self.datasets and peer in self.datasets:
+                        pairings[ds] = peer
         self.judge_verdicts.append({
             "verdict": verdict,
             "note": (response.get("overall_note") or "").strip(),
@@ -949,7 +959,10 @@ class ContrastiveMeshPipeline:
         if not lab:
             raise RuntimeError("No final label to validate")
         paths = self._validator_csv_paths()
-        present = {ds: p.read_text() for ds, p in paths.items() if p.exists()}
+        present = {
+            ds: self._prompt_csv_text(pd.read_csv(p))
+            for ds, p in paths.items() if p.exists()
+        }
         if not present:
             raise RuntimeError(
                 f"No validator CSVs under {self._model_dir}. Run: python -m "
@@ -964,18 +977,17 @@ class ContrastiveMeshPipeline:
             f"({self.preprocessing.get('model', self.model)}).\n"
             "The labeling agents and the judge did NOT see these rows. Your job is to "
             "predict, per row, whether it activates the concept described by the FINAL "
-            f"{'RULE SET' if LABEL_FORMAT == 'rules' else 'LABEL'} below. Binary output only.\n\n"
-            f"FINAL {'RULE SET' if LABEL_FORMAT == 'rules' else 'LABEL'}\n{lab if LABEL_FORMAT == 'rules' else f'\"{lab}\"'}\n\n"
+            f"{'RULE SET' if self.label_format == 'rules' else 'LABEL'} below. Binary output only.\n\n"
+            f"FINAL {'RULE SET' if self.label_format == 'rules' else 'LABEL'}\n{lab if self.label_format == 'rules' else f'\"{lab}\"'}\n\n"
             f"{self._preprocessing_block()}\n\n"
             "Row cells: numeric 'value (pXX)' = training percentile; categorical 'value "
-            "(freq Y.YY)' = training prevalence. Each row carries pred_class/pred_conf/"
-            "pred_correct (classification) or pred_value/pred_abs_err (regression). "
-            "Rows are shuffled; you cannot infer class from ordering.\n\n"
+            "(freq Y.YY)' = training prevalence. Rows are shuffled; you cannot infer class "
+            "from ordering.\n\n"
             f"{data_block}\n\n"
             "TASK\n"
             "For each row_id in each dataset, classify the row into one of two categories "
-            f"based solely on whether it fits the FINAL {'RULE SET' if LABEL_FORMAT == 'rules' else 'LABEL'}'s structural claims:\n"
-            f"  * \"fires\"         — the row matches the {'rule set' if LABEL_FORMAT == 'rules' else 'label'}'s description of activating rows.\n"
+            f"based solely on whether it fits the FINAL {'RULE SET' if self.label_format == 'rules' else 'LABEL'}'s structural claims:\n"
+            f"  * \"fires\"         — the row matches the {'rule set' if self.label_format == 'rules' else 'label'}'s description of activating rows.\n"
             "  * \"does_not_fire\" — the row does not match that description.\n"
             "Judge each row independently. Do not assume any particular number of rows should "
             "fire in a dataset — the true count could be 0, all, or anything in between, and "
@@ -1181,7 +1193,7 @@ class ContrastiveMeshPipeline:
             f"{self._preprocessing_block()}\n\n"
             f"{data_block}\n\n"
             "TASK\n"
-            f"Write a {'necessary-and-sufficient RULE SET' if LABEL_FORMAT == 'rules' else 'single consensus label'} for f_{{idx}} that describes what distinguishes\n"
+            f"Write a {'necessary-and-sufficient RULE SET' if self.label_format == 'rules' else 'single consensus label'} for f_{{idx}} that describes what distinguishes\n"
             "activating from contrast rows across ALL datasets — in STRUCTURAL / DISTRIBUTIONAL\n"
             "terms only.\n"
             "  * IGNORE column names and ordering. Treat all columns as nameless c0..cN.\n"
@@ -1192,22 +1204,21 @@ class ContrastiveMeshPipeline:
             "  * No column names. No domain terms (no 'quasar', 'carat', 'bankruptcy', etc.).\n"
             "  * The previous round-1 agents may have leaked domain language into their labels.\n"
             "    Strip that away and work from the raw CSVs below, not from their framings.\n\n"
-            f"{self._rules_block() if LABEL_FORMAT == 'rules' else ''}"
+            f"{self._rules_block() if self.label_format == 'rules' else ''}"
             "CONTRAST DISCIPLINE — include only distinguishing properties:\n"
             "  * Before adding ANY property to the consensus label, verify activating rows DIFFER\n"
             "    from contrast rows on it — in any combination of inputs (percentile positions,\n"
-            "    categorical frequencies, within-row spread, column-subset co-firing), labels\n"
-            "    (target values, base-rate enrichment), or predictions (pred_class, pred_conf,\n"
-            "    pred_correct / pred_value, pred_abs_err).\n"
+            "    categorical frequencies, within-row spread, column-subset co-firing), or labels\n"
+            "    (target values, base-rate enrichment).\n"
             "  * Check this across ALL datasets: a property may distinguish act from con in one\n"
             "    dataset but not in another — in that case it is not a cross-dataset signal.\n"
             "  * Properties shared between activating and contrast are NOT feature-level signals\n"
             "    and must not appear in the label.\n"
-            "  * Keep looking — properties can combine across dimensions (an input × prediction\n"
-            "    joint regime; a percentile × target pair; a column-subset × confidence pattern).\n"
+            "  * Keep looking — properties can combine across dimensions (an input × target\n"
+            "    joint regime; a percentile × target pair; a column-subset × rarity pattern).\n"
             "    Exhaust those combinations before settling on a label.\n\n"
-            f"{'In rules mode, output only direct row-level structural rules. Put any commentary about strongest subtype, secondary subtype, portability, unresolved disagreement, or heterogeneity outside the rule set; do not include it in the final output.\\n\\n' if LABEL_FORMAT == 'rules' else ''}"
-            f"{self._output_block() if LABEL_FORMAT == 'rules' else f'Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words). Shape-level language only. No column names. No preamble.'}"
+            f"{'In rules mode, output only direct row-level structural rules. Put any commentary about strongest subtype, secondary subtype, portability, unresolved disagreement, or heterogeneity outside the rule set; do not include it in the final output.\\n\\n' if self.label_format == 'rules' else ''}"
+            f"{self._output_block() if self.label_format == 'rules' else f'Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words). Shape-level language only. No column names. No preamble.'}"
         ).replace("{idx}", str(self.feat_idx))
 
     def record_synthesis(self, label: str) -> None:
@@ -1225,7 +1236,9 @@ class ContrastiveMeshPipeline:
             "model": self.model,
             "feat_idx": self.feat_idx,
             "arch": self.arch,
+            "prompt_order": self.prompt_order,
             "label_format": self.label_format,
+            "pairings_mode": self.pairings_mode,
             "label": label,
             "label_source": (
                 "synthesis" if self.synthesis and label == self.synthesis
@@ -1264,7 +1277,33 @@ def _cli():
     parser.add_argument("--feat", type=int, required=True)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("init", help="Show datasets and round-1 prompts")
+    init_p = sub.add_parser(
+        "init",
+        help=(
+            "Initialize state for a (model, feature) with the chosen knobs and "
+            "print round-1 prompts. Knobs are persisted in the state file; later "
+            "subcommands read them from state."
+        ),
+    )
+    init_p.add_argument(
+        "--arch", default=DEFAULT_ARCH, choices=sorted(VALID_ARCHES),
+        help=f"Ring architecture (default: {DEFAULT_ARCH}).",
+    )
+    init_p.add_argument(
+        "--prompt-order", default=DEFAULT_PROMPT_ORDER, choices=sorted(VALID_PROMPT_ORDERS),
+        help=f"Section ordering for round/ring prompts (default: {DEFAULT_PROMPT_ORDER}).",
+    )
+    init_p.add_argument(
+        "--label-format", default=DEFAULT_LABEL_FORMAT, choices=sorted(VALID_LABEL_FORMATS),
+        help=f"Final label format (default: {DEFAULT_LABEL_FORMAT}).",
+    )
+    init_p.add_argument(
+        "--pairings", default=DEFAULT_PAIRINGS, choices=sorted(VALID_PAIRINGS),
+        help=(
+            f"Whether the judge may propose next_round_pairings to override default "
+            f"ring rotation (default: {DEFAULT_PAIRINGS})."
+        ),
+    )
 
     show = sub.add_parser("show-round", help="Show prompts for a specific round")
     show.add_argument("--round", type=int, required=True)
@@ -1292,17 +1331,35 @@ def _cli():
     rec_val.add_argument("--response-file", type=Path, required=True)
 
     args = parser.parse_args()
-    pipe = ContrastiveMeshPipeline(args.model, args.feat)
 
     if args.cmd == "init":
-        print(f"ARCH={pipe.arch}  PROMPT_ORDER={PROMPT_ORDER}  LABEL_FORMAT={pipe.label_format}")
+        # `init` defines the run's knobs; wipe any prior state first so the
+        # knobs are authoritative (resume-and-change is intentionally not
+        # supported — force an explicit reset instead).
+        stale = ContrastiveMeshPipeline(args.model, args.feat)
+        stale.reset()
+        pipe = ContrastiveMeshPipeline(
+            model=args.model,
+            feat_idx=args.feat,
+            arch=args.arch,
+            prompt_order=args.prompt_order,
+            label_format=args.label_format,
+            pairings_mode=args.pairings,
+        )
+        pipe._save_state()
+        print(f"arch={pipe.arch}  prompt_order={pipe.prompt_order}  label_format={pipe.label_format}  pairings={pipe.pairings_mode}")
         print(f"Datasets (n={len(pipe.datasets)}): {pipe.datasets}")
         prompts = pipe.round_prompts(1)
         for ds, p in zip(pipe.datasets, prompts):
             print(f"\n===== {ds} =====\n{p}")
-    elif args.cmd == "show-round":
+        return
+
+    # All non-init subcommands load knobs from the state file written by init.
+    pipe = ContrastiveMeshPipeline(args.model, args.feat)
+
+    if args.cmd == "show-round":
         active = pipe.active_datasets_for_round(args.round)
-        print(f"ARCH={pipe.arch}  PROMPT_ORDER={PROMPT_ORDER}  LABEL_FORMAT={pipe.label_format}")
+        print(f"arch={pipe.arch}  prompt_order={pipe.prompt_order}  label_format={pipe.label_format}  pairings={pipe.pairings_mode}")
         print(f"Active datasets for round {args.round} (n={len(active)}): {active}")
         prompts = pipe.round_prompts(args.round)
         for ds, p in zip(active, prompts):
@@ -1325,7 +1382,7 @@ def _cli():
                 print(f"  judge note: {verdict['note']}")
         if pipe.synthesis:
             print(f"\nSynthesized: {pipe.synthesis}")
-        print(f"ARCH={pipe.arch}")
+        print(f"arch={pipe.arch}  prompt_order={pipe.prompt_order}  label_format={pipe.label_format}  pairings={pipe.pairings_mode}")
         print(f"Next active datasets: {pipe.active_datasets_for_round(pipe.next_round_number())}")
         print(f"Done: {pipe.is_done()}   Rounds: {len(pipe.rounds)}/{MAX_ROUNDS}")
     elif args.cmd == "save-label":

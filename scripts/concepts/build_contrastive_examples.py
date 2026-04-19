@@ -30,6 +30,13 @@ import pandas as pd
 import torch
 from scipy.spatial.distance import cdist
 
+from scripts.concepts.dataset_quality_cache import (
+    DEFAULT_CACHE_PATH,
+    DEFAULT_SCORE_CONFIG,
+    cache_entry_for_feature,
+    load_quality_cache,
+    select_top_datasets,
+)
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import (
     load_sae, load_test_embeddings, SPLITS_PATH,
@@ -212,32 +219,6 @@ def load_baseline_predictions(model: str, dataset: str) -> Optional[dict]:
         "pred_class": d["pred_class"],
         "y_true": d["y_true"],
         "task_type": str(d["task_type"]),
-    }
-
-
-def _pred_annotations(ri: int, preds: Optional[dict]) -> dict:
-    """Build per-row prediction annotation columns.
-
-    Classification: pred_class, pred_conf (max prob), pred_correct (bool).
-    Regression:     pred_value, pred_abs_err.
-    Returns {} if no cache or ri out of range.
-    """
-    if preds is None or ri >= len(preds["pred_class"]):
-        return {}
-    if preds["task_type"] == "regression":
-        pred_v = float(preds["pred_probs"][ri])
-        y_v = float(preds["y_true"][ri])
-        return {
-            "pred_value": round(pred_v, 6),
-            "pred_abs_err": round(abs(pred_v - y_v), 6),
-        }
-    probs = preds["pred_probs"][ri]
-    pred_cls = int(preds["pred_class"][ri])
-    y_v = int(preds["y_true"][ri])
-    return {
-        "pred_class": pred_cls,
-        "pred_conf": round(float(probs.max()), 4),
-        "pred_correct": bool(pred_cls == y_v),
     }
 
 
@@ -439,9 +420,6 @@ def build_contrastive(model, feat_idx, dataset, sae, test_embs, splits,
     task_type = ds_splits.get("task_type", "classification")
     target_summary = _target_summary(y_train, task_type)
 
-    # Baseline predictions (positionally aligned with SAE test embeddings)
-    preds = load_baseline_predictions(model, dataset)
-
     # Stratified activating rows: 2 top + 2 near-p90 + 2 near-p80 (6 total)
     active_mask = feat_acts > 0
     if active_mask.sum() < 1:
@@ -483,8 +461,6 @@ def build_contrastive(model, feat_idx, dataset, sae, test_embs, splits,
                 "activation": float(feat_acts[ri]),
                 "target": float(y_test[ri]) if ri < len(y_test) else None,
             }
-            # Baseline prediction annotations (model's pred on this row)
-            row.update(_pred_annotations(int(ri), preds))
             # Raw data values, annotated with marginal (training-split) position
             if ri < len(X_test):
                 for col in X_test.columns:
@@ -579,7 +555,6 @@ def build_validator_examples(
         y_test = np.asarray(y)[sae_row_indices]
         X_train = X.iloc[train_idx].reset_index(drop=True)
         marginals = _compute_marginals(X_train)
-        preds = load_baseline_predictions(model, ds)
 
         rows = []
         ds_truth: dict = {}
@@ -588,7 +563,6 @@ def build_validator_examples(
                 ri = int(ri)
                 row_id = f"r{len(rows):03d}"
                 row = {"row_id": row_id}
-                row.update(_pred_annotations(ri, preds))
                 row["target"] = float(y_test[ri])
                 for col in X_test.columns:
                     row[col] = _annotate_value(col, X_test.iloc[ri][col], marginals)
@@ -629,6 +603,23 @@ def main():
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--max-datasets", type=int, default=5)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--dataset-selection",
+        choices=["auto", "n_active", "quality"],
+        default="auto",
+        help="How to choose datasets per feature. 'auto' prefers the quality cache when available.",
+    )
+    parser.add_argument(
+        "--quality-cache-path",
+        type=Path,
+        default=DEFAULT_CACHE_PATH,
+        help="Path to the global dataset-quality cache.",
+    )
+    parser.add_argument(
+        "--require-quality-cache",
+        action="store_true",
+        help="Fail if quality-based dataset selection is requested but the cache is missing.",
+    )
     parser.add_argument("--validator", action="store_true",
                         help="Build validator (held-out) CSVs instead of contrastive examples")
     parser.add_argument("--n-act", type=int, default=5,
@@ -683,10 +674,18 @@ def main():
 
     # Rank datasets by activation count for each feature
     datasets = sorted(test_embs.keys())
+    quality_cache = load_quality_cache(args.quality_cache_path)
+    if args.dataset_selection == "quality" and not quality_cache:
+        if args.require_quality_cache or args.quality_cache_path != DEFAULT_CACHE_PATH:
+            parser.error(f"Quality cache not found at {args.quality_cache_path}")
+    if args.dataset_selection == "auto" and args.require_quality_cache and not quality_cache:
+        parser.error(f"Required quality cache not found at {args.quality_cache_path}")
 
     for feat in features:
         # Find datasets where this feature fires most
         ds_counts = []
+        ds_quality_entries = None
+        selected_via = "n_active"
         for ds in datasets:
             emb = test_embs[ds]
             with torch.no_grad():
@@ -701,8 +700,39 @@ def main():
             print(f"f_{feat}: no activations across any dataset")
             continue
 
-        selected_ds = [ds for ds, _ in ds_counts[:args.max_datasets]]
-        print(f"f_{feat}: {len(ds_counts)} datasets fire, using top {len(selected_ds)}")
+        if quality_cache and args.dataset_selection in {"auto", "quality"}:
+            feature_block = cache_entry_for_feature(quality_cache, args.model, feat)
+            if feature_block:
+                ds_quality_entries = feature_block.get("datasets", {})
+                selected_ds = select_top_datasets(
+                    ds_quality_entries,
+                    args.max_datasets,
+                    diversity_tie_margin=quality_cache.get("metadata", {})
+                    .get("score_config", {})
+                    .get("diversity_tie_margin", DEFAULT_SCORE_CONFIG["diversity_tie_margin"]),
+                )
+                if selected_ds:
+                    selected_via = "quality_cache"
+                elif args.dataset_selection == "quality" and args.require_quality_cache:
+                    parser.error(
+                        f"Quality cache has no selectable datasets for model={args.model} f_{feat}"
+                    )
+            elif args.dataset_selection == "quality" and args.require_quality_cache:
+                parser.error(
+                    f"Quality cache missing model={args.model} f_{feat} at {args.quality_cache_path}"
+                )
+            else:
+                selected_ds = []
+        else:
+            selected_ds = []
+
+        if not selected_ds:
+            selected_ds = [ds for ds, _ in ds_counts[:args.max_datasets]]
+            selected_via = "n_active"
+
+        print(
+            f"f_{feat}: {len(ds_counts)} datasets fire, using top {len(selected_ds)} via {selected_via}"
+        )
 
         ds_contexts = {}
         for ds in selected_ds:
@@ -728,7 +758,10 @@ def main():
                 "n_activating": int((pd.Series([r["label"] for r in rows]) == "activating").sum()),
                 "csv_file": f"f{feat}_{ds}.csv",
                 "target_summary": target_summary,
+                "dataset_selection_method": selected_via,
             }
+            if ds_quality_entries and ds in ds_quality_entries:
+                ds_contexts[ds]["dataset_quality"] = ds_quality_entries[ds]
             for key in ["nr_inst", "nr_attr", "nr_class", "nr_num", "nr_cat",
                          "inst_to_attr", "cat_to_num", "nr_bin"]:
                 if key in meta:
@@ -740,6 +773,7 @@ def main():
             "feature_idx": feat,
             "n_datasets_firing": len(ds_counts),
             "datasets_used": list(ds_contexts.keys()),
+            "dataset_selection_method": selected_via,
             "preprocessing": ctx,
             "dataset_stats": ds_contexts,
         }
