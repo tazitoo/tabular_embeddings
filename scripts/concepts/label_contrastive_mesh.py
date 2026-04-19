@@ -41,12 +41,18 @@ CONTRASTIVE_DIR = PROJECT_ROOT / "output" / "contrastive_examples"
 CONVERGENCE_THRESHOLD = 0.80  # diagnostic only; judge decides when to stop
 MAX_ROUNDS = 5
 LABEL_WORDS_MIN, LABEL_WORDS_MAX = 10, 25
+LABEL_FORMAT: str = os.environ.get("LABEL_FORMAT", "sentence").lower()
+_LABEL_FORMATS = {"sentence", "rules"}
+if LABEL_FORMAT not in _LABEL_FORMATS:
+    raise ValueError(f"LABEL_FORMAT={LABEL_FORMAT!r} not one of {sorted(_LABEL_FORMATS)}")
 NOMIC_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
 JUDGE_SAMPLE_SEED = 13
 PEER_SAMPLE_N_ACT = 3
 PEER_SAMPLE_N_CON = 3
 JUDGE_SAMPLE_N_ACT = 2
 JUDGE_SAMPLE_N_CON = 2
+RINGLITE_SELF_SAMPLE_N_ACT = 3
+RINGLITE_SELF_SAMPLE_N_CON = 3
 
 # Section ordering for round1_prompt and ring_prompt. Env override: PROMPT_ORDER.
 #   A — evidence before instructions (current baseline).
@@ -67,6 +73,11 @@ if PROMPT_ORDER not in _PROMPT_ORDER_SEQUENCES:
     raise ValueError(
         f"PROMPT_ORDER={PROMPT_ORDER!r} not one of {list(_PROMPT_ORDER_SEQUENCES)}"
     )
+
+ARCH: str = os.environ.get("ARCH", "baseline").lower()
+_ARCH_MODES = {"baseline", "ringlite", "ringlite_freeze"}
+if ARCH not in _ARCH_MODES:
+    raise ValueError(f"ARCH={ARCH!r} not one of {sorted(_ARCH_MODES)}")
 
 _NOMIC_MODEL = None
 
@@ -107,6 +118,8 @@ class ContrastiveMeshPipeline:
         ctx_path = self._model_dir / f"f{self.feat_idx}_context.json"
         self.feat_context = json.loads(ctx_path.read_text())
         self.datasets: list[str] = self.feat_context["datasets_used"]
+        self.arch = ARCH
+        self.label_format = LABEL_FORMAT
         self.preprocessing = self.feat_context["preprocessing"]
         self.csv_paths = {ds: self._model_dir / f"f{self.feat_idx}_{ds}.csv"
                           for ds in self.datasets}
@@ -125,6 +138,24 @@ class ContrastiveMeshPipeline:
         data = json.loads(self._state_path.read_text())
         if data.get("feat_idx") != self.feat_idx or data.get("model") != self.model:
             return
+        saved_arch = data.get("arch", "baseline")
+        saved_label_format = data.get("label_format", "sentence")
+        if self.arch != saved_arch and (
+            data.get("rounds") or data.get("judge_verdicts") or data.get("synthesis")
+        ):
+            raise ValueError(
+                f"State file {self._state_path} was created with ARCH={saved_arch!r}, "
+                f"but current ARCH={self.arch!r}. Reset the feature state or resume with "
+                f"the matching architecture mode."
+            )
+        if self.label_format != saved_label_format and (
+            data.get("rounds") or data.get("judge_verdicts") or data.get("synthesis")
+        ):
+            raise ValueError(
+                f"State file {self._state_path} was created with LABEL_FORMAT={saved_label_format!r}, "
+                f"but current LABEL_FORMAT={self.label_format!r}. Reset the feature state or resume "
+                f"with the matching label format."
+            )
         self.rounds = data.get("rounds", [])
         self.similarities = data.get("similarities", [])
         self.judge_verdicts = data.get("judge_verdicts", [])
@@ -135,6 +166,8 @@ class ContrastiveMeshPipeline:
         self._state_path.write_text(json.dumps({
             "model": self.model,
             "feat_idx": self.feat_idx,
+            "arch": self.arch,
+            "label_format": self.label_format,
             "datasets": self.datasets,
             "rounds": self.rounds,
             "similarities": self.similarities,
@@ -207,6 +240,48 @@ class ContrastiveMeshPipeline:
             f"  contrast rows: {len(con)}"
         )
 
+    def _sampled_dataset_block(
+        self,
+        ds: str,
+        *,
+        round_num: int,
+        n_act: int,
+        n_con: int,
+        purpose: str,
+        label: str,
+    ) -> str:
+        meta = self.feat_context["dataset_stats"].get(ds, {})
+        target = meta.get("target_summary") or {}
+        header = (
+            f"Dataset: {ds} ({meta.get('task_type', '?')}), "
+            f"n_num={meta.get('nr_num', '?')}, n_cat={meta.get('nr_cat', '?')}, "
+            f"n_bin={meta.get('nr_bin', '?')}, n_classes={meta.get('nr_class', '?')}, "
+            f"n_attrs={meta.get('nr_attr', '?')}"
+        )
+        if target.get("task") == "classification":
+            cf = target.get("class_freq", {})
+            cf_str = ", ".join(f"y={k}:{v:.3f}" for k, v in cf.items())
+            header += f"\nTarget base rates (train, n={target.get('n')}): {cf_str}"
+        elif target.get("task") == "regression":
+            header += (
+                f"\nTarget distribution (train, n={target.get('n')}): "
+                f"mean={target.get('mean')}, std={target.get('std')}, "
+                f"p25={target.get('p25')}, p50={target.get('p50')}, p75={target.get('p75')}"
+            )
+        samples = self._sample_rows_for(round_num, ds, n_act, n_con, purpose=purpose)
+        note = (
+            "Numeric cells: 'value (pXX)' = pXX percentile in training.\n"
+            "Categorical cells: 'value (freq Y.YY)' = training prevalence.\n"
+            "Prediction columns: pred_class/pred_conf/pred_correct (classification) or\n"
+            "pred_value/pred_abs_err (regression).\n"
+            "These rows are a normalized evidence packet for this round, not the full CSV.\n"
+        )
+        return (
+            f"{header}\n\n{note}\n"
+            f"{label} {n_act} sampled activating rows:\n{samples['act']}\n"
+            f"{label} {n_con} sampled contrast rows:\n{samples['con']}"
+        )
+
     # ── Shared section builders (for round1 and ring prompts) ──────────
 
     @staticmethod
@@ -222,6 +297,23 @@ class ContrastiveMeshPipeline:
             "    percentiles? At rare/common categorical levels? Across many columns or a narrow\n"
             "    subset? With tight or dispersed within-row spread of percentiles?\n"
             "  * Do NOT mention specific column names or domain terms."
+        )
+
+    @staticmethod
+    def _rules_block() -> str:
+        return (
+            "RULE-SET TARGET\n"
+            "  * Output a necessary-and-sufficient RULE SET for when this concept is present.\n"
+            "  * The rule set should express the concept's MEANING overall, not activation strength.\n"
+            "  * Rules must be semantic/structural invariants that could hold across datasets even if\n"
+            "    the surface manifestation differs.\n"
+            "  * Avoid directional activation phrasing like 'higher than contrast', 'stronger', 'more\n"
+            "    active', or any claim whose meaning depends on activation magnitude rather than the\n"
+            "    row structure itself.\n"
+            "  * Do not target a specific rule count. Include exactly the rules needed to be necessary\n"
+            "    and sufficient; no more, no fewer.\n"
+            "  * Final rules must be direct row-level structural conditions, not commentary about the\n"
+            "    evidence or the pipeline.\n"
         )
 
     @staticmethod
@@ -242,6 +334,19 @@ class ContrastiveMeshPipeline:
 
     @staticmethod
     def _output_block() -> str:
+        if LABEL_FORMAT == "rules":
+            return (
+                "Output ONLY the rule set. No preamble, no explanation.\n"
+                "Format exactly as plain text:\n"
+                "RULE SET\n"
+                "- <rule 1>\n"
+                "- <rule 2>\n"
+                "- ...\n"
+                "Each bullet must be a direct row-level structural rule.\n"
+                "Do NOT include commentary such as 'strongest subtype', 'secondary subtype',\n"
+                "'not portable', 'heterogeneous', 'no single rule survives', or any similar\n"
+                "analysis of the evidence."
+            )
         return (
             f"Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words) "
             "describing the structural / distributional fingerprint. No column names. No domain terms. "
@@ -284,6 +389,11 @@ class ContrastiveMeshPipeline:
             "contrast": self._contrast_discipline_block(),
             "output": self._output_block(),
         }
+        if LABEL_FORMAT == "rules":
+            blocks["task"] += (
+                "\nReturn a monosemantic necessary-and-sufficient rule set, not a polished sentence."
+            )
+            blocks["shape"] = f"{self._shape_only_block()}\n\n{self._rules_block()}"
         return self._assemble(blocks, PROMPT_ORDER)
 
     def _peer_evidence_block(self, peer_ds: str, round_num: int) -> str:
@@ -292,37 +402,13 @@ class ContrastiveMeshPipeline:
         Replaces passing the full CSV, which (a) bloats context 5× and
         (b) lets peers pattern-match on incidental rows rather than generalize.
         """
-        meta = self.feat_context["dataset_stats"].get(peer_ds, {})
-        target = meta.get("target_summary") or {}
-        header = (
-            f"Dataset: {peer_ds} ({meta.get('task_type', '?')}), "
-            f"n_num={meta.get('nr_num', '?')}, n_cat={meta.get('nr_cat', '?')}, "
-            f"n_bin={meta.get('nr_bin', '?')}, n_classes={meta.get('nr_class', '?')}, "
-            f"n_attrs={meta.get('nr_attr', '?')}"
-        )
-        if target.get("task") == "classification":
-            cf = target.get("class_freq", {})
-            cf_str = ", ".join(f"y={k}:{v:.3f}" for k, v in cf.items())
-            header += f"\nTarget base rates (train, n={target.get('n')}): {cf_str}"
-        elif target.get("task") == "regression":
-            header += (
-                f"\nTarget distribution (train, n={target.get('n')}): "
-                f"mean={target.get('mean')}, std={target.get('std')}, "
-                f"p25={target.get('p25')}, p50={target.get('p50')}, p75={target.get('p75')}"
-            )
-        samples = self._sample_rows_for(
-            round_num, peer_ds, PEER_SAMPLE_N_ACT, PEER_SAMPLE_N_CON, purpose="peer",
-        )
-        note = (
-            "Numeric cells: 'value (pXX)' = pXX percentile in training.\n"
-            "Categorical cells: 'value (freq Y.YY)' = training prevalence.\n"
-            "Prediction columns: pred_class/pred_conf/pred_correct (classification) or\n"
-            "pred_value/pred_abs_err (regression).\n"
-        )
-        return (
-            f"{header}\n\n{note}\n"
-            f"peer's {PEER_SAMPLE_N_ACT} sampled activating rows:\n{samples['act']}\n"
-            f"peer's {PEER_SAMPLE_N_CON} sampled contrast rows:\n{samples['con']}"
+        return self._sampled_dataset_block(
+            peer_ds,
+            round_num=round_num,
+            n_act=PEER_SAMPLE_N_ACT,
+            n_con=PEER_SAMPLE_N_CON,
+            purpose="peer",
+            label="peer's",
         )
 
     @staticmethod
@@ -380,7 +466,21 @@ class ContrastiveMeshPipeline:
             f"You are the agent for '{ds}', labeling SAE feature f_{self.feat_idx}.\n"
             f"This is round {round_num} of ring-consensus mesh labeling."
         )
-        data = f"YOUR DATA ROWS\n{self._dataset_block(ds, full_csv=True)}"
+        if self.arch == "baseline":
+            data = f"YOUR DATA ROWS\n{self._dataset_block(ds, full_csv=True)}"
+        else:
+            sampled_self = self._sampled_dataset_block(
+                ds,
+                round_num=round_num,
+                n_act=RINGLITE_SELF_SAMPLE_N_ACT,
+                n_con=RINGLITE_SELF_SAMPLE_N_CON,
+                purpose="self",
+                label="your",
+            )
+            data = (
+                "YOUR DATA ROWS\n"
+                f"{sampled_self}"
+            )
         peer_block = (
             f"PEER EVIDENCE (from '{peer_ds}')\n"
             f"  peer's current label: \"{peer_label}\"\n\n"
@@ -398,17 +498,14 @@ class ContrastiveMeshPipeline:
             feedback_block = "\n\n".join(parts)
         task = (
             "TASK\n"
-            "Revise your label in light of the peer's hypothesis and the judge's feedback above.\n"
+            f"Revise your {'rule set' if LABEL_FORMAT == 'rules' else 'label'} in light of the peer's hypothesis and the judge's feedback above.\n"
             "Address unsupported / contradicted claims; incorporate the missing signal if the "
             "evidence supports it; apply the suggested revision unless your data contradicts it.\n"
             "If the peer's shape-level pattern also fits your activating rows, merge framings. "
             "If your data contradicts theirs at the shape level, hold your ground but sharpen.\n"
-            "Goal: a label expressible in structural terms that fits both datasets."
+            f"Goal: a {'necessary-and-sufficient rule set' if LABEL_FORMAT == 'rules' else 'label'} expressible in structural terms that fits both datasets."
         )
-        output = (
-            f"Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words). "
-            "No prefix, no explanation."
-        )
+        output = self._output_block()
         blocks = {
             "header": header,
             "preprocessing": self._preprocessing_block(),
@@ -420,6 +517,8 @@ class ContrastiveMeshPipeline:
             "contrast": self._contrast_discipline_block(),
             "output": output,
         }
+        if LABEL_FORMAT == "rules":
+            blocks["shape"] = f"{self._shape_only_block()}\n\n{self._rules_block()}"
         return self._assemble(blocks, PROMPT_ORDER)
 
     def round_prompts(self, round_num: int) -> list[str]:
@@ -433,15 +532,48 @@ class ContrastiveMeshPipeline:
             )
         prev_labels = self.rounds[round_num - 2]
         peer_offset = ((round_num - 1) - 1) % max(n - 1, 1) + 1  # 1,2,...,n-1,1,...
-        return [
-            self.ring_prompt(
-                ds=ds,
-                peer_ds=self.datasets[(i - peer_offset) % n],
-                peer_label=prev_labels[(i - peer_offset) % n],
-                round_num=round_num,
+        # Prior judge verdict (from the round just judged) may contain
+        # explicit pairings that override the default ring rotation per
+        # dataset. Unset datasets fall back to the fixed offset.
+        prior_pairings: dict = {}
+        if len(self.judge_verdicts) >= round_num - 1 and round_num >= 2:
+            prior_pairings = (
+                self.judge_verdicts[round_num - 2].get("next_round_pairings") or {}
             )
-            for i, ds in enumerate(self.datasets)
+        active = self.active_datasets_for_round(round_num)
+        prompts: list[str] = []
+        for i, ds in enumerate(self.datasets):
+            if ds not in active:
+                continue
+            if ds in prior_pairings and prior_pairings[ds] in self.datasets:
+                peer_ds = prior_pairings[ds]
+                peer_idx = self.datasets.index(peer_ds)
+            else:
+                peer_idx = (i - peer_offset) % n
+                peer_ds = self.datasets[peer_idx]
+            prompts.append(
+                self.ring_prompt(
+                    ds=ds,
+                    peer_ds=peer_ds,
+                    peer_label=prev_labels[peer_idx],
+                    round_num=round_num,
+                )
+            )
+        return prompts
+
+    def active_datasets_for_round(self, round_num: int) -> list[str]:
+        """Datasets that need worker prompts for a given round."""
+        if round_num <= 1 or self.arch != "ringlite_freeze":
+            return list(self.datasets)
+        prev_idx = round_num - 2
+        if prev_idx < 0 or prev_idx >= len(self.judge_verdicts):
+            return list(self.datasets)
+        per_ds = self.judge_verdicts[prev_idx].get("per_dataset") or {}
+        active = [
+            ds for ds in self.datasets
+            if (per_ds.get(ds) or {}).get("verdict") != "accept"
         ]
+        return active or list(self.datasets)
 
     # ── State updates ──────────────────────────────────────────────────
     def record_round(
@@ -449,15 +581,31 @@ class ContrastiveMeshPipeline:
     ) -> float:
         if round_num is None:
             round_num = len(self.rounds) + 1
-        if len(labels) != len(self.datasets):
-            raise ValueError(
-                f"Expected {len(self.datasets)} labels, got {len(labels)}"
-            )
-        clean = [_strip_label(l) for l in labels]
         if round_num != len(self.rounds) + 1:
             raise ValueError(
                 f"Next round is {len(self.rounds) + 1}, got round_num={round_num}"
             )
+        active = self.active_datasets_for_round(round_num)
+        if round_num == 1 or self.arch != "ringlite_freeze":
+            expected = len(self.datasets)
+            if len(labels) != expected:
+                raise ValueError(f"Expected {expected} labels, got {len(labels)}")
+            clean = [_strip_label(l) for l in labels]
+        else:
+            expected = len(active)
+            if len(labels) != expected:
+                raise ValueError(
+                    f"ARCH={self.arch} round {round_num} expects {expected} labels "
+                    f"for active datasets {active}, got {len(labels)}"
+                )
+            if not self.rounds:
+                raise ValueError("Freeze mode requires a prior round to carry frozen labels forward")
+            merged = list(self.rounds[-1])
+            active_iter = iter(_strip_label(l) for l in labels)
+            for i, ds in enumerate(self.datasets):
+                if ds in active:
+                    merged[i] = next(active_iter)
+            clean = merged
         self.rounds.append(clean)
         sim = mean_pairwise_cosine(clean)
         self.similarities.append(sim)
@@ -591,30 +739,35 @@ class ContrastiveMeshPipeline:
             "pred_value/pred_abs_err).\n\n"
             f"{data_block}\n\n"
             "TASK\n"
-            "For each dataset independently, check whether the agent's label claims distinguish "
+            f"For each dataset independently, check whether the agent's {'rule set' if LABEL_FORMAT == 'rules' else 'label'} claims distinguish "
             "that dataset's activating row from its contrast row — in any combination of inputs "
             "(percentile positions, categorical frequencies), labels (target), or predictions "
             "(pred_class/pred_conf/pred_correct or pred_value/pred_abs_err).\n"
             "A claim survives only if it separates the two rows.\n\n"
-            "Then decide whether the 5 labels share a cross-dataset distinguishing pattern the "
+            f"Then decide whether the {len(self.datasets)} per-dataset {'rule sets' if LABEL_FORMAT == 'rules' else 'labels'} share a cross-dataset distinguishing pattern the "
             "sampled rows corroborate. If so, the overall verdict is 'done'; otherwise 'continue' "
             f"(rounds remaining: {remaining}).\n\n"
-            "FINAL CONSENSUS LABEL\n"
+            f"FINAL CONSENSUS {'RULE SET' if LABEL_FORMAT == 'rules' else 'LABEL'}\n"
             "If overall_verdict is 'done', OR this is the final round "
-            f"({'YES' if remaining == 0 else 'no'}), you must also write a 'final_label' — a "
-            f"single-sentence consensus label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words) that "
-            "describes what distinguishes activating from contrast rows across the datasets, in "
+            f"({'YES' if remaining == 0 else 'no'}), you must also write a 'final_label' — "
+            f"{'a plain-text RULE SET with bullets under a \"RULE SET\" header' if LABEL_FORMAT == 'rules' else f'a single-sentence consensus label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words)'} "
+            "that describes what distinguishes activating from contrast rows across the datasets, in "
             "shape-only language. You have watched the agents revise for up to 5 rounds, you have "
-            "sampled fresh evidence each round, and you have the cross-dataset view; this label is "
-            "your synthesis, not a vote among the agents' labels.\n"
+            "sampled fresh evidence each round, and you have the cross-dataset view; this is "
+            "your synthesis, not a vote among the agents' outputs.\n"
+            "  * Capture the concept's MEANING overall, not activation strength.\n"
             "  * If a cross-dataset pattern holds on all sampled pairs, state it plainly.\n"
-            "  * If the signal is genuinely heterogeneous, name the shared meta-structure (e.g. "
-            "    \"activating rows place tail-mass on a localized column subset; which subset\n"
-            "    differs by schema\") — but only if the sampled pairs actually corroborate it.\n"
+            "  * If the signal is genuinely heterogeneous, abstract to the shared semantic core rather\n"
+            "    than smoothing over contradictions with directional phrasing.\n"
             "  * No column names. No domain terms. Use structural language.\n"
+            "  * In rules mode, the final rule set must contain ONLY direct row-level structural rules.\n"
+            "    Put all commentary about strongest subtype, secondary subtype, portability, unresolved\n"
+            "    disagreement, or heterogeneity into overall_note instead.\n"
+            "  * If no portable monosemantic rule survives, overall_note should say that clearly, but the\n"
+            "    final rule set should still avoid meta-commentary.\n"
             "Otherwise omit the 'final_label' field.\n\n"
             "SHAPE-ONLY DISCIPLINE FOR YOUR OUTPUT\n"
-            "The agents are required to write shape-level labels only — no column names, no\n"
+            f"The agents are required to write shape-level {'rule sets' if LABEL_FORMAT == 'rules' else 'labels'} only — no column names, no\n"
             "domain terms. Your feedback and suggestions must follow the same rule so agents\n"
             "can apply them directly.\n"
             "  * Refer to columns as 'a specific numeric column', 'a column subset', 'adjacent\n"
@@ -626,6 +779,13 @@ class ContrastiveMeshPipeline:
             "    hard-coded index like 'position +1'. Use structural phrasing instead.\n"
             "If you find yourself about to reference a specific column or domain, restate the\n"
             "observation as a structural / statistical property.\n\n"
+            "RULE-SET PURITY (rules mode)\n"
+            "When LABEL_FORMAT=rules, 'final_label' is not an essay and not a verdict. It is only the\n"
+            "rule set itself. Forbidden inside final_label in rules mode:\n"
+            "  * 'strongest recurring subtype', 'secondary subtype', 'treat as heterogeneous',\n"
+            "    'no single rule survives', 'not portable', 'across the full set', or similar\n"
+            "    meta-analysis.\n"
+            "Those belong in overall_note, not in the rule set.\n\n"
             "EVIDENCE CALIBRATION — tag every claim with a certainty level\n"
             "Each claim in supported_claims / unsupported_claims / contradicted_claims /\n"
             "missing_signal must be an object {\"claim\": str, \"certainty\": str} where\n"
@@ -659,8 +819,18 @@ class ContrastiveMeshPipeline:
             '      "contradicted_claims":[{"claim": str, "certainty": ...}, ...],\n'
             '      "missing_signal":     {"claim": str, "certainty": ...} | null,\n'
             '      "portability_risk":   {"level": "low"|"medium"|"high", "justification": "<short>"},\n'
-            '      "suggested_revision": "<one tighter sentence or a short edit instruction — shape-only>"\n'
+            f'      "suggested_revision": "<{"one tighter rule set or a short edit instruction" if LABEL_FORMAT == "rules" else "one tighter sentence or a short edit instruction"} — shape-only>"\n'
             '    }\n'
+            '  },\n'
+            '  "next_round_pairings": {\n'
+            '    // OPTIONAL. Overrides the default ring-rotation peer assignment for\n'
+            '    // the next round. Use this when per-dataset claims contradict on the\n'
+            '    // same structural axis (e.g. an "activating = high" claim in one\n'
+            '    // dataset vs "activating = low" in another). Pair the minority-\n'
+            '    // direction agent with a majority-direction peer so both can reconcile\n'
+            '    // in front of evidence. Omit for datasets that should keep the default\n'
+            '    // rotation. If overall_verdict is "done", omit this field entirely.\n'
+            '    "<dataset>": "<peer_dataset>"\n'
             '  }\n'
             '}\n'
             "```\n"
@@ -668,7 +838,13 @@ class ContrastiveMeshPipeline:
             "'emerging' certainty backing the verdict); 'revise' = tighten per suggested_revision; "
             "'split' = the label is conflating two distinct regimes that should be stated separately.\n"
             "An 'accept' verdict should NOT rest on 'local observation' claims alone — that is a\n"
-            "one-sample agreement, not a durable pattern."
+            "one-sample agreement, not a durable pattern.\n\n"
+            "PAIRING GUIDANCE: if per-dataset supported_claims (or the round-1 labels above) "
+            "contradict each other on direction / polarity (e.g. 'activating = upper-tail' in "
+            "one dataset vs 'activating = low-tail' in another), prefer using "
+            "`next_round_pairings` to pair those datasets together. One round of face-to-face "
+            "evidence usually resolves whether they are the same concept surface-inverted "
+            "(merge to a polarity-agnostic description) or genuinely split (two sub-concepts)."
         )
 
     @staticmethod
@@ -725,11 +901,20 @@ class ContrastiveMeshPipeline:
                 f"final_label required when verdict='done' or final round "
                 f"(round {round_just_judged} of {MAX_ROUNDS}) but was missing/empty."
             )
+        pairings_in = response.get("next_round_pairings") or {}
+        pairings: dict = {}
+        if isinstance(pairings_in, dict):
+            for ds, peer in pairings_in.items():
+                if ds == peer:
+                    continue  # agent can't be its own peer
+                if ds in self.datasets and peer in self.datasets:
+                    pairings[ds] = peer
         self.judge_verdicts.append({
             "verdict": verdict,
             "note": (response.get("overall_note") or "").strip(),
             "final_label": final_label,
             "per_dataset": {ds: per_ds[ds] for ds in self.datasets},
+            "next_round_pairings": pairings,
         })
         self._save_state()
 
@@ -779,8 +964,8 @@ class ContrastiveMeshPipeline:
             f"({self.preprocessing.get('model', self.model)}).\n"
             "The labeling agents and the judge did NOT see these rows. Your job is to "
             "predict, per row, whether it activates the concept described by the FINAL "
-            "LABEL below. Binary output only.\n\n"
-            f"FINAL LABEL\n\"{lab}\"\n\n"
+            f"{'RULE SET' if LABEL_FORMAT == 'rules' else 'LABEL'} below. Binary output only.\n\n"
+            f"FINAL {'RULE SET' if LABEL_FORMAT == 'rules' else 'LABEL'}\n{lab if LABEL_FORMAT == 'rules' else f'\"{lab}\"'}\n\n"
             f"{self._preprocessing_block()}\n\n"
             "Row cells: numeric 'value (pXX)' = training percentile; categorical 'value "
             "(freq Y.YY)' = training prevalence. Each row carries pred_class/pred_conf/"
@@ -789,8 +974,8 @@ class ContrastiveMeshPipeline:
             f"{data_block}\n\n"
             "TASK\n"
             "For each row_id in each dataset, classify the row into one of two categories "
-            "based solely on whether it fits the FINAL LABEL's structural claims:\n"
-            "  * \"fires\"         — the row matches the label's description of activating rows.\n"
+            f"based solely on whether it fits the FINAL {'RULE SET' if LABEL_FORMAT == 'rules' else 'LABEL'}'s structural claims:\n"
+            f"  * \"fires\"         — the row matches the {'rule set' if LABEL_FORMAT == 'rules' else 'label'}'s description of activating rows.\n"
             "  * \"does_not_fire\" — the row does not match that description.\n"
             "Judge each row independently. Do not assume any particular number of rows should "
             "fire in a dataset — the true count could be 0, all, or anything in between, and "
@@ -996,7 +1181,7 @@ class ContrastiveMeshPipeline:
             f"{self._preprocessing_block()}\n\n"
             f"{data_block}\n\n"
             "TASK\n"
-            "Write a single consensus label for f_{idx} that describes what distinguishes\n"
+            f"Write a {'necessary-and-sufficient RULE SET' if LABEL_FORMAT == 'rules' else 'single consensus label'} for f_{{idx}} that describes what distinguishes\n"
             "activating from contrast rows across ALL datasets — in STRUCTURAL / DISTRIBUTIONAL\n"
             "terms only.\n"
             "  * IGNORE column names and ordering. Treat all columns as nameless c0..cN.\n"
@@ -1007,6 +1192,7 @@ class ContrastiveMeshPipeline:
             "  * No column names. No domain terms (no 'quasar', 'carat', 'bankruptcy', etc.).\n"
             "  * The previous round-1 agents may have leaked domain language into their labels.\n"
             "    Strip that away and work from the raw CSVs below, not from their framings.\n\n"
+            f"{self._rules_block() if LABEL_FORMAT == 'rules' else ''}"
             "CONTRAST DISCIPLINE — include only distinguishing properties:\n"
             "  * Before adding ANY property to the consensus label, verify activating rows DIFFER\n"
             "    from contrast rows on it — in any combination of inputs (percentile positions,\n"
@@ -1020,8 +1206,8 @@ class ContrastiveMeshPipeline:
             "  * Keep looking — properties can combine across dimensions (an input × prediction\n"
             "    joint regime; a percentile × target pair; a column-subset × confidence pattern).\n"
             "    Exhaust those combinations before settling on a label.\n\n"
-            f"Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words). "
-            "Shape-level language only. No column names. No preamble."
+            f"{'In rules mode, output only direct row-level structural rules. Put any commentary about strongest subtype, secondary subtype, portability, unresolved disagreement, or heterogeneity outside the rule set; do not include it in the final output.\\n\\n' if LABEL_FORMAT == 'rules' else ''}"
+            f"{self._output_block() if LABEL_FORMAT == 'rules' else f'Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words). Shape-level language only. No column names. No preamble.'}"
         ).replace("{idx}", str(self.feat_idx))
 
     def record_synthesis(self, label: str) -> None:
@@ -1038,6 +1224,8 @@ class ContrastiveMeshPipeline:
         output_path.write_text(json.dumps({
             "model": self.model,
             "feat_idx": self.feat_idx,
+            "arch": self.arch,
+            "label_format": self.label_format,
             "label": label,
             "label_source": (
                 "synthesis" if self.synthesis and label == self.synthesis
@@ -1064,6 +1252,9 @@ def _strip_label(s: str) -> str:
     for prefix in ("Label:", "LABEL:", "label:"):
         if s.startswith(prefix):
             s = s[len(prefix):].strip()
+    for prefix in ("RULE SET", "Rule set", "Rules", "RULES"):
+        if s.startswith(prefix):
+            s = s[len(prefix):].strip()
     return s
 
 
@@ -1080,7 +1271,7 @@ def _cli():
 
     record = sub.add_parser("record", help="Record labels for the next round")
     record.add_argument("--labels-file", type=Path, required=True,
-                         help="JSON list of label strings, one per dataset (in feat_context.datasets_used order)")
+                         help="JSON list of label strings; baseline/ringlite use datasets_used order, ringlite_freeze uses the active-dataset order printed by show-round")
 
     sub.add_parser("status", help="Print round-by-round state")
     sub.add_parser("save-label", help="Write final label to f{feat}_label.json")
@@ -1104,13 +1295,17 @@ def _cli():
     pipe = ContrastiveMeshPipeline(args.model, args.feat)
 
     if args.cmd == "init":
+        print(f"ARCH={pipe.arch}  PROMPT_ORDER={PROMPT_ORDER}  LABEL_FORMAT={pipe.label_format}")
         print(f"Datasets (n={len(pipe.datasets)}): {pipe.datasets}")
         prompts = pipe.round_prompts(1)
         for ds, p in zip(pipe.datasets, prompts):
             print(f"\n===== {ds} =====\n{p}")
     elif args.cmd == "show-round":
+        active = pipe.active_datasets_for_round(args.round)
+        print(f"ARCH={pipe.arch}  PROMPT_ORDER={PROMPT_ORDER}  LABEL_FORMAT={pipe.label_format}")
+        print(f"Active datasets for round {args.round} (n={len(active)}): {active}")
         prompts = pipe.round_prompts(args.round)
-        for ds, p in zip(pipe.datasets, prompts):
+        for ds, p in zip(active, prompts):
             print(f"\n===== round {args.round} / {ds} =====\n{p}")
     elif args.cmd == "record":
         labels = json.loads(args.labels_file.read_text())
@@ -1130,6 +1325,8 @@ def _cli():
                 print(f"  judge note: {verdict['note']}")
         if pipe.synthesis:
             print(f"\nSynthesized: {pipe.synthesis}")
+        print(f"ARCH={pipe.arch}")
+        print(f"Next active datasets: {pipe.active_datasets_for_round(pipe.next_round_number())}")
         print(f"Done: {pipe.is_done()}   Rounds: {len(pipe.rounds)}/{MAX_ROUNDS}")
     elif args.cmd == "save-label":
         path = pipe.save_label()
