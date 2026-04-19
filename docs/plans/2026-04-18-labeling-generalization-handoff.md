@@ -52,18 +52,32 @@ Resume invariants:
 | **f_11** | 4 (judge done r4) | 5 accept | **0.660 / 0.660 / 0.667** | "Activating rows concentrate a localized column subset at its modal or rare co-firing signature with confident-correct predictions, while contrasts break the localization or spread into extreme tails." |
 | **f_6**  | 4 (judge done r4) | 4 accept, 1 revise | **0.660 / 0.660 / 0.691** | "Activating rows place tail-mass values (rare categorical codes or extreme-percentile numerics) on a localized column subset while contrasts hold baseline-frequency values at those positions." |
 | **f_36** | 3 (judge done r3) | 4 accept, 1 revise | **0.680 / 0.680 / 0.680** | "Activating rows densely cover a broad column block at mid-band percentiles or rare-frequency categorical levels; contrasts thin out or push isolated positions to extreme tails." |
+| **f_86** | 4 (judge done r4) | 5 accept | **0.200 / 0.200 / 0.130** ⚠️ polarity-inverted | "Activating rows concentrate tail mass on a localized numeric column subset at upper-mid-to-tail percentiles; contrasts lack that subset or invert its polarity." |
 
 Per-dataset accuracies:
 
 **f_11:** hazelnut 0.80, NATICUSdroid 0.80, students 0.60, Marketing 0.60, splice 0.50.
 **f_6:** HR 0.70, NATICUS 0.70, churn 0.70, credit_card 0.70, in_vehicle 0.50.
 **f_36:** kddcup09 0.80, SDSS17 0.80, taiwanese 0.70, Marketing 0.60, Diabetes130US 0.50.
+**f_86:** wine_quality 0.60, miami 0.20, superconductivity 0.20, diamonds 0.00, physiochemical_protein 0.00. **Every diamonds/protein prediction is exactly inverted from truth — the label's polarity is backwards.**
 
-Running aggregate over completed features:
-- mean micro accuracy = **0.667**
-- mean macro accuracy = **0.667**
-- mean f1 = **0.679**
-- `n=3` completed features (`f_11`, `f_6`, `f_36`)
+Running aggregate over completed features (n=4):
+- mean micro accuracy = **0.550** (0.660, 0.660, 0.680, 0.200)
+- mean macro accuracy = **0.550**
+- mean f1 = **0.542**
+- Excluding the inverted f_86 as an interpretability failure: mean = **0.667** on n=3.
+
+### f_86 note
+
+The f_86 cross-dataset label is polarity-inverted for 2 of the 5
+regression datasets (protein, diamonds both scored 0/10). The label
+describes the upper-tail-concentration behavior seen in
+superconductivity/miami but protein's activating rows are the opposite
+shape (most numerics low, one column anchored high). Treat the f_86
+label as unusable for downstream work until either (a) the pipeline is
+extended to handle polarity flips in the cross-dataset synthesizer, or
+(b) the label is replaced manually. This is a pipeline limitation, not
+a research finding.
 
 State + label snapshots on disk:
 - `output/contrastive_examples/mitra/f11_label_A.json`
@@ -81,7 +95,6 @@ Paper-draft note:
 
 | Feature | Datasets | Status |
 |---------|----------|--------|
-| **f_86** | diamonds, miami_housing, physiochemical_protein, superconductivity, wine_quality (all regression) | validator CSVs built; pipeline NOT yet run |
 | **f_92** | APSFailure, NATICUSdroid, SDSS17, hiva_agnostic, splice | validator CSVs built; pipeline NOT yet run |
 
 Each remaining feature needs:
