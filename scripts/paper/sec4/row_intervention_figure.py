@@ -15,6 +15,9 @@ from pathlib import Path
 DATA_FILE = Path(__file__).parent / "row_intervention_data.json"
 OUTPUT_DIR = Path(__file__).parent
 
+# Paper repo path
+PAPER_FIGURES = Path("/Users/brian/src/tabular_embedding_paper/figures")
+
 
 def main():
     with open(DATA_FILE) as f:
@@ -191,13 +194,12 @@ def main():
         fig.add_artist(con)
         cross_arrows.append(con)
 
-    plt.savefig(OUTPUT_DIR / "row_intervention_figure.pdf",
-                bbox_inches="tight", dpi=300,
-                bbox_extra_artists=cross_arrows)
-    plt.savefig(OUTPUT_DIR / "row_intervention_figure.png",
-                bbox_inches="tight", dpi=150,
-                bbox_extra_artists=cross_arrows)
-    print("Saved row_intervention_figure.pdf/png")
+    paper_output = PAPER_FIGURES / "4_results" / "row_intervention_figure.pdf"
+    paper_output.parent.mkdir(parents=True, exist_ok=True)
+    for path in (OUTPUT_DIR / "row_intervention_figure.pdf", paper_output):
+        plt.savefig(path, bbox_inches="tight", dpi=300,
+                    bbox_extra_artists=cross_arrows)
+        print(f"Saved {path}")
 
 
 if __name__ == "__main__":
