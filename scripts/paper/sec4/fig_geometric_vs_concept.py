@@ -32,6 +32,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.paper._paper_repo import paper_figure_path
 
 from scripts.compare_sae_cross_model import get_dataset_tasks
 
@@ -305,10 +306,10 @@ def make_figure(cls_pairs: dict, reg_pairs: dict, output_path: Path):
     ax_strip_cls.set_ylabel('r', fontsize=8)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(str(output_path), dpi=300, bbox_inches='tight')
-    print(f"Saved: {output_path}")
-    fig.savefig(str(output_path.with_suffix('.png')), dpi=300, bbox_inches='tight')
-    print(f"Saved: {output_path.with_suffix('.png')}")
+    paper_path = paper_figure_path("4_results", "geometric_vs_concept.pdf")
+    for p in (output_path, paper_path):
+        fig.savefig(str(p), dpi=300, bbox_inches='tight')
+        print(f"Saved: {p}")
     plt.close(fig)
 
     # Print summary
