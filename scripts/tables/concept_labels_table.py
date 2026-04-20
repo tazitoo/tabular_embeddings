@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Generate a LaTeX table of SAE concept labels from the labeling pipeline.
 
-Pulls `label` (and optional validator headline) from each
-`output/contrastive_examples/{model}/f{feat}_label_A.json` snapshot
-and emits a three-column table:
+Prefers the current pairoff_v10 run at
+`output/contrastive_examples/{model}/f{feat}_A_pairoff_v10_codex/result.json`
+(keys: `final_label`, `validator_results.overall.*`). Falls back to
+older `f{feat}_label_A.json` snapshots (keys: `label`,
+`validator_results.overall.*`) for models that haven't been re-swept.
+
+Emits a three-column table:
 
     TFM name | concept | label
 
 Defaults to the mitra features we've run in the PROMPT_ORDER=A sweep
-(f_6, f_11, f_36). Pass --features / --model to override.
+(f_6, f_11, f_36, f_86, f_92). Pass --features / --model to override.
 
 Usage:
     python -m scripts.tables.concept_labels_table
@@ -24,9 +28,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts._project_root import PROJECT_ROOT
+from scripts.paper._paper_repo import paper_table_path
 
 OUTPUT_DIR = PROJECT_ROOT / "output" / "contrastive_examples"
 TEX_OUT = Path(__file__).with_suffix(".tex")
+PAPER_TEX_OUT = paper_table_path("concept_labels_table.tex")
 
 TFM_DISPLAY = {
     "mitra": "Mitra",
@@ -59,8 +65,28 @@ def _escape_tex(s: str) -> str:
 
 
 def _load_label_snapshot(model: str, feat: int) -> dict | None:
-    """Return the parsed _A snapshot if it exists, else the latest label, else None."""
+    """Return the latest label snapshot for (model, feat), normalising
+    key names across generator versions.
+
+    Preference order:
+      1. pairoff_v10_codex run: {model_dir}/f{feat}_A_pairoff_v10_codex/result.json
+         (keys: final_label, validator_results)
+      2. legacy: {model_dir}/f{feat}_label_A.json (keys: label, validator_results)
+      3. legacy: {model_dir}/f{feat}_label.json
+
+    Always returns a dict with `label` key populated (copied from
+    `final_label` when the pairoff run is the source).
+    """
     model_dir = OUTPUT_DIR / model
+
+    pairoff_path = model_dir / f"f{feat}_A_pairoff_v10_codex" / "result.json"
+    if pairoff_path.exists():
+        data = json.loads(pairoff_path.read_text())
+        if "label" not in data and "final_label" in data:
+            data["label"] = data["final_label"]
+        data["_source_path"] = str(pairoff_path.relative_to(PROJECT_ROOT))
+        return data
+
     for suffix in ("_label_A.json", "_label.json"):
         path = model_dir / f"f{feat}{suffix}"
         if path.exists():
@@ -200,6 +226,8 @@ def main():
     tex = build_table(args.model, args.features, metric, mark_drafts=not args.no_draft_note)
     args.output.write_text(tex)
     print(f"Wrote {args.output} ({len(tex)} bytes, {len(args.features)} rows)")
+    PAPER_TEX_OUT.write_text(tex)
+    print(f"  → also wrote {PAPER_TEX_OUT}")
 
 
 if __name__ == "__main__":

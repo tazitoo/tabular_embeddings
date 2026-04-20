@@ -147,16 +147,57 @@ produced all 8 models. Note:
   — `output/layerwise_depth_analysis_mitra_regressor.json` doesn't
   exist, so the Feb 19 PDF was copied forward. Stale.
 
-## Labeling-dependent artefacts (BLOCKED)
+## Labeling — Mitra v10 pairoff_codex
 
-The following are blocked on task #28 (outside this repo) landing all
-five `f{6,11,36,86,92}_label_{A,Apairing}_v10.json` in
-`output/contrastive_examples/mitra/`. As of session end, only f_92 has
-landed.
+Current labels live at
+`output/contrastive_examples/mitra/f{N}_A_pairoff_v10_codex/result.json`
+(5 features). Naming differs from the original plan's
+`f{N}_label_{A,Apairing}_v10.json` — only one variant run (`pairings_mode=off`,
+`prompt_order=A`, codex worker/judge/validator). No paired counterpart
+has landed, so the "A vs Apairing" delta table the plan anticipated
+collapses to a single column.
 
-- `scripts/tables/concept_labels_table.tex` → paper `tables/concept_labels_table.tex`
-- Per-feature validator accuracy table (new or update existing)
-- Pairing delta range ("+0.08 to +0.24") in prose
+### Generator updated
+
+`scripts/tables/concept_labels_table.py` now prefers the new pairoff
+path, falls back to legacy `_label_A.json` otherwise, and dual-writes
+to `tables/concept_labels_table.tex` in the paper repo.
+
+### Per-feature validator accuracy (10+10 protocol)
+
+100 labeled rows per feature (5 datasets × 10 activating + 10
+non-activating). Values are macro accuracy from
+`validator_results.overall.accuracy_macro`.
+
+| Feature | Label (judge synthesis) | Macro acc |
+|---------|-------------------------|-----------|
+| f_6  | Compact, low-entropy rows where most positions stay ordinary while one or a few coded positions stand out. | 0.46 |
+| f_11 | Mostly smooth, compact rows with mid-to-upper mass and limited mixed rare-state or two-sided tail excursions. | 0.64 |
+| f_36 | Rows marked by a small coordinated subset deviation embedded in an otherwise mixed or baseline-heavy profile, rather than a uniform row-wide shift. | 0.55 |
+| f_86 | Selective rather than row-wide structure: a mostly quiet or midrange background with a compact cluster of stronger coordinates. | 0.43 |
+| f_92 | Rows with a coherent low-entropy shape, concentrating atypical mass into a recurring core or aligned block rather than scattered extras. | 0.53 |
+
+**Mean validator acc across 5 features: 0.522.** Range 0.43–0.64.
+f_6 and f_86 land below 0.5 (no-better-than-chance on binary
+activating-vs-not); f_11 is strongest at 0.64.
+
+### Paper prose to revisit
+
+The paper draft previously cited per-feature pairing deltas like
+"+0.08 to +0.24" and specific `f_92 0.42 → 0.50`, `f_86 0.20 → 0.44`
+transitions. Those came from an A/Apairing comparison that no longer
+has a paired run. Two options:
+
+1. **Wait for a paired (pairings_mode=on) sweep** to land, then
+   rebuild the before/after framing. This is the path of least
+   revision to the paper prose.
+2. **Reframe the section around the single pairoff run**, dropping
+   the A-vs-Apairing delta. The existing validator accuracy table in
+   the paper would need updating to the 5 values above, and the prose
+   about pairing contribution would need to go.
+
+Which direction depends on whether the pair-on run is imminent — flag
+for author decision.
 
 ## Cleanup notes
 
