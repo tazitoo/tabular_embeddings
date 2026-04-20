@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """Two-by-two importance decay grid.
 
-Top row: LOO importance decay, matched (left) and unmatched (right),
-same data as plot_importance_decay.py.
+Top row (LOO): per-feature |Δpred| ranked descending across all
+(model, dataset) pairs, split into MNN-matched (left) and unmatched
+(right) features. Same data as plot_importance_decay.py.
 
-Bottom row: placeholders for the ablation-replay and transfer-replay
-step-Δpred curves, which will be populated once
-    - scripts/intervention/replay_ablation_step_preds.py has been run
-      across all 15 pairs and
-    - the transfer re-sweep finishes with the new step_preds save
-      (scripts/intervention/transfer_sweep_v2.py).
-
-Empty frames are drawn deliberately so the missing panels appear in the
-rendered figure as a visible to-do reminder.
+Bottom row (greedy step): per-step |Δpred| from the greedy ablation
+(left) and transfer (right) sweeps. For each (pair, dataset, row), the
+sweep records the strong model's prediction after each greedy step in
+`step_preds`; we take successive pairwise deltas (baseline → step 1,
+step 1 → step 2, …), reduce over the class axis with total-variation
+distance for classification or absolute value for regression, then
+average per-step across all rows grouped by strong model.
 
 Usage:
     python -m scripts.figures.4_results.plot_importance_decay_grid
@@ -42,27 +41,150 @@ build_matched_sets = _decay.build_matched_sets
 accumulate_rank_curve = _decay.accumulate_rank_curve
 
 OUT_DIR = PROJECT_ROOT / "output" / "figures"
+ABLATION_DIR = PROJECT_ROOT / "output" / "ablation_sweep_tols"
+TRANSFER_DIR = PROJECT_ROOT / "output" / "transfer_global_mnnp90_trained_tols"
 
 
-def _style_axes(ax, title: str) -> None:
+def _style_axes(ax, title: str, xlabel: str = "Rank descending") -> None:
     ax.set_yscale("log")
     ax.set_xscale("log")
     ax.set_ylim(1e-4, 1.5e0)
-    ax.set_xlabel("Rank descending")
+    ax.set_xlabel(xlabel)
     ax.set_title(title, fontsize=10)
     ax.grid(True, which="both", ls=":", alpha=0.4)
 
 
-def _draw_placeholder(ax, title: str, message: str) -> None:
-    _style_axes(ax, title)
-    ax.text(
-        0.5, 0.5, message,
-        transform=ax.transAxes,
-        ha="center", va="center",
-        fontsize=9, color="#888888", style="italic",
-    )
-    # Log-log axes need a positive dummy point to render tick grid.
-    ax.plot([1], [1e-2], alpha=0)
+def _step_delta_row(pred_row: np.ndarray, baseline: np.ndarray,
+                    step_sizes_row: np.ndarray) -> np.ndarray:
+    """Compute per-step |Δpred| for one row's greedy walk.
+
+    `pred_row` has shape (MAX_STEPS,) for regression or
+    (MAX_STEPS, n_classes) for classification. `baseline` is the
+    pre-intervention prediction (shape matches one step).
+    `step_sizes_row[s] > 0` marks valid steps; NaN steps are dropped.
+
+    Returns an array of length equal to the number of valid steps.
+    """
+    n_steps = int((step_sizes_row > 0).sum())
+    if n_steps == 0:
+        return np.empty(0, dtype=np.float32)
+    seq = pred_row[:n_steps]
+    prev = np.concatenate([baseline[None, ...], seq[:-1]], axis=0)
+    diff = seq - prev
+    if diff.ndim == 1:
+        return np.abs(diff)
+    # Multi-class: total variation distance = 0.5 * L1 norm over classes
+    return 0.5 * np.abs(diff).sum(axis=-1)
+
+
+def _accumulate_step_curves(sweep_dir) -> dict[str, list[list[float]]]:
+    """Walk a sweep dir and collect per-step |Δpred| arrays grouped by
+    strong model. Returns {strong_model: [ list_per_step ]} where
+    list_per_step[s] is a flat Python list of |Δ| values observed at
+    step s across all rows in all (pair, dataset) files.
+    """
+    MAX_STEPS = 20
+    per_model: dict[str, list[list[float]]] = {}
+    for pair_dir in sorted(sweep_dir.iterdir()):
+        if not pair_dir.is_dir() or "_vs_" not in pair_dir.name:
+            continue
+        for npz_path in sorted(pair_dir.glob("*.npz")):
+            try:
+                d = np.load(npz_path, allow_pickle=True)
+            except Exception:
+                continue
+            needed = {"step_preds", "step_sizes", "preds_strong",
+                      "strong_model", "strong_wins"}
+            if not needed.issubset(set(d.files)):
+                continue
+            strong = str(d["strong_model"])
+            sw = d["strong_wins"].astype(bool)
+            if not sw.any():
+                continue
+            step_preds = d["step_preds"][sw]
+            step_sizes = d["step_sizes"][sw]
+            baseline = d["preds_strong"][sw]
+            bucket = per_model.setdefault(strong, [[] for _ in range(MAX_STEPS)])
+            for r in range(step_preds.shape[0]):
+                deltas = _step_delta_row(step_preds[r], baseline[r],
+                                         step_sizes[r])
+                for s, v in enumerate(deltas):
+                    if np.isfinite(v):
+                        bucket[s].append(float(v))
+    return per_model
+
+
+def _step_delta_row_vs_weak(
+    pred_row: np.ndarray, weak_baseline: np.ndarray,
+    step_sizes_row: np.ndarray,
+) -> np.ndarray:
+    """Transfer variant: deltas are (injected prediction) − (previous
+    injected prediction) with the baseline being the weak model's
+    pre-injection prediction.
+    """
+    n_steps = int((step_sizes_row > 0).sum())
+    if n_steps == 0:
+        return np.empty(0, dtype=np.float32)
+    seq = pred_row[:n_steps]
+    prev = np.concatenate([weak_baseline[None, ...], seq[:-1]], axis=0)
+    diff = seq - prev
+    if diff.ndim == 1:
+        return np.abs(diff)
+    return 0.5 * np.abs(diff).sum(axis=-1)
+
+
+def _accumulate_transfer_curves(sweep_dir) -> dict[str, list[list[float]]]:
+    """Like `_accumulate_step_curves` but groups by STRONG model (the
+    source of the injected concepts). Baseline is `preds_weak`."""
+    MAX_STEPS = 20
+    per_model: dict[str, list[list[float]]] = {}
+    for pair_dir in sorted(sweep_dir.iterdir()):
+        if not pair_dir.is_dir() or "_vs_" not in pair_dir.name:
+            continue
+        for npz_path in sorted(pair_dir.glob("*.npz")):
+            try:
+                d = np.load(npz_path, allow_pickle=True)
+            except Exception:
+                continue
+            needed = {"step_preds", "step_sizes", "preds_weak",
+                      "strong_model", "strong_wins"}
+            if not needed.issubset(set(d.files)):
+                continue
+            strong = str(d["strong_model"])
+            sw = d["strong_wins"].astype(bool)
+            if not sw.any():
+                continue
+            step_preds = d["step_preds"][sw]
+            step_sizes = d["step_sizes"][sw]
+            baseline = d["preds_weak"][sw]
+            bucket = per_model.setdefault(strong, [[] for _ in range(MAX_STEPS)])
+            for r in range(step_preds.shape[0]):
+                deltas = _step_delta_row_vs_weak(step_preds[r], baseline[r],
+                                                 step_sizes[r])
+                for s, v in enumerate(deltas):
+                    if np.isfinite(v):
+                        bucket[s].append(float(v))
+    return per_model
+
+
+def _plot_step_curves(ax, per_model: dict[str, list[list[float]]],
+                      order: list[str], title: str) -> None:
+    _style_axes(ax, title, xlabel="Greedy step")
+    for model in order:
+        if model not in per_model:
+            continue
+        buckets = per_model[model]
+        xs, ys = [], []
+        for s, vals in enumerate(buckets, start=1):
+            if not vals:
+                continue
+            xs.append(s)
+            ys.append(float(np.mean(vals)))
+        if not xs:
+            continue
+        ax.plot(xs, ys, color=MODEL_COLORS[model],
+                linestyle=MODEL_LINESTYLE[model], lw=1.6,
+                label=DISPLAY[model], marker="o", ms=3)
 
 
 def main() -> None:
@@ -103,16 +225,16 @@ def main() -> None:
 
     _style_axes(top_left, "(a) LOO decay — matched concepts")
     _style_axes(top_right, "(b) LOO decay — unmatched concepts")
-    _draw_placeholder(
-        bot_left,
-        "(c) Ablation step $|\\Delta\\text{pred}|$",
-        "pending: replay_ablation_step_preds\nacross 15 pairs",
-    )
-    _draw_placeholder(
-        bot_right,
-        "(d) Transfer step $|\\Delta\\text{pred}|$",
-        "pending: transfer re-sweep\nwith step_preds save",
-    )
+
+    print("Computing ablation step |Δpred| curves…")
+    ablation_curves = _accumulate_step_curves(ABLATION_DIR)
+    _plot_step_curves(bot_left, ablation_curves, order,
+                      "(c) Ablation step $|\\Delta\\text{pred}|$")
+
+    print("Computing transfer step |Δpred| curves…")
+    transfer_curves = _accumulate_transfer_curves(TRANSFER_DIR)
+    _plot_step_curves(bot_right, transfer_curves, order,
+                      "(d) Transfer step $|\\Delta\\text{pred}|$")
 
     axes[0, 0].set_ylabel("Mean $|\\Delta\\text{pred}|$ (LOO)")
     axes[1, 0].set_ylabel("Mean $|\\Delta\\text{pred}|$ (step)")
