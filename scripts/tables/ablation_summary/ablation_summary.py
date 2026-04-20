@@ -20,7 +20,7 @@ from scripts._project_root import PROJECT_ROOT
 from scripts.paper._paper_repo import paper_table_path
 
 SWEEP_DIR = PROJECT_ROOT / "output" / "ablation_sweep_tols"
-RANDOM_DIR = PROJECT_ROOT / "output" / "ablation_sweep_random"
+RANDOM_DIR = PROJECT_ROOT / "output" / "ablation_sweep_random_tols"
 OUTPUT_TEX = Path(__file__).parent / "ablation_summary.tex"
 PAPER_OUTPUT_TEX = paper_table_path("section4_summary.tex")
 

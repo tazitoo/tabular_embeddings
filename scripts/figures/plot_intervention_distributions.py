@@ -35,7 +35,7 @@ OUTPUT_DIR = PROJECT_ROOT / "output" / "figures"
 # the random shapes stay legible underneath.
 SOURCES = [
     # (label, sweep_dir, face_color, alpha)
-    ("ablation (random)",  PROJECT_ROOT / "output" / "ablation_sweep_random",               "#E69F00", 0.55),  # orange
+    ("ablation (random)",  PROJECT_ROOT / "output" / "ablation_sweep_random_tols",          "#E69F00", 0.55),  # orange
     ("transfer (random)",  PROJECT_ROOT / "output" / "transfer_random",                     "#56B4E9", 0.55),  # sky blue
     ("ablation (trained)", PROJECT_ROOT / "output" / "ablation_sweep_tols",                 "#D55E00", 0.60),  # vermillion
     ("transfer (trained)", PROJECT_ROOT / "output" / "transfer_global_mnnp90_trained_tols", "#0072B2", 0.60),  # blue
