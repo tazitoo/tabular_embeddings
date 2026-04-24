@@ -7,8 +7,10 @@ for delta injection. The only difference is:
 
   - Delta source: virtual atoms mapped from the source model's unmatched
     features into the target model's embedding space (not SAE feature zeroing).
-  - Injection mode: full-sequence (context + query) via inject_context=False,
-    so attention-based models propagate the transferred concept.
+  - Injection mode: query-only (inject_context=False). The train context is
+    left unmodified; deltas are added to query positions at the extraction
+    layer only. Attention in subsequent layers still lets the modified query
+    attend to the (unchanged) context.
   - Direction: forward only (strong→weak). For each row where the strong model
     outperforms the weak, transfer strong's unique concepts into the weak model.
 
