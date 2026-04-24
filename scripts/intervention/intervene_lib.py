@@ -27,6 +27,7 @@ import numpy as np
 import torch
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.intervention.context_sampling import select_context_indices
 from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND, SAE_FILENAME, sae_sweep_dir
 
 logger = logging.getLogger(__name__)
@@ -184,10 +185,20 @@ def load_training_mean(
 def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) -> tuple:
     """Dataset-level metric for strong/weak determination.
 
-    Classification: AUC (matching TabArena evaluation protocol).
+    Classification: AUC (matching TabArena evaluation protocol) with a
+    neg_logloss fallback when AUC is undefined — e.g. when the holdout
+    contains only one class, or when the SAE test-split sampler starved
+    minority classes out of the test set. Logloss is well-defined on a
+    monochromatic holdout and ranks models by prediction calibration,
+    preserving strong/weak determination where AUC cannot.
     Regression: neg_RMSE.
 
     Returns (metric_value, metric_name) where higher is always better.
+    metric_name is one of:
+      - "auc"          : AUC computed successfully
+      - "neg_logloss"  : AUC undefined; fell back to negated mean cross-entropy
+      - "neg_rmse"     : regression
+      - "degenerate"   : both AUC and logloss failed (e.g. non-finite preds)
     """
     from sklearn.metrics import roc_auc_score
 
@@ -195,36 +206,45 @@ def compute_importance_metric(y_true: np.ndarray, preds: np.ndarray, task: str) 
         rmse = float(np.sqrt(np.mean((preds - y_true) ** 2)))
         return -rmse, "neg_rmse"
 
-    # 1D predictions: some models (e.g. CARTE) return P(y=1) as a flat array
-    # for binary classification. Convert to (n, 2) probability matrix.
+    # Normalize shape for downstream AUC attempt.
+    # 1D or (N,1) single-column binary output is legitimate P(y=1); widen to 2-col.
+    preds_2d = preds
     if preds.ndim == 1:
         if np.all((preds >= 0) & (preds <= 1)):
-            preds = np.column_stack([1 - preds, preds])
-        else:
-            return float("-inf"), "degenerate"
+            preds_2d = np.column_stack([1 - preds, preds])
+    elif preds.ndim == 2 and preds.shape[1] == 1:
+        p1 = preds.ravel()
+        if np.all((p1 >= 0) & (p1 <= 1)):
+            preds_2d = np.column_stack([1 - p1, p1])
 
-    n_pred_classes = preds.shape[1]
+    # Try AUC first.
+    n_pred_classes = preds_2d.shape[1] if preds_2d.ndim == 2 else 1
     n_true_classes = len(np.unique(y_true))
+    if (preds_2d.ndim == 2 and n_pred_classes >= 2
+            and n_pred_classes >= n_true_classes
+            and n_true_classes >= 2):
+        try:
+            if n_pred_classes == 2:
+                auc = roc_auc_score(y_true, preds_2d[:, 1])
+            else:
+                auc = roc_auc_score(y_true, preds_2d, multi_class="ovr",
+                                    labels=np.arange(n_pred_classes))
+            if np.isfinite(auc):
+                return float(auc), "auc"
+        except ValueError:
+            pass  # fall through to logloss
 
-    # Degenerate: single-class output or fewer prediction columns than true classes
-    if n_pred_classes <= 1 or n_pred_classes < n_true_classes:
-        return float("-inf"), "degenerate"
-
-    # Need at least 2 classes in y_true to compute AUC
-    if n_true_classes < 2:
-        return float("-inf"), "degenerate"
-
+    # Fallback: neg_logloss. Defined whenever per-row loss can be computed,
+    # including monochromatic holdouts where AUC is undefined.
     try:
-        if n_pred_classes == 2:
-            # Binary: AUC on P(y=1)
-            auc = roc_auc_score(y_true, preds[:, 1])
-        else:
-            # Multi-class: one-vs-rest AUC
-            auc = roc_auc_score(y_true, preds, multi_class="ovr",
-                                labels=np.arange(n_pred_classes))
-        return float(auc), "auc"
-    except ValueError:
-        return float("-inf"), "degenerate"
+        losses = compute_per_row_loss(y_true, preds, task)
+        mean_loss = float(np.mean(losses))
+        if np.isfinite(mean_loss):
+            return -mean_loss, "neg_logloss"
+    except Exception:
+        pass
+
+    return float("-inf"), "degenerate"
 
 
 def compute_per_row_loss(y_true: np.ndarray, preds: np.ndarray, task: str) -> np.ndarray:
@@ -321,34 +341,16 @@ def _cap_context(X_train, y_train, max_context: int, task: str, seed: int = 42):
     - DataFrame models (CARTE, Tabula-8B): simple rng.choice (line 261)
     - Numpy models: stratified for classification, simple for regression (line 55-88)
     """
-    if len(X_train) <= max_context:
-        return X_train, y_train
-
-    rng = np.random.RandomState(seed)
-
-    if hasattr(X_train, 'iloc'):
-        # DataFrame path — simple random (matches line 261-263)
-        idx = rng.choice(len(X_train), max_context, replace=False)
-        return X_train.iloc[idx].reset_index(drop=True), y_train[idx]
-
-    # Numpy path — stratified for classification (matches sample_context())
-    if task == "classification":
-        classes, counts = np.unique(y_train, return_counts=True)
-        indices = []
-        for cls, count in zip(classes, counts):
-            cls_idx = np.where(y_train == cls)[0]
-            n_take = max(1, int(max_context * count / len(y_train)))
-            indices.append(rng.choice(cls_idx, size=min(n_take, len(cls_idx)), replace=False))
-        indices = np.concatenate(indices)
-        if len(indices) > max_context:
-            indices = rng.choice(indices, size=max_context, replace=False)
-        elif len(indices) < max_context:
-            remaining = np.setdiff1d(np.arange(len(y_train)), indices)
-            extra = rng.choice(remaining, size=max_context - len(indices), replace=False)
-            indices = np.concatenate([indices, extra])
-    else:
-        indices = rng.choice(len(X_train), size=max_context, replace=False)
-
+    indices = select_context_indices(
+        n_rows=len(X_train),
+        y_train=np.asarray(y_train),
+        max_context=max_context,
+        task=task,
+        dataframe_style=hasattr(X_train, "iloc"),
+        seed=seed,
+    )
+    if hasattr(X_train, "iloc"):
+        return X_train.iloc[indices].reset_index(drop=True), y_train[indices]
     return X_train[indices], y_train[indices]
 
 
@@ -393,6 +395,7 @@ def load_dataset_context(
     dataset: str,
     splits: Optional[dict] = None,
     max_context: int = 1024,
+    query_source: str = "holdout",
 ) -> Tuple:
     """Load preprocessed data and resolve row alignment for one dataset.
 
@@ -411,18 +414,22 @@ def load_dataset_context(
     train_idx = np.array(split_info["train_indices"])
     holdout_indices = np.array(split_info["test_indices"])
 
-    # Load row_indices from test NPZ
-    test_npz = sorted(SAE_DATA_DIR.glob(f"{model_key}_taskaware_sae_test.npz"))
-    if not test_npz:
-        test_npz = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_sae_test.npz"))
-    if not test_npz:
-        raise FileNotFoundError(f"No test embeddings for {model_key} in {SAE_DATA_DIR}")
-    npz_data = np.load(test_npz[0], allow_pickle=True)
+    if query_source not in {"holdout", "train_noncontext", "train_all", "all_cached"}:
+        raise ValueError(f"query_source={query_source!r} not in ['holdout', 'train_noncontext', 'train_all', 'all_cached']")
 
-    offset, count = _unpool_dataset(npz_data, dataset)
-    if offset is None:
-        raise ValueError(f"Dataset {dataset} not in test embeddings")
-    row_indices = npz_data["row_indices"][offset:offset + count]
+    row_indices = None
+    if query_source == "holdout":
+        test_npz = sorted(SAE_DATA_DIR.glob(f"{model_key}_taskaware_sae_test.npz"))
+        if not test_npz:
+            test_npz = sorted(SAE_DATA_DIR.glob(f"{model_key}_*_sae_test.npz"))
+        if not test_npz:
+            raise FileNotFoundError(f"No test embeddings for {model_key} in {SAE_DATA_DIR}")
+        npz_data = np.load(test_npz[0], allow_pickle=True)
+
+        offset, count = _unpool_dataset(npz_data, dataset)
+        if offset is None:
+            raise ValueError(f"Dataset {dataset} not in test embeddings")
+        row_indices = npz_data["row_indices"][offset:offset + count]
 
     if model_key in DATAFRAME_MODELS:
         # DataFrame models: load raw data, split by absolute indices
@@ -436,24 +443,75 @@ def load_dataset_context(
             )
         X_df, y = cached
 
-        X_train = X_df.iloc[train_idx].reset_index(drop=True)
-        y_train = y[train_idx]
-        X_train, y_train = _cap_context(X_train, y_train, max_context, task)
-
-        # Query rows: absolute row_indices into original DataFrame
-        X_query = X_df.iloc[row_indices].reset_index(drop=True)
-        y_query = y[row_indices]
+        X_train_full = X_df.iloc[train_idx].reset_index(drop=True)
+        y_train_full = y[train_idx]
+        if query_source == "holdout":
+            X_train, y_train = _cap_context(X_train_full, y_train_full, max_context, task)
+            X_query = X_df.iloc[row_indices].reset_index(drop=True)
+            y_query = y[row_indices]
+        else:
+            ctx_local = select_context_indices(
+                n_rows=len(X_train_full),
+                y_train=np.asarray(y_train_full),
+                max_context=max_context,
+                task=task,
+                dataframe_style=True,
+            )
+            X_train = X_train_full.iloc[ctx_local].reset_index(drop=True)
+            y_train = y_train_full[ctx_local]
+            if query_source == "train_noncontext":
+                query_local = np.setdiff1d(np.arange(len(X_train_full)), ctx_local)
+                X_query = X_train_full.iloc[query_local].reset_index(drop=True)
+                y_query = y_train_full[query_local]
+                row_indices = train_idx[query_local]
+            elif query_source == "train_all":
+                query_local = np.arange(len(X_train_full))
+                X_query = X_train_full.iloc[query_local].reset_index(drop=True)
+                y_query = y_train_full[query_local]
+                row_indices = train_idx[query_local]
+            else:
+                query_row_indices = np.concatenate([train_idx, holdout_indices])
+                X_query = X_df.iloc[query_row_indices].reset_index(drop=True)
+                y_query = y[query_row_indices]
+                row_indices = query_row_indices
     else:
         # Standard path: load from preprocessing cache
         from data.preprocessing import load_preprocessed, CACHE_DIR
 
         data = load_preprocessed(model_key, dataset, CACHE_DIR)
-        positions = align_test_rows(holdout_indices, row_indices)
-        X_train = data.X_train
-        y_train = data.y_train
-        X_train, y_train = _cap_context(X_train, y_train, max_context, task)
-        X_query = data.X_test[positions]
-        y_query = data.y_test[positions]
+        if query_source == "holdout":
+            positions = align_test_rows(holdout_indices, row_indices)
+            X_train = data.X_train
+            y_train = data.y_train
+            X_train, y_train = _cap_context(X_train, y_train, max_context, task)
+            X_query = data.X_test[positions]
+            y_query = data.y_test[positions]
+        else:
+            X_train_full = data.X_train
+            y_train_full = data.y_train
+            ctx_local = select_context_indices(
+                n_rows=len(X_train_full),
+                y_train=np.asarray(y_train_full),
+                max_context=max_context,
+                task=task,
+                dataframe_style=False,
+            )
+            X_train = X_train_full[ctx_local]
+            y_train = y_train_full[ctx_local]
+            if query_source == "train_noncontext":
+                query_local = np.setdiff1d(np.arange(len(X_train_full)), ctx_local)
+                X_query = X_train_full[query_local]
+                y_query = y_train_full[query_local]
+                row_indices = train_idx[query_local]
+            elif query_source == "train_all":
+                query_local = np.arange(len(X_train_full))
+                X_query = X_train_full[query_local]
+                y_query = y_train_full[query_local]
+                row_indices = train_idx[query_local]
+            else:
+                X_query = np.concatenate([data.X_train, data.X_test], axis=0)
+                y_query = np.concatenate([data.y_train, data.y_test], axis=0)
+                row_indices = np.concatenate([train_idx, holdout_indices])
 
     return X_train, y_train, X_query, y_query, row_indices, task
 

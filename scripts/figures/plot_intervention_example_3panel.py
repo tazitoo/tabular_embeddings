@@ -64,6 +64,71 @@ def _scalar(preds, y):
     return preds.ravel()
 
 
+def _load_baseline_preds_tied(dataset: str, model_a: str, model_b: str):
+    """Fallback loader for tied pairs.
+
+    Transfer and ablation NPZs skip writing preds when the dataset-level
+    metric is degenerate. That status lumps two very different cases:
+
+    1. Genuinely tied: both models make meaningful (variable) predictions
+       that happen to score identically on AUC / neg-RMSE — or predictions
+       compressed tightly around the base rate on extreme-imbalance data
+       (still ordered, so AUC is informative even if std is small). Scatter
+       is informative; render it.
+    2. A model is truly broken: output has zero variance across rows
+       (constant prediction). Scatter would show a straight line at the
+       constant value, which is misleading. Skip and let the caller render
+       an explanatory annotation.
+
+    The distinguishing test is std == 0 (or within float noise), not a
+    soft threshold like std < 0.01 — compressed-but-ordered predictions
+    have small-but-nonzero std and are still meaningful.
+
+    Returns (p_a, p_b, y, is_regression) or None when a model is broken.
+    """
+    imp_dir = PROJECT_ROOT / "output" / "perrow_importance"
+    pa = imp_dir / model_a / f"{dataset}.npz"
+    pb = imp_dir / model_b / f"{dataset}.npz"
+    if not pa.exists() or not pb.exists():
+        return None
+    da, db = np.load(pa, allow_pickle=True), np.load(pb, allow_pickle=True)
+    y = da["y_query"].astype(int)
+    preds_a = da["baseline_preds"]
+    preds_b = db["baseline_preds"]
+    is_reg = (preds_a.ndim == 1) or (preds_a.ndim == 2 and preds_a.shape[1] == 1)
+    p_a = _scalar(preds_a, y)
+    p_b = _scalar(preds_b, y)
+    # Reject only when a model's output is literally constant (broken).
+    # Using a tiny float-noise tolerance rather than an exact 0 check.
+    if p_a.std() < 1e-8 or p_b.std() < 1e-8:
+        return None
+    return (p_a, p_b, y, is_reg)
+
+
+def _broken_model(dataset: str, model_a: str, model_b: str) -> str | None:
+    """Identify which of (model_a, model_b) has constant output on dataset.
+
+    Returns the broken model name, or None if neither is (caller will treat
+    as generic degenerate — e.g. truly tied pair).
+    """
+    imp_dir = PROJECT_ROOT / "output" / "perrow_importance"
+    for m in (model_a, model_b):
+        p = imp_dir / m / f"{dataset}.npz"
+        if not p.exists():
+            continue
+        d = np.load(p, allow_pickle=True)
+        preds = d["baseline_preds"]
+        if preds.ndim == 2 and preds.shape[1] == 1:
+            signal = preds.ravel()
+        elif preds.ndim == 2 and preds.shape[1] >= 2:
+            signal = preds[:, 1] if preds.shape[1] == 2 else preds.max(axis=1)
+        else:
+            continue
+        if float(signal.std()) < 1e-8:
+            return m
+    return None
+
+
 def draw_intervention_cell(ax, ablation_path: Path, transfer_path: Path,
                            marker_size: float = 6.0, base_size: float = 10.0):
     """Draw the combined-intervention L-shape scatter onto `ax`.
@@ -73,9 +138,41 @@ def draw_intervention_cell(ax, ablation_path: Path, transfer_path: Path,
     the per-dataset grid script.
 
     Returns (n_drawn, n_strong_wins, strong_model, weak_model, is_regression).
+    When the NPZ is a tied/degenerate stub (no preds_strong/weak), falls
+    back to baseline preds from perrow_importance and draws the grey
+    scatter only (no arrows). Returns n_drawn=0 in that case.
     """
     d_a = np.load(ablation_path, allow_pickle=True)
     d_t = np.load(transfer_path, allow_pickle=True)
+
+    # Tied/degenerate pair: preds_* are not written; fall back to baselines.
+    if "preds_strong" not in d_a.keys() or str(d_a.get("metric_name", "")) == "degenerate":
+        strong = str(d_a["strong_model"])
+        weak = str(d_a["weak_model"])
+        fb = _load_baseline_preds_tied(ablation_path.stem, strong, weak)
+        if fb is None:
+            # Either missing baseline file OR one model is saturated /
+            # near-constant (degenerate, not genuinely tied) — the
+            # caller's KeyError handler will render an empty panel.
+            raise KeyError("degenerate pair (saturated predictions)")
+        p_s, p_w, y, is_regression = fb
+        if is_regression:
+            all_vals = np.concatenate([p_s, p_w])
+            lo = all_vals.min() - 0.05 * (all_vals.max() - all_vals.min())
+            hi = all_vals.max() + 0.05 * (all_vals.max() - all_vals.min())
+        else:
+            lo, hi = 0, 1
+        ax.plot([lo, hi], [lo, hi], "k--", lw=0.5, alpha=0.4, zorder=1)
+        if not is_regression:
+            event_rate = y.mean()
+            ax.axhline(event_rate, color="#dddddd", lw=0.5, ls=":", zorder=1)
+            ax.axvline(event_rate, color="#dddddd", lw=0.5, ls=":", zorder=1)
+        ax.scatter(p_s, p_w, c=BASE_COLOR, s=base_size, alpha=0.35,
+                   edgecolors="none", zorder=2)
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        ax.set_aspect("equal", adjustable="box")
+        return (0, 0, strong, weak, is_regression)
 
     y = d_a["y_query"].astype(int)
     p_s = _scalar(d_a["preds_strong"], y)
