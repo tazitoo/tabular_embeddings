@@ -176,6 +176,20 @@ def run_dataset(
     imp_b = np.load(imp_dir / model_b / f"{dataset}.npz", allow_pickle=True)
     preds_a = imp_a["baseline_preds"]
     preds_b = imp_b["baseline_preds"]
+
+    # Widen single-column binary outputs (e.g. Mitra's P(y=1) shape (N,1))
+    # to (N,2) so step_preds / strong_preds / baseline_preds_w all share
+    # the same shape as the intervention forward pass output. Without this,
+    # mitra-as-weak interventions raise a broadcast error at step_preds
+    # assignment because the intervention path returns (N,2).
+    def _widen_binary(p):
+        if p.ndim == 2 and p.shape[1] == 1:
+            p1 = p.ravel().astype(np.float32)
+            return np.column_stack([1.0 - p1, p1]).astype(np.float32)
+        return p
+    preds_a = _widen_binary(preds_a)
+    preds_b = _widen_binary(preds_b)
+
     row_indices_a = imp_a["row_indices"]
     row_indices_b = imp_b["row_indices"]
     assert np.array_equal(row_indices_a, row_indices_b), (
