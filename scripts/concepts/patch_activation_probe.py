@@ -28,7 +28,6 @@ if str(PROJECT_ROOT_FALLBACK) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT_FALLBACK))
 
 from scripts._project_root import PROJECT_ROOT
-from scripts.concepts.label_contrastive_mesh import CONTRASTIVE_DIR
 from scripts.intervention.intervene_lib import (
     load_norm_stats,
     load_sae,
@@ -37,6 +36,8 @@ from scripts.intervention.intervene_lib import (
 from scripts.concepts.row_source import load_row_source_row_indices
 from scripts.intervention.context_sampling import select_context_indices
 from models.mitra_embeddings import MitraEmbeddingExtractor
+
+CONTRASTIVE_DIR = PROJECT_ROOT / "output" / "contrastive_examples"
 
 
 @dataclass
