@@ -305,6 +305,7 @@ def probe_feature_dataset(
     rows_per_direction: int,
     device: str,
     patch_plans: list[dict] | None = None,
+    patch_plan_only: bool = False,
 ) -> list[PatchResult]:
     X_context, y_context, X_query_raw, _, _, task = _load_raw_mitra_context_query(
         model, dataset
@@ -330,6 +331,8 @@ def probe_feature_dataset(
         feat=feat,
         dataset=dataset,
     )
+    if patch_plan_only and patch_plans and not dataset_plans:
+        return []
     if dataset_plans:
         candidate_cols = []
         for plan in dataset_plans:
@@ -542,6 +545,11 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--patch-plan-only",
+        action="store_true",
+        help="When --patch-plan is set, skip datasets without an explicit plan instead of using auto-ranked columns.",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=PROJECT_ROOT / "output" / "concept_patch_probes" / "mitra_patch_probe.json",
@@ -569,6 +577,7 @@ def main() -> None:
                         rows_per_direction=args.rows_per_direction,
                         device=args.device,
                         patch_plans=patch_plans,
+                        patch_plan_only=args.patch_plan_only,
                     )
                 )
             except Exception as exc:
@@ -587,6 +596,7 @@ def main() -> None:
             "rows_per_direction": args.rows_per_direction,
             "device": args.device,
             "patch_plan": str(args.patch_plan) if args.patch_plan else None,
+            "patch_plan_only": args.patch_plan_only,
         },
         "patch_plans": patch_plans,
         "results": [asdict(r) for r in all_results],
