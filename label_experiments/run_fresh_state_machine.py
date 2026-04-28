@@ -778,9 +778,10 @@ def _causal_judge_prompt(prompt: str, worker_records: list[dict]) -> str:
     lines.extend(
         [
             "",
-            "In the JSON response, include causal_patch_plan: one record per dataset you want "
-            "to test. Each record should map your portable hypothesis to that dataset's exact "
-            "patch columns.",
+            "In the JSON response, include causal_patch_plan: exactly one record for every "
+            "dataset in this feature's evidence set. Do not skip weak or high-risk datasets; "
+            "those failures are the portability signal we need. Each record should map your "
+            "portable hypothesis to that dataset's exact patch columns.",
             "Use expected_add_delta='increase' when copying active donor values into contrast "
             "rows should increase SAE firing; use expected_remove_delta='decrease' when copying "
             "contrast donor values into activating rows should reduce SAE firing. Use 'unclear' "
@@ -1257,6 +1258,15 @@ def _run_experiment(args: argparse.Namespace) -> int:
                     for rec in plan:
                         rec.setdefault("model", args.model)
                         rec.setdefault("feat", args.feat)
+                    planned = {rec.get("dataset") for rec in plan}
+                    missing_plan = [ds for ds in datasets if ds not in planned]
+                    if missing_plan:
+                        retry_error = (
+                            "causal_patch_plan must include one record for every dataset. "
+                            f"Missing: {missing_plan}"
+                        )
+                        attempt_errors.append(retry_error)
+                        continue
                     causal_patch_plans_by_round[int(round_num)] = plan
                     _write_json(task_dir / "causal_patch_plan.json", {"patch_plans": plan})
                 try:
