@@ -792,6 +792,81 @@ def _causal_judge_prompt(prompt: str, worker_records: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _packet_path(causal_evidence_dir: Path | None, model: str, feat: int) -> Path | None:
+    if causal_evidence_dir is None:
+        return None
+    path = causal_evidence_dir / f"{model}_f{feat}_suppression_label_packet.md"
+    return path if path.exists() else None
+
+
+def _read_causal_packet(
+    causal_evidence_dir: Path | None,
+    *,
+    model: str,
+    feat: int,
+) -> str:
+    path = _packet_path(causal_evidence_dir, model, feat)
+    return path.read_text() if path else ""
+
+
+def _extract_dataset_packet(packet: str, dataset: str) -> str:
+    if not packet:
+        return ""
+    marker = f"## Dataset: {dataset}"
+    start = packet.find(marker)
+    if start < 0:
+        return ""
+    next_start = packet.find("\n## Dataset: ", start + len(marker))
+    if next_start < 0:
+        return packet[start:].strip()
+    return packet[start:next_start].strip()
+
+
+def _append_worker_causal_evidence(
+    prompt: str,
+    *,
+    causal_evidence_dir: Path | None,
+    model: str,
+    feat: int,
+    dataset: str,
+) -> str:
+    packet = _read_causal_packet(causal_evidence_dir, model=model, feat=feat)
+    ds_packet = _extract_dataset_packet(packet, dataset)
+    if not ds_packet:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        "CAUSAL LOO EVIDENCE SIDE-CAR\n"
+        "The following is optional causal evidence computed by perturbing matched "
+        "active/contrast row pairs through Mitra and the SAE. Use it to identify which "
+        "row fields are causally salient, but keep your final label shape-level and "
+        "do not include column names.\n\n"
+        f"{ds_packet}"
+    )
+
+
+def _append_judge_causal_evidence(
+    prompt: str,
+    *,
+    causal_evidence_dir: Path | None,
+    model: str,
+    feat: int,
+) -> str:
+    packet = _read_causal_packet(causal_evidence_dir, model=model, feat=feat)
+    if not packet:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        "CAUSAL LOO EVIDENCE SIDE-CAR\n"
+        "The following feature-level packet contains bidirectional LOO perturbation "
+        "evidence. remove-from-active drops are necessity-like evidence; add-to-contrast "
+        "increases are sufficiency-like evidence and may fail when other context is "
+        "missing. Use this evidence to synthesize the label, but keep final_label and "
+        "feedback shape-level with no column names.\n\n"
+        f"{packet}"
+    )
+
+
 def _wrapped_prompt(role: str, task_prompt: str, retry_error: str | None = None) -> str:
     retry_block = ""
     if retry_error:
@@ -1002,6 +1077,13 @@ def _run_experiment(args: argparse.Namespace) -> int:
             for idx, task in enumerate(payload.get("tasks") or [], 1):
                 dataset = task["dataset"]
                 prompt = task["prompt"]
+                prompt = _append_worker_causal_evidence(
+                    prompt,
+                    causal_evidence_dir=args.causal_evidence_dir,
+                    model=args.model,
+                    feat=args.feat,
+                    dataset=dataset,
+                )
                 if args.causal_patch_plan:
                     prompt = _causal_worker_prompt(prompt)
                 task_dir = phase_dir / f"worker_{idx:02d}_{_sanitize(dataset)}"
@@ -1098,6 +1180,12 @@ def _run_experiment(args: argparse.Namespace) -> int:
 
         if next_action == "judge":
             prompt = payload["prompt"]
+            prompt = _append_judge_causal_evidence(
+                prompt,
+                causal_evidence_dir=args.causal_evidence_dir,
+                model=args.model,
+                feat=args.feat,
+            )
             if args.agent_band_prediction:
                 band_feedback = _agent_band_feedback_prompt(
                     agent_band_feedback_by_round.get(int(round_num), [])
@@ -1447,6 +1535,7 @@ def _run_experiment(args: argparse.Namespace) -> int:
         "dev_validator_n_act": args.dev_validator_n_act,
         "dev_validator_n_con": args.dev_validator_n_con,
         "agent_band_prediction": args.agent_band_prediction,
+        "causal_evidence_dir": str(args.causal_evidence_dir) if args.causal_evidence_dir else None,
         "causal_patch_plan": args.causal_patch_plan,
         "models": {
             "worker": args.worker_model,
@@ -1496,7 +1585,8 @@ def _run_experiment(args: argparse.Namespace) -> int:
         f"ARCH={args.arch}  LABEL_FORMAT={args.label_format}  "
         f"PAIRINGS={args.pairings}  JUDGE_PROMPT_FAMILY={args.judge_prompt_family}  "
         f"judge_rows={args.judge_sample_n_act}+{args.judge_sample_n_con}  "
-        f"agent_band_prediction={args.agent_band_prediction}"
+        f"agent_band_prediction={args.agent_band_prediction}  "
+        f"causal_evidence={bool(args.causal_evidence_dir)}"
     )
     print(
         f"worker_tokens={usage_by_role['worker']}  judge_tokens={usage_by_role['judge']}  "
@@ -1565,6 +1655,15 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Ask workers for concrete local patch columns and require the judge to emit "
             "a portable per-dataset causal_patch_plan for patch_activation_probe.py."
+        ),
+    )
+    run.add_argument(
+        "--causal-evidence-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory containing {model}_f{feat}_suppression_label_packet.md files. "
+            "Appends dataset-specific causal LOO evidence to workers and the full packet to judges."
         ),
     )
     run.add_argument("--worker-model", default=DEFAULT_WORKER_MODEL)
