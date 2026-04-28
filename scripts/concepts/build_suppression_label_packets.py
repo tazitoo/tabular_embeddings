@@ -101,6 +101,32 @@ def _format_num(value: float | int | None) -> str:
     return f"{float(value):.3f}"
 
 
+def _top_loo(items: list[dict], limit: int) -> list[dict]:
+    return sorted(items or [], key=lambda item: float(item.get("delta") or 0.0), reverse=True)[:limit]
+
+
+def _render_loo_table(lines: list[str], title: str, items: list[dict]) -> None:
+    lines.extend(
+        [
+            title,
+            "",
+            "| field | original act | patched act | delta | active value | donor value |",
+            "| --- | ---: | ---: | ---: | --- | --- |",
+        ]
+    )
+    if not items:
+        lines.append("| (none) | | | | | |")
+    for item in items:
+        lines.append(
+            f"| `{item['column_name']}` | "
+            f"{_format_num(item.get('original_activation'))} | "
+            f"{_format_num(item.get('patched_activation'))} | "
+            f"{_format_num(item.get('delta'))} | "
+            f"{item.get('active_value')} | {item.get('donor_value')} |"
+        )
+    lines.append("")
+
+
 def _render_markdown(packet: dict) -> str:
     lines = [
         f"# Mitra f{packet['feat']} Suppression Evidence",
@@ -146,6 +172,9 @@ def _render_markdown(packet: dict) -> str:
                     f"- selected fields: {selected}",
                     f"- stop reason: {ex['stop_reason']}",
                     "",
+                    "Top LOO remove-from-active drops copy one donor value into the activating row.",
+                    "Top LOO add-to-contrast increases copy one active value into the donor contrast row.",
+                    "",
                     "| field | active value | donor value |",
                     "| --- | --- | --- |",
                 ]
@@ -158,6 +187,16 @@ def _render_markdown(packet: dict) -> str:
             else:
                 lines.append("| (none) | | |")
             lines.append("")
+            _render_loo_table(
+                lines,
+                "Top LOO remove-from-active drops",
+                ex.get("top_loo_remove", []),
+            )
+            _render_loo_table(
+                lines,
+                "Top LOO add-to-contrast increases",
+                ex.get("top_loo_add", []),
+            )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -182,6 +221,7 @@ def build_packets(
     suppression_path: Path,
     out_dir: Path,
     include_full_rows: bool,
+    top_loo: int,
 ) -> dict:
     payload = json.loads(suppression_path.read_text())
     grouped: dict[int, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
@@ -228,6 +268,8 @@ def build_packets(
                     "selected_columns": selected,
                     "selected_column_indices": result.get("selected_column_indices") or [],
                     "changed_fields": _changed_fields(active, donor, selected),
+                    "top_loo_remove": _top_loo(result.get("loo_remove") or [], top_loo),
+                    "top_loo_add": _top_loo(result.get("loo_add") or [], top_loo),
                     "steps": result.get("steps") or [],
                 }
                 if include_full_rows:
@@ -290,12 +332,14 @@ def main() -> None:
         action="store_true",
         help="Omit full active/donor/patched row payloads from JSON packets.",
     )
+    parser.add_argument("--top-loo", type=int, default=5)
     args = parser.parse_args()
 
     manifest = build_packets(
         suppression_path=args.suppression,
         out_dir=args.out_dir,
         include_full_rows=not args.no_full_rows,
+        top_loo=args.top_loo,
     )
     for packet in manifest["packets"]:
         summary = packet["summary"]

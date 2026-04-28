@@ -52,6 +52,18 @@ class SuppressionStep:
 
 
 @dataclass
+class LooImportance:
+    direction: str
+    column_index: int
+    column_name: str
+    original_activation: float
+    patched_activation: float
+    delta: float
+    active_value: str
+    donor_value: str
+
+
+@dataclass
 class SuppressionResult:
     model: str
     feat: int
@@ -67,6 +79,8 @@ class SuppressionResult:
     stop_reason: str
     selected_columns: list[str]
     selected_column_indices: list[int]
+    loo_remove: list[LooImportance]
+    loo_add: list[LooImportance]
     steps: list[SuppressionStep]
 
 
@@ -151,15 +165,21 @@ def _optimize_one_row(
     original_row = X_query_raw.iloc[active_row]
     donor = X_query_raw.iloc[donor_row]
 
-    loo_rows: list[pd.Series] = [original_row]
-    loo_cols: list[int] = []
+    loo_rows: list[pd.Series] = [original_row, donor]
+    remove_cols: list[int] = []
+    add_cols: list[int] = []
     for col in candidate_cols:
         if _string_value(original_row.iloc[col]) == _string_value(donor.iloc[col]):
             continue
-        patched = original_row.copy()
-        patched.iloc[col] = donor.iloc[col]
-        loo_rows.append(patched)
-        loo_cols.append(col)
+        remove_patched = original_row.copy()
+        remove_patched.iloc[col] = donor.iloc[col]
+        loo_rows.append(remove_patched)
+        remove_cols.append(col)
+    for col in remove_cols:
+        add_patched = donor.copy()
+        add_patched.iloc[col] = original_row.iloc[col]
+        loo_rows.append(add_patched)
+        add_cols.append(col)
     acts = _evaluate_rows(
         model=model,
         feat=feat,
@@ -171,10 +191,41 @@ def _optimize_one_row(
         rows=loo_rows,
     )
     original_activation = float(acts[0])
+    donor_activation = float(acts[1])
+    remove_acts = acts[2:2 + len(remove_cols)]
+    add_acts = acts[2 + len(remove_cols):]
     loo_drops = {
         col: original_activation - float(act)
-        for col, act in zip(loo_cols, acts[1:])
+        for col, act in zip(remove_cols, remove_acts)
     }
+    loo_remove = [
+        LooImportance(
+            direction="remove_from_active",
+            column_index=int(col),
+            column_name=col_names[col],
+            original_activation=original_activation,
+            patched_activation=float(act),
+            delta=original_activation - float(act),
+            active_value=_string_value(original_row.iloc[col]),
+            donor_value=_string_value(donor.iloc[col]),
+        )
+        for col, act in zip(remove_cols, remove_acts)
+    ]
+    loo_add = [
+        LooImportance(
+            direction="add_to_contrast",
+            column_index=int(col),
+            column_name=col_names[col],
+            original_activation=donor_activation,
+            patched_activation=float(act),
+            delta=float(act) - donor_activation,
+            active_value=_string_value(original_row.iloc[col]),
+            donor_value=_string_value(donor.iloc[col]),
+        )
+        for col, act in zip(add_cols, add_acts)
+    ]
+    loo_remove.sort(key=lambda item: item.delta, reverse=True)
+    loo_add.sort(key=lambda item: item.delta, reverse=True)
     remaining = [
         col
         for col, _ in sorted(loo_drops.items(), key=lambda item: item[1], reverse=True)
@@ -267,6 +318,8 @@ def _optimize_one_row(
         stop_reason=stop_reason,
         selected_columns=[col_names[col] for col in selected],
         selected_column_indices=selected,
+        loo_remove=loo_remove,
+        loo_add=loo_add,
         steps=steps,
     )
 
@@ -412,6 +465,8 @@ def main() -> None:
             {
                 **asdict(result),
                 "steps": [asdict(step) for step in result.steps],
+                "loo_remove": [asdict(item) for item in result.loo_remove],
+                "loo_add": [asdict(item) for item in result.loo_add],
             }
             for result in all_results
         ],
@@ -423,6 +478,8 @@ def main() -> None:
     for result in all_results:
         row = asdict(result)
         row.pop("steps")
+        row.pop("loo_remove")
+        row.pop("loo_add")
         row["selected_columns"] = "|".join(result.selected_columns)
         row["selected_column_indices"] = "|".join(
             str(col) for col in result.selected_column_indices
