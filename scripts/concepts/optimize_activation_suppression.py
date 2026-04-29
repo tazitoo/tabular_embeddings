@@ -388,6 +388,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="mitra")
     parser.add_argument("--features", nargs="+", type=int, required=True)
+    parser.add_argument(
+        "--datasets",
+        nargs="*",
+        default=None,
+        help="Optional explicit dataset list. Overrides --datasets-per-feature selection.",
+    )
     parser.add_argument("--datasets-per-feature", type=int, default=2)
     parser.add_argument(
         "--task-filter",
@@ -419,12 +425,13 @@ def main() -> None:
     all_results: list[SuppressionResult] = []
     errors: list[dict] = []
     for feat in args.features:
-        for dataset in _datasets_for_feature(
+        datasets = args.datasets or _datasets_for_feature(
             args.model,
             feat,
             args.datasets_per_feature,
             args.task_filter,
-        ):
+        )
+        for dataset in datasets:
             print(f"Optimizing {args.model} f{feat} {dataset}...", flush=True)
             try:
                 all_results.extend(
@@ -451,6 +458,7 @@ def main() -> None:
         "config": {
             "model": args.model,
             "features": args.features,
+            "datasets": args.datasets,
             "datasets_per_feature": args.datasets_per_feature,
             "task_filter": args.task_filter,
             "rows_per_dataset": args.rows_per_dataset,
