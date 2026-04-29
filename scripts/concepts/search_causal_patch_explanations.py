@@ -137,11 +137,16 @@ def _nearest_donors(
     return [(int(donor_rows[i]), float(dist[i])) for i in order[:n]]
 
 
-def _different_columns(active: pd.Series, donor: pd.Series, max_cols: int | None) -> list[int]:
+def _different_columns(
+    active: pd.Series,
+    donor: pd.Series,
+    max_cols: int | None,
+    exclude_cols: set[int] | None = None,
+) -> list[int]:
     cols = [
         i
         for i, (a, d) in enumerate(zip(active.iloc[:], donor.iloc[:]))
-        if str(a) != str(d)
+        if str(a) != str(d) and i not in (exclude_cols or set())
     ]
     return cols[:max_cols] if max_cols else cols
 
@@ -228,6 +233,10 @@ def search(args: argparse.Namespace) -> dict:
     )
     X_query_num, col_names = _encode_frame_for_matching(X_query_raw)
     X_scaled = _scaled_query(X_query_num)
+    excluded_columns = set(args.exclude_columns or [])
+    excluded_col_indices = {
+        idx for idx, name in enumerate(col_names) if name in excluded_columns
+    }
 
     evaluator = LiveMitraSaeEvaluator(
         model=args.model,
@@ -280,7 +289,12 @@ def search(args: argparse.Namespace) -> dict:
                 pair_distances[(int(active_row), int(donor_row))] = distance
                 active = X_query_raw.iloc[int(active_row)]
                 donor = X_query_raw.iloc[int(donor_row)]
-                for col in _different_columns(active, donor, args.candidate_cols):
+                for col in _different_columns(
+                    active,
+                    donor,
+                    args.candidate_cols,
+                    excluded_col_indices,
+                ):
                     patch_rows.append(_patched_row(active, donor, [col]))
                     patch_meta.append(
                         PairColumn(
@@ -448,6 +462,7 @@ def search(args: argparse.Namespace) -> dict:
             "min_step_drop": args.min_step_drop,
             "eval_chunk_size": args.eval_chunk_size,
             "device": args.device,
+            "exclude_columns": sorted(excluded_columns),
         },
         "explanations": explanations,
     }
@@ -462,6 +477,12 @@ def main() -> None:
     parser.add_argument("--donors-per-active", type=int, default=25)
     parser.add_argument("--min-donors", type=int, default=10)
     parser.add_argument("--candidate-cols", type=int, default=None)
+    parser.add_argument(
+        "--exclude-columns",
+        nargs="*",
+        default=None,
+        help="Column names to exclude from candidate patches.",
+    )
     parser.add_argument("--max-patch-cols", type=int, default=8)
     parser.add_argument("--target-drop-frac", type=float, default=0.8)
     parser.add_argument("--activation-tol", type=float, default=1e-4)
