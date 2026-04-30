@@ -29,6 +29,7 @@ from models.mitra_embeddings import MitraEmbeddingExtractor
 from scripts._project_root import PROJECT_ROOT
 from scripts.concepts.optimize_activation_suppression import _scaled_query
 from scripts.concepts.patch_activation_probe import (
+    MITRA_SEED,
     _encode_frame_for_matching,
     _load_raw_mitra_context_query,
 )
@@ -79,7 +80,12 @@ class LiveMitraSaeEvaluator:
         self.task = task
         self.device = device
         self.features = features
-        self.extractor = MitraEmbeddingExtractor(device=device, n_estimators=1, fine_tune=False)
+        self.extractor = MitraEmbeddingExtractor(
+            device=device,
+            n_estimators=1,
+            fine_tune=False,
+            seed=MITRA_SEED,
+        )
         self.mean, self.std = load_norm_stats(model, dataset, device=device)
         self.sae, _ = load_sae(model, device=device)
 

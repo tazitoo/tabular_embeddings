@@ -38,6 +38,8 @@ from scripts.intervention.context_sampling import select_context_indices
 from models.mitra_embeddings import MitraEmbeddingExtractor
 
 CONTRASTIVE_DIR = PROJECT_ROOT / "output" / "contrastive_examples"
+MITRA_SEED = 13
+MITRA_CONTEXT_ROWS = 1024
 
 
 @dataclass
@@ -123,7 +125,7 @@ def _load_raw_mitra_context_query(model: str, dataset: str):
     ctx_local = select_context_indices(
         n_rows=len(train_idx),
         y_train=y_encoded[train_idx],
-        max_context=600,
+        max_context=MITRA_CONTEXT_ROWS,
         task=task,
         dataframe_style=True,
     )
@@ -279,7 +281,12 @@ def _extract_feature_activations(
     if model != "mitra":
         raise NotImplementedError("patch_activation_probe currently supports --model mitra")
 
-    extractor = MitraEmbeddingExtractor(device=device, n_estimators=1, fine_tune=False)
+    extractor = MitraEmbeddingExtractor(
+        device=device,
+        n_estimators=1,
+        fine_tune=False,
+        seed=MITRA_SEED,
+    )
     result = extractor.extract_embeddings(
         X_context,
         y_context,

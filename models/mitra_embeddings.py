@@ -11,6 +11,8 @@ Note: By default uses ICL mode (fine_tune=False) for frozen-weight embedding
 extraction. Pass fine_tune=True to finetune pretrained weights per dataset.
 """
 
+import inspect
+import random
 from typing import Dict, List, Optional, Union
 
 import numpy as np
@@ -23,11 +25,25 @@ from .base import EmbeddingExtractor, EmbeddingResult
 class MitraEmbeddingExtractor(EmbeddingExtractor):
     """Extract embeddings from Mitra's 2D attention transformer."""
 
-    def __init__(self, device: str = "cpu", n_estimators: int = 1, fine_tune: bool = False):
+    def __init__(
+        self,
+        device: str = "cpu",
+        n_estimators: int = 1,
+        fine_tune: bool = False,
+        seed: int = 13,
+    ):
         super().__init__(device)
         self.n_estimators = n_estimators
         self.fine_tune = fine_tune
+        self.seed = seed
         self._classifier = None
+
+    def _seed_everything(self) -> None:
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
 
     @property
     def model_name(self) -> str:
@@ -53,11 +69,22 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
                 "pip install 'autogluon.tabular[mitra]'"
             )
 
-        self._classifier = MitraModel(
-            device=self.device,
-            n_estimators=self.n_estimators,
-            fine_tune=self.fine_tune,
-        )
+        kwargs = {
+            "device": self.device,
+            "n_estimators": self.n_estimators,
+            "fine_tune": self.fine_tune,
+        }
+        try:
+            params = inspect.signature(MitraModel).parameters
+            if "random_state" in params:
+                kwargs["random_state"] = self.seed
+            elif "seed" in params:
+                kwargs["seed"] = self.seed
+        except (TypeError, ValueError):
+            pass
+
+        self._seed_everything()
+        self._classifier = MitraModel(**kwargs)
         self._model = True  # Mark as loaded
         self._current_task = task
 
@@ -115,6 +142,7 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
         n_features = X_q_np.shape[1]
 
         # Fit (finetunes pretrained weights on context data)
+        self._seed_everything()
         self._classifier.fit(X_ctx_np, y_context)
 
         # Batch predict() calls for high-dim datasets to avoid OOM.
@@ -150,6 +178,7 @@ class MitraEmbeddingExtractor(EmbeddingExtractor):
             all_outputs = []
             for chunk_start in range(0, n_query, query_batch):
                 X_chunk = X_query[chunk_start:chunk_start + query_batch]
+                self._seed_everything()
                 if task == "regression":
                     all_outputs.append(self._classifier.predict(X_chunk))
                 else:
