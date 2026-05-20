@@ -230,8 +230,14 @@ def build_pair(source: str, target: str, condition: str) -> dict:
     d_tgt = atoms_t.shape[1]
 
     # Parity anchor: the *deployed* global-ridge builder, reused unchanged.
-    vg, cg, r2g = build_global_ridge_virtual_atoms(
+    # Tuple-slice so this works whether the deployed builder returns 2 values
+    # (worker HEAD) or 3 with r2_global appended (local-only change). r2 for
+    # cache metadata is computed independently via fit_concept_map below so
+    # the script never depends on the optional third return.
+    ret_g = build_global_ridge_virtual_atoms(
         atoms_s, filt_src, filt_tgt, unmatched)
+    vg, cg = ret_g[0], ret_g[1]
+    _, r2g = fit_concept_map(filt_src, filt_tgt, alpha=ALPHA)
     _save_cache("global", condition, source, target, vg, cg, unmatched, n,
                 d_tgt, matching_file,
                 {"method": "global_ridge_parity", "alpha": ALPHA}, r2g)
