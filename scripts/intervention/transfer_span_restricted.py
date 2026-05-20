@@ -54,7 +54,25 @@ from scripts.intervention.transfer_virtual_nodes import (
 )
 from scripts.analysis.build_transfer_caches import build_global_ridge_virtual_atoms
 from scripts.analysis.compare_transfer_maps import sha256_file
-from scripts.analysis.transfer_subspace_r2 import _effective_rank, _ortho_basis
+
+
+# Inlined from the local-only diagnostic scripts.analysis.transfer_subspace_r2
+# to keep this file self-contained on the orthogonal branch (the diagnostic is
+# not committed; this file is the only one on the span-restricted branch).
+def _ortho_basis(mat, k):
+    """Top-k right singular (orthonormal, target-space) basis of ``mat``,
+    columns ordered by singular value. ``mat`` is (n_dirs, d_target)."""
+    _, s, vt = np.linalg.svd(mat, full_matrices=False)
+    k = min(k, vt.shape[0])
+    return vt[:k].T, s
+
+
+def _effective_rank(s, frac):
+    """Smallest #components capturing ``frac`` of squared-singular energy."""
+    energy = np.cumsum(s ** 2)
+    if energy[-1] <= 0:
+        return 1
+    return int(np.searchsorted(energy / energy[-1], frac) + 1)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
