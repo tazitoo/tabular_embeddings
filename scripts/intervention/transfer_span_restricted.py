@@ -306,6 +306,19 @@ def _wmean(items):
     return weighted, simple, len(items)
 
 
+def _pair_r2(variant: str, condition: str, a: str, b: str):
+    """concept_map_r2 from each direction's cache + their mean. Returns
+    {direction: r2, ..., 'mean': mean}. NaN if a cache is missing."""
+    out = {}
+    for s, t in [(a, b), (b, a)]:
+        p = OUT_ROOT / "virtual_atoms" / f"{variant}_{condition}" / f"{s}_to_{t}.npz"
+        out[f"{s}_to_{t}"] = (float(np.load(p, allow_pickle=True)["concept_map_r2"])
+                              if p.exists() else float("nan"))
+    vals = [v for v in out.values() if not np.isnan(v)]
+    out["mean"] = float(np.mean(vals)) if vals else float("nan")
+    return out
+
+
 def aggregate(models: list, conditions: list) -> dict:
     """Decision table + parity check from existing transfer_sweep_v2 runs.
     Reads only our runs/ namespace and the published results (read-only)."""
@@ -313,13 +326,19 @@ def aggregate(models: list, conditions: list) -> dict:
                     for a, b in permutations(models, 2)})
     report = {"pairs": {}, "parity": {}, "decision": {}}
     for pair in pairs:
+        a, b = pair.split("_vs_")
         row = {}
         for cond in conditions:
             for variant in ("global", "span"):
                 rd = RUNS_ROOT / f"{variant}_{cond}" / pair
                 w, s, n = _wmean(list(_collect_gc(rd).values()))
+                r2 = _pair_r2(variant, cond, a, b)
                 row[f"{variant}_{cond}"] = {"gc_weighted": w,
-                                            "gc_simple": s, "n_datasets": n}
+                                            "gc_simple": s, "n_datasets": n,
+                                            "r2_mean": r2["mean"],
+                                            "r2_per_direction": {
+                                                k: v for k, v in r2.items()
+                                                if k != "mean"}}
         # Parity: our global_trained vs published deployed result.
         ours = _collect_gc(RUNS_ROOT / "global_trained" / pair)
         pub = _collect_gc(PUBLISHED_ROOT / pair)
@@ -371,7 +390,9 @@ def main() -> None:
                         f"n={par['n_common_datasets']})")
             for k, v in row.items():
                 logger.info(f"  {k:16s} gc_w={v['gc_weighted']:+.3f} "
-                            f"gc_s={v['gc_simple']:+.3f} n={v['n_datasets']}")
+                            f"gc_s={v['gc_simple']:+.3f} "
+                            f"r2_mean={v['r2_mean']:+.3f} "
+                            f"n={v['n_datasets']}")
             logger.info(f"  -> verdict: {rep['decision'][pair]}")
         dp = OUT_ROOT / "decision.json"
         dp.write_text(json.dumps(rep, indent=2))
