@@ -79,9 +79,19 @@ def _weak_importance_rank(imp_weak) -> dict:
 
 
 def run(strong: str, weak: str, dataset: str, device: str,
-        matching_file: Path, sae_dir: Path, imp_dir: Path) -> dict:
+        matching_file: Path, sae_dir: Path, imp_dir: Path,
+        mode: str = "matched") -> dict:
     """Transfer single matched-concept ablation deltas weak->strong on the
-    lower-triangle rows; record per-concept harm to the strong model."""
+    lower-triangle rows; record per-concept harm to the strong model.
+
+    mode:
+      "raw"     — map the true ablation delta (-h[r,c]*atom_c) straight through M.
+                  Faithful, but the near-null map shrinks it to near-noise.
+      "matched" — magnitude-match the E1 transfer channel: unit-map the concept
+                  atom through M, renormalize, rescale by ||atom||*median_norm_ratio,
+                  then inject -a_s*virtual_atom*std_strong. Same perturbation size
+                  E1 uses as *help*, signed for removal (apples-to-apples).
+    """
     splits = json.loads(SPLITS_PATH.read_text())
 
     # ── Load SAEs, norm stats, test embeddings ───────────────────────────────
@@ -166,6 +176,23 @@ def run(strong: str, weak: str, dataset: str, device: str,
     assert np.allclose(recon_ab - recon_full, analytic, atol=1e-4), \
         "SAE decode is not linear as assumed; use compute_feature_deltas instead"
 
+    # Magnitude-matched channel: precompute per-concept virtual atoms exactly as
+    # the transfer sweep does (unit-map through M, renorm, rescale by
+    # ||atom||*median_norm_ratio). Injected delta = -a_s*virtual_atom*std_strong.
+    virtual_atoms = None
+    if mode == "matched":
+        src_n = np.linalg.norm(filt_src, axis=1)
+        tgt_n = np.linalg.norm(filt_tgt, axis=1)
+        vmask = (src_n > 1e-8) & (tgt_n > 1e-8)
+        median_norm_ratio = float(np.median(tgt_n[vmask] / src_n[vmask])) if vmask.any() else 1.0
+        atom_norms = np.linalg.norm(atoms_weak_cand, axis=1, keepdims=True)  # (K,1)
+        unit = atoms_weak_cand / np.clip(atom_norms, 1e-8, None)
+        vdir = unit @ M_t                                                   # (K, d_strong)
+        vdir_n = np.linalg.norm(vdir, axis=1, keepdims=True)
+        virtual_atoms = ((vdir / np.clip(vdir_n, 1e-8, None))
+                         * atom_norms * median_norm_ratio).astype(np.float32)
+        logger.info(f"  Magnitude-matched channel: median_norm_ratio={median_norm_ratio:.3f}")
+
     # ── Build strong recipient tail ──────────────────────────────────────────
     t0 = time.time()
     X_train_s, y_train_s, X_query_s, _, _, task_s = load_dataset_context(
@@ -199,10 +226,13 @@ def run(strong: str, weak: str, dataset: str, device: str,
 
     t1 = time.time()
     for i, r in enumerate(lower):
-        # analytic per-concept normalized ablation delta in weak space
-        d_norm_src = -(h_weak[r, cand][:, None]) * atoms_weak_cand   # (K, d_weak)
-        d_norm_tgt = d_norm_src @ M_t                               # (K, d_strong)
-        d_raw = (d_norm_tgt * std_strong[None, :]).astype(np.float32)
+        # per-concept ablation delta in strong raw emb space (K, d_strong)
+        if mode == "raw":
+            d_norm_src = -(h_weak[r, cand][:, None]) * atoms_weak_cand  # (K, d_weak)
+            d_raw = ((d_norm_src @ M_t) * std_strong[None, :]).astype(np.float32)
+        else:  # matched: -a_s * virtual_atom * std_strong
+            d_raw = (-(h_weak[r, cand][:, None]) * virtual_atoms
+                     * std_strong[None, :]).astype(np.float32)
         deltas = np.vstack([np.zeros((1, d_raw.shape[1]), np.float32), d_raw])  # (K+1, d_strong)
         deltas_t = torch.tensor(deltas, dtype=torch.float32, device=device)
         preds = batched_intervention(tail_s, X_query_s[r:r + 1], deltas_t,
@@ -245,6 +275,7 @@ def run(strong: str, weak: str, dataset: str, device: str,
 
     return {
         "strong": strong, "weak": weak, "dataset": dataset,
+        "mode": mode,
         "metric_name": metric_name,
         "metric_strong": float(m_strong), "metric_weak": float(m_weak),
         "n_query": int(n_query), "n_lower": int(len(lower)),
@@ -265,6 +296,9 @@ def main():
                     help="strong (recipient) then weak (ablation donor); "
                          "default: tabpfn tabdpt")
     ap.add_argument("--dataset", default="credit-g")
+    ap.add_argument("--mode", choices=["matched", "raw"], default="matched",
+                    help="matched (default): magnitude-match E1's injection scale; "
+                         "raw: map the true ablation delta straight through M")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE)
     ap.add_argument("--sae-dir", type=Path, default=None)
@@ -277,14 +311,15 @@ def main():
     out_dir = (args.output_dir if args.output_dir else OUTPUT_DIR) / f"{strong}_from_{weak}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"HARM-VIA-TRANSFER  weak={weak} -> strong={strong}  [{args.dataset}]")
+    logger.info(f"HARM-VIA-TRANSFER [{args.mode}]  weak={weak} -> strong={strong}  [{args.dataset}]")
     result = run(strong, weak, args.dataset, args.device,
-                 args.matching_file, args.sae_dir, imp_dir)
+                 args.matching_file, args.sae_dir, imp_dir, mode=args.mode)
 
-    out_path = out_dir / f"{args.dataset}.json"
+    out_path = out_dir / f"{args.dataset}_{args.mode}.json"
     out_path.write_text(json.dumps(result, indent=2))
 
-    print(f"\n{'='*70}\nHARM VIA WEAK->STRONG TRANSFER: {weak} -> {strong} [{args.dataset}]\n{'='*70}")
+    print(f"\n{'='*70}\nHARM VIA WEAK->STRONG TRANSFER [{args.mode}]: "
+          f"{weak} -> {strong} [{args.dataset}]\n{'='*70}")
     if result["n_lower"] == 0:
         print("  No lower-triangle rows; nothing to test.")
     else:
