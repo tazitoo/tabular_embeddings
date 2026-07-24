@@ -29,7 +29,7 @@ for g in $(seq 0 $((NGPU-1))); do
     done
     [ ${#gpairs[@]} -eq 0 ] && continue
     (
-        log=/tmp/fwd_morg_gpu${g}.log
+        log=/tmp/fwd_morg_${ENV}_gpu${g}.log
         echo "=== $(date -Iseconds) GPU $g env=$ENV pairs: ${gpairs[*]} ===" > "$log"
         for pair in "${gpairs[@]}"; do
             a=${pair%%:*}; b=${pair##*:}
