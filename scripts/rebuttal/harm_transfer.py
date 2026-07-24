@@ -148,14 +148,23 @@ def run(strong: str, weak: str, dataset: str, device: str,
     logger.info(f"  Landmark map {weak}->{strong}: {len(filt_pairs)} pairs kept, "
                 f"R²={r2:.3f}, M shape={M.shape}")
 
+    # Sign-flip resolution (oracle-free): filter_landmarks negates the strong-
+    # side atom of any pair whose LOO cosine is negative (MNN uses |r|). For a
+    # FLIPPED concept the map is anti-aligned, so the true "remove from strong"
+    # direction is +delta; for an aligned concept it is -delta.
+    flipped_src = {int(pair[0]) for pair, _cos in quality["flipped"]}
+    logger.info(f"  Sign-flipped concepts (anti-aligned map): {len(flipped_src)}/{len(m_pairs)} pairs")
+
     # Candidate concepts = matched WEAK indices, deduped, ranked by weak importance.
     imp_rank = _weak_importance_rank(imp_weak)
     cand = sorted(set(src_idx), key=lambda c: -imp_rank.get(c, 0.0))
+    cand_flipped = np.array([c in flipped_src for c in cand], dtype=bool)  # (K,)
     # tgt matches per weak concept (metadata only; not used in the delta)
     strong_matches = {}
     for si, ti in m_pairs:
         strong_matches.setdefault(si, []).append(int(ti))
-    logger.info(f"  Candidate matched weak concepts: {len(cand)}")
+    logger.info(f"  Candidate matched weak concepts: {len(cand)} "
+                f"({int(cand_flipped.sum())} sign-flipped)")
 
     # ── Weak SAE activations on the lower-triangle rows ───────────────────────
     with torch.no_grad():
@@ -260,6 +269,10 @@ def run(strong: str, weak: str, dataset: str, device: str,
     dpt_minus = p_true_minus - base_p_true[:, None]
     dp1_plus = p1_plus - base_p1[:, None]
     dp1_minus = p1_minus - base_p1[:, None]
+    # Sign-corrected REMOVAL: for a flipped concept the true removal is +delta;
+    # for an aligned concept it is -delta. delta_*_removal < 0 == ablation harmed.
+    dpt_removal = np.where(cand_flipped[None, :], dpt_plus, dpt_minus)   # (n_lower, K)
+    dp1_removal = np.where(cand_flipped[None, :], dp1_plus, dp1_minus)
     fires = h_weak[np.ix_(lower, cand)] > 0              # (n_lower, K) bool
     fi, fk = np.where(fires)
     rows = []
@@ -267,27 +280,29 @@ def run(strong: str, weak: str, dataset: str, device: str,
         rows.append({
             "row": int(lower[i]),
             "weak_concept": int(cand[k]),
+            "concept_flipped": bool(cand_flipped[k]),
             "strong_matches": strong_matches.get(cand[k], []),
             "h_activation": float(h_weak[lower[i], cand[k]]),
             "y_true": int(y_lower[i]),
             "base_p_true": float(base_p_true[i]),
-            "delta_p_true_ablate": float(dpt_minus[i, k]),   # -delta; <0 == harm
-            "delta_p_true_inject": float(dpt_plus[i, k]),    # +delta
+            "delta_p_true_removal": float(dpt_removal[i, k]),  # sign-corrected; <0 == harm
+            "delta_p_true_ablate": float(dpt_minus[i, k]),     # raw -delta
+            "delta_p_true_inject": float(dpt_plus[i, k]),      # raw +delta
             "base_p1": float(base_p1[i]),
-            "delta_p1_ablate": float(dp1_minus[i, k]),
-            "delta_p1_inject": float(dp1_plus[i, k]),
+            "delta_p1_removal": float(dp1_removal[i, k]),
         })
 
     arrays = {
         "lower_rows": lower.astype(np.int64),
         "cand": np.asarray(cand, dtype=np.int64),
+        "cand_flipped": cand_flipped,
         "y_lower": y_lower.astype(np.int64),
         "base_p1": base_p1.astype(np.float32),
         "base_p_true": base_p_true.astype(np.float32),
+        "delta_p_true_removal": dpt_removal.astype(np.float32),
         "delta_p_true_ablate": dpt_minus.astype(np.float32),
         "delta_p_true_inject": dpt_plus.astype(np.float32),
-        "delta_p1_ablate": dp1_minus.astype(np.float32),
-        "delta_p1_inject": dp1_plus.astype(np.float32),
+        "delta_p1_removal": dp1_removal.astype(np.float32),
         "fires": fires,
         "h_weak_lower": h_weak[np.ix_(lower, cand)].astype(np.float32),
     }
@@ -339,11 +354,11 @@ def main():
     np.savez_compressed(out_dir / f"{stem}.npz", **arrays)
 
     # Long-form CSV: one row per firing (row, concept). No aggregation.
-    # Both signs recorded: _ablate = -delta (removal, harm-relevant), _inject = +delta.
+    # delta_p_true_removal = sign-corrected ablation (flip-aware); _ablate/_inject = raw +/-.
     csv_path = out_dir / f"{stem}.csv"
-    cols = ["row", "weak_concept", "h_activation", "y_true", "base_p_true",
-            "delta_p_true_ablate", "delta_p_true_inject",
-            "base_p1", "delta_p1_ablate", "delta_p1_inject"]
+    cols = ["row", "weak_concept", "concept_flipped", "h_activation", "y_true",
+            "base_p_true", "delta_p_true_removal",
+            "delta_p_true_ablate", "delta_p_true_inject"]
     with open(csv_path, "w") as f:
         f.write(",".join(cols) + "\n")
         for rec in result["rows"]:
@@ -354,20 +369,23 @@ def main():
     if result["n_lower"] == 0:
         print("  No lower-triangle rows; nothing to test.")
     else:
+        R = result["rows"]
+        rem = np.array([r["delta_p_true_removal"] for r in R])
         print(f"  lower-triangle rows (strong {strong} wins): {result['n_lower']}/{result['n_query']}  "
               f"| candidate concepts: {result['n_candidates']}  | map R²={result['map_r2']:.3f}")
-        print(f"  firing (row, concept) events: {result['n_firing_events']}  "
-              f"(both signs tried per event, as in the transfer sweep)")
-        print(f"\n  Raw sample — 15 events with the largest ABLATION harm "
-              f"(Δp(y) under -delta; <0 == removal harmed the strong model):")
-        print(f"  {'row':>4} {'weak_c':>7} {'h_act':>7} {'y':>2} {'base_p(y)':>10} "
-              f"{'Δp(y)|ablate':>13} {'Δp(y)|inject':>13}")
-        for rec in sorted(result["rows"], key=lambda r: r["delta_p_true_ablate"])[:15]:
+        print(f"  firing (row, concept) events: {result['n_firing_events']}")
+        print(f"\n  Sign-corrected REMOVAL (flip-aware ablation; Δp(y) < 0 == removal harmed strong):")
+        print(f"    events harmed (Δ<0): {(rem<0).sum()}/{len(rem)}   "
+              f"helped (Δ>0): {(rem>0).sum()}   |  worst harm Δp(y)={rem.min():+.4f}  "
+              f"events harm>0.02: {(rem< -0.02).sum()}")
+        print(f"\n  Top-15 removal-harm events:")
+        print(f"  {'row':>4} {'weak_c':>7} {'flip':>4} {'h_act':>7} {'y':>2} "
+              f"{'base_p(y)':>10} {'Δp(y)|removal':>14}")
+        for rec in sorted(R, key=lambda r: r["delta_p_true_removal"])[:15]:
             print(f"  {rec['row']:>4d} {rec['weak_concept']:>7d} "
+                  f"{'Y' if rec['concept_flipped'] else 'n':>4} "
                   f"{rec['h_activation']:>7.3f} {rec['y_true']:>2d} "
-                  f"{rec['base_p_true']:>10.4f} "
-                  f"{rec['delta_p_true_ablate']:>+13.4f} "
-                  f"{rec['delta_p_true_inject']:>+13.4f}")
+                  f"{rec['base_p_true']:>10.4f} {rec['delta_p_true_removal']:>+14.4f}")
     print(f"\nWrote {out_dir}/{stem}.{{json,npz,csv}}")
 
 
