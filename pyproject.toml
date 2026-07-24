@@ -18,28 +18,36 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Individual model dependencies
-tabpfn = ["tabpfn>=2.0"]
-tabicl = ["tabicl"]
-tabdpt = ["tabdpt"]
-hyperfast = ["hyperfast"]
-carte = ["carte-ai", "torch_geometric"]
-mitra = ["autogluon.tabular[mitra]"]
-tabula8b = ["transformers>=4.36", "bitsandbytes>=0.46.1", "accelerate"]
+# Individual model dependencies.
+# VERSIONS ARE PINNED to the exact packages that produced the paper's results.
+# The cached embeddings / SAEs / norm-stats are tied to these model versions;
+# newer releases change architectures/dims (e.g. tabpfn 8.x, tabdpt 1.2.0) and
+# silently break compatibility. Reference runtime: torch==2.6.0+cu124,
+# numpy==2.3.5, python 3.12. Reproduce with these exact pins.
+tabpfn = ["tabpfn==6.3.2"]
+# Plain TabICL. PyPI latest is 2.x, which is the DIFFERENT tabicl_v2 model and
+# belongs in a separate env (tfm2 uses tabicl==2.0.3). Unpinned silently
+# installs v2 and breaks the plain-tabicl pairs.
+tabicl = ["tabicl==0.1.4"]
+tabdpt = ["tabdpt==1.1.12"]
+hyperfast = ["hyperfast==1.0.6"]
+carte = ["carte-ai==0.0.26", "torch_geometric==2.7.0"]
+mitra = ["autogluon.tabular[mitra]==1.5.0"]
+tabula8b = ["transformers==4.57.6", "bitsandbytes==0.49.2", "accelerate==1.12.0"]
 mothernet = ["ticl @ git+https://github.com/microsoft/ticl.git"]
 
 # All models (except mothernet which requires manual install)
 models = [
-    "tabpfn>=2.0",
-    "tabicl",
-    "tabdpt",
-    "hyperfast",
-    "carte-ai",
-    "torch_geometric",
-    "autogluon.tabular[mitra]",
-    "transformers>=4.36",
-    "bitsandbytes>=0.46.1",
-    "accelerate",
+    "tabpfn==6.3.2",
+    "tabicl==0.1.4",  # plain TabICL; v2 (tabicl==2.0.3) lives in the tfm2 env
+    "tabdpt==1.1.12",
+    "hyperfast==1.0.6",
+    "carte-ai==0.0.26",
+    "torch_geometric==2.7.0",
+    "autogluon.tabular[mitra]==1.5.0",
+    "transformers==4.57.6",
+    "bitsandbytes==0.49.2",
+    "accelerate==1.12.0",
 ]
 
 # SAE training and hyperparameter optimization
@@ -52,6 +60,14 @@ sae = [
 matching = [
     "igraph>=0.10",
     "leidenalg>=0.10",
+    "pymfe>=0.4",
+]
+
+# Concept labeling (embedding-based convergence check)
+labeling = [
+    "sentence-transformers>=2.2",
+    "einops",
+    "openai>=1.0",
 ]
 
 # Benchmark dataset loaders
