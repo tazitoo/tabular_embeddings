@@ -538,6 +538,11 @@ def run_dataset(
     step_features = np.full((n_query, MAX_STEPS, 3), -1, dtype=np.int32)
     step_sizes = np.zeros((n_query, MAX_STEPS), dtype=np.int8)
     selected_features = np.full((n_query, MAX_STEPS * 3), -1, dtype=np.int32)
+    # Deployed delta per row: the actual transferred contribution injected into
+    # the recipient (sum of accepted signed per-feature deltas), raw recipient
+    # embedding space. Zero on non-intervened rows. Used for the intervention-
+    # vs-embedding subspace analysis (ofnL Q2).
+    deployed_delta = np.zeros((n_query, d_target), dtype=np.float32)
 
     # Per-feature predictions: cumulative injection one feature at a time
     MAX_FEAT_STEPS = 20
@@ -739,6 +744,12 @@ def run_dataset(
         accepted_k = len(accepted_combo)
         if accepted_k > 0:
             optimal_k[r] = accepted_k
+            # Actual transferred contribution: sum the accepted signed per-feature
+            # deltas (raw recipient embedding space).
+            _dep = torch.zeros(d_target, dtype=torch.float32, device=device)
+            for j in accepted_combo:
+                _dep = _dep + per_feature_deltas[j]
+            deployed_delta[r] = _dep.detach().cpu().numpy()
             if baseline_preds_w.ndim == 2:
                 orig_loss = -np.log(np.clip(baseline_preds_w[r, y_r], eps, 1 - eps))
                 best_loss = -np.log(np.clip(best_pred[y_r], eps, 1 - eps))
@@ -835,6 +846,9 @@ def run_dataset(
         "step_preds": step_preds,
         "step_features": step_features,
         "step_sizes": step_sizes,
+        # Actual deployed transfer delta per row (raw recipient emb space), for
+        # the intervention-vs-embedding subspace analysis (ofnL Q2).
+        "deployed_delta": deployed_delta,
         "feature_preds": feature_preds,
         "selected_features": selected_features,
         # Per-feature acceptance: which concepts transferred successfully
