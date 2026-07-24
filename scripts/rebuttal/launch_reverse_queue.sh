@@ -23,20 +23,39 @@ TFM=/home/brian/anaconda3/envs/tfm/bin/python
 TFM2=/home/brian/anaconda3/envs/tfm2/bin/python
 HOST=$(hostname)
 
-KIND="${1:?Usage: $0 <ablation|transfer> <a:b> [<a:b> ...]}"; shift
+KIND="${1:?Usage: $0 <ablation|transfer|ablation_random|transfer_random> <a:b> ...}"; shift
 PAIRS=("$@")
 if [[ ${#PAIRS[@]} -eq 0 ]]; then
-    echo "No pairs given. Usage: $0 <ablation|transfer> <a:b> [<a:b> ...]"; exit 1
+    echo "No pairs given. Usage: $0 <ablation|transfer|ablation_random|transfer_random> <a:b> ..."; exit 1
 fi
+
+# A trailing _random selects the random-SAE control: the same vendored scripts
+# pointed at the random baseline SAE/importance/matching dirs and a separate
+# output dir (mirrors launch_random_ablation_queue.sh). Trained mode is default.
+RANDOM_MODE=0
+case "$KIND" in
+    *_random) RANDOM_MODE=1; KIND=${KIND%_random} ;;
+esac
 
 case "$KIND" in
     ablation) MOD=ablation_sweep_symmetric ;;
     transfer) MOD=transfer_sweep_symmetric ;;
-    *) echo "Unknown kind '$KIND' (want ablation|transfer)"; exit 1 ;;
+    *) echo "Unknown kind '$KIND' (want ablation|transfer[ _random])"; exit 1 ;;
 esac
 
-LOG=/tmp/reverse_${KIND}_${HOST}.log
-LOCK=/tmp/reverse_${KIND}_${HOST}.lock
+if [[ $RANDOM_MODE -eq 1 ]]; then
+    EXTRA=(--sae-dir output/sae_random_baseline
+           --importance-dir output/perrow_importance_random
+           --matching-file output/sae_feature_matching_mnn_t0.001_random.json
+           --output-dir "output/rebuttal/symmetric_${KIND}_random")
+    tag=_random
+else
+    EXTRA=()
+    tag=
+fi
+
+LOG=/tmp/reverse_${KIND}${tag}_${HOST}.log
+LOCK=/tmp/reverse_${KIND}${tag}_${HOST}.lock
 
 # Lock: SSH nohup can fire even when a prompt is rejected; keep a second launch
 # of the same kind on the same host from duplicating work.
@@ -49,7 +68,7 @@ trap 'rm -f "$LOCK"' EXIT
 
 cd "$REPO"
 
-echo "=== $(date -Iseconds) reverse $KIND start on $HOST | pairs: ${PAIRS[*]} ===" | tee -a "$LOG"
+echo "=== $(date -Iseconds) reverse ${KIND}${tag} start on $HOST | pairs: ${PAIRS[*]} ===" | tee -a "$LOG"
 
 for pair in "${PAIRS[@]}"; do
     a=${pair%%:*}; b=${pair##*:}
@@ -58,9 +77,9 @@ for pair in "${PAIRS[@]}"; do
     else
         PY=$TFM; env_name=tfm
     fi
-    echo "=== $(date -Iseconds) [$env_name] $MOD $a vs $b ===" | tee -a "$LOG"
-    "$PY" -m scripts.rebuttal.$MOD --models "$a" "$b" --device cuda --resume >> "$LOG" 2>&1
+    echo "=== $(date -Iseconds) [$env_name${tag:+ RANDOM}] $MOD $a vs $b ===" | tee -a "$LOG"
+    "$PY" -m scripts.rebuttal.$MOD --models "$a" "$b" --device cuda --resume "${EXTRA[@]}" >> "$LOG" 2>&1
     echo "=== $(date -Iseconds) $MOD $a vs $b exit=$? ===" | tee -a "$LOG"
 done
 
-echo "=== $(date -Iseconds) reverse $KIND complete on $HOST ===" | tee -a "$LOG"
+echo "=== $(date -Iseconds) reverse ${KIND}${tag} complete on $HOST ===" | tee -a "$LOG"
