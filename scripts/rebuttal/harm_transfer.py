@@ -213,48 +213,53 @@ def run(strong: str, weak: str, dataset: str, device: str,
                         device, cat_indices=cat_indices, target_name=target_name)
     logger.info(f"  Strong tail ({strong}) built in {time.time()-t0:.1f}s")
 
-    # ── Per row: one tail pass over [baseline, all candidate deltas] ──────────
+    # ── Per row: tail pass over [baseline, +delta (K), -delta (K)] ───────────
+    # BOTH signs, exactly as the transfer sweep does ("cross-correlation uses
+    # |r|, sign may flip"): delta_raw = a_s * virtual_atom * std_strong, and we
+    # evaluate +delta (inject/reinforce the concept) AND -delta (ablate/remove
+    # it). The removal (-delta) direction is the harm-relevant one; we record
+    # both and select nothing.
     K = len(cand)
     eps = 1e-7
-    # harmed_p_true[r_i, k] = strong P(true class) after transferring concept k's
-    # ablation delta on lower row r_i; col -1 slot is the zero-delta baseline.
     base_p_true = np.zeros(len(lower), dtype=np.float64)
-    harmed_p_true = np.zeros((len(lower), K), dtype=np.float64)
-    harmed_p1 = np.zeros((len(lower), K), dtype=np.float64)  # P(class 1) for AUC
     base_p1 = np.zeros(len(lower), dtype=np.float64)
+    p_true_plus = np.zeros((len(lower), K), dtype=np.float64)   # +delta (inject)
+    p_true_minus = np.zeros((len(lower), K), dtype=np.float64)  # -delta (ablate)
+    p1_plus = np.zeros((len(lower), K), dtype=np.float64)
+    p1_minus = np.zeros((len(lower), K), dtype=np.float64)
 
     t1 = time.time()
     for i, r in enumerate(lower):
-        # per-concept ablation delta in strong raw emb space (K, d_strong)
-        if mode == "raw":
-            d_norm_src = -(h_weak[r, cand][:, None]) * atoms_weak_cand  # (K, d_weak)
-            d_raw = ((d_norm_src @ M_t) * std_strong[None, :]).astype(np.float32)
-        else:  # matched: -a_s * virtual_atom * std_strong
-            d_raw = (-(h_weak[r, cand][:, None]) * virtual_atoms
-                     * std_strong[None, :]).astype(np.float32)
-        deltas = np.vstack([np.zeros((1, d_raw.shape[1]), np.float32), d_raw])  # (K+1, d_strong)
+        a_s = h_weak[r, cand][:, None]  # (K,1) donor (weak) activation, == transfer's a_s
+        if mode == "raw":              # map the true decoder atom straight through M
+            pos = ((a_s * atoms_weak_cand) @ M_t * std_strong[None, :]).astype(np.float32)
+        else:                          # matched: identical to the transfer sweep
+            pos = (a_s * virtual_atoms * std_strong[None, :]).astype(np.float32)
+        deltas = np.vstack([np.zeros((1, pos.shape[1]), np.float32), pos, -pos])  # (2K+1, d)
         deltas_t = torch.tensor(deltas, dtype=torch.float32, device=device)
         preds = batched_intervention(tail_s, X_query_s[r:r + 1], deltas_t,
-                                     inject_context=False)  # (K+1, 2)
+                                     inject_context=False)  # (2K+1, 2)
         preds = np.asarray(preds, dtype=np.float64)
         y_r = int(y_query[r])
         base_p_true[i] = np.clip(preds[0, y_r], eps, 1 - eps)
         base_p1[i] = preds[0, 1]
-        harmed_p_true[i] = np.clip(preds[1:, y_r], eps, 1 - eps)
-        harmed_p1[i] = preds[1:, 1]
+        p_true_plus[i] = np.clip(preds[1:1 + K, y_r], eps, 1 - eps)
+        p1_plus[i] = preds[1:1 + K, 1]
+        p_true_minus[i] = np.clip(preds[1 + K:1 + 2 * K, y_r], eps, 1 - eps)
+        p1_minus[i] = preds[1 + K:1 + 2 * K, 1]
         if (i + 1) % 10 == 0 or i + 1 == len(lower):
             logger.info(f"    row {i+1}/{len(lower)} "
                         f"({(i+1)/(time.time()-t1):.1f} rows/s)")
 
     # ── Raw per-(row, concept) prediction deltas — NO aggregation ────────────
-    # A concept only affects a row where it fires (h>0); every non-firing pair
-    # is an exact no-op, so we emit one record per FIRING (row, concept): the
-    # change in the strong model's prediction when that single concept's
-    # ablation delta is transferred in.  delta_p_true < 0 == harm (the strong
-    # model moved off the correct class).
+    # One record per FIRING (row, concept): the change in the strong model's
+    # P(true class) under +delta (inject) and -delta (ablate/remove). For the
+    # harm question, delta_p_true_minus < 0 == removal harmed the strong model.
     y_lower = y_query[lower]
-    delta_p1 = harmed_p1 - base_p1[:, None]              # (n_lower, K) change in P(class 1)
-    delta_p_true = harmed_p_true - base_p_true[:, None]  # (n_lower, K) <0 == harm
+    dpt_plus = p_true_plus - base_p_true[:, None]
+    dpt_minus = p_true_minus - base_p_true[:, None]
+    dp1_plus = p1_plus - base_p1[:, None]
+    dp1_minus = p1_minus - base_p1[:, None]
     fires = h_weak[np.ix_(lower, cand)] > 0              # (n_lower, K) bool
     fi, fk = np.where(fires)
     rows = []
@@ -266,11 +271,11 @@ def run(strong: str, weak: str, dataset: str, device: str,
             "h_activation": float(h_weak[lower[i], cand[k]]),
             "y_true": int(y_lower[i]),
             "base_p_true": float(base_p_true[i]),
-            "harmed_p_true": float(harmed_p_true[i, k]),
-            "delta_p_true": float(delta_p_true[i, k]),   # <0 == harm
+            "delta_p_true_ablate": float(dpt_minus[i, k]),   # -delta; <0 == harm
+            "delta_p_true_inject": float(dpt_plus[i, k]),    # +delta
             "base_p1": float(base_p1[i]),
-            "harmed_p1": float(harmed_p1[i, k]),
-            "delta_p1": float(delta_p1[i, k]),
+            "delta_p1_ablate": float(dp1_minus[i, k]),
+            "delta_p1_inject": float(dp1_plus[i, k]),
         })
 
     arrays = {
@@ -279,10 +284,10 @@ def run(strong: str, weak: str, dataset: str, device: str,
         "y_lower": y_lower.astype(np.int64),
         "base_p1": base_p1.astype(np.float32),
         "base_p_true": base_p_true.astype(np.float32),
-        "harmed_p1": harmed_p1.astype(np.float32),
-        "harmed_p_true": harmed_p_true.astype(np.float32),
-        "delta_p1": delta_p1.astype(np.float32),
-        "delta_p_true": delta_p_true.astype(np.float32),
+        "delta_p_true_ablate": dpt_minus.astype(np.float32),
+        "delta_p_true_inject": dpt_plus.astype(np.float32),
+        "delta_p1_ablate": dp1_minus.astype(np.float32),
+        "delta_p1_inject": dp1_plus.astype(np.float32),
         "fires": fires,
         "h_weak_lower": h_weak[np.ix_(lower, cand)].astype(np.float32),
     }
@@ -334,10 +339,11 @@ def main():
     np.savez_compressed(out_dir / f"{stem}.npz", **arrays)
 
     # Long-form CSV: one row per firing (row, concept). No aggregation.
+    # Both signs recorded: _ablate = -delta (removal, harm-relevant), _inject = +delta.
     csv_path = out_dir / f"{stem}.csv"
-    cols = ["row", "weak_concept", "h_activation", "y_true",
-            "base_p_true", "harmed_p_true", "delta_p_true",
-            "base_p1", "harmed_p1", "delta_p1"]
+    cols = ["row", "weak_concept", "h_activation", "y_true", "base_p_true",
+            "delta_p_true_ablate", "delta_p_true_inject",
+            "base_p1", "delta_p1_ablate", "delta_p1_inject"]
     with open(csv_path, "w") as f:
         f.write(",".join(cols) + "\n")
         for rec in result["rows"]:
@@ -351,17 +357,17 @@ def main():
         print(f"  lower-triangle rows (strong {strong} wins): {result['n_lower']}/{result['n_query']}  "
               f"| candidate concepts: {result['n_candidates']}  | map R²={result['map_r2']:.3f}")
         print(f"  firing (row, concept) events: {result['n_firing_events']}  "
-              f"(non-firing pairs are exact no-ops, omitted)")
-        print(f"\n  Raw sample — 15 events with the largest |Δ P(true class)| "
-              f"(Δ<0 == harm to strong model):")
-        print(f"  {'row':>4} {'weak_c':>7} {'h_act':>7} {'y':>2} "
-              f"{'base_p(y)':>10} {'harm_p(y)':>10} {'Δp(y)':>9}")
-        for rec in sorted(result["rows"], key=lambda r: abs(r["delta_p_true"]),
-                          reverse=True)[:15]:
+              f"(both signs tried per event, as in the transfer sweep)")
+        print(f"\n  Raw sample — 15 events with the largest ABLATION harm "
+              f"(Δp(y) under -delta; <0 == removal harmed the strong model):")
+        print(f"  {'row':>4} {'weak_c':>7} {'h_act':>7} {'y':>2} {'base_p(y)':>10} "
+              f"{'Δp(y)|ablate':>13} {'Δp(y)|inject':>13}")
+        for rec in sorted(result["rows"], key=lambda r: r["delta_p_true_ablate"])[:15]:
             print(f"  {rec['row']:>4d} {rec['weak_concept']:>7d} "
                   f"{rec['h_activation']:>7.3f} {rec['y_true']:>2d} "
-                  f"{rec['base_p_true']:>10.4f} {rec['harmed_p_true']:>10.4f} "
-                  f"{rec['delta_p_true']:>+9.4f}")
+                  f"{rec['base_p_true']:>10.4f} "
+                  f"{rec['delta_p_true_ablate']:>+13.4f} "
+                  f"{rec['delta_p_true_inject']:>+13.4f}")
     print(f"\nWrote {out_dir}/{stem}.{{json,npz,csv}}")
 
 
