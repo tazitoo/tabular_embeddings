@@ -46,7 +46,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
 
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import (
@@ -247,32 +246,46 @@ def run(strong: str, weak: str, dataset: str, device: str,
             logger.info(f"    row {i+1}/{len(lower)} "
                         f"({(i+1)/(time.time()-t1):.1f} rows/s)")
 
-    # ── Per-concept harm metrics ─────────────────────────────────────────────
-    base_loss = -np.log(base_p_true)                       # (n_lower,)
-    harmed_loss = -np.log(harmed_p_true)                   # (n_lower, K)
-    loss_increase = harmed_loss - base_loss[:, None]       # >0 == harm
-    prob_drop = base_p_true[:, None] - harmed_p_true       # >0 == harm
-
+    # ── Raw per-(row, concept) prediction deltas — NO aggregation ────────────
+    # A concept only affects a row where it fires (h>0); every non-firing pair
+    # is an exact no-op, so we emit one record per FIRING (row, concept): the
+    # change in the strong model's prediction when that single concept's
+    # ablation delta is transferred in.  delta_p_true < 0 == harm (the strong
+    # model moved off the correct class).
     y_lower = y_query[lower]
-    both_classes = len(np.unique(y_lower)) == 2
-    base_auc = roc_auc_score(y_lower, base_p1) if both_classes else float("nan")
-
-    concepts = []
-    for k in range(K):
-        auc_k = roc_auc_score(y_lower, harmed_p1[:, k]) if both_classes else float("nan")
-        concepts.append({
+    delta_p1 = harmed_p1 - base_p1[:, None]              # (n_lower, K) change in P(class 1)
+    delta_p_true = harmed_p_true - base_p_true[:, None]  # (n_lower, K) <0 == harm
+    fires = h_weak[np.ix_(lower, cand)] > 0              # (n_lower, K) bool
+    fi, fk = np.where(fires)
+    rows = []
+    for i, k in zip(fi.tolist(), fk.tolist()):
+        rows.append({
+            "row": int(lower[i]),
             "weak_concept": int(cand[k]),
             "strong_matches": strong_matches.get(cand[k], []),
-            "weak_importance": float(imp_rank.get(cand[k], 0.0)),
-            "mean_loss_increase": float(loss_increase[:, k].mean()),
-            "max_loss_increase": float(loss_increase[:, k].max()),
-            "mean_prob_drop": float(prob_drop[:, k].mean()),
-            "n_rows_harmed": int((prob_drop[:, k] > 0).sum()),
-            "auc_after": float(auc_k),
-            "auc_drop": float(base_auc - auc_k) if both_classes else float("nan"),
+            "h_activation": float(h_weak[lower[i], cand[k]]),
+            "y_true": int(y_lower[i]),
+            "base_p_true": float(base_p_true[i]),
+            "harmed_p_true": float(harmed_p_true[i, k]),
+            "delta_p_true": float(delta_p_true[i, k]),   # <0 == harm
+            "base_p1": float(base_p1[i]),
+            "harmed_p1": float(harmed_p1[i, k]),
+            "delta_p1": float(delta_p1[i, k]),
         })
-    concepts.sort(key=lambda c: -c["mean_loss_increase"])
 
+    arrays = {
+        "lower_rows": lower.astype(np.int64),
+        "cand": np.asarray(cand, dtype=np.int64),
+        "y_lower": y_lower.astype(np.int64),
+        "base_p1": base_p1.astype(np.float32),
+        "base_p_true": base_p_true.astype(np.float32),
+        "harmed_p1": harmed_p1.astype(np.float32),
+        "harmed_p_true": harmed_p_true.astype(np.float32),
+        "delta_p1": delta_p1.astype(np.float32),
+        "delta_p_true": delta_p_true.astype(np.float32),
+        "fires": fires,
+        "h_weak_lower": h_weak[np.ix_(lower, cand)].astype(np.float32),
+    }
     return {
         "strong": strong, "weak": weak, "dataset": dataset,
         "mode": mode,
@@ -280,11 +293,10 @@ def run(strong: str, weak: str, dataset: str, device: str,
         "metric_strong": float(m_strong), "metric_weak": float(m_weak),
         "n_query": int(n_query), "n_lower": int(len(lower)),
         "map_r2": float(r2), "n_landmarks": int(len(filt_pairs)),
-        "base_auc_lower": float(base_auc),
         "n_candidates": int(K),
-        "n_concepts_harmful_loss": int(sum(c["mean_loss_increase"] > 0 for c in concepts)),
-        "n_concepts_harmful_auc": int(sum((c["auc_drop"] > 0) for c in concepts if not np.isnan(c["auc_drop"]))),
-        "concepts": concepts,
+        "n_firing_events": int(fires.sum()),
+        "rows": rows,
+        "_arrays": arrays,
     }
 
 
@@ -315,33 +327,42 @@ def main():
     result = run(strong, weak, args.dataset, args.device,
                  args.matching_file, args.sae_dir, imp_dir, mode=args.mode)
 
-    out_path = out_dir / f"{args.dataset}_{args.mode}.json"
-    out_path.write_text(json.dumps(result, indent=2))
+    arrays = result.pop("_arrays")
 
-    print(f"\n{'='*70}\nHARM VIA WEAK->STRONG TRANSFER [{args.mode}]: "
+    stem = f"{args.dataset}_{args.mode}"
+    (out_dir / f"{stem}.json").write_text(json.dumps(result, indent=2))
+    np.savez_compressed(out_dir / f"{stem}.npz", **arrays)
+
+    # Long-form CSV: one row per firing (row, concept). No aggregation.
+    csv_path = out_dir / f"{stem}.csv"
+    cols = ["row", "weak_concept", "h_activation", "y_true",
+            "base_p_true", "harmed_p_true", "delta_p_true",
+            "base_p1", "harmed_p1", "delta_p1"]
+    with open(csv_path, "w") as f:
+        f.write(",".join(cols) + "\n")
+        for rec in result["rows"]:
+            f.write(",".join(str(rec[c]) for c in cols) + "\n")
+
+    print(f"\n{'='*70}\nPER-ROW ABLATION->TRANSFER DELTAS [{args.mode}]: "
           f"{weak} -> {strong} [{args.dataset}]\n{'='*70}")
     if result["n_lower"] == 0:
         print("  No lower-triangle rows; nothing to test.")
     else:
-        print(f"  rows tested (strong wins): {result['n_lower']}/{result['n_query']}  "
-              f"| baseline AUC over these rows: {result['base_auc_lower']:.4f}")
-        print(f"  matched candidate concepts: {result['n_candidates']}  "
-              f"| map R²={result['map_r2']:.3f} ({result['n_landmarks']} landmarks)")
-        print(f"  concepts that HARM (mean loss ↑): "
-              f"{result['n_concepts_harmful_loss']}/{result['n_candidates']}  "
-              f"| that drop AUC: {result['n_concepts_harmful_auc']}/{result['n_candidates']}")
-        print(f"\n  Top-10 most harmful concepts (by mean per-row loss increase):")
-        print(f"  {'weak_c':>7} {'importⁿ':>8} {'loss↑':>8} {'maxloss↑':>9} "
-              f"{'p(y)drop':>9} {'rows✗':>6} {'AUC↓':>7}")
-        for c in result["concepts"][:10]:
-            print(f"  {c['weak_concept']:>7d} {c['weak_importance']:>8.4f} "
-                  f"{c['mean_loss_increase']:>8.4f} {c['max_loss_increase']:>9.4f} "
-                  f"{c['mean_prob_drop']:>9.4f} {c['n_rows_harmed']:>6d} "
-                  f"{c['auc_drop']:>7.4f}")
-        verdict = "YES" if result["n_concepts_harmful_loss"] > 0 else "NO"
-        print(f"\n  >> Can weak->strong transfer harm strong? {verdict} "
-              f"({result['n_concepts_harmful_loss']} concept(s) impose harm)")
-    print(f"\nWrote {out_path}")
+        print(f"  lower-triangle rows (strong {strong} wins): {result['n_lower']}/{result['n_query']}  "
+              f"| candidate concepts: {result['n_candidates']}  | map R²={result['map_r2']:.3f}")
+        print(f"  firing (row, concept) events: {result['n_firing_events']}  "
+              f"(non-firing pairs are exact no-ops, omitted)")
+        print(f"\n  Raw sample — 15 events with the largest |Δ P(true class)| "
+              f"(Δ<0 == harm to strong model):")
+        print(f"  {'row':>4} {'weak_c':>7} {'h_act':>7} {'y':>2} "
+              f"{'base_p(y)':>10} {'harm_p(y)':>10} {'Δp(y)':>9}")
+        for rec in sorted(result["rows"], key=lambda r: abs(r["delta_p_true"]),
+                          reverse=True)[:15]:
+            print(f"  {rec['row']:>4d} {rec['weak_concept']:>7d} "
+                  f"{rec['h_activation']:>7.3f} {rec['y_true']:>2d} "
+                  f"{rec['base_p_true']:>10.4f} {rec['harmed_p_true']:>10.4f} "
+                  f"{rec['delta_p_true']:>+9.4f}")
+    print(f"\nWrote {out_dir}/{stem}.{{json,npz,csv}}")
 
 
 if __name__ == "__main__":
