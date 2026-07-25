@@ -39,7 +39,8 @@ for idx in "${!GPUS[@]}"; do
         for pair in "${gpairs[@]}"; do
             a=${pair%%:*}; b=${pair##*:}
             echo "=== $(date -Iseconds) GPU$g $a vs $b start ===" >> "$log"
-            CUDA_VISIBLE_DEVICES=$g PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+            CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$g \
+                PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
                 "$PY" -m scripts.rebuttal.transfer_sweep_symmetric \
                 --models "$a" "$b" --forward --device cuda --resume \
                 --output-dir "$OUT" >> "$log" 2>&1
