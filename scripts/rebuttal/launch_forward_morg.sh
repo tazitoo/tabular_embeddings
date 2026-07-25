@@ -13,19 +13,24 @@
 set -uo pipefail
 
 REPO=/home/brian/src/tabular_embeddings
-ENV="${1:?Usage: $0 <tfm|tfm2> <a:b> ...}"; shift
+ENV="${1:?Usage: $0 <tfm|tfm2> <gpu_csv> <a:b> ...}"; shift
+GPUS_CSV="${1:?GPU list, e.g. 1,2,3,4 (skip a faulted GPU)}"; shift
 PY=/home/brian/anaconda3/envs/$ENV/bin/python
 OUT=output/rebuttal/forward_deltas
-NGPU=5
+IFS=',' read -ra GPUS <<< "$GPUS_CSV"
+NG=${#GPUS[@]}
 cd "$REPO"
 
 pairs=("$@")
 [ ${#pairs[@]} -eq 0 ] && { echo "No pairs given."; exit 1; }
 
-for g in $(seq 0 $((NGPU-1))); do
+# One job per GPU: round-robin pairs over the given GPU list, each GPU runs its
+# pairs sequentially. expandable_segments guards against fragmentation OOM.
+for idx in "${!GPUS[@]}"; do
+    g=${GPUS[$idx]}
     gpairs=()
     for i in "${!pairs[@]}"; do
-        [ $((i % NGPU)) -eq "$g" ] && gpairs+=("${pairs[$i]}")
+        [ $((i % NG)) -eq "$idx" ] && gpairs+=("${pairs[$i]}")
     done
     [ ${#gpairs[@]} -eq 0 ] && continue
     (
@@ -34,7 +39,8 @@ for g in $(seq 0 $((NGPU-1))); do
         for pair in "${gpairs[@]}"; do
             a=${pair%%:*}; b=${pair##*:}
             echo "=== $(date -Iseconds) GPU$g $a vs $b start ===" >> "$log"
-            CUDA_VISIBLE_DEVICES=$g "$PY" -m scripts.rebuttal.transfer_sweep_symmetric \
+            CUDA_VISIBLE_DEVICES=$g PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+                "$PY" -m scripts.rebuttal.transfer_sweep_symmetric \
                 --models "$a" "$b" --forward --device cuda --resume \
                 --output-dir "$OUT" >> "$log" 2>&1
             echo "=== $(date -Iseconds) GPU$g $a vs $b exit=$? ===" >> "$log"
