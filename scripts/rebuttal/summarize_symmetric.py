@@ -40,7 +40,8 @@ import numpy as np
 from scripts._project_root import PROJECT_ROOT
 
 # kind -> (forward canonical dir, reverse rebuttal dir)
-DIRS = {
+# (forward below-diagonal dir, reverse above-diagonal dir) per intervention kind.
+DIRS_TRAINED = {
     "transfer": (
         PROJECT_ROOT / "output" / "transfer_sweep_v2",
         PROJECT_ROOT / "output" / "rebuttal" / "symmetric_transfer",
@@ -50,6 +51,18 @@ DIRS = {
         PROJECT_ROOT / "output" / "rebuttal" / "symmetric_ablation",
     ),
 }
+# Random-baseline control: same structure, random-SAE forward + reverse arms.
+DIRS_RANDOM = {
+    "transfer": (
+        PROJECT_ROOT / "output" / "transfer_random",
+        PROJECT_ROOT / "output" / "rebuttal" / "symmetric_transfer_random",
+    ),
+    "ablation": (
+        PROJECT_ROOT / "output" / "ablation_sweep_random_tols",
+        PROJECT_ROOT / "output" / "rebuttal" / "symmetric_ablation_random",
+    ),
+}
+DIRS = DIRS_TRAINED  # set per --mode in main()
 
 
 def _wins_stats(npz):
@@ -139,9 +152,16 @@ def summarize_kind(kind: str) -> dict:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--json", type=Path,
-                    default=PROJECT_ROOT / "output" / "rebuttal" / "symmetric_summary.json")
+    ap.add_argument("--mode", choices=["trained", "random"], default="trained",
+                    help="trained (default) or the random-baseline control arms")
+    ap.add_argument("--json", type=Path, default=None)
     args = ap.parse_args()
+
+    global DIRS
+    DIRS = DIRS_RANDOM if args.mode == "random" else DIRS_TRAINED
+    if args.json is None:
+        name = "symmetric_summary.json" if args.mode == "trained" else "symmetric_summary_random.json"
+        args.json = PROJECT_ROOT / "output" / "rebuttal" / name
 
     out = {k: summarize_kind(k) for k in DIRS}
 
