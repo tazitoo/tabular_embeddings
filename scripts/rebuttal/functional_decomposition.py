@@ -84,6 +84,8 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache):
     dd = np.asarray(d["deployed_delta"], dtype=np.float64)
     preds_strong = np.asarray(d["preds_strong"], dtype=np.float64)   # target (donor)
     preds_weak = np.asarray(d["preds_weak"], dtype=np.float64)       # recipient baseline
+    if preds_strong.ndim != 2:            # classification-only (baseline-swap filter is argmax-based)
+        return None
     y_query = np.asarray(d["y_query"]).astype(int)
     rows = np.where(np.linalg.norm(dd, axis=1) > 1e-12)[0]
     if len(rows) < 5:
@@ -137,6 +139,7 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache):
         ))
     A = np.array(recs)
     good = ~np.isnan(A[:, :3]).any(1)
+    kept_rows = rows[good]
     A = A[good]
     if not len(A):
         return None
@@ -144,6 +147,12 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache):
         "recipient": recipient, "donor": strong, "dataset": dataset, "n_rows": int(len(A)),
         "gc_active": float(A[:, 0].mean()), "gc_tail": float(A[:, 1].mean()),
         "gc_full": float(A[:, 2].mean()), "active_energy_frac": float(A[:, 3].mean()),
+        # per-row arrays (row index into the n_query test set) so aggregation can
+        # drop baseline-swap rows and match recipients across trained/random.
+        "row_idx": [int(x) for x in kept_rows],
+        "gc_active_rows": [float(x) for x in A[:, 0]],
+        "gc_tail_rows": [float(x) for x in A[:, 1]],
+        "gc_full_rows": [float(x) for x in A[:, 2]],
     }
 
 
