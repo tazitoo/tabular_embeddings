@@ -70,8 +70,8 @@ def _gc(base_p, inter_p, target_p, y):
     return float(np.clip((ol - il) / gap, 0.0, 1.0)) if gap > 1e-8 else np.nan
 
 
-def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache):
-    npz = FWD_DIR / f"{min(strong,weak)}_vs_{max(strong,weak)}" / f"{dataset}.npz"
+def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FWD_DIR):
+    npz = fwd_dir / f"{min(strong,weak)}_vs_{max(strong,weak)}" / f"{dataset}.npz"
     if not npz.exists():
         return None
     d = np.load(npz, allow_pickle=True)
@@ -161,19 +161,22 @@ def main():
     ap.add_argument("--models", nargs=2, required=True, metavar=("STRONG", "WEAK"))
     ap.add_argument("--dataset", default=None, help="single dataset; default = all with deltas")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--delta-dir", type=Path, default=FWD_DIR,
+                    help="dir of deployed deltas (default forward_deltas; forward_deltas_random for the random arm)")
+    ap.add_argument("--output-dir", type=Path, default=OUT_DIR)
     args = ap.parse_args()
     strong, weak = args.models
     pair = f"{min(strong,weak)}_vs_{max(strong,weak)}"
     if args.dataset:
         datasets = [args.dataset]
     else:
-        datasets = sorted(p.stem for p in (FWD_DIR / pair).glob("*.npz"))
+        datasets = sorted(p.stem for p in (args.delta_dir / pair).glob("*.npz"))
 
     emb_cache, norm_cache = {}, {}
     results = []
     for ds in datasets:
         try:
-            r = run_dataset(strong, weak, ds, args.device, emb_cache, norm_cache)
+            r = run_dataset(strong, weak, ds, args.device, emb_cache, norm_cache, fwd_dir=args.delta_dir)
         except Exception as e:
             logger.info(f"  {ds}: FAIL {e}")
             continue
@@ -184,8 +187,8 @@ def main():
                         f"n={r['n_rows']})")
     if not results:
         print("No datasets produced results."); return
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUT_DIR / f"{pair}.json").write_text(json.dumps(results, indent=2))
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    (args.output_dir / f"{pair}.json").write_text(json.dumps(results, indent=2))
 
     a = np.array([r["gc_active"] for r in results])
     t = np.array([r["gc_tail"] for r in results])
