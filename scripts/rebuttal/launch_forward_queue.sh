@@ -10,7 +10,7 @@
 # Usage (on any worker or morg), pairs are "a:b" model names (order irrelevant;
 # --forward makes recipient = weaker model, recorded in each npz):
 #   nohup bash scripts/rebuttal/launch_forward_queue.sh \
-#         <gpu_csv> <sae_dir> <imp_dir> <matching_file> <out_dir> a:b [a:b ...] \
+#         <gpu_csv> <sae_dir> <imp_dir> <matching_file> <cache_dir|-> <out_dir> a:b [a:b ...] \
 #         > /tmp/fwd_queue.out 2>&1 </dev/null &
 #
 # Output: <out_dir>/<pair>/<dataset>.npz  (--resume skips finished datasets).
@@ -23,8 +23,10 @@ GPUS_CSV="${1:?gpu csv, e.g. 0,1,2,3,4}"; shift
 SAE_DIR="${1:?sae dir}"; shift
 IMP_DIR="${1:?importance dir}"; shift
 MATCH="${1:?matching file}"; shift
+CACHE="${1:?virtual-atoms cache dir (use - for runtime/no cache)}"; shift
 OUT="${1:?output dir}"; shift
 pairs=("$@")
+CACHE_ARG=""; [ "$CACHE" != "-" ] && CACHE_ARG="--virtual-atoms-cache-dir $CACHE"
 [ ${#pairs[@]} -eq 0 ] && { echo "No pairs given."; exit 1; }
 
 TFM=/home/brian/anaconda3/envs/tfm/bin/python
@@ -67,7 +69,7 @@ for g in "${GPUS[@]}"; do
                 "$PY" -m scripts.rebuttal.transfer_sweep_symmetric \
                 --models "$a" "$b" --forward --device cuda --resume \
                 --sae-dir "$SAE_DIR" --importance-dir "$IMP_DIR" \
-                --matching-file "$MATCH" --output-dir "$OUT" >> "$log" 2>&1
+                --matching-file "$MATCH" $CACHE_ARG --output-dir "$OUT" >> "$log" 2>&1
             echo "=== $(date -Iseconds) GPU$g $a vs $b exit=$? ===" >> "$log"
         done
         echo "=== $(date -Iseconds) GPU$g ALL DONE ===" >> "$log"

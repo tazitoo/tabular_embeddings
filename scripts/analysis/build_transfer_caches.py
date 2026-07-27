@@ -69,13 +69,15 @@ def build_global_ridge_virtual_atoms(
     filt_tgt: np.ndarray,
     unmatched_src_ids: list,
     alpha: float = 1.0,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, float]:
     """Match production semantics (transfer_sweep_v2.py:367-397):
     fit ridge on raw (non-unit) landmarks, project unit query through M,
     renormalize direction, apply magnitude recipe.
+
+    Returns (virtual_atoms, computed_mask, concept_map_r2).
     """
     # fit_concept_map fits on the raw (non-unit) atoms
-    M_global, _ = fit_concept_map(filt_src, filt_tgt, alpha=alpha)
+    M_global, r2_global = fit_concept_map(filt_src, filt_tgt, alpha=alpha)
 
     src_norms_matched = np.linalg.norm(filt_src, axis=1)
     tgt_norms_matched = np.linalg.norm(filt_tgt, axis=1)
@@ -103,7 +105,7 @@ def build_global_ridge_virtual_atoms(
             continue
         vatoms[out_idx] = ((virtual_dir / vdir_norm) * atom_norm * median_norm_ratio).astype(np.float32)
         computed[out_idx] = True
-    return vatoms, computed
+    return vatoms, computed, float(r2_global)
 
 
 def save_cache(
@@ -119,8 +121,10 @@ def save_cache(
     matching_file: Path,
     matching_sha: str,
     map_params: dict,
+    concept_map_r2: float = float("nan"),
+    tag: str = "",
 ) -> Path:
-    out_dir = OUT_ROOT / f"{variant}_{sae_condition}"
+    out_dir = OUT_ROOT / f"{variant}_{sae_condition}{tag}"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{source}_to_{target}.npz"
     np.savez_compressed(
@@ -141,13 +145,14 @@ def save_cache(
         matching_file=np.array(str(matching_file)),
         matching_file_sha256=np.array(matching_sha),
         map_params_json=np.array(json.dumps(map_params)),
+        concept_map_r2=np.float64(concept_map_r2),
     )
     return path
 
 
 def process_pair_direction(task: tuple) -> tuple:
     """Worker function: build all 3 map variants for one (pair, direction, sae_condition)."""
-    pair_models, source, target, sae_condition, matching_file = task
+    pair_models, source, target, sae_condition, matching_file, tag, global_only, min_landmarks = task
     matching_file = Path(matching_file)
     sae_dir = SAE_DIRS[sae_condition]
 
@@ -165,7 +170,7 @@ def process_pair_direction(task: tuple) -> tuple:
     except Exception as e:
         return (source, target, sae_condition, f"get_matched_pairs failed: {e}")
 
-    if len(m_pairs) < 10:
+    if len(m_pairs) < min_landmarks:
         return (source, target, sae_condition, f"too few matched pairs: {len(m_pairs)}")
 
     src_idx = [p[0] for p in m_pairs]
@@ -177,7 +182,7 @@ def process_pair_direction(task: tuple) -> tuple:
         matched_src, matched_tgt, m_pairs, min_cosine=0.0, alpha=1.0
     )
     n = len(filt_src)
-    if n < 12:
+    if n < min_landmarks:
         return (source, target, sae_condition, f"after filter only {n} landmarks")
 
     unmatched_src_ids = get_unmatched_features(
@@ -186,14 +191,20 @@ def process_pair_direction(task: tuple) -> tuple:
     matching_sha = sha256_file(matching_file)
 
     # Variant 1: Global ridge (matches production semantics)
-    vatoms_g, computed_g = build_global_ridge_virtual_atoms(
+    vatoms_g, computed_g, r2_global = build_global_ridge_virtual_atoms(
         atoms_s, filt_src, filt_tgt, unmatched_src_ids
     )
     save_cache(
         "global", sae_condition, source, target, vatoms_g, computed_g,
         unmatched_src_ids, n, filt_tgt.shape[1], matching_file, matching_sha,
         map_params={"method": "global_ridge", "K": "all", "alpha": 1.0},
+        concept_map_r2=r2_global, tag=tag,
     )
+
+    if global_only:
+        return (source, target, sae_condition,
+                f"ok (n_landmarks={n}, n_unmatched={len(unmatched_src_ids)}, "
+                f"global_computed={int(computed_g.sum())}, r2={r2_global:.4f})")
 
     # Variant 2: Per-pair CV-tuned top-K
     tune_result = tune_k_for_pair(filt_src, filt_tgt, TOPK_GRID)
@@ -206,6 +217,7 @@ def process_pair_direction(task: tuple) -> tuple:
         unmatched_src_ids, n, filt_tgt.shape[1], matching_file, matching_sha,
         map_params={"method": "topk_per_pair", "K": k_star, "k_grid": TOPK_GRID,
                     "alpha": 1.0, "best_mean_cosine": tune_result["best_mean_cosine"]},
+        tag=tag,
     )
 
     # Variant 3: Per-query CV min-based with K_min=10
@@ -218,6 +230,7 @@ def process_pair_direction(task: tuple) -> tuple:
         map_params={"method": "per_query_cv_min_k10", "k_grid": PQCV_GRID,
                     "alpha": 1.0,
                     "k_chosen_per_concept_mean": float(k_chosen.mean()) if len(k_chosen) else 0.0},
+        tag=tag,
     )
 
     return (source, target, sae_condition,
@@ -234,6 +247,15 @@ def main():
     parser.add_argument("--sae-condition", default=None,
                         choices=["trained", "random"],
                         help="Build only one SAE condition.")
+    parser.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE,
+                        help="Matching JSON to build the cache against.")
+    parser.add_argument("--tag", default="",
+                        help="Suffix appended to the output dir (e.g. '_randomSAE_p90' "
+                             "-> global_random_randomSAE_p90). Keeps a fresh build separate.")
+    parser.add_argument("--global-only", action="store_true",
+                        help="Build only the global-ridge variant (skip topk/pqcv).")
+    parser.add_argument("--min-landmarks", type=int, default=12,
+                        help="Minimum landmarks to build a map (random SAEs match sparsely).")
     args = parser.parse_args()
 
     pairs_to_run = [tuple(sorted(args.pair))] if args.pair else PAIRS
@@ -244,7 +266,8 @@ def main():
         a, b = pair
         for src, tgt in [(a, b), (b, a)]:
             for cond in conditions:
-                tasks.append((pair, src, tgt, cond, DEFAULT_MATCHING_FILE))
+                tasks.append((pair, src, tgt, cond, args.matching_file,
+                              args.tag, args.global_only, args.min_landmarks))
 
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     print(f"Dispatching {len(tasks)} build tasks to {args.workers} workers...")
