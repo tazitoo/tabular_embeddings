@@ -10,23 +10,26 @@ decision boundary). So the energy split can't settle "recombination vs novel
 capacity" functionally.
 
 This measures function directly. For each deployed transfer delta Delta (forward
-transfer, recipient = weak model), split it against the recipient's active
-subspace E (top-k_e eigenvectors capturing 90% of activation variance):
+transfer, recipient = weak model), split it against the recipient's ON-MANIFOLD
+subspace E — the top-k_e eigenvectors capturing 90% of activation variance, a
+linear proxy for the data manifold's dominant directions:
 
-    Delta_active = E E^T Delta        (the dominant / "existing structure" part)
-    Delta_tail   = Delta - Delta_active   (the low-variance / "novel" part)
+    Delta_on  = E E^T Delta            (ON-manifold: high-variance directions)
+    Delta_off = Delta - Delta_on       (OFF-manifold: orthogonal low-variance)
 
 Inject each SEPARATELY into the recipient and measure how much of the transfer's
 gap-closure (recipient -> donor prediction) each one produces:
 
-    gc_active : does the dominant-structure component move the prediction?
-    gc_tail   : does the low-variance "novel" component move the prediction?
-    gc_full   : the full delta (sanity vs the stored preds_intervened)
+    gc_on_manifold  : does the high-variance (on-manifold) component move it?
+    gc_off_manifold : does the low-variance (off-manifold) component move it?
+    gc_full         : the full delta (sanity vs the stored preds_intervened)
 
-If gc_tail ~ 0 while gc_active ~ gc_full, the "novel" energy is functionally
-inert -> recombination of existing structure does the work. If gc_tail is large
-despite its low energy, low-variance directions ARE prediction-relevant ->
-genuine functional novelty the energy view hid.
+If gc_off ~ 0 while gc_on ~ gc_full, off-manifold energy is functionally inert ->
+recombination of existing (on-manifold) structure does the work. If gc_off is
+large despite its low energy, off-manifold directions ARE prediction-relevant ->
+genuine functional novelty the energy view hid. ("on/off-manifold" here always
+means the high/low-variance split above, distinct from the nearest-neighbour
+data-proximity notion in transfer_direction.py.)
 
 Reads deployed_delta from output/rebuttal/forward_deltas/<pair>/<dataset>.npz.
 Needs the recipient base model (GPU).
@@ -59,15 +62,20 @@ OUT_DIR = PROJECT_ROOT / "output" / "rebuttal" / "functional_decomposition"
 EPS = 1e-7
 
 
-def _loss(p, y):
-    return -np.log(np.clip(p[y], EPS, 1 - EPS))
-
-
-def _gc(base_p, inter_p, target_p, y):
-    """Gap closed from base->target by an intervention, per the transfer sweep."""
-    ol = _loss(base_p, y); tl = _loss(target_p, y); il = _loss(inter_p, y)
-    gap = ol - tl
-    return float(np.clip((ol - il) / gap, 0.0, 1.0)) if gap > 1e-8 else np.nan
+def _gc(base_p, inter_p, strong_p, y):
+    """Gap closed base->strong by an intervention, matching the transfer sweep.
+    Classification: cross-entropy toward y_true. Regression: squared distance to
+    the strong (donor) prediction."""
+    base_p = np.asarray(base_p); inter_p = np.asarray(inter_p); strong_p = np.asarray(strong_p)
+    if base_p.ndim >= 1 and base_p.size > 1:                 # classification prob vector
+        ol = -np.log(np.clip(base_p[y], EPS, 1 - EPS))
+        tl = -np.log(np.clip(strong_p[y], EPS, 1 - EPS))
+        il = -np.log(np.clip(inter_p[y], EPS, 1 - EPS))
+        gap = ol - tl
+        return float(np.clip((ol - il) / gap, 0.0, 1.0)) if gap > 1e-8 else np.nan
+    orig = (float(base_p) - float(strong_p)) ** 2           # regression: distance to strong pred
+    best = (float(inter_p) - float(strong_p)) ** 2
+    return float(np.clip(1.0 - best / orig, 0.0, 1.0)) if orig > 1e-12 else np.nan
 
 
 def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FWD_DIR):
@@ -84,9 +92,10 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FW
     dd = np.asarray(d["deployed_delta"], dtype=np.float64)
     preds_strong = np.asarray(d["preds_strong"], dtype=np.float64)   # target (donor)
     preds_weak = np.asarray(d["preds_weak"], dtype=np.float64)       # recipient baseline
-    if preds_strong.ndim != 2:            # classification-only (baseline-swap filter is argmax-based)
-        return None
-    y_query = np.asarray(d["y_query"]).astype(int)
+    # all task types now (strong-wins population, matching the paper's gc). y_query
+    # is only used as a class index for classification; ignored for regression.
+    y_query = np.asarray(d["y_query"])
+    y_query = y_query.astype(int) if preds_strong.ndim == 2 else y_query
     rows = np.where(np.linalg.norm(dd, axis=1) > 1e-12)[0]
     if len(rows) < 5:
         return None
@@ -120,22 +129,26 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FW
     tail = build_tail(recipient, Xtr, ytr, Xq, layer, task, device,
                       cat_indices=cat_indices, target_name=target_name)
 
+    # on-manifold = projection onto the recipient's high-variance active subspace
+    # E (top eigenvectors capturing 90% of embedding variance, a linear proxy for
+    # the data manifold's dominant directions); off-manifold = the orthogonal,
+    # low-variance complement.
     recs = []
     for r in rows:
         Delta = dd[r]
-        d_act = E @ (E.T @ Delta)               # active-subspace component
-        d_tail = Delta - d_act                  # low-variance / "novel" component
-        deltas = torch.tensor(np.vstack([d_act, d_tail, Delta]),
+        d_on = E @ (E.T @ Delta)                # on-manifold (high-variance) component
+        d_off = Delta - d_on                    # off-manifold (low-variance) component
+        deltas = torch.tensor(np.vstack([d_on, d_off, Delta]),
                               dtype=torch.float32, device=device)
         preds = np.asarray(batched_intervention(tail, Xq[r:r+1], deltas,
                                                 inject_context=False), dtype=np.float64)
         y = int(y_query[r])
         b, t = preds_weak[r], preds_strong[r]
         recs.append((
-            _gc(b, preds[0], t, y),   # active
-            _gc(b, preds[1], t, y),   # tail
+            _gc(b, preds[0], t, y),   # on-manifold
+            _gc(b, preds[1], t, y),   # off-manifold
             _gc(b, preds[2], t, y),   # full
-            float(np.linalg.norm(d_act)**2 / (np.linalg.norm(Delta)**2 + 1e-12)),  # active energy frac
+            float(np.linalg.norm(d_on)**2 / (np.linalg.norm(Delta)**2 + 1e-12)),  # on-manifold energy frac
         ))
     A = np.array(recs)
     good = ~np.isnan(A[:, :3]).any(1)
@@ -145,13 +158,13 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FW
         return None
     return {
         "recipient": recipient, "donor": strong, "dataset": dataset, "n_rows": int(len(A)),
-        "gc_active": float(A[:, 0].mean()), "gc_tail": float(A[:, 1].mean()),
-        "gc_full": float(A[:, 2].mean()), "active_energy_frac": float(A[:, 3].mean()),
+        "gc_on_manifold": float(A[:, 0].mean()), "gc_off_manifold": float(A[:, 1].mean()),
+        "gc_full": float(A[:, 2].mean()), "on_manifold_energy": float(A[:, 3].mean()),
         # per-row arrays (row index into the n_query test set) so aggregation can
         # drop baseline-swap rows and match recipients across trained/random.
         "row_idx": [int(x) for x in kept_rows],
-        "gc_active_rows": [float(x) for x in A[:, 0]],
-        "gc_tail_rows": [float(x) for x in A[:, 1]],
+        "gc_on_manifold_rows": [float(x) for x in A[:, 0]],
+        "gc_off_manifold_rows": [float(x) for x in A[:, 1]],
         "gc_full_rows": [float(x) for x in A[:, 2]],
     }
 
@@ -182,25 +195,25 @@ def main():
             continue
         if r:
             results.append(r)
-            logger.info(f"  {ds}: gc_active={r['gc_active']:.3f} gc_tail={r['gc_tail']:.3f} "
-                        f"gc_full={r['gc_full']:.3f}  (active energy {r['active_energy_frac']:.2f}, "
+            logger.info(f"  {ds}: gc_on={r['gc_on_manifold']:.3f} gc_off={r['gc_off_manifold']:.3f} "
+                        f"gc_full={r['gc_full']:.3f}  (on-manifold energy {r['on_manifold_energy']:.2f}, "
                         f"n={r['n_rows']})")
     if not results:
         print("No datasets produced results."); return
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / f"{pair}.json").write_text(json.dumps(results, indent=2))
 
-    a = np.array([r["gc_active"] for r in results])
-    t = np.array([r["gc_tail"] for r in results])
+    on = np.array([r["gc_on_manifold"] for r in results])
+    off = np.array([r["gc_off_manifold"] for r in results])
     f = np.array([r["gc_full"] for r in results])
-    ef = np.array([r["active_energy_frac"] for r in results])
+    ef = np.array([r["on_manifold_energy"] for r in results])
     print(f"\n{'='*70}\nFUNCTIONAL DECOMPOSITION  {weak} <- {strong}  ({len(results)} datasets)\n{'='*70}")
-    print(f"  gap closed by ACTIVE (dominant-structure) component: mean={a.mean():.3f}")
-    print(f"  gap closed by TAIL ('novel' low-variance) component: mean={t.mean():.3f}")
+    print(f"  gap closed by ON-MANIFOLD  (high-variance) component: mean={on.mean():.3f}")
+    print(f"  gap closed by OFF-MANIFOLD (low-variance)  component: mean={off.mean():.3f}")
     print(f"  gap closed by FULL delta:                            mean={f.mean():.3f}")
-    print(f"  (active component holds {ef.mean():.0%} of the delta's ENERGY)")
-    print(f"\n  => tail carries {ef.mean()*0+ (1-ef.mean()):.0%} of energy but "
-          f"{t.mean()/max(f.mean(),1e-9):.0%} of the functional gap-closure")
+    print(f"  (on-manifold component holds {ef.mean():.0%} of the delta's ENERGY)")
+    print(f"\n  => off-manifold carries {(1-ef.mean()):.0%} of energy but "
+          f"{off.mean()/max(f.mean(),1e-9):.0%} of the functional gap-closure")
 
 
 if __name__ == "__main__":
