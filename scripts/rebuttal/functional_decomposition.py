@@ -50,6 +50,7 @@ from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH, get_extraction_layer_taskaware, build_tail,
     load_dataset_context, load_test_embeddings, batched_intervention,
+    batched_ablation_sequential, SEQUENTIAL_MODELS,
 )
 from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 from scripts.rebuttal.subspace_analysis import _eig_cov, _k_for_variance
@@ -140,8 +141,18 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FW
         d_off = Delta - d_on                    # off-manifold (low-variance) component
         deltas = torch.tensor(np.vstack([d_on, d_off, Delta]),
                               dtype=torch.float32, device=device)
-        preds = np.asarray(batched_intervention(tail, Xq[r:r+1], deltas,
-                                                inject_context=False), dtype=np.float64)
+        # Query-only injection of the 3 delta variants. CARTE (and the other
+        # SEQUENTIAL_MODELS) have no `recapture`; they inject via a central-node
+        # hook, so route them through the same per-row batched path the ablation
+        # pipeline uses (batched_ablation_sequential -> CARTETail.predict_row_batched).
+        # Everything else uses the generic recapture path (inject_context=False =
+        # query positions only, matching the sequential models' central-node inject).
+        if isinstance(tail, SEQUENTIAL_MODELS):
+            preds = np.asarray(batched_ablation_sequential(tail, Xq[r:r+1], deltas,
+                                                           query_idx=r), dtype=np.float64)
+        else:
+            preds = np.asarray(batched_intervention(tail, Xq[r:r+1], deltas,
+                                                    inject_context=False), dtype=np.float64)
         y = int(y_query[r])
         b, t = preds_weak[r], preds_strong[r]
         recs.append((
