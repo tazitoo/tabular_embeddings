@@ -86,10 +86,14 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FW
     d = np.load(npz, allow_pickle=True)
     if "deployed_delta" not in d.files:
         return None
-    recipient = str(d["weak_model"])          # forward: recipient = weak
-    if recipient != weak:
-        # orientation in the npz can differ; trust the npz's recipient
-        weak = recipient
+    recipient = str(d["weak_model"])          # forward: recipient = weak (per-dataset, from the npz)
+    donor = str(d["strong_model"])            # forward: donor  = strong (per-dataset, from the npz)
+    if donor == recipient:
+        raise ValueError(f"{dataset}: degenerate delta, donor == recipient == {donor}")
+    if {donor, recipient} != {strong, weak}:
+        raise ValueError(
+            f"{dataset}: npz models {{{donor}, {recipient}}} do not match requested pair "
+            f"{{{strong}, {weak}}} -- wrong --models or wrong delta dir")
     dd = np.asarray(d["deployed_delta"], dtype=np.float64)
     preds_strong = np.asarray(d["preds_strong"], dtype=np.float64)   # target (donor)
     preds_weak = np.asarray(d["preds_weak"], dtype=np.float64)       # recipient baseline
@@ -168,7 +172,7 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FW
     if not len(A):
         return None
     return {
-        "recipient": recipient, "donor": strong, "dataset": dataset, "n_rows": int(len(A)),
+        "recipient": recipient, "donor": donor, "dataset": dataset, "n_rows": int(len(A)),
         "gc_on_manifold": float(A[:, 0].mean()), "gc_off_manifold": float(A[:, 1].mean()),
         "gc_full": float(A[:, 2].mean()), "on_manifold_energy": float(A[:, 3].mean()),
         # per-row arrays (row index into the n_query test set) so aggregation can
@@ -199,16 +203,17 @@ def main():
     emb_cache, norm_cache = {}, {}
     results = []
     for ds in datasets:
-        try:
-            r = run_dataset(strong, weak, ds, args.device, emb_cache, norm_cache, fwd_dir=args.delta_dir)
-        except Exception as e:
-            logger.info(f"  {ds}: FAIL {e}")
-            continue
+        # No blanket except: a real failure must crash with its traceback rather
+        # than be silently dropped (that swallow once hid every carte-recipient
+        # dataset). "Nothing to compute" is signalled by run_dataset -> None.
+        r = run_dataset(strong, weak, ds, args.device, emb_cache, norm_cache, fwd_dir=args.delta_dir)
         if r:
             results.append(r)
             logger.info(f"  {ds}: gc_on={r['gc_on_manifold']:.3f} gc_off={r['gc_off_manifold']:.3f} "
                         f"gc_full={r['gc_full']:.3f}  (on-manifold energy {r['on_manifold_energy']:.2f}, "
                         f"n={r['n_rows']})")
+        else:
+            logger.info(f"  {ds}: no result (no delta file or <5 active rows)")
     if not results:
         print("No datasets produced results."); return
     args.output_dir.mkdir(parents=True, exist_ok=True)
