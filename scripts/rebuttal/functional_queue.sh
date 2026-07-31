@@ -10,6 +10,7 @@ set -uo pipefail
 REPO=/home/brian/src/tabular_embeddings; cd "$REPO"
 GPUS_CSV="${1:?gpu csv}"; DELTA="${2:?delta dir}"; OUT="${3:?out dir}"; shift 3
 pairs=("$@")
+VT="${VAR_THRESHOLD:-0.90}"   # on-manifold cumulative-variance threshold (sweep via env)
 [ ${#pairs[@]} -eq 0 ] && { echo "no pairs"; exit 1; }
 IFS=',' read -ra GPUS <<< "$GPUS_CSV"; NG=${#GPUS[@]}
 TFM=/home/brian/anaconda3/envs/tfm/bin/python
@@ -27,7 +28,7 @@ for idx in "${!GPUS[@]}"; do
       CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$g \
         PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         "$PY" -m scripts.rebuttal.functional_decomposition --models "$a" "$b" \
-        --device cuda --delta-dir "$DELTA" --output-dir "$OUT" >> /tmp/fq_gpu${g}.log 2>&1
+        --device cuda --delta-dir "$DELTA" --output-dir "$OUT" --var-threshold "$VT" >> /tmp/fq_gpu${g}.log 2>&1
       echo "=== $(date -Iseconds) GPU$g $pair exit=$? ===" >> /tmp/fq_gpu${g}.log
     done
   ) &
