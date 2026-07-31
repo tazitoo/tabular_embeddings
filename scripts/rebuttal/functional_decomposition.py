@@ -79,7 +79,8 @@ def _gc(base_p, inter_p, strong_p, y):
     return float(np.clip(1.0 - best / orig, 0.0, 1.0)) if orig > 1e-12 else np.nan
 
 
-def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FWD_DIR):
+def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FWD_DIR,
+                var_threshold=0.90):
     npz = fwd_dir / f"{min(strong,weak)}_vs_{max(strong,weak)}" / f"{dataset}.npz"
     if not npz.exists():
         return None
@@ -113,7 +114,7 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FW
     mean, std = norm_cache[recipient][dataset]
     Xraw = Xn * np.asarray(std) + np.asarray(mean)
     _, lam_e, V_e = _eig_cov(Xraw, center=True)
-    ke = max(1, min(_k_for_variance(lam_e, 0.90), V_e.shape[1]))
+    ke = max(1, min(_k_for_variance(lam_e, var_threshold), V_e.shape[1]))
     E = V_e[:, :ke]                             # (d, ke)
 
     # Recipient tail (to re-run predictions under each injected component).
@@ -173,6 +174,7 @@ def run_dataset(strong, weak, dataset, device, emb_cache, norm_cache, fwd_dir=FW
         return None
     return {
         "recipient": recipient, "donor": donor, "dataset": dataset, "n_rows": int(len(A)),
+        "var_threshold": float(var_threshold), "ke": int(ke), "emb_dim": int(V_e.shape[1]),
         "gc_on_manifold": float(A[:, 0].mean()), "gc_off_manifold": float(A[:, 1].mean()),
         "gc_full": float(A[:, 2].mean()), "on_manifold_energy": float(A[:, 3].mean()),
         # per-row arrays (row index into the n_query test set) so aggregation can
@@ -192,6 +194,9 @@ def main():
     ap.add_argument("--delta-dir", type=Path, default=FWD_DIR,
                     help="dir of deployed deltas (default forward_deltas; forward_deltas_random for the random arm)")
     ap.add_argument("--output-dir", type=Path, default=OUT_DIR)
+    ap.add_argument("--var-threshold", type=float, default=0.90,
+                    help="cumulative activation-variance fraction defining the on-manifold "
+                         "subspace E (default 0.90). Sweep this to test the split's sensitivity.")
     args = ap.parse_args()
     strong, weak = args.models
     pair = f"{min(strong,weak)}_vs_{max(strong,weak)}"
@@ -206,7 +211,8 @@ def main():
         # No blanket except: a real failure must crash with its traceback rather
         # than be silently dropped (that swallow once hid every carte-recipient
         # dataset). "Nothing to compute" is signalled by run_dataset -> None.
-        r = run_dataset(strong, weak, ds, args.device, emb_cache, norm_cache, fwd_dir=args.delta_dir)
+        r = run_dataset(strong, weak, ds, args.device, emb_cache, norm_cache,
+                        fwd_dir=args.delta_dir, var_threshold=args.var_threshold)
         if r:
             results.append(r)
             logger.info(f"  {ds}: gc_on={r['gc_on_manifold']:.3f} gc_off={r['gc_off_manifold']:.3f} "
