@@ -1,0 +1,135 @@
+# Camera-ready / if-accepted TODO
+
+Changes promised in the rebuttal or surfaced during rebuttal work. Tagged with the
+reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
+
+## A. Section 3 (Experimental Setup) additions
+- [ ] **Random-SAE definition** — state it is NOT purely random: archetypal
+      matryoshka top-k SAE; the baseline **retains the data-derived archetype
+      dictionary** and randomizes only the concept assignments (logits +
+      deviations). Move this *before* the results. (your #2; SD9t clarity, dVDs, nn7D)
+      → draft paragraph in `rebuttal_draft_random_ofnl.md` (S3).
+- [ ] **SAE selection rule** — lift from App. D.6 into main text: feasible set =
+      {R² ≥ 0.80, alive ≥ 0.80, stability ≥ 0.75}, then pick the least-complex SAE
+      (min √(hidden_dim · L0), the two capacity terms of the sweep objective
+      test_recon·√(hidden_dim)·√(L0)/alive_frac). (SD9t Q2, nn7D)
+- [ ] **TabDPT retrieval** — state explicitly that TabDPT runs in its native
+      retrieval-augmented mode (per-query nearest-neighbour context), and that
+      retrieval is preserved through the causal intervention. (SD9t Q5)
+- [ ] **Transfer linear map** — lift a brief description from App. F.8 into the
+      main text (what is fit for the concept map). (SD9t clarity)
+
+## B. Metric / methodology clarifications
+- [ ] **Strong/weak on low-event-rate datasets** — clarify that AUC is used for
+      strong/weak, with a neg-logloss fallback when the 200-sample holdout is
+      single-class (no class-1 present); affects ~4 datasets (seismic-bumps,
+      hiva_agnostic, taiwanese_bankruptcy_prediction, Marketing_Campaign). Same
+      fallback in both trained and random arms; datasets NOT dropped (matches paper).
+      (your #1)
+- [ ] **Per-example strong/weak** — clarify wording in Sec 4.2 that strong/weak is
+      the per-row winner under fixed shared context, not an overall ranking. (SD9t Q1)
+
+## C. Tables / results
+- [ ] **Add `acc` (acceptance) column to the ablation table (Table 1)** — parallel
+      to the transfer table; its omission is an oversight. (your #3; SD9t Q3)
+- [ ] **Replace oracle-subset numbers with FULL-TEST-SET numbers** — transfer
+      gc≈0.883, ablation gc≈0.919 over ~100% of rows (below+above diagonal), vs the
+      ~60% below-diagonal subset in the submission. **[substantive — new headline
+      numbers/table]** (dVDs primary request)
+- [ ] **Add weak→strong transfer result** — gc≈0.981: strong models do NOT already
+      contain all of the weaker model's concepts. (SD9t Q1b)
+- [ ] **Add "no harm" result** — 0 / 77,536 intervened rows moved the recipient to
+      a worse loss (100% improve or unchanged); follows from the acceptance/overshoot
+      rule. (dVDs)
+- [ ] **Revise the "purely new capacity" sentence** — replace the near-zero cosine
+      with the measured aligned/novel energy split + the functional decomposition
+      (on-manifold vs off-manifold gap-closure), and note the ridge-map alignment
+      floor (~0.33) so the geometry is not over-read. (ofnL Q2) — numbers pending compute.
+      NOTE: functional decomposition covers 5 recipients (mitra/tabdpt/tabicl/
+      tabicl_v2/tabpfn); carte-recipient rows are excluded because CARTETail lacks a
+      `recapture` method (see §E). Report the on/off split on this named population;
+      it excludes carte, so its gc_full differs slightly from the all-recipient headline gc.
+- [ ] **Foreground the per-concept efficiency (parsimony)** as the random-baseline
+      answer: trained closes 0.90 with K≈8.9 vs random 0.52 with K_R≈17.3 (~3.4×
+      gap-closure per concept). (dVDs, nn7D)
+- [ ] **(Appendix, camera-ready) Truly-random isotropic-SAE control for the
+      on-manifold ENERGY question.** The archetype-random baseline keeps the
+      data-derived archetype dictionary, so its deltas are on-manifold *by
+      construction* — it cannot null whether the transfer delta's on-manifold energy
+      concentration comes from the concepts vs. the acceptance/greedy search + the
+      data-aligned dictionary. Isotropic k_e/d fails the other way (ignores
+      acceptance entirely). The clean null is an SAE whose dictionary NEVER touches
+      the archetypes (isotropic decoder directions), run through the SAME
+      matching → caches → greedy transfer → decomposition pipeline; then measure the
+      accepted deltas' on-manifold energy. Concentrates on-manifold ⇒ the acceptance
+      search forces it; near chance ⇒ the data dictionary does. Full pipeline for a
+      new SAE variant (random SAEs match differently → fresh matching). Doubles as a
+      stronger R1 baseline (a dictionary that does NOT span the data subspace).
+      NOT used for the dVDs discussion answer — that rests on the functional gc split
+      (controlled by the archetype-random arm) and drops the energy claim.
+      (ofnL Q2 follow-up; the "purely random control" idea)
+- [ ] **(Appendix) "Disambiguation of apparently tied off-manifold gc."** On mean-of-gc
+      the off-manifold split looks tied trained-vs-random (@99%: rel_off 0.40 vs 0.37) —
+      but that's a gc-normalization artifact. gc = (loss_w−loss_int)/(loss_w−loss_s)
+      divides out the stakes, so near-tie rows (tiny gap, gc≈1 on ~0 nats) get equal
+      weight and drown out the high-stakes rows where the arms differ. Disambiguate via
+      scripts/rebuttal/gap_stratified_decomposition.py (classification rows, logloss gap):
+      1. **FIRST ITEM — quartile-stratified gc by absolute gap** (logloss_w − logloss_s):
+         rel_off rises monotonically with the gap — TRAINED 0.33/0.38/0.39/0.48,
+         RANDOM 0.33/0.37/0.37/0.42. Off-manifold matters MORE on high-stakes rows, and
+         trained > random at the top. Robust presentation; lead with it.
+      2. Loss-weighted rel = Σ(gc_c·gap)/Σ(gc_full·gap) (= nats-of-loss-removed ratio):
+         TRAINED rel_off 0.78 vs RANDOM 0.50 (vs 0.40/0.37 mean-of-gc) — the learned-vs-
+         random gap gc hid. CAVEAT: tail-sensitive (large-gap band runs to ~16 nats);
+         report winsorized and note the tail. Functional comparison (dictionary+acceptance
+         held fixed), so it's a valid learned-vs-random signal, not a geometry artifact.
+      Run across the whole sweep (80/90/95/99), not just 99. Revise any main-text wording
+      that calls off-manifold "redundant/tied"; this strengthens the latent-capacity
+      reading rather than deflating it. (ofnL Q2)
+
+## D. Framing
+- [ ] **Reframe interventions as a causal DIAGNOSTIC, not a deployment/model-
+      improvement method** — remove wording implying free full-benchmark accuracy
+      gains; per-row-winner knowledge is the experimental control. (dVDs, nn7D)
+- [ ] **State HyperFast / Tabula-8B exclusion scope** — causal conclusions are for
+      the transformer-ICL family; those two lack the per-row embedding interface the
+      intervention needs. (dVDs)
+- [ ] **Note interpretability limitation** — systematic human/ground-truth concept-
+      semantics validation is future work (beyond the patch examples). (dVDs, nn7D)
+- [ ] **App F.5 — dense SAE latents & labeling difficulty.** Cite "Dense SAE latents
+      are features, not bugs" (arXiv:2506.15679). Our archetypal-matryoshka SAEs
+      contain dense latents; per that work these are *genuine features*, not artifacts
+      — so their presence is not a defect in our dictionaries. But density = the latent
+      fires on a large fraction of inputs, so there is *less discriminative firing
+      evidence* to pin down what it encodes, which is a concrete reason concept
+      labeling is harder for a subset of our concepts. Use it two ways in App F.5:
+      (a) support that dense latents are legitimate (pre-empts "these look like broken
+      features"); (b) explain/scope our labeling difficulty on dense concepts.
+      NOTE: firing DENSITY (fraction of rows a latent activates on — an encoder
+      property) is distinct from transfer ACCEPTANCE rate (the ≥1000/≈2% cutoff for
+      the patch set — a transfer property). Do NOT assume the patch concepts are the
+      dense ones; if we want to connect App F.5 to the patch-coverage story, measure
+      firing density on the SAE activations directly and check the overlap.
+- [ ] (optional) **Negative-R² reframe** — state that global map R² is the wrong
+      yardstick; specificity is per-row directional edit + gap-closure-per-concept.
+      (dVDs)
+
+## E. Internal / reproducibility (for open-source release; not necessarily paper text)
+- [ ] **Baseline-prediction consistency between arms** — `perrow_importance` and
+      `perrow_importance_random` were computed 2–3 days apart and their baseline
+      preds drift (SAE-independent, so they should be identical). Decision-level
+      impact: carte 7.8% class-swaps, mitra 1.4%, tabdpt 0.5%, tabpfn 0.06%,
+      tabicl/tabicl_v2 0%. Fix: have the random arm REUSE the trained baselines
+      (baseline is SAE-independent), or re-derive strong/weak from a single baseline.
+      Root-cause the carte drift (preprocessing/RobustScaler timing vs. stochastic
+      inference) — currently deferred.
+- [ ] Confirm ensemble/retrieval inference is seeded so baselines are reproducible
+      (tabpfn/mitra/tabdpt drift; tabicl/tabicl_v2 already deterministic).
+- [ ] **CARTETail lacks `recapture`** — every other main-sweep tail (tabpfn, tabicl,
+      tabicl_v2, mitra, tabdpt) implements `recapture(X_query_new)`; CARTETail does not,
+      so `functional_decomposition.py` (and any re-injection path via
+      `intervene_lib.batched_intervention`) fails carte-recipient datasets with
+      `'CARTETail' object has no attribute 'recapture'`, silently dropping them. Adding it
+      means re-running CARTE's star-graph transform on the modified central-node
+      embeddings — non-trivial. Until then the functional decomposition excludes
+      carte-recipient rows; state this scope where the on/off-manifold split is reported.
