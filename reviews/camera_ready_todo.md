@@ -86,6 +86,9 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       Run across the whole sweep (80/90/95/99), not just 99. Revise any main-text wording
       that calls off-manifold "redundant/tied"; this strengthens the latent-capacity
       reading rather than deflating it. (ofnL Q2)
+      ROBUSTNESS — needed before this carries weight (newest, least-settled result):
+      confirm the 0.33→0.48 quartile trend holds ACROSS PAIRS/recipients (trained rises,
+      random stays flat), not driven by a subset of pairs. Only then does it earn a claim.
 
 ## D. Framing
 - [ ] **Reframe interventions as a causal DIAGNOSTIC, not a deployment/model-
@@ -133,3 +136,24 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       means re-running CARTE's star-graph transform on the modified central-node
       embeddings — non-trivial. Until then the functional decomposition excludes
       carte-recipient rows; state this scope where the on/off-manifold split is reported.
+      (NOTE: superseded this session — carte-recipient now runs via
+      `predict_row_batched`; the decomposition covers all 6 recipients. Update/close.)
+
+## F. Main-text relocation — dVDs list committed in the reply (+ SD9t)
+The specific "move into main text" commitments from the reply. Several overlap §A/§C
+above; this is the consolidated dVDs checklist so nothing is dropped in the edit.
+- [ ] **Full-test-set numbers + weak→strong gc=0.981 into MAIN TEXT** (were listed as
+      §C additions; dVDs wants them in the body, not appendix). (dVDs)
+- [ ] **Donor prediction as a REQUIRED INPUT in Sec. 4.2** — state that the
+      intervention / strong–weak definition takes the donor's per-row prediction as a
+      given input, not something inferred. (dVDs)
+- [ ] **SAE stability metric promoted from App. D into main text** (ties to the §A
+      "SAE selection rule" item — surface the stability≥0.75 criterion in the body). (dVDs)
+- [ ] **Geometry-matched (random-SAE) control into Sec. 3, AHEAD of the numbers**
+      (drafted in §A `rebuttal_draft_random_ofnl.md` S3 — confirm placement before
+      results). (dVDs)
+- [ ] **Per-concept gap-closure DIRECTLY in Tables 1 and 2** — as a table column, not
+      only narrated (concretizes the §C parsimony item). (dVDs)
+- [ ] **SD9t's four formatting fixes** — enumerate from §B and apply. (SD9t)
+- [ ] **App. F.8 landmark / linear-map summary into main text** (the §A "Transfer
+      linear map" item — include the landmark-count summary). (SD9t)
