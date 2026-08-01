@@ -116,6 +116,10 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
 - [ ] (optional) **Negative-R² reframe** — state that global map R² is the wrong
       yardstick; specificity is per-row directional edit + gap-closure-per-concept.
       (dVDs)
+- [ ] **(CONDITIONAL — only if a reviewer/AC requests a retitle) Retitle to
+      "INCEPT: Infusing Novel Concepts to Explain Pretrained Tabular Model Disparity."**
+      Do NOT change unilaterally or propose it ourselves — apply only if reviewer/AC
+      feedback explicitly asks for a title change.
 
 ## E. Internal / reproducibility (for open-source release; not necessarily paper text)
 - [ ] **Baseline-prediction consistency between arms** — `perrow_importance` and
