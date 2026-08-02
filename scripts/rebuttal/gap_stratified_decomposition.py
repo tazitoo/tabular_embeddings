@@ -19,6 +19,7 @@ gap = logloss_weak - logloss_strong, reconstructed from the forward_deltas npz
 Usage:
     python -m scripts.rebuttal.gap_stratified_decomposition            # 99% both arms
     python -m scripts.rebuttal.gap_stratified_decomposition --thr 90
+    python -m scripts.rebuttal.gap_stratified_decomposition --by recipient
 """
 import argparse
 import glob
@@ -47,7 +48,7 @@ def collect(arm, thr):
         else f"functional_decomposition{suf}")
     fwd = PROJECT_ROOT / "output" / "rebuttal" / (
         "forward_deltas_random" if arm == "random" else "forward_deltas")
-    on, off, full, gap = [], [], [], []
+    on, off, full, gap, recip, pair_lbl = [], [], [], [], [], []
     n_reg = 0
     for jf in glob.glob(str(dec / "*.json")):
         pair = os.path.basename(jf)[:-5]
@@ -68,16 +69,40 @@ def collect(arm, thr):
             off.extend(rec["gc_off_manifold_rows"])
             full.extend(rec["gc_full_rows"])
             gap.extend(g.tolist())
-    return (np.array(on), np.array(off), np.array(full), np.array(gap), n_reg)
+            recip.extend([rec["recipient"]] * len(r))
+            pair_lbl.extend([f"{rec['donor']}->{rec['recipient']}"] * len(r))
+    return (np.array(on), np.array(off), np.array(full), np.array(gap),
+            np.array(recip), np.array(pair_lbl), n_reg)
+
+
+def _quartile_rows(on, off, full, gap):
+    """Per-quartile (rel_on, rel_off) rows, quartiles cut within the given subset."""
+    q = np.quantile(gap, [0, .25, .5, .75, 1.0])
+    out = []
+    for i in range(4):
+        lo, hi = q[i], q[i + 1]
+        m = (gap >= lo) & (gap <= hi if i == 3 else gap < hi)
+        if not m.sum():
+            continue
+        f_ = full[m].mean()
+        out.append((lo, hi, int(m.sum()), np.median(gap[m]),
+                    on[m].mean() / f_, off[m].mean() / f_))
+    return out
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--thr", type=int, default=99, choices=[80, 90, 95, 99])
+    ap.add_argument("--by", choices=["recipient", "pair"],
+                    help="also break the quartile trend down per group "
+                         "(robustness: is the rise broad-based or a few pairs?)")
+    ap.add_argument("--min-rows", type=int, default=200,
+                    help="skip groups smaller than this in the --by breakdown")
     args = ap.parse_args()
 
+    per_group = {}
     for arm in ["trained", "random"]:
-        on, off, full, gap, n_reg = collect(arm, args.thr)
+        on, off, full, gap, recip, pair_lbl, n_reg = collect(arm, args.thr)
         n = len(on)
         # mean-of-gc (the current numbers) vs loss-weighted
         rel_on_m, rel_off_m = on.mean() / full.mean(), off.mean() / full.mean()
@@ -89,17 +114,51 @@ def main():
         print(f"  LOSS-WEIGHTED  : rel_on={rel_on_w:.2f}  rel_off={rel_off_w:.2f}"
               f"   <- gc-robust")
         # gap-stratified (quartiles)
-        q = np.quantile(gap, [0, .25, .5, .75, 1.0])
         print(f"  gap-stratified (logloss_w - logloss_s, nats):")
         print(f"    {'band':<18}{'n':>6}{'med-gap':>9}{'rel_on':>8}{'rel_off':>9}")
-        for i in range(4):
-            lo, hi = q[i], q[i + 1]
-            m = (gap >= lo) & (gap <= hi if i == 3 else gap < hi)
-            if not m.sum():
-                continue
-            f_ = full[m].mean()
-            print(f"    [{lo:.3f},{hi:.3f}){'':<3}{m.sum():>6}{np.median(gap[m]):>9.3f}"
-                  f"{on[m].mean()/f_:>8.2f}{off[m].mean()/f_:>9.2f}")
+        for lo, hi, m_n, med, r_on, r_off in _quartile_rows(on, off, full, gap):
+            print(f"    [{lo:.3f},{hi:.3f}){'':<3}{m_n:>6}{med:>9.3f}"
+                  f"{r_on:>8.2f}{r_off:>9.2f}")
+
+        if args.by:
+            labels = recip if args.by == "recipient" else pair_lbl
+            per_group[arm] = {}
+            # composition: share of each group's rows landing in each POOLED gap
+            # quartile -- if a high-rel_off group concentrates in Q4, the pooled
+            # quartile trend is a mix effect, not a within-group rise.
+            pq = np.digitize(gap, np.quantile(gap, [.25, .5, .75]))
+            for g in sorted(set(labels)):
+                m = labels == g
+                if m.sum() < args.min_rows:
+                    continue
+                rows = _quartile_rows(on[m], off[m], full[m], gap[m])
+                if len(rows) != 4:
+                    continue
+                wf_g = (full[m] * gap[m]).sum()
+                per_group[arm][g] = dict(
+                    quart=[r[5] for r in rows],
+                    n=int(m.sum()),
+                    rel_off_w=(off[m] * gap[m]).sum() / wf_g,
+                    rel_off_m=off[m].mean() / full[m].mean(),
+                    share=[float((pq[m] == i).mean()) for i in range(4)])
+
+    if args.by:
+        print(f"\n=== PER-{args.by.upper()} rel_off by gap quartile "
+              f"(quartiles cut within group; groups <{args.min_rows} rows skipped) ===")
+        groups = sorted(set(per_group["trained"]) | set(per_group["random"]))
+        print(f"  {'group':<26}{'arm':<9}{'n':>6}   Q1   Q2   Q3   Q4   Q4-Q1")
+        n_rise = {"trained": 0, "random": 0}
+        for g in groups:
+            for arm in ["trained", "random"]:
+                if g not in per_group[arm]:
+                    print(f"  {g:<26}{arm:<9}{'--':>6}   (below min-rows)")
+                    continue
+                qs, gn = per_group[arm][g]
+                n_rise[arm] += qs[3] > qs[0]
+                print(f"  {g:<26}{arm:<9}{gn:>6}" +
+                      "".join(f"{v:>5.2f}" for v in qs) + f"{qs[3]-qs[0]:>8.2f}")
+        for arm in ["trained", "random"]:
+            print(f"  {arm}: Q4 > Q1 in {n_rise[arm]}/{len(per_group[arm])} groups")
 
 
 if __name__ == "__main__":

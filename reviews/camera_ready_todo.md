@@ -45,10 +45,32 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       with the measured aligned/novel energy split + the functional decomposition
       (on-manifold vs off-manifold gap-closure), and note the ridge-map alignment
       floor (~0.33) so the geometry is not over-read. (ofnL Q2) — numbers pending compute.
-      NOTE: functional decomposition covers 5 recipients (mitra/tabdpt/tabicl/
-      tabicl_v2/tabpfn); carte-recipient rows are excluded because CARTETail lacks a
-      `recapture` method (see §E). Report the on/off split on this named population;
-      it excludes carte, so its gc_full differs slightly from the all-recipient headline gc.
+      NOTE (updated 2026-08-02): the 5-recipient caveat is STALE — carte-recipient now
+      runs via `predict_row_batched`, so the decomposition covers all 6 recipients.
+- [ ] **DECIDED (2026-08-02): report the on/off split at the 99% variance threshold.**
+      Rationale: 99% is the CONSERVATIVE choice for an off-manifold claim, because it
+      hands the on-manifold subspace essentially all the recipient's embedding variance
+      and therefore yields the SMALLEST rel_off. Pooled trained rel_off by threshold:
+      80% 0.47, 90% 0.46, 95% 0.44, 99% 0.40 (random 0.46/0.43/0.42/0.37). Present
+      80/90/95 as a **sensitivity check** — "the choice of threshold does not drive the
+      conclusion, and we report the pessimistic end" — NOT as a robustness/replication
+      claim; the four runs share rows, deltas and acceptance, and differ only in the
+      dimension of E. Practical: the `_t99` dirs store `ke`/`var_threshold`; the
+      unsuffixed 90% dir predates that field.
+- [ ] **CAVEAT to state wherever the POOLED on/off number appears: it is a row-count
+      weighted blend of six very different recipients, and carte dominates it.**
+      Per-recipient rel_off @99% spans 0.11–0.89 (carte 0.73–0.89, mitra 0.27–0.45,
+      tabicl 0.37–0.39, tabpfn ~0.31, tabdpt 0.22–0.25, tabicl_v2 0.11–0.14). carte is
+      11,197 of 36,039 trained classification rows (~31%), and its on-manifold subspace
+      is near-degenerate — ke = 1–3 of 300 dims at 80%, still only 1–11 at 99% — so
+      almost the entire delta is off-manifold *by construction* for that recipient. The
+      trained and random arms also carry different recipient mixes (carte 11,197 trained
+      vs 6,304 random), so the pooled trained-vs-random contrast is confounded with
+      composition. DECIDE before writing: report per-recipient rather than pooled, or
+      report pooled with this caveat stated inline. NOT established: whether ke/emb_dim
+      explains the ordering generally — tabicl (48–122/512, 0.37) vs tabicl_v2
+      (37–116/512, 0.11) breaks it. carte is a demonstrable outlier; a general
+      "low-rank ⇒ high rel_off" law is an untested hypothesis.
 - [ ] **Foreground the per-concept efficiency (parsimony)** as the random-baseline
       answer: trained closes 0.90 with K≈8.9 vs random 0.52 with K_R≈17.3 (~3.4×
       gap-closure per concept). (dVDs, nn7D)
@@ -89,6 +111,20 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       ROBUSTNESS — needed before this carries weight (newest, least-settled result):
       confirm the 0.33→0.48 quartile trend holds ACROSS PAIRS/recipients (trained rises,
       random stays flat), not driven by a subset of pairs. Only then does it earn a claim.
+      **GATE RESULT (2026-08-02): FAILED. Do not claim this.** Run
+      `gap_stratified_decomposition.py --thr 99 --by recipient`. The pooled quartile rise
+      is NOT broad-based — per-recipient trained Q1→Q4 rel_off: carte 0.89→0.73,
+      mitra 0.27→0.45, tabdpt 0.25→0.22, tabicl 0.37→0.39, tabicl_v2 0.13→0.11,
+      tabpfn 0.32→0.31. Trained rises in only 2/6 recipients; RANDOM rises in 3/6 —
+      i.e. the "trained rises, random stays flat" pattern does not survive. Only mitra
+      shows the pooled pattern. The pooled trend is a composition (Simpson's) effect:
+      rel_off differs ~8× across recipients and the gap quartiles do not draw evenly
+      from them. The loss-weighted 0.78-vs-0.50 contrast is confounded the same way
+      (different recipient mixes per arm — see the pooling caveat above). The threshold
+      sweep could not have caught this: it varies the subspace dimension on a FIXED set
+      of rows, so it is orthogonal to the composition problem.
+      IF revisited: the honest version is per-recipient, and on current evidence only
+      mitra supports it — one recipient is an anecdote, not a claim.
 
 ## D. Framing
 - [ ] **Reframe interventions as a causal DIAGNOSTIC, not a deployment/model-
