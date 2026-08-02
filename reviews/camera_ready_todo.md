@@ -47,7 +47,9 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       floor (~0.33) so the geometry is not over-read. (ofnL Q2) — numbers pending compute.
       NOTE (updated 2026-08-02): the 5-recipient caveat is STALE — carte-recipient now
       runs via `predict_row_batched`, so the decomposition covers all 6 recipients.
-- [ ] **DECIDED (2026-08-02): report the on/off split at the 99% variance threshold.**
+- [ ] **IF the on/off split is used at all, use the 99% variance threshold** (settled
+      2026-08-02 — a choice about how we would report it, NOT a commitment to report it;
+      see the disaggregation result below, which weakens the whole thread).
       Rationale: 99% is the CONSERVATIVE choice for an off-manifold claim, because it
       hands the on-manifold subspace essentially all the recipient's embedding variance
       and therefore yields the SMALLEST rel_off. Pooled trained rel_off by threshold:
@@ -66,8 +68,19 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       almost the entire delta is off-manifold *by construction* for that recipient. The
       trained and random arms also carry different recipient mixes (carte 11,197 trained
       vs 6,304 random), so the pooled trained-vs-random contrast is confounded with
-      composition. DECIDE before writing: report per-recipient rather than pooled, or
-      report pooled with this caveat stated inline. NOT established: whether ke/emb_dim
+      composition. **The pooled number is not merely confounded — it has no coherent
+      reading.** E is the recipient's own eigenbasis, so rel_off is defined against a
+      different basis per recipient, with effective ranks from ke≈1–11 of 300 (carte) to
+      43–128 of 768 (tabdpt). Averaging them averages quantities that do not share a
+      definition, so "report pooled with a caveat" is NOT one of the options. What DOES
+      survive: within a fixed recipient, trained-vs-random is a fair comparison because
+      the basis is held constant. What does NOT: the pooled value, and any reading of
+      rel_off's absolute LEVEL as evidence about concepts rather than about the
+      recipient's spectrum (for carte, "off-manifold" means "nearly the whole space" and
+      the measurement is close to vacuous). This weakens the on/off split as a vehicle
+      for the ofnL Q2 "purely new capacity" answer — if that answer is still wanted, the
+      fallback is the aligned/novel energy split + the ridge-map alignment floor.
+      NOT established: whether ke/emb_dim
       explains the ordering generally — tabicl (48–122/512, 0.37) vs tabicl_v2
       (37–116/512, 0.11) breaks it. carte is a demonstrable outlier; a general
       "low-rank ⇒ high rel_off" law is an untested hypothesis.
@@ -111,20 +124,32 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       ROBUSTNESS — needed before this carries weight (newest, least-settled result):
       confirm the 0.33→0.48 quartile trend holds ACROSS PAIRS/recipients (trained rises,
       random stays flat), not driven by a subset of pairs. Only then does it earn a claim.
-      **GATE RESULT (2026-08-02): FAILED. Do not claim this.** Run
-      `gap_stratified_decomposition.py --thr 99 --by recipient`. The pooled quartile rise
-      is NOT broad-based — per-recipient trained Q1→Q4 rel_off: carte 0.89→0.73,
-      mitra 0.27→0.45, tabdpt 0.25→0.22, tabicl 0.37→0.39, tabicl_v2 0.13→0.11,
-      tabpfn 0.32→0.31. Trained rises in only 2/6 recipients; RANDOM rises in 3/6 —
-      i.e. the "trained rises, random stays flat" pattern does not survive. Only mitra
-      shows the pooled pattern. The pooled trend is a composition (Simpson's) effect:
-      rel_off differs ~8× across recipients and the gap quartiles do not draw evenly
-      from them. The loss-weighted 0.78-vs-0.50 contrast is confounded the same way
-      (different recipient mixes per arm — see the pooling caveat above). The threshold
-      sweep could not have caught this: it varies the subspace dimension on a FIXED set
-      of rows, so it is orthogonal to the composition problem.
-      IF revisited: the honest version is per-recipient, and on current evidence only
-      mitra supports it — one recipient is an anecdote, not a claim.
+      **GATE RESULT (2026-08-02): the gate does not pass. This did not earn a claim.**
+      Reproduce with `gap_stratified_decomposition.py --thr 99 --by recipient` and
+      `--by pair` (both print the Q1..Q4 rel_off table and the Q4>Q1 tally per arm).
+      - **Per recipient**: trained Q1→Q4 rel_off — carte 0.89→0.73, mitra 0.27→0.45,
+        tabdpt 0.25→0.22, tabicl 0.37→0.39, tabicl_v2 0.13→0.11, tabpfn 0.32→0.31.
+        Trained rises in 2/6; RANDOM rises in 3/6. The "trained rises, random flat"
+        signature does not survive.
+      - **Per pair** (the decisive run): trained Q4>Q1 in **13/27** pairs, random in
+        **13/29** — the two arms are indistinguishable, so the pooled 0.33→0.48 rise is
+        not a pair-level phenomenon.
+      - Residual structure is set by the RECIPIENT and flips sign: mitra-recipient
+        trained rises in 4/5 donors (+0.06..+0.35) while random is flat/negative;
+        tabdpt-recipient is the MIRROR IMAGE (random rises 5/5 at +0.04..+0.18, trained
+        0/5); carte-recipient trained falls in 5/5 (−0.08..−0.21). Random's own
+        excursions (+0.18, +0.15, −0.21) are as large as trained's, so all of the
+        mitra values except tabdpt→mitra (+0.35) sit INSIDE random's noise band.
+      - That recipient-driven structure is **definitional, not empirical**: E is the
+        recipient's own eigenbasis, so rel_off is parameterized by recipient geometry
+        before any donor enters. Donor effects are second-order (within-recipient
+        rel_off barely moves across 5 donors; across recipients it spans 0.11–0.94).
+      - The threshold sweep could not have caught any of this: it varies dim(E) on a
+        FIXED set of rows, orthogonal to the disaggregation problem.
+      NOT tested, deliberately: the loss-weighted variant (0.78 vs 0.50). Deprioritized
+      — the quartile disaggregation already answers the gate, and the loss-weighted
+      number is tail-sensitive (large-gap band runs to ~16 nats). The script no longer
+      computes it; re-add if ever revisited.
 
 ## D. Framing
 - [ ] **Reframe interventions as a causal DIAGNOSTIC, not a deployment/model-

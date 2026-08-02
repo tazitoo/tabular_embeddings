@@ -123,24 +123,13 @@ def main():
         if args.by:
             labels = recip if args.by == "recipient" else pair_lbl
             per_group[arm] = {}
-            # composition: share of each group's rows landing in each POOLED gap
-            # quartile -- if a high-rel_off group concentrates in Q4, the pooled
-            # quartile trend is a mix effect, not a within-group rise.
-            pq = np.digitize(gap, np.quantile(gap, [.25, .5, .75]))
             for g in sorted(set(labels)):
                 m = labels == g
                 if m.sum() < args.min_rows:
                     continue
                 rows = _quartile_rows(on[m], off[m], full[m], gap[m])
-                if len(rows) != 4:
-                    continue
-                wf_g = (full[m] * gap[m]).sum()
-                per_group[arm][g] = dict(
-                    quart=[r[5] for r in rows],
-                    n=int(m.sum()),
-                    rel_off_w=(off[m] * gap[m]).sum() / wf_g,
-                    rel_off_m=off[m].mean() / full[m].mean(),
-                    share=[float((pq[m] == i).mean()) for i in range(4)])
+                if len(rows) == 4:
+                    per_group[arm][g] = ([r[5] for r in rows], int(m.sum()))
 
     if args.by:
         print(f"\n=== PER-{args.by.upper()} rel_off by gap quartile "
@@ -157,6 +146,9 @@ def main():
                 n_rise[arm] += qs[3] > qs[0]
                 print(f"  {g:<26}{arm:<9}{gn:>6}" +
                       "".join(f"{v:>5.2f}" for v in qs) + f"{qs[3]-qs[0]:>8.2f}")
+        # The gate: if the pooled Q1->Q4 rise were a real trained-vs-random signal it
+        # should show up broadly here (trained rises, random does not). It does not --
+        # see camera_ready_todo.md SS C.
         for arm in ["trained", "random"]:
             print(f"  {arm}: Q4 > Q1 in {n_rise[arm]}/{len(per_group[arm])} groups")
 
