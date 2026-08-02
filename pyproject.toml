@@ -7,14 +7,24 @@ name = "tabular-embeddings"
 version = "0.1.0"
 description = "Embedding extraction and comparison for tabular foundation models"
 requires-python = ">=3.10"
+# EXACTLY PINNED, not floors. These are the versions that produced the paper's
+# results (python 3.12.12). Floors like `numpy>=1.24` are satisfied by 1.26.4,
+# 2.2.6 AND 2.3.5 simultaneously, so two `pip install -e .` runs on different
+# dates yield different numeric stacks -- which is how the worker pool drifted to
+# three numpy versions and two scikit-learn versions. numpy 2.x changed type
+# promotion and scikit-learn drives preprocessing (StandardScaler,
+# PowerTransformer), so these are not cosmetic.
+# torch carries a CUDA local version (+cu124) that PyPI specifiers cannot express;
+# install it from the matching index:
+#   pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 dependencies = [
-    "numpy>=1.24",
-    "pandas>=2.0",
-    "torch>=2.0",
-    "scikit-learn>=1.3",
-    "scipy>=1.10",
-    "matplotlib>=3.7",
-    "seaborn>=0.12",
+    "numpy==2.3.5",
+    "pandas==2.3.3",
+    "torch==2.6.0",
+    "scikit-learn==1.6.1",
+    "scipy==1.16.3",
+    "matplotlib==3.10.8",
+    "seaborn==0.13.2",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +33,15 @@ dependencies = [
 # The cached embeddings / SAEs / norm-stats are tied to these model versions;
 # newer releases change architectures/dims (e.g. tabpfn 8.x, tabdpt 1.2.0) and
 # silently break compatibility. Reference runtime: torch==2.6.0+cu124,
-# numpy==2.3.5, python 3.12. Reproduce with these exact pins.
+# numpy==2.3.5, python 3.12 -- now enforced in [project.dependencies] above
+# rather than stated only here.
+#
+# TWO ENVIRONMENTS. The pins below describe `tfm`, the default. `tabicl_v2` needs
+# a newer torch/tabicl that are incompatible with plain tabicl, so it lives in a
+# separate `tfm2` env -- see the [tfm2] extra. Pair routing picks the env by
+# whether the pair involves tabicl_v2, which means a model appearing in BOTH envs
+# must be pinned identically in both or it silently runs two different versions
+# depending on its partner (this happened: see the autogluon note under [tfm2]).
 tabpfn = ["tabpfn==6.3.2"]
 # Plain TabICL. PyPI latest is 2.x, which is the DIFFERENT tabicl_v2 model and
 # belongs in a separate env (tfm2 uses tabicl==2.0.3). Unpinned silently
@@ -48,6 +66,28 @@ models = [
     "transformers==4.57.6",
     "bitsandbytes==0.49.2",
     "accelerate==1.12.0",
+]
+
+# The SECOND worker environment (`tfm2`), required for tabicl_v2 -- tabicl 2.x is
+# a different model from plain tabicl 0.1.4 and needs a newer torch. Install with
+#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu126
+# then `pip install -e .[tfm2]`. Core numeric stack is deliberately IDENTICAL to
+# the tfm env (numpy/scipy/pandas/scikit-learn) so only the model layer differs.
+#
+# DISCREPANCY (2026-08-02, unresolved): deployed tfm2 envs carry
+# autogluon.tabular==1.4.0 while tfm carries 1.5.0, so Mitra runs a different
+# autogluon version depending on whether its pair involves tabicl_v2. tabpfn
+# likewise differs (6.3.2 vs 7.0.1) but that one is required by the newer torch.
+# The autogluon split appears to be drift, not intent; pinned to 1.5.0 here to
+# match tfm, which means existing tfm2 envs need updating to comply.
+tfm2 = [
+    "torch==2.7.1",
+    "tabicl==2.0.3",
+    "tabpfn==7.0.1",
+    "tabdpt==1.1.12",
+    "carte-ai==0.0.26",
+    "torch_geometric==2.7.0",
+    "autogluon.tabular[mitra]==1.5.0",
 ]
 
 # SAE training and hyperparameter optimization
