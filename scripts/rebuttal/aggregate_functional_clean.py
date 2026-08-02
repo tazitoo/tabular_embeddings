@@ -25,6 +25,7 @@ arms (near-tie baseline drift, mostly regression) as a caveat, not a filter.
 Usage:
     python -m scripts.rebuttal.aggregate_functional_clean
 """
+import argparse
 import glob
 import json
 import os
@@ -36,6 +37,11 @@ from scripts._project_root import PROJECT_ROOT
 
 TRAINED = PROJECT_ROOT / "output/rebuttal/functional_decomposition"
 RANDOM = PROJECT_ROOT / "output/rebuttal/functional_decomposition_random"
+
+# Threshold-suffixed variants. The unsuffixed dirs above are the original 90% runs,
+# which predate the ke/var_threshold provenance fields; `--suffix _t90` selects the
+# self-certifying re-run instead.
+SUFFIXED = "{base}{suffix}"
 
 
 def load(dirpath):
@@ -107,8 +113,18 @@ def _arm_table(arm, per):
 
 
 def main():
-    tr = load(str(TRAINED))
-    rn = load(str(RANDOM)) if RANDOM.exists() else {}
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--suffix", default="",
+                    help="threshold-dir suffix, e.g. _t90 for the self-certifying "
+                         "90%% re-run (unsuffixed = the original 90%% dirs, which "
+                         "lack the ke/var_threshold provenance fields)")
+    args = ap.parse_args()
+    trained = TRAINED.parent / (TRAINED.name + args.suffix)
+    random_d = RANDOM.parent / (RANDOM.name + args.suffix)
+    print(f"trained dir: {trained.name}    random dir: {random_d.name}")
+
+    tr = load(str(trained))
+    rn = load(str(random_d)) if random_d.exists() else {}
 
     per_tr = defaultdict(_blank)
     for rec in tr.values():
@@ -127,7 +143,7 @@ def main():
           f"random pairs={len({p for p,_ in rn})}/15; "
           f"recipient-differs-between-arms datasets (near-tie drift, reported not dropped)={flips}")
 
-    dst = PROJECT_ROOT / "output/rebuttal/functional_clean_table.json"
+    dst = PROJECT_ROOT / f"output/rebuttal/functional_clean_table{args.suffix}.json"
     dst.write_text(json.dumps(out, indent=2, default=float))
     print(f"Wrote {dst}")
 
