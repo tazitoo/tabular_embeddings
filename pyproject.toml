@@ -99,15 +99,17 @@ tfm2 = [
 
 # SAE training and hyperparameter optimization
 sae = [
-    "optuna>=3.0",
-    "wandb",
+    "optuna==4.7.0",
+    "wandb==0.24.2",
 ]
 
-# Concept matching (Leiden community detection)
+# Concept matching (Leiden community detection) + dataset meta-features.
+# pymfe is imported by scripts/__init__.py, so this extra is NOT optional for
+# most of the pipeline -- it is in [all] for that reason.
 matching = [
-    "igraph>=0.10",
+    "igraph==1.0.0",
     "leidenalg>=0.10",
-    "pymfe>=0.4",
+    "pymfe==0.4.4",
 ]
 
 # Concept labeling (embedding-based convergence check)
@@ -117,10 +119,16 @@ labeling = [
     "openai>=1.0",
 ]
 
-# Benchmark dataset loaders
+# Benchmark dataset loaders.
+# openml was previously UNDECLARED despite being imported by
+# scripts/sae_corpus/00_download_tabarena_splits.py -- the first step of the
+# pipeline -- and by sae_sweep / row_level_probes / label_concepts /
+# layerwise_cka_analysis. A fresh env built from this file could not download
+# the TabArena splits.
 benchmarks = [
     "relbench",
     "pmlb",
+    "openml==0.15.1",
 ]
 
 # Distributed execution
@@ -137,9 +145,14 @@ dev = [
     "pytest>=7.0",
 ]
 
-# Everything needed for a full worker environment
+# Everything needed for a full worker environment.
+# `matching` was previously EXCLUDED here despite pymfe being imported from
+# scripts/__init__.py, so `pip install -e .[all]` produced an env that could not
+# import most of the scripts package. `labeling` stays out on purpose: it is
+# heavyweight (sentence-transformers) and labeling runs in Claude Code without an
+# API key, so workers do not need it.
 all = [
-    "tabular-embeddings[models,sae,benchmarks,distributed,plots,dev]",
+    "tabular-embeddings[models,sae,matching,benchmarks,distributed,plots,dev]",
 ]
 
 [tool.setuptools.packages.find]
