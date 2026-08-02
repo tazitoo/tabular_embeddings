@@ -86,15 +86,34 @@ def main():
                     choices=["minimal", "full", "algos"],
                     help="see apply_seeding(); 'full' is the standard recipe, "
                          "'algos' adds use_deterministic_algorithms(True)")
+    ap.add_argument("--dump", metavar="PATH",
+                    help="save this run's predictions, so the SAME model can be "
+                         "compared ACROSS seed-modes (does enabling determinism "
+                         "change an already-reproducible model's values?)")
+    ap.add_argument("--compare", nargs=2, metavar=("A.npz", "B.npz"),
+                    help="diff two --dump files per model and exit")
     args = ap.parse_args()
+
+    if args.compare:
+        A, B = (np.load(p, allow_pickle=True) for p in args.compare)
+        print(f"cross-mode comparison: {args.compare[0]} vs {args.compare[1]}")
+        for model in sorted(set(A.files) & set(B.files)):
+            a, b = A[model], B[model]
+            d = np.abs(a - b)
+            same = bool(np.array_equal(a, b))
+            print(f"  {model:<12} identical={str(same):<5} "
+                  f"mean|d|={d.mean():.3e}  max|d|={d.max():.3e}")
+        return
 
     print(f"seed-mode = {args.seed_mode}")
     splits = json.loads(SPLITS_PATH.read_text())
+    dumps = {}
     for model in args.models:
         a = build_once(model, args.dataset, args.device, splits, args.seed_mode)
         b = build_once(model, args.dataset, args.device, splits, args.seed_mode)
         d = np.abs(a - b)
         same = bool(np.array_equal(a, b))
+        dumps[model] = a
         print(f"\n=== {model} / {args.dataset} ===")
         print(f"  shape={a.shape}  bit-identical={same}")
         print(f"  |d|: mean={d.mean():.3e}  max={d.max():.3e}  "
@@ -102,6 +121,9 @@ def main():
               f"/{len(d)}")
         if not same:
             print(f"  -> NOT reproducible under identical seeds")
+    if args.dump:
+        np.savez(args.dump, **dumps)
+        print(f"\ndumped {len(dumps)} model(s) -> {args.dump}")
 
 
 if __name__ == "__main__":
