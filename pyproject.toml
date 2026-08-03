@@ -28,6 +28,10 @@ dependencies = [
     "numpy==2.3.5",
     "pandas==2.3.3",
     "torch==2.6.0",
+    # torchvision/torchaudio arrive transitively but carry the same +cu124 local
+    # version as torch, so they are declared to keep the CUDA build pinned too.
+    "torchvision==0.21.0",
+    "torchaudio==2.6.0",
     "scikit-learn==1.6.1",
     "scipy==1.16.3",
     "matplotlib==3.10.8",
@@ -158,3 +162,34 @@ all = [
 [tool.setuptools.packages.find]
 include = ["models*", "data*", "analysis*", "config*", "scripts*"]
 exclude = ["output*", "notebooks*"]
+
+# ---------------------------------------------------------------------------
+# uv: transitive-dependency locking.
+#
+# The pins above cover DIRECT dependencies only. Rebuilding a worker from this
+# file and diffing against an existing one showed 65 transitive packages still
+# floating, 39 of which are imported during model compute (tabpfn-common-utils,
+# category-encoders, einx, safetensors, catboost/xgboost, protobuf, ...). Direct
+# pins cannot close that; `uv lock` writes uv.lock with the full resolution.
+#
+#   uv lock                      # regenerate after editing dependencies
+#   uv sync --extra all          # materialise the locked env
+#
+# Scoped to Linux deliberately. The worker pool is Linux/CUDA/py3.12 and a
+# universal resolution would have to accommodate CPU-only torch wheels, which is
+# a different environment, not a portable version of this one.
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+
+# torch's CUDA build carries a +cu124 local version that a PyPI specifier cannot
+# express -- previously this had to be a manual `pip install --index-url` step
+# outside the spec. Declaring the index here makes the lock self-contained.
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
