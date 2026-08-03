@@ -1,0 +1,74 @@
+# The `tfm2` worker environment -- a SEPARATE environment from the repo root's
+# `tfm`, not an extra of it.
+#
+# Why it exists: tabicl 2.x ("tabicl_v2") is a different model from plain
+# tabicl 0.1.4, and it needs torch 2.7.1/cu126. The root project pins
+# torch==2.6.0/cu124. Those are mutually unsatisfiable, so a single lock cannot
+# describe both -- `uv lock` fails outright if tfm2 is expressed as an extra.
+# Hence two environments, two locks.
+#
+# Pair routing (scripts/rebuttal/functional_queue.sh and friends) selects the
+# interpreter by whether the pair involves tabicl_v2. A model present in BOTH
+# environments therefore runs whichever version each env carries -- keep the
+# shared pins below identical to the root pyproject or the same model silently
+# behaves differently depending on its partner.
+#
+# Build:
+#   conda create -y -n tfm2 python=3.12.12
+#   cd envs/tfm2 && uv lock && uv sync
+#   /path/to/envs/tfm2/bin/pip install -e /path/to/repo --no-deps
+#
+# The repo itself is installed with --no-deps because this file, not the root
+# pyproject, owns this environment's dependency set.
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tabular-embeddings-tfm2"
+version = "0.1.0"
+description = "tabicl_v2 worker environment (torch 2.7.1/cu126)"
+requires-python = ">=3.12,<3.13"
+
+# Core numeric stack is deliberately IDENTICAL to the root pyproject so that only
+# the model layer differs between the two environments.
+dependencies = [
+    "numpy==2.3.5",
+    "pandas==2.3.3",
+    "scikit-learn==1.6.1",
+    "scipy==1.16.3",
+    "matplotlib==3.10.8",
+    "seaborn==0.13.2",
+    # The divergence that justifies a separate environment:
+    "torch==2.7.1",
+    "tabicl==2.0.3",       # tabicl_v2; root env pins 0.1.4 (a different model)
+    "tabpfn==7.0.1",       # required by the newer torch; root env pins 6.3.2
+    # Shared with the root env -- keep these in sync with it.
+    "tabdpt==1.1.12",
+    "carte-ai==0.0.26",
+    "torch_geometric==2.7.0",
+    # DISCREPANCY (2026-08-02): deployed tfm2 envs carry autogluon 1.4.0 while
+    # tfm carries 1.5.0, so Mitra runs a different autogluon depending on whether
+    # its pair involves tabicl_v2. That looks like drift rather than intent
+    # (tfm2's other divergences all trace to tabicl_v2's torch requirement, this
+    # one does not), so it is pinned to match tfm. UNVERIFIED: that 1.5.0
+    # installs cleanly against torch 2.7.1. If it conflicts, pin 1.4.0 here and
+    # document that Mitra differs across environments rather than hiding it.
+    "autogluon.tabular[mitra]==1.5.0",
+    "openml==0.15.1",
+    "igraph==1.0.0",
+    "leidenalg>=0.10",
+    "pymfe==0.4.4",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }

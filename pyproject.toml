@@ -79,27 +79,12 @@ models = [
     "accelerate==1.12.0",
 ]
 
-# The SECOND worker environment (`tfm2`), required for tabicl_v2 -- tabicl 2.x is
-# a different model from plain tabicl 0.1.4 and needs a newer torch. Install with
-#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu126
-# then `pip install -e .[tfm2]`. Core numeric stack is deliberately IDENTICAL to
-# the tfm env (numpy/scipy/pandas/scikit-learn) so only the model layer differs.
-#
-# DISCREPANCY (2026-08-02, unresolved): deployed tfm2 envs carry
-# autogluon.tabular==1.4.0 while tfm carries 1.5.0, so Mitra runs a different
-# autogluon version depending on whether its pair involves tabicl_v2. tabpfn
-# likewise differs (6.3.2 vs 7.0.1) but that one is required by the newer torch.
-# The autogluon split appears to be drift, not intent; pinned to 1.5.0 here to
-# match tfm, which means existing tfm2 envs need updating to comply.
-tfm2 = [
-    "torch==2.7.1",
-    "tabicl==2.0.3",
-    "tabpfn==7.0.1",
-    "tabdpt==1.1.12",
-    "carte-ai==0.0.26",
-    "torch_geometric==2.7.0",
-    "autogluon.tabular[mitra]==1.5.0",
-]
+# NOTE: the second worker environment (`tfm2`, required for tabicl_v2) is NOT an
+# extra here. It pins torch==2.7.1 against this project's torch==2.6.0, so the
+# two are mutually unsatisfiable -- `uv lock` proved it by failing to resolve.
+# They are two SEPARATE environments, not two flavours of one, which is why
+# tabicl_v2 pairs must run under tfm2 and everything else under tfm.
+# See envs/tfm2/pyproject.toml.
 
 # SAE training and hyperparameter optimization
 sae = [
