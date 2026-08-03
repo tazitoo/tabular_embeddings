@@ -41,7 +41,12 @@ Usage:
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
+
+# Must precede CUDA initialisation, hence before torch is imported. Required by
+# torch.use_deterministic_algorithms for cuBLAS ops; see docs/reproducibility.md.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import numpy as np
 import torch
@@ -198,6 +203,13 @@ def main():
                     help="cumulative activation-variance fraction defining the on-manifold "
                          "subspace E (default 0.90). Sweep this to test the split's sensitivity.")
     args = ap.parse_args()
+    # Seeding alone does not make carte reproducible: it is the only recipient
+    # whose tail is TRAINED, and CARTE re-seeds torch internally anyway. This is
+    # the operative knob (covers the scatter/index_add ops PyG uses), and it is
+    # verified not to perturb the other five models. Pairs with the
+    # CUBLAS_WORKSPACE_CONFIG set at the top of this module.
+    # See docs/reproducibility.md.
+    torch.use_deterministic_algorithms(True)
     strong, weak = args.models
     pair = f"{min(strong,weak)}_vs_{max(strong,weak)}"
     if args.dataset:
