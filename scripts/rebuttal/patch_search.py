@@ -130,12 +130,75 @@ def rank_columns(X: np.ndarray, a: np.ndarray, top_k: int) -> list[int]:
     return [int(j) for j in np.argsort(-np.asarray(scores))[:top_k]]
 
 
-def candidate_values(X: np.ndarray, col: int, max_vals: int) -> np.ndarray:
-    """Values from the column's OBSERVED support -- never invents a value."""
-    v = np.unique(X[~np.isnan(X[:, col]), col])
-    if len(v) <= max_vals:
-        return v
-    return np.unique(np.quantile(v, np.linspace(0.0, 1.0, max_vals)))
+def candidate_values(X: np.ndarray, col: int, max_vals: int,
+                     interior: bool = True) -> np.ndarray:
+    """Values that actually OCCUR in the column, weighted by how typical they are.
+
+    Three things this has to get right, each of which the naive version got wrong:
+
+    1. Never invent a value. np.quantile interpolates linearly by default, so quantiles
+       of ordinal-coded categoricals produce codes like 2.571 that correspond to no
+       category -- off-distribution by construction, and a violation of the only
+       in-support guard we have now that contrastive rows are gone. method="nearest"
+       snaps every proposal onto an observed value.
+    2. Quantile the column WITH multiplicity, not its unique values. A column that is
+       90% zeros has unique-quantiles spread over rare extremes (0, 98, 249, ... 1000)
+       while data-quantiles correctly propose the typical value (0).
+    3. Do not force the extremes. linspace(0,1) always includes min and max, biasing the
+       search toward the most violent legal edit; interior quantiles avoid that.
+    """
+    v = X[~np.isnan(X[:, col]), col]
+    if v.size == 0:
+        return np.array([])
+    uniq = np.unique(v)
+    if len(uniq) <= max_vals:
+        return uniq
+    qs = np.linspace(0.05, 0.95, max_vals) if interior else np.linspace(0.0, 1.0, max_vals)
+    out = np.unique(np.quantile(v, qs, method="nearest"))
+    if len(out) < max_vals:
+        # Snapping collapses quantiles onto the same value in skewed columns (90% zeros
+        # -> two candidates). Top up with evenly spaced OBSERVED values so the search
+        # keeps its coverage without proposing anything that does not occur.
+        extra = uniq[np.linspace(0, len(uniq) - 1, max_vals).astype(int)]
+        out = np.unique(np.concatenate([out, extra]))
+    return out
+
+
+def column_types(model: str, dataset: str, X: np.ndarray) -> set[int]:
+    """Categorical column indices, from the preprocessing cache where it declares them.
+
+    A "standard step" is meaningless for an ordinal-coded categorical -- moving code 2
+    to 2.5 names no category, and even 2->3 is not a step of any size. Those columns get
+    alternative observed LEVELS instead of a gradient.
+    """
+    cat: set[int] = set()
+    try:
+        from data.preprocessing import load_preprocessed, CACHE_DIR
+        cat = set(load_preprocessed(model, dataset, CACHE_DIR).cat_indices or [])
+    except Exception:
+        pass
+    for j in range(X.shape[1]):
+        v = X[~np.isnan(X[:, j]), j]
+        if j not in cat and v.size and len(np.unique(v)) <= 20 and np.allclose(v, np.round(v)):
+            cat.add(j)
+    return cat
+
+
+def nearest_observed(X: np.ndarray, col: int, target: float) -> float:
+    """Snap a proposed value onto the nearest value the column actually takes."""
+    v = X[~np.isnan(X[:, col]), col]
+    if v.size == 0:
+        return float(target)
+    return float(v[np.argmin(np.abs(v - target))])
+
+
+def edit_distance(X: np.ndarray, col: int, old: float, new: float) -> float:
+    """Size of an edit in units of the column's own spread, so columns are comparable."""
+    v = X[~np.isnan(X[:, col]), col]
+    scale = float(np.subtract(*np.percentile(v, [75, 25]))) if v.size else 0.0
+    if scale <= 1e-12:
+        scale = float(np.std(v)) if v.size else 1.0
+    return abs(float(new) - float(old)) / max(scale, 1e-9)
 
 
 # ── the search ───────────────────────────────────────────────────────────────
@@ -194,71 +257,135 @@ def shift_metrics(a_base, a_new, others, feat):
             "n_others_moved_gt_10pct": int((rel > 0.10).sum())}
 
 
-def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
-               others, cols, max_vals, max_steps, sel_tol, recon_bar, batched=True):
-    """Greedy (column, value) suppression for one row.
+def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac, max_levels):
+    """Pass 1: one standard step per column -> local sensitivity of c, in one forward.
 
-    sel_tol now bounds the RELATIVE shift of the other k-1 concepts (p90), not an
-    absolute activation difference.
+    Continuous columns get +/- step_frac of their IQR, snapped to an observed value, so
+    the response is a finite-difference gradient in comparable units across columns.
+    Categorical columns get alternative observed levels instead, since a "step" in
+    ordinal-code space is not a step of any size.
+
+    Returns one record per (column, value) probe, carrying both the concept's response
+    and the other k-1 concepts' response -- so columns can be ranked by SELECTIVITY
+    (how much c moves per unit of collateral) rather than by raw effect.
     """
+    variants, meta = [], []
+    for j in range(X_query.shape[1]):
+        v = X_query[~np.isnan(X_query[:, j]), j]
+        if v.size == 0:
+            continue
+        if j in cat:
+            vals = [val for val in candidate_values(X_query, j, max_levels)
+                    if not np.isclose(val, x0[j], equal_nan=True)]
+        else:
+            iqr = float(np.subtract(*np.percentile(v, [75, 25]))) or float(np.std(v)) or 1.0
+            vals = []
+            for sgn in (-1.0, 1.0):
+                cand = nearest_observed(X_query, j, x0[j] + sgn * step_frac * iqr)
+                if not np.isclose(cand, x0[j], equal_nan=True):
+                    vals.append(cand)
+        for val in dict.fromkeys(vals):
+            r = x0.copy(); r[j] = val
+            variants.append(r); meta.append((int(j), float(val)))
+    if not variants:
+        return []
+    a, rel = ev(variants)
+    out = []
+    for i, (j, val) in enumerate(meta):
+        m = shift_metrics(a_base_row, a[i], others, feat)
+        d = float(a_base_row[feat] - a[i][feat])          # positive = suppresses
+        out.append({"column": j, "value": val, "drop": d,
+                    "activation_after": float(a[i][feat]), "recon_rel": float(rel[i]),
+                    "edit_distance": edit_distance(X_query, j, x0[j], val),
+                    # effect on c per unit of collateral: the quantity we actually want
+                    "selectivity": d / (m["other_rel_p90"] + 1e-6), **m})
+    return out
+
+
+def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
+               others, cat, sel_tol, recon_bar, batched=True, step_frac=0.5,
+               max_levels=6, top_m=8, max_cols=3):
+    """Two-pass search: column sensitivity, then combinations of the best columns.
+
+    Pass 1 probes every column with a standard step (one batched forward) and ranks them
+    by selectivity -- c's response per unit of collateral movement in the other k-1.
+    Pass 2 evaluates subsets of the top-ranked columns, each held at its pass-1 value,
+    in a second batched forward. Two forwards per row instead of a rescan per greedy
+    step, and the ranking optimises the thing we care about rather than raw suppression.
+    """
+    import itertools
+
     base = X_query.copy()
-    cur = base[row].copy()
     a0, rel0 = extract_acts(donor, dataset, X_ctx, y_ctx, base, task, device)
     a_base_row = a0[row].copy()
     a_start = float(a_base_row[feat])
+    x0 = base[row].copy()
     ev = make_evaluator(donor, dataset, X_ctx, y_ctx, base, task, device, row, batched)
-    hist, used = [], set()
-    a_now, a_now_vec = a_start, a_base_row.copy()
-    stop = "max_steps"
 
-    for _ in range(max_steps):
-        variants, meta = [], []
-        for c in cols:
-            if c in used:
-                continue
-            for val in candidate_values(X_query, c, max_vals):
-                if np.isclose(val, cur[c], equal_nan=True):
-                    continue
-                r = cur.copy(); r[c] = val
-                variants.append(r); meta.append((c, float(val)))
-        if not variants:
-            stop = "no_candidates"; break
+    sens = column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat,
+                              step_frac, max_levels)
+    # best suppressing probe per column, then rank columns by selectivity
+    per_col = {}
+    for s in sens:
+        if s["drop"] <= 0:
+            continue
+        if s["column"] not in per_col or s["selectivity"] > per_col[s["column"]]["selectivity"]:
+            per_col[s["column"]] = s
+    ranked = sorted(per_col.values(), key=lambda s: -s["selectivity"])[:top_m]
 
-        a, rel = ev(variants)
-        best = None
-        for i, (c, val) in enumerate(meta):
-            av = a[i]
-            drop = a_now - float(av[feat])
-            m = shift_metrics(a_base_row, av, others, feat)
-            ok_sel = sel_tol is None or m["other_rel_p90"] <= sel_tol
-            ok_rec = recon_bar is None or float(rel[i]) <= recon_bar
-            cand = {"column": int(c), "value": val, "activation_after": float(av[feat]),
-                    "drop": drop, "recon_rel": float(rel[i]),
-                    "qualifies": bool(ok_sel and ok_rec), **m}
-            if drop > 0 and ok_sel and ok_rec and (best is None or drop > best["drop"]):
-                best = cand; best["_vec"] = av
-        if best is None:
-            stop = "no_qualifying_column"; break
-        cur[best["column"]] = best["value"]
-        used.add(best["column"])
-        a_now = best["activation_after"]
-        a_now_vec = best.pop("_vec")
-        hist.append(best)
-        if a_now <= 0:
-            stop = "fully_suppressed"; break
+    best, stop = None, "no_sensitive_column"
+    if ranked:
+        combos, cmeta = [], []
+        for size in range(1, max_cols + 1):
+            for sub in itertools.combinations(ranked, size):
+                r = x0.copy()
+                for s in sub:
+                    r[s["column"]] = s["value"]
+                combos.append(r); cmeta.append(sub)
+        a, rel = ev(combos)
+        cands = []
+        for i, sub in enumerate(cmeta):
+            m = shift_metrics(a_base_row, a[i], others, feat)
+            drop = a_start - float(a[i][feat])
+            ok = ((sel_tol is None or m["other_rel_p90"] <= sel_tol) and
+                  (recon_bar is None or float(rel[i]) <= recon_bar))
+            if drop > 0 and ok:
+                cands.append({"columns": [s["column"] for s in sub],
+                              "values": [s["value"] for s in sub],
+                              "activation_after": float(a[i][feat]), "drop": drop,
+                              "recon_rel": float(rel[i]),
+                              "edit_distance": float(sum(s["edit_distance"] for s in sub)),
+                              "_vec": a[i], **m})
+        if cands:
+            # prefer the smallest edit among those achieving comparable suppression
+            top = max(c["drop"] for c in cands)
+            best = min([c for c in cands if c["drop"] >= 0.9 * top],
+                       key=lambda c: c["edit_distance"])
+            stop = "fully_suppressed" if best["activation_after"] <= 0 else "best_combination"
+        else:
+            stop = "no_qualifying_combination"
 
-    # per-concept ratios for the accepted set, so the readout can rebuild the delta
-    # from MEASURED shifts instead of assuming only c moved
+    a_now_vec = best.pop("_vec") if best else a_base_row.copy()
+    a_now = float(best["activation_after"]) if best else a_start
+    cur = x0.copy()
+    if best:
+        for c, v in zip(best["columns"], best["values"]):
+            cur[c] = v
+
     acc = np.concatenate([[feat], others]).astype(int) if len(others) else np.array([feat])
     ratios = {int(j): float(a_now_vec[j] / a_base_row[j]) if abs(a_base_row[j]) > 1e-9 else 1.0
               for j in acc}
     return {"row": int(row), "a_start": a_start, "a_final": a_now,
             "ratio": (a_now / a_start) if a_start > 0 else float("nan"),
             "drop_frac": (1.0 - a_now / a_start) if a_start > 0 else float("nan"),
-            "recon_rel_start": float(rel0[row]), "steps": hist, "stop_reason": stop,
-            "patched_row": cur.tolist(), "n_cols_changed": len(used),
+            "recon_rel_start": float(rel0[row]), "stop_reason": stop,
+            "patched_row": cur.tolist(),
+            "n_cols_changed": len(best["columns"]) if best else 0,
+            "best": best, "sensitivity_top": ranked[:5],
+            "n_probes": len(sens), "n_sensitive_columns": len(per_col),
             "final_shift": shift_metrics(a_base_row, a_now_vec, others, feat),
-            "accepted_ratios": ratios, "batched": bool(batched)}
+            "accepted_ratios": ratios, "batched": bool(batched),
+            "steps": [best] if best else []}
 
 
 def placebo_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
@@ -309,10 +436,18 @@ def cells_for_concept(donor, feat, min_rows):
         sel = np.asarray(z["selected_features"])
         if sel.size == 0:
             continue
-        rows = [r for r in range(sel.shape[0]) if feat in set(sel[r][sel[r] >= 0].tolist())]
+        # k = how many concepts were accepted at that row. Purity is capped by it: the
+        # delta is a sum over k terms, so at k~60 even a 3x selectivity ratio yields
+        # purity < 0.09 because 59 small shifts outweigh one large one. k is skewed
+        # (median 6, a third of rows <= 3), so prefer cells offering LOW-k rows rather
+        # than cells with the most accepted rows.
+        rows = [(r, len(np.unique(sel[r][sel[r] >= 0])))
+                for r in range(sel.shape[0]) if feat in set(sel[r][sel[r] >= 0].tolist())]
         if len(rows) >= min_rows:
             out.append((str(z["weak_model"]), os.path.basename(f)[:-4], rows, f))
-    out.sort(key=lambda t: -len(t[2]))
+    # rank cells by how many low-k rows they offer, then by median k
+    out.sort(key=lambda t: (-sum(1 for _, k in t[2] if k <= 5),
+                            float(np.median([k for _, k in t[2]]))))
     return out
 
 
@@ -412,6 +547,8 @@ def main():
                     help="max allowed shift in the other k-1; omit to record only "
                          "(the probe measures the placebo null that sets this)")
     ap.add_argument("--recon-bar", type=float, default=None)
+    ap.add_argument("--step-frac", type=float, default=0.5,
+                    help="standard step per continuous column, in IQR units (pass 1)")
     ap.add_argument("--check-independence", action="store_true",
                     help="verify query rows do not influence each other before trusting "
                          "the batched candidate evaluation")
@@ -446,9 +583,11 @@ def run_concept(donor, feat, args):
         if not cells:
             print(f"\n{donor} f{feat}: no cell with >= {args.min_rows} accepted rows")
             return {"donor": donor, "feat": feat, "status": "no_cell"}
-        recipient, dataset, acc_rows, npz_path = cells[0]
+        recipient, dataset, acc_rows_k, npz_path = cells[0]
+        ks = [k for _, k in acc_rows_k]
         print(f"\n{donor} f{feat} -> {recipient} / {dataset}  "
-              f"({len(acc_rows)} accepted rows, {len(cells)} cells)", flush=True)
+              f"({len(acc_rows_k)} accepted rows, {len(cells)} cells, "
+              f"k median={np.median(ks):.0f} min={min(ks)})", flush=True)
 
         X_ctx, y_ctx, X_query, _, _, task = load_dataset_context(donor, dataset,
                                                                  query_source="holdout")
@@ -460,10 +599,11 @@ def run_concept(donor, feat, args):
             A = sae.encode(torch.tensor(np.asarray(load_test_embeddings(donor)[dataset],
                                                    dtype=np.float32),
                                         device=args.device)).cpu().numpy().astype(np.float64)
-        cols = rank_columns(X_query, A[:, feat], args.top_cols)
-        # placebo columns: the LOWEST-association ones, i.e. the tail of the same ranking
+        cat = column_types(donor, dataset, X_query)
+        # placebo columns: the LOWEST-association ones by rank correlation with the
+        # cached activation -- what an edit that should not matter for c already costs
         all_ranked = rank_columns(X_query, A[:, feat], X_query.shape[1])
-        low = [j for j in reversed(all_ranked) if j not in cols][:2]
+        low = list(reversed(all_ranked))[:3]
 
         # Batching is only valid when query rows are independent. Decide by measurement,
         # not by model name: mitra's 2D attention makes its rows interact (shift 2.44)
@@ -478,24 +618,26 @@ def run_concept(donor, feat, args):
         z = np.load(npz_path, allow_pickle=True)
         sel = np.asarray(z["selected_features"])
 
-        # sample rows ACROSS the accepted set -- sae_test rows are ordered
-        pick = (np.linspace(0, len(acc_rows) - 1, args.rows_per_concept).astype(int)
-                if len(acc_rows) > args.rows_per_concept else np.arange(len(acc_rows)))
+        # LOWEST-k rows first: purity is arithmetically capped by k, so patch the rows
+        # where isolating one concept is possible at all.
+        chosen = [r for r, _ in sorted(acc_rows_k, key=lambda t: t[1])][:args.rows_per_concept]
         entry = {"donor": donor, "feat": feat, "recipient": recipient, "dataset": dataset,
-                 "n_accepted_rows": len(acc_rows), "ranked_columns": cols,
-                 "rows": [], "placebo": None}
-        for pi in pick:
-            row = int(acc_rows[int(pi)])
+                 "n_accepted_rows": len(acc_rows_k), "k_median": float(np.median(ks)),
+                 "n_categorical_cols": len(cat), "rows": [], "placebo": None}
+        for row in chosen:
+            row = int(row)
             others = np.array([int(f) for f in np.unique(sel[row][sel[row] >= 0])
                                if int(f) != feat], dtype=int)
             res = search_row(donor, dataset, X_ctx, y_ctx, X_query, task, args.device,
-                             row, feat, others, cols, args.max_vals, args.max_steps,
-                             args.selectivity_tol, args.recon_bar, batched=batched)
+                             row, feat, others, cat, args.selectivity_tol, args.recon_bar,
+                             batched=batched, step_frac=args.step_frac,
+                             max_levels=args.max_vals, top_m=args.top_cols,
+                             max_cols=args.max_steps)
             res["n_other_concepts"] = int(len(others))
             # a large drop means nothing without the selectivity and in-sample numbers
             m = res["final_shift"]
             rec = max((s["recon_rel"] for s in res["steps"]), default=res["recon_rel_start"])
-            print(f"    row {row}: drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
+            print(f"    row {row} (k={len(others)+1}): drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
                   f"{res['stop_reason']}) | target {m['target_rel']:.1%} vs others "
                   f"med {m['other_rel_median']:.1%} p90 {m['other_rel_p90']:.1%} "
                   f"(>10%: {m['n_others_moved_gt_10pct']}/{len(others)}) | "
@@ -517,7 +659,7 @@ def run_concept(donor, feat, args):
             entry["rows"].append(res)
 
         try:
-            row0 = int(acc_rows[int(pick[0])])
+            row0 = int(chosen[0])
             others0 = np.array([int(f) for f in np.unique(sel[row0][sel[row0] >= 0])
                                 if int(f) != feat], dtype=int)
             entry["placebo"] = placebo_row(donor, dataset, X_ctx, y_ctx, X_query, task,
