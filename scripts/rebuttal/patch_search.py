@@ -446,9 +446,13 @@ def cells_for_concept(donor, feat, min_rows):
                 for r in range(sel.shape[0]) if feat in set(sel[r][sel[r] >= 0].tolist())]
         if len(rows) >= min_rows:
             out.append((str(z["weak_model"]), os.path.basename(f)[:-4], rows, f))
-    # rank cells by how many low-k rows they offer, then by median k
-    out.sort(key=lambda t: (-sum(1 for _, k in t[2] if k <= 5),
-                            float(np.median([k for _, k in t[2]]))))
+    # Rank by the LOWEST k the cell contains, then by how many low-k rows it has.
+    # Ranking by cell size instead (or filtering on it) discards the very rows that
+    # make attribution possible: requiring >=8 accepted rows raised the median
+    # reachable k from 3 to 21 across the 276 concepts, and cost 216 of them their
+    # best row.
+    out.sort(key=lambda t: (min(k for _, k in t[2]),
+                            -sum(1 for _, k in t[2] if k <= 5)))
     return out
 
 
@@ -543,7 +547,10 @@ def main():
     ap.add_argument("--top-cols", type=int, default=6)
     ap.add_argument("--max-vals", type=int, default=6)
     ap.add_argument("--max-steps", type=int, default=3)
-    ap.add_argument("--min-rows", type=int, default=8)
+    ap.add_argument("--min-rows", type=int, default=1,
+                    help="minimum accepted rows for a cell to be usable. Keep at 1: a "
+                         "cell holding a single k=1 row beats a 40-row cell of k=60, "
+                         "since purity is capped by k, not by row count.")
     ap.add_argument("--selectivity-tol", type=float, default=None,
                     help="max allowed shift in the other k-1; omit to record only "
                          "(the probe measures the placebo null that sets this)")
