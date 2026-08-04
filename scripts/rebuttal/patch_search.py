@@ -32,8 +32,10 @@ Design decisions this encodes (each settled by measurement earlier):
   rows         Sampled across the accepted rows. sae_test rows are ordered/clustered
                (first-16 ||mean||=8.65 vs 1.17 over 200), so "first N" is a biased draw.
 
-tabdpt is excluded: its corpus draw is unreproducible and substituting any reproducible
-draw moves the injected delta by ~59% (vs 0.13% for a deterministic donor).
+tabdpt is PARKED, not excluded. Its corpus draw is unreproducible, so its recipient
+effects carry extra uncertainty (substituting a reproducible draw moves the injected
+delta ~59%, vs 0.13% for a deterministic donor). Its donor-side patches are unaffected:
+whether an input edit suppresses the concept does not depend on the corpus draw.
 
 Usage:
     python -m scripts.rebuttal.patch_search --probe --device cuda
@@ -58,7 +60,14 @@ from scripts.intervention.intervene_lib import (
 FWD = PROJECT_ROOT / "output" / "rebuttal" / "forward_deltas"
 ATOMS = PROJECT_ROOT / "output" / "transfer_caches" / "global_trained"
 EXTRACT_SEED = 13
-EXCLUDED_DONORS = {"tabdpt"}
+# Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
+# embeddings come from an unseeded retrieval draw, so re-extraction yields a
+# different draw and the injected delta moves ~59% (vs 0.13% for a deterministic
+# donor). That compromises only the tie between a patch's recipient effect and the
+# PUBLISHED delta -- the donor-side claim ("editing column X suppresses concept c")
+# does not depend on the corpus draw at all and is fully valid for tabdpt.
+# Use --park-donors to set it aside explicitly for a given run.
+EXCLUDED_DONORS: set[str] = set()
 
 # stratified across donors and both firing-density regimes; tabdpt excluded
 PROBE_CONCEPTS = [
@@ -566,6 +575,9 @@ def main():
                     help="run every concept in the locked set instead of --concepts")
     ap.add_argument("--donors", nargs="*", default=None,
                     help="restrict to these donors (tabicl_v2 must run under tfm2)")
+    ap.add_argument("--park-donors", nargs="*", default=None,
+                    help="set these donors aside for this run; they are reported as "
+                         "parked, never silently dropped")
     ap.add_argument("--shard", default=None, help="i/n -- take every n-th concept")
     ap.add_argument("--resume", action="store_true",
                     help="skip concepts already present in --out")
@@ -584,7 +596,12 @@ def main():
         concepts = PROBE_CONCEPTS
     else:
         concepts = [(c.split(":")[0], int(c.split(":")[1])) for c in (args.concepts or [])]
-    concepts = [c for c in concepts if c[0] not in EXCLUDED_DONORS]
+    parked = set(args.park_donors or []) | EXCLUDED_DONORS
+    n_parked = sum(1 for c in concepts if c[0] in parked)
+    if n_parked:
+        print(f"PARKED {n_parked} concepts from donors {sorted(parked)} "
+              f"-- set aside for this run, not dropped from the population")
+    concepts = [c for c in concepts if c[0] not in parked]
     if args.donors:
         concepts = [c for c in concepts if c[0] in set(args.donors)]
     if args.shard:
