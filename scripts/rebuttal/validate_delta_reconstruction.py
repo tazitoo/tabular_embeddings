@@ -176,8 +176,19 @@ def main():
 
     files = sorted(glob.glob(str(FWD / "*" / "*.npz")))
     if args.donor:
-        files = [f for f in files if os.path.basename(os.path.dirname(f)).startswith(args.donor + "_vs_")]
+        # Directories are named <weak>_vs_<strong>, so parsing the name selects the
+        # WRONG side. Read strong_model from the file instead.
+        keep = []
+        for f in files:
+            try:
+                if str(np.load(f, allow_pickle=True)["strong_model"]) == args.donor:
+                    keep.append(f)
+            except Exception:
+                continue
+        files = keep
     files = files[:args.max_files]
+    if args.donor:
+        print(f"{len(files)} files with strong_model == {args.donor}")
 
     if args.substitute_seed is not None:
         print(f"substituting seed-{args.substitute_seed} activations into {len(files)} "
@@ -197,12 +208,19 @@ def main():
             print(f"  {tag:46s} {r['n_rows']:>5d} {r['delta_rel_change_median']:14.4f} "
                   f"{r['delta_rel_change_p95']:9.4f} {r['delta_cos_median']:8.4f}")
         if subs:
-            print(f"\n  median delta relative change: "
-                  f"{np.median([s['delta_rel_change_median'] for s in subs]):.4f}")
-            print(f"  median delta cosine to cached: "
-                  f"{np.median([s['delta_cos_median'] for s in subs]):.4f}")
-            print("\n  Small change => the injected delta is draw-stable even though the raw")
-            print("  activations are not, and this donor can be patched against published deltas.")
+            # Report per DONOR: only rows whose strong_model is the re-extracted model
+            # test that model's draw stability. Mixing donors hides the answer.
+            by_donor = {}
+            for s in subs:
+                by_donor.setdefault(s["donor"], []).append(s)
+            print()
+            for d, ss in sorted(by_donor.items()):
+                med = np.median([s["delta_rel_change_median"] for s in ss])
+                cos = np.median([s["delta_cos_median"] for s in ss])
+                print(f"  donor={d:10s} n={len(ss):2d}  median delta rel change={med:.4f}  "
+                      f"median cos={cos:.4f}")
+            print("\n  Only files whose DONOR is the re-extracted model test draw stability;")
+            print("  a small change for other donors is just a control on the machinery.")
         with open(args.out.replace(".json", f"_subseed{args.substitute_seed}.json"), "w") as fh:
             json.dump(subs, fh, indent=2)
         return
