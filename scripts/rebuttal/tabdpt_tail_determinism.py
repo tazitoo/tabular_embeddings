@@ -60,8 +60,17 @@ def make_tail(recipient, dataset, device):
     if ytr.dtype == np.int32:
         ytr = ytr.astype(np.int64)
     layer = get_extraction_layer_taskaware(recipient, dataset=dataset)
+    # functional_decomposition passes cat_indices for these models; omitting it builds a
+    # DIFFERENT model and inflates any baseline-vs-injection discrepancy.
+    cat_idx = None
+    if recipient in ("hyperfast", "tabpfn"):
+        from data.preprocessing import load_preprocessed, CACHE_DIR
+        try:
+            cat_idx = load_preprocessed(recipient, dataset, CACHE_DIR).cat_indices or None
+        except Exception:
+            pass
     torch.manual_seed(13); np.random.seed(13)
-    tail = build_tail(recipient, Xtr, ytr, Xq, layer, task, device,
+    tail = build_tail(recipient, Xtr, ytr, Xq, layer, task, device, cat_indices=cat_idx,
                       target_name=splits.get(dataset, {}).get("target", "target"))
     return tail, Xq, task
 
