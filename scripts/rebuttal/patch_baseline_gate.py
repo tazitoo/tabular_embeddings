@@ -50,8 +50,38 @@ DEFAULT_PROBES = [
 
 
 def _extractor(model: str, device: str):
-    from scripts.concepts.patch_activation_probe import _embedding_extractor_for_model
-    return _embedding_extractor_for_model(model, device)
+    """Extractor dispatch.
+
+    The COMMITTED patch_activation_probe is mitra-only (it raises NotImplementedError
+    for every other model); the multi-model dispatch exists only in uncommitted WIP.
+    Prefer that dispatch when present, but fall back to a local one so this gate --
+    the check that decides whether any patch result is trustworthy -- does not depend
+    on whether that WIP has been committed.
+    """
+    try:
+        from scripts.concepts.patch_activation_probe import _embedding_extractor_for_model
+        return _embedding_extractor_for_model(model, device)
+    except ImportError:
+        pass
+    if model == "mitra":
+        from models.mitra_embeddings import MitraEmbeddingExtractor
+        return MitraEmbeddingExtractor(device=device, n_estimators=1, fine_tune=False, seed=13)
+    if model == "tabpfn":
+        from models.tabpfn_embeddings import TabPFNEmbeddingExtractor
+        return TabPFNEmbeddingExtractor(device=device)
+    if model == "tabicl":
+        from models.tabicl_embeddings import TabICLEmbeddingExtractor
+        return TabICLEmbeddingExtractor(device=device)
+    if model == "tabicl_v2":
+        from models.tabicl_v2_embeddings import TabICLV2EmbeddingExtractor
+        return TabICLV2EmbeddingExtractor(device=device)
+    if model == "tabdpt":
+        from models.tabdpt_embeddings import TabDPTEmbeddingExtractor
+        return TabDPTEmbeddingExtractor(device=device)
+    if model == "carte":
+        from models.carte_embeddings import CARTEEmbeddingExtractor
+        return CARTEEmbeddingExtractor(device=device)
+    raise NotImplementedError(f"Unsupported model: {model}")
 
 
 def _sae_acts(model: str, emb: np.ndarray, dataset: str, device: str) -> np.ndarray:
@@ -80,7 +110,15 @@ def corpus_route_acts(model: str, dataset: str, device: str, n_rows: int) -> np.
 
 
 def probe_route_acts(model: str, dataset: str, device: str, n_rows: int) -> np.ndarray:
-    from scripts.concepts.patch_activation_probe import _load_raw_context_query
+    """The existing patch pipeline's route. Only exists in the multi-model WIP:
+    the committed loader is _load_raw_mitra_context_query and the committed
+    _extract_feature_activations refuses any model except mitra."""
+    try:
+        from scripts.concepts.patch_activation_probe import _load_raw_context_query
+    except ImportError:
+        raise RuntimeError(
+            "multi-model patch_activation_probe not committed -- probe_route unavailable "
+            "(committed version is mitra-only)")
     X_context, y_context, X_query_raw, _, _, task = _load_raw_context_query(model, dataset)
     ex = _extractor(model, device)
     res = ex.extract_embeddings(
