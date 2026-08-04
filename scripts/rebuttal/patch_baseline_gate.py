@@ -28,6 +28,11 @@ Usage:
 """
 import argparse
 import json
+import os
+
+# Must be set before torch initialises cuBLAS. Same treatment as
+# scripts/rebuttal/functional_decomposition.py:49; see docs/reproducibility.md.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import numpy as np
 import torch
@@ -180,17 +185,34 @@ def main():
               else [(args.model, d) for m, d in DEFAULT_PROBES if m == args.model]
               if args.model else DEFAULT_PROBES)
 
+    # docs/reproducibility.md: with this enabled, repeated runs on one host are
+    # bit-identical for all 6 models. A nonzero self_consistency row below is
+    # therefore a determinism bug to fix, NOT a noise floor to calibrate against.
+    torch.use_deterministic_algorithms(True)
+    torch.manual_seed(13)
+    np.random.seed(13)
+
     results = []
     for model, dataset in probes:
         print(f"\n{model} / {dataset}  (first {args.n_rows} sae_test rows)")
         ref = cached_acts(model, dataset, args.device)[:args.n_rows]
         entry = {"model": model, "dataset": dataset, "routes": []}
-        for name, fn in (("corpus_route", corpus_route_acts), ("probe_route", probe_route_acts)):
-            try:
-                entry["routes"].append(_report(name, fn(model, dataset, args.device, args.n_rows), ref))
-            except Exception as exc:
-                print(f"    {name:14s} ERROR {type(exc).__name__}: {exc}")
-                entry["routes"].append({"route": name, "error": f"{type(exc).__name__}: {exc}"})
+        try:
+            # two identical runs: self_consistency compares them to each other,
+            # corpus_route compares the first against the stored corpus.
+            a1 = corpus_route_acts(model, dataset, args.device, args.n_rows)
+            a2 = corpus_route_acts(model, dataset, args.device, args.n_rows)
+            entry["routes"].append(_report("self_consistency", a2, a1))
+            entry["routes"].append(_report("corpus_route", a1, ref))
+        except Exception as exc:
+            print(f"    {'corpus_route':14s} ERROR {type(exc).__name__}: {exc}")
+            entry["routes"].append({"route": "corpus_route", "error": f"{type(exc).__name__}: {exc}"})
+        try:
+            entry["routes"].append(
+                _report("probe_route", probe_route_acts(model, dataset, args.device, args.n_rows), ref))
+        except Exception as exc:
+            print(f"    {'probe_route':14s} ERROR {type(exc).__name__}: {exc}")
+            entry["routes"].append({"route": "probe_route", "error": f"{type(exc).__name__}: {exc}"})
         results.append(entry)
 
     with open(args.out, "w") as fh:
