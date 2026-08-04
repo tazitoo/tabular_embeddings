@@ -34,6 +34,7 @@ import torch
 
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import (
+    get_extraction_layer_taskaware,
     load_dataset_context,
     load_norm_stats,
     load_sae,
@@ -100,13 +101,31 @@ def cached_acts(model: str, dataset: str, device: str) -> np.ndarray:
         return sae.encode(torch.tensor(Xn, device=device)).cpu().numpy()
 
 
+def layer_embeddings(model: str, dataset: str, X_train, y_train, X_query, task: str):
+    """Layer-L embeddings for arbitrary (possibly patched) query rows.
+
+    Uses the same extraction path the SAE corpus was built with
+    (04_extract_all_layers.py): load_and_fit + extract_all_layers, then the
+    task-aware layer that intervene_lib reports as authoritative. This is the
+    piece input patching needs -- the forward half, complementing build_tail.
+    """
+    from models.layer_extraction import extract_all_layers, load_and_fit, sort_layer_names
+
+    clf = load_and_fit(model, X_train, y_train, task=task, device="cuda")
+    layer_embs = extract_all_layers(model, clf, X_query, task=task)
+    names = sort_layer_names(list(layer_embs.keys()))
+    idx = get_extraction_layer_taskaware(model, dataset)
+    idx = min(max(idx, 0), len(names) - 1)
+    return np.asarray(layer_embs[names[idx]], dtype=np.float32), names[idx], idx
+
+
 def corpus_route_acts(model: str, dataset: str, device: str, n_rows: int) -> np.ndarray:
     X_train, y_train, X_query, _, _, task = load_dataset_context(
         model, dataset, query_source="holdout")
-    ex = _extractor(model, device)
     q = X_query[:n_rows] if not hasattr(X_query, "iloc") else X_query.iloc[:n_rows]
-    res = ex.extract_embeddings(X_train, y_train, q, task=task)
-    return _sae_acts(model, res.embeddings, dataset, device)
+    emb, lname, lidx = layer_embeddings(model, dataset, X_train, y_train, q, task)
+    print(f"      (task-aware layer idx={lidx} name={lname!r}, emb dim={emb.shape[1]})")
+    return _sae_acts(model, emb, dataset, device)
 
 
 def probe_route_acts(model: str, dataset: str, device: str, n_rows: int) -> np.ndarray:
