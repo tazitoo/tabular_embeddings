@@ -83,14 +83,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n-rows", type=int, default=32)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--models", nargs="*", default=None,
+                    help="restrict to these donors; tabicl_v2 must run under tfm2")
     ap.add_argument("--skip-reextract", action="store_true")
     ap.add_argument("--out", default=str(
         PROJECT_ROOT / "output" / "rebuttal" / "sae_insample_null.json"))
     args = ap.parse_args()
 
     torch.use_deterministic_algorithms(True)
+    probes = ([p for p in DEFAULT_PROBES if p[0] in set(args.models)]
+              if args.models else DEFAULT_PROBES)
     results = []
-    for model, dataset in DEFAULT_PROBES:
+    for model, dataset in probes:
         sae, _ = load_sae(model, device=args.device)
         C = getattr(sae, "reference_data", None)
         C = C.detach().cpu().numpy() if C is not None else None
