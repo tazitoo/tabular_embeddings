@@ -514,6 +514,15 @@ def readout(npz_path, feat, row, ratios, device):
     d_from_c = signs[i_c] * a_corpus[i_c] * (r_vec[i_c] - 1.0) * B[i_c]
     purity = float(np.linalg.norm(d_from_c) / (np.linalg.norm(d_total) + 1e-12))
 
+    # CEILING CONTROL: ablate c outright -- remove its term and leave every other
+    # concept untouched. That is the most any input patch could achieve, because a
+    # perfect patch drives a_c to zero and disturbs nothing else. It also separates
+    # "the patch failed" from "this concept barely matters at this row": if the ceiling
+    # effect is ~0, no patch can show anything and that is a fact about the concept.
+    r_abl = np.ones_like(r_vec)
+    r_abl[i_c] = 0.0
+    d_abl = ((signs * a_corpus * r_abl) @ B)
+
     splits = json.loads(SPLITS_PATH.read_text())
     Xtr, ytr, Xq, _, _, task = load_dataset_context(recipient, dataset, splits)
     if ytr.dtype == np.int32:
@@ -529,7 +538,7 @@ def readout(npz_path, feat, row, ratios, device):
     _reseed()
     tail = build_tail(recipient, Xtr, ytr, Xq, layer, task, device, cat_indices=cat_idx,
                       target_name=splits.get(dataset, {}).get("target", "target"))
-    deltas = torch.tensor(np.vstack([dd[row], d_cf]), dtype=torch.float32, device=device)
+    deltas = torch.tensor(np.vstack([dd[row], d_cf, d_abl]), dtype=torch.float32, device=device)
     if isinstance(tail, SEQUENTIAL_MODELS):
         preds = np.asarray(batched_ablation_sequential(tail, Xq[row:row+1], deltas, query_idx=row),
                            dtype=np.float64)
@@ -538,9 +547,21 @@ def readout(npz_path, feat, row, ratios, device):
                            dtype=np.float64)
     y = int(np.asarray(z["y_query"])[row])
     b, t = np.asarray(z["preds_weak"])[row], np.asarray(z["preds_strong"])[row]
+    gc_dep = float(_gc(b, preds[0], t, y))
+    gc_cf = float(_gc(b, preds[1], t, y))
+    gc_ceil = float(_gc(b, preds[2], t, y))
+    # everything in gap-closure units: how much of the achievable effect did the patch
+    # deliver? capture near 1 = the patch does what ablating the concept does.
+    ceiling_effect = gc_dep - gc_ceil
+    patch_effect = gc_dep - gc_cf
     return {"recipient": recipient, "dataset": dataset, "row": int(row),
-            "gc_deployed": float(_gc(b, preds[0], t, y)),
-            "gc_counterfactual": float(_gc(b, preds[1], t, y)),
+            "gc_deployed": gc_dep,
+            "gc_counterfactual": gc_cf,
+            "gc_ceiling_ablated": gc_ceil,
+            "ceiling_effect": ceiling_effect,
+            "patch_effect": patch_effect,
+            "capture_of_ceiling": (float(patch_effect / ceiling_effect)
+                                    if abs(ceiling_effect) > 1e-9 else float("nan")),
             "attribution_purity": purity, "sign_c": sign_c,
             "a_c_corpus": float(A[row, feat]), "ratio_c": float(r_vec[i_c]),
             "n_accepted": len(fids),
@@ -714,10 +735,13 @@ def run_concept(donor, feat, args):
                                              args.device)
                     if res["readout"]:
                         r = res["readout"]
-                        print(f"       recipient gc {r['gc_deployed']:.4f} -> "
-                              f"{r['gc_counterfactual']:.4f} | purity "
-                              f"{r['attribution_purity']:.3f} | delta moved "
-                              f"{r['delta_rel_change']:.1%}", flush=True)
+                        cap = r.get('capture_of_ceiling')
+                        cap_s = f"{cap:6.1%}" if cap is not None and np.isfinite(cap) else "   n/a"
+                        print(f"       gc {r['gc_deployed']:.4f} -> {r['gc_counterfactual']:.4f} "
+                              f"| CEILING (ablate c) {r['gc_ceiling_ablated']:.4f} "
+                              f"= {r['ceiling_effect']:+.4f} | patch {r['patch_effect']:+.4f} "
+                              f"| capture {cap_s} | purity {r['attribution_purity']:.3f}",
+                              flush=True)
                 except Exception as exc:
                     res["readout"] = {"error": f"{type(exc).__name__}: {exc}"}
                     print(f"       readout ERROR {type(exc).__name__}: {exc}", flush=True)
