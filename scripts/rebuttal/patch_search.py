@@ -140,15 +140,75 @@ def candidate_values(X: np.ndarray, col: int, max_vals: int) -> np.ndarray:
 
 # ── the search ───────────────────────────────────────────────────────────────
 
+def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, batched):
+    """Evaluate candidate rows -> (activations, recon_rel), one entry per candidate.
+
+    batched=True appends every candidate as an extra query row, so a whole greedy step
+    costs one forward. That is only valid when query rows do not influence each other:
+    tabpfn and tabicl pass check_independence exactly (shift 0.00e+00), but MITRA FAILS
+    it (shift 2.44) because its 2D attention lets query rows attend to one another.
+    For those models fall back to replacing the target row and paying one forward per
+    candidate -- slow, but the only correct option.
+    """
+    base = X_query
+
+    def batched_eval(variants):
+        Xq = np.vstack([base, np.asarray(variants, dtype=base.dtype)])
+        a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
+        return a[len(base):], rel[len(base):]
+
+    def replace_eval(variants):
+        acts, recs = [], []
+        for v in variants:
+            Xq = base.copy()
+            Xq[row] = v
+            a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
+            acts.append(a[row]); recs.append(rel[row])
+        return np.asarray(acts), np.asarray(recs)
+
+    return batched_eval if batched else replace_eval
+
+
+def shift_metrics(a_base, a_new, others, feat):
+    """How much did the OTHER accepted concepts move, per concept and relative to their own scale?
+
+    An absolute max over k-1 concepts is not meaningful: activations differ by an order
+    of magnitude across features, so the max is just whichever concept is largest. Every
+    accepted concept has a_j > 0 by construction (candidacy required h_strong > 0), so a
+    relative change is well defined.
+    """
+    tgt = abs(a_new[feat] - a_base[feat]) / max(abs(a_base[feat]), 1e-6)
+    if len(others) == 0:
+        return {"other_rel_median": 0.0, "other_rel_p90": 0.0, "other_rel_max": 0.0,
+                "other_abs_max": 0.0, "target_rel": float(tgt),
+                "selectivity_ratio": float("inf"), "n_others_moved_gt_10pct": 0}
+    b, n = a_base[others], a_new[others]
+    rel = np.abs(n - b) / np.maximum(np.abs(b), 1e-6)
+    p90 = float(np.percentile(rel, 90))
+    return {"other_rel_median": float(np.median(rel)), "other_rel_p90": p90,
+            "other_rel_max": float(rel.max()),
+            "other_abs_max": float(np.abs(n - b).max()),
+            "target_rel": float(tgt),
+            # >1 means the target moved relatively more than the 90th-pct other concept
+            "selectivity_ratio": float(tgt / (p90 + 1e-9)),
+            "n_others_moved_gt_10pct": int((rel > 0.10).sum())}
+
+
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
-               others, cols, max_vals, max_steps, sel_tol, recon_bar):
-    """Greedy (column, value) suppression for one row, batching all candidates."""
+               others, cols, max_vals, max_steps, sel_tol, recon_bar, batched=True):
+    """Greedy (column, value) suppression for one row.
+
+    sel_tol now bounds the RELATIVE shift of the other k-1 concepts (p90), not an
+    absolute activation difference.
+    """
     base = X_query.copy()
     cur = base[row].copy()
     a0, rel0 = extract_acts(donor, dataset, X_ctx, y_ctx, base, task, device)
-    a_start = float(a0[row, feat])
+    a_base_row = a0[row].copy()
+    a_start = float(a_base_row[feat])
+    ev = make_evaluator(donor, dataset, X_ctx, y_ctx, base, task, device, row, batched)
     hist, used = [], set()
-    a_now = a_start
+    a_now, a_now_vec = a_start, a_base_row.copy()
     stop = "max_steps"
 
     for _ in range(max_steps):
@@ -164,37 +224,41 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         if not variants:
             stop = "no_candidates"; break
 
-        # append candidates as extra query rows: one forward for the whole step
-        Xq = np.vstack([base, np.asarray(variants, dtype=base.dtype)])
-        a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
-        off = len(base)
+        a, rel = ev(variants)
         best = None
         for i, (c, val) in enumerate(meta):
-            av = a[off + i]
+            av = a[i]
             drop = a_now - float(av[feat])
-            dist = (float(np.max(np.abs(av[others] - a0[row][others]))) if len(others) else 0.0)
-            ok_sel = sel_tol is None or dist <= sel_tol
-            ok_rec = recon_bar is None or float(rel[off + i]) <= recon_bar
+            m = shift_metrics(a_base_row, av, others, feat)
+            ok_sel = sel_tol is None or m["other_rel_p90"] <= sel_tol
+            ok_rec = recon_bar is None or float(rel[i]) <= recon_bar
             cand = {"column": int(c), "value": val, "activation_after": float(av[feat]),
-                    "drop": drop, "max_other_shift": dist,
-                    "recon_rel": float(rel[off + i]),
-                    "qualifies": bool(ok_sel and ok_rec)}
+                    "drop": drop, "recon_rel": float(rel[i]),
+                    "qualifies": bool(ok_sel and ok_rec), **m}
             if drop > 0 and ok_sel and ok_rec and (best is None or drop > best["drop"]):
-                best = cand
+                best = cand; best["_vec"] = av
         if best is None:
             stop = "no_qualifying_column"; break
         cur[best["column"]] = best["value"]
         used.add(best["column"])
         a_now = best["activation_after"]
+        a_now_vec = best.pop("_vec")
         hist.append(best)
         if a_now <= 0:
             stop = "fully_suppressed"; break
 
+    # per-concept ratios for the accepted set, so the readout can rebuild the delta
+    # from MEASURED shifts instead of assuming only c moved
+    acc = np.concatenate([[feat], others]).astype(int) if len(others) else np.array([feat])
+    ratios = {int(j): float(a_now_vec[j] / a_base_row[j]) if abs(a_base_row[j]) > 1e-9 else 1.0
+              for j in acc}
     return {"row": int(row), "a_start": a_start, "a_final": a_now,
             "ratio": (a_now / a_start) if a_start > 0 else float("nan"),
             "drop_frac": (1.0 - a_now / a_start) if a_start > 0 else float("nan"),
             "recon_rel_start": float(rel0[row]), "steps": hist, "stop_reason": stop,
-            "patched_row": cur.tolist(), "n_cols_changed": len(used)}
+            "patched_row": cur.tolist(), "n_cols_changed": len(used),
+            "final_shift": shift_metrics(a_base_row, a_now_vec, others, feat),
+            "accepted_ratios": ratios, "batched": bool(batched)}
 
 
 def placebo_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
@@ -218,14 +282,15 @@ def placebo_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     Xq = np.vstack([base, np.asarray(variants, dtype=base.dtype)])
     a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
     off = len(base)
-    drops = [float(a0[row, feat] - a[off + i, feat]) for i in range(len(meta))]
-    shifts = [float(np.max(np.abs(a[off + i][others] - a0[row][others]))) if len(others) else 0.0
-              for i in range(len(meta))]
+    mets = [shift_metrics(a0[row], a[off + i], others, feat) for i in range(len(meta))]
+    tgt = [m["target_rel"] for m in mets]
+    oth = [m["other_rel_p90"] for m in mets]
     return {"n": len(meta),
-            "drop_median": float(np.median(drops)), "drop_p95": float(np.percentile(drops, 95)),
-            "drop_max": float(np.max(drops)),
-            "other_shift_median": float(np.median(shifts)),
-            "other_shift_p95": float(np.percentile(shifts, 95)),
+            # what an IRRELEVANT edit already does -- the bar a real patch must clear
+            "target_rel_median": float(np.median(tgt)), "target_rel_p95": float(np.percentile(tgt, 95)),
+            "other_rel_p90_median": float(np.median(oth)),
+            "other_rel_p90_p95": float(np.percentile(oth, 95)),
+            "selectivity_ratio_median": float(np.median([m["selectivity_ratio"] for m in mets])),
             "recon_rel_median": float(np.median(rel[off:]))}
 
 
@@ -251,11 +316,12 @@ def cells_for_concept(donor, feat, min_rows):
     return out
 
 
-def readout(npz_path, feat, row, ratio, device):
-    """Recipient prediction under the counterfactual delta (c's term scaled by `ratio`).
+def readout(npz_path, feat, row, ratios, device):
+    """Recipient prediction under the counterfactual delta.
 
-    Published deltas are untouched: a_c comes from the CORPUS activation and only the
-    dimensionless ratio comes from the patch.
+    `ratios` maps accepted feature id -> measured a'/a, for EVERY accepted concept at
+    this row, not just c. Published deltas are untouched: activations come from the
+    corpus and only the dimensionless ratios come from the patch.
     """
     from scripts.rebuttal.functional_decomposition import _gc
     from scripts.intervention.intervene_lib import (
@@ -283,11 +349,21 @@ def readout(npz_path, feat, row, ratio, device):
         return None
     B = np.stack([V[fmap[f]] * std_w for f in fids])
     c, *_ = np.linalg.lstsq(B.T, dd[row], rcond=None)
-    sign_c = float(np.sign(c[fids.index(feat)]))
-    term = sign_c * A[row, feat] * V[fmap[feat]] * std_w
-    d_cf = dd[row] - (1.0 - ratio) * term
-    purity = float(np.linalg.norm((1.0 - ratio) * term) /
-                   (np.linalg.norm(dd[row] - d_cf) + 1e-12))
+    signs = np.sign(c)
+    sign_c = float(signs[fids.index(feat)])
+
+    # Rebuild the counterfactual from the MEASURED ratio of EVERY accepted concept.
+    # Ratios keep everything on the corpus scale (a_cf_j = a_j^corpus * ratio_j), so the
+    # published deltas stay intact and only dimensionless ratios come from re-extraction.
+    # Using c's ratio alone would ASSUME the selectivity we are trying to establish --
+    # that assumption is what made the previous purity trivially 1.0.
+    r_vec = np.array([float(ratios.get(int(f), 1.0)) for f in fids])
+    a_corpus = np.array([A[row, f] for f in fids])
+    d_cf = ((signs * a_corpus * r_vec) @ B)
+    d_total = d_cf - dd[row]
+    i_c = fids.index(feat)
+    d_from_c = signs[i_c] * a_corpus[i_c] * (r_vec[i_c] - 1.0) * B[i_c]
+    purity = float(np.linalg.norm(d_from_c) / (np.linalg.norm(d_total) + 1e-12))
 
     splits = json.loads(SPLITS_PATH.read_text())
     Xtr, ytr, Xq, _, _, task = load_dataset_context(recipient, dataset, splits)
@@ -317,7 +393,10 @@ def readout(npz_path, feat, row, ratio, device):
             "gc_deployed": float(_gc(b, preds[0], t, y)),
             "gc_counterfactual": float(_gc(b, preds[1], t, y)),
             "attribution_purity": purity, "sign_c": sign_c,
-            "a_c_corpus": float(A[row, feat]), "ratio_applied": float(ratio)}
+            "a_c_corpus": float(A[row, feat]), "ratio_c": float(r_vec[i_c]),
+            "n_accepted": len(fids),
+            "delta_rel_change": float(np.linalg.norm(d_total) /
+                                      (np.linalg.norm(dd[row]) + 1e-12))}
 
 
 def main():
@@ -386,12 +465,15 @@ def run_concept(donor, feat, args):
         all_ranked = rank_columns(X_query, A[:, feat], X_query.shape[1])
         low = [j for j in reversed(all_ranked) if j not in cols][:2]
 
-        if args.check_independence:
-            ind = check_independence(donor, dataset, X_ctx, y_ctx, X_query, task, args.device)
-            print(f"    independence: base shift={ind['base_rows_max_shift']:.2e} "
-                  f"dup shift={ind['duplicate_vs_original_max_shift']:.2e} -> "
-                  f"{'OK' if ind['independent'] else 'ROWS INTERACT (batching invalid)'}",
-                  flush=True)
+        # Batching is only valid when query rows are independent. Decide by measurement,
+        # not by model name: mitra's 2D attention makes its rows interact (shift 2.44)
+        # while tabpfn/tabicl are exactly 0.00.
+        ind = check_independence(donor, dataset, X_ctx, y_ctx, X_query, task, args.device)
+        batched = ind["independent"]
+        print(f"    independence: base shift={ind['base_rows_max_shift']:.2e} "
+              f"dup shift={ind['duplicate_vs_original_max_shift']:.2e} -> "
+              f"{'batched' if batched else 'ROWS INTERACT -> per-candidate forwards'}",
+              flush=True)
 
         z = np.load(npz_path, allow_pickle=True)
         sel = np.asarray(z["selected_features"])
@@ -408,24 +490,27 @@ def run_concept(donor, feat, args):
                                if int(f) != feat], dtype=int)
             res = search_row(donor, dataset, X_ctx, y_ctx, X_query, task, args.device,
                              row, feat, others, cols, args.max_vals, args.max_steps,
-                             args.selectivity_tol, args.recon_bar)
+                             args.selectivity_tol, args.recon_bar, batched=batched)
             res["n_other_concepts"] = int(len(others))
-            # surface the guard numbers: a large drop means nothing without them
-            shift = max((s["max_other_shift"] for s in res["steps"]), default=0.0)
+            # a large drop means nothing without the selectivity and in-sample numbers
+            m = res["final_shift"]
             rec = max((s["recon_rel"] for s in res["steps"]), default=res["recon_rel_start"])
-            print(f"    row {row}: a {res['a_start']:.3f} -> {res['a_final']:.3f} "
-                  f"(drop {res['drop_frac']:.1%}, {res['n_cols_changed']} cols, "
-                  f"{res['stop_reason']}) | other-shift {shift:.3f} over "
-                  f"k-1={len(others)} | recon {res['recon_rel_start']:.3f}->{rec:.3f}",
-                  flush=True)
+            print(f"    row {row}: drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
+                  f"{res['stop_reason']}) | target {m['target_rel']:.1%} vs others "
+                  f"med {m['other_rel_median']:.1%} p90 {m['other_rel_p90']:.1%} "
+                  f"(>10%: {m['n_others_moved_gt_10pct']}/{len(others)}) | "
+                  f"sel-ratio {m['selectivity_ratio']:.2f} | "
+                  f"recon {res['recon_rel_start']:.3f}->{rec:.3f}", flush=True)
             if np.isfinite(res["ratio"]):
                 try:
-                    res["readout"] = readout(npz_path, feat, row, res["ratio"], args.device)
+                    res["readout"] = readout(npz_path, feat, row, res["accepted_ratios"],
+                                             args.device)
                     if res["readout"]:
                         r = res["readout"]
                         print(f"       recipient gc {r['gc_deployed']:.4f} -> "
-                              f"{r['gc_counterfactual']:.4f}  purity={r['attribution_purity']:.3f}",
-                              flush=True)
+                              f"{r['gc_counterfactual']:.4f} | purity "
+                              f"{r['attribution_purity']:.3f} | delta moved "
+                              f"{r['delta_rel_change']:.1%}", flush=True)
                 except Exception as exc:
                     res["readout"] = {"error": f"{type(exc).__name__}: {exc}"}
                     print(f"       readout ERROR {type(exc).__name__}: {exc}", flush=True)
@@ -437,11 +522,13 @@ def run_concept(donor, feat, args):
                                 if int(f) != feat], dtype=int)
             entry["placebo"] = placebo_row(donor, dataset, X_ctx, y_ctx, X_query, task,
                                            args.device, row0, feat, others0, low, args.max_vals)
-            if entry["placebo"]:
+            if entry["placebo"] and "n" in entry["placebo"]:
                 p = entry["placebo"]
-                print(f"    placebo ({p['n']} edits to low-association cols): "
-                      f"drop median={p['drop_median']:.4f} p95={p['drop_p95']:.4f}  "
-                      f"other-shift p95={p['other_shift_p95']:.4f}", flush=True)
+                print(f"    PLACEBO ({p['n']} edits, low-association cols): target moves "
+                      f"{p['target_rel_median']:.1%} (p95 {p['target_rel_p95']:.1%}), "
+                      f"others p90 {p['other_rel_p90_median']:.1%}, "
+                      f"sel-ratio {p['selectivity_ratio_median']:.2f}  "
+                      f"<- a real patch must beat this", flush=True)
         except Exception as exc:
             entry["placebo"] = {"error": f"{type(exc).__name__}: {exc}"}
         return entry
