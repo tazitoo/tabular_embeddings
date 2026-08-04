@@ -41,8 +41,10 @@ from scripts.intervention.intervene_lib import (
 FWD = PROJECT_ROOT / "output" / "rebuttal" / "forward_deltas"
 
 
-def find_cell(recipient):
+def find_cell(recipient, dataset=None):
     for f in sorted(glob.glob(str(FWD / "*" / "*.npz"))):
+        if dataset and os.path.basename(f)[:-4] != dataset:
+            continue
         z = np.load(f, allow_pickle=True)
         if str(z["weak_model"]) == recipient and z["selected_features"].size:
             rows = [r for r in range(z["deployed_delta"].shape[0])
@@ -67,15 +69,18 @@ def make_tail(recipient, dataset, device):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--recipient", default="tabdpt")
+    ap.add_argument("--dataset", default=None,
+                    help="pin the dataset; TabDPT only SAMPLES when train > context_size "
+                         "(2048), so a small-train dataset can look deterministic by luck")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default=str(
         PROJECT_ROOT / "output" / "rebuttal" / "tabdpt_tail_determinism.json"))
     args = ap.parse_args()
 
     torch.use_deterministic_algorithms(True)
-    found = find_cell(args.recipient)
+    found = find_cell(args.recipient, args.dataset)
     if not found:
-        print(f"no cell with recipient={args.recipient}"); return
+        print(f"no cell with recipient={args.recipient} dataset={args.dataset}"); return
     path, dataset, donor, row, z = found
     dd = np.asarray(z["deployed_delta"], dtype=np.float64)[row]
     print(f"{donor} -> {args.recipient} / {dataset}, row {row}\n")
