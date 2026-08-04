@@ -118,6 +118,15 @@ def layer_embeddings(model: str, dataset: str, X_train, y_train, X_query, task: 
     """
     from models.layer_extraction import extract_all_layers, load_and_fit, sort_layer_names
 
+    # Reset the global RNG before EVERY extraction, not once per process. Mitra applies
+    # predict-time augmentations (shuffle_classes, shuffle_features, random_mirror_x)
+    # that draw from the global RNG, so a second call in the same process starts from an
+    # advanced state and diverges even though MitraClassifier(seed=0) is fixed.
+    torch.manual_seed(EXTRACT_SEED)
+    np.random.seed(EXTRACT_SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(EXTRACT_SEED)
+
     clf = load_and_fit(model, X_train, y_train, task=task, device="cuda")
     # TabDPT's predict() draws n_ensembles retrieval contexts unseeded by default;
     # pin it so re-extraction is reproducible (docs/reproducibility.md).
