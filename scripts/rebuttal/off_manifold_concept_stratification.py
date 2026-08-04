@@ -81,6 +81,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", choices=["trained", "random"], default="trained")
     ap.add_argument("--var-threshold", type=float, default=0.90)
+    ap.add_argument("--dump", action="store_true",
+                     help="write the locked patching cell (off in [--dump-off-lo, "
+                          "--dump-off-hi), acceptance in [--dump-acc-lo, --dump-acc-hi]) "
+                          "to --dump-out as CSV: donor,feat_id,off_frac,density,"
+                          "universality,n_datasets,acceptance")
+    ap.add_argument("--dump-off-lo", type=float, default=0.6)
+    ap.add_argument("--dump-off-hi", type=float, default=0.8)
+    ap.add_argument("--dump-acc-lo", type=float, default=200)
+    ap.add_argument("--dump-acc-hi", type=float, default=499)
+    ap.add_argument("--dump-out", default=None,
+                     help="default: output/rebuttal/off_manifold_concept_dump_<arm>.csv")
     args = ap.parse_args()
 
     fwd = PROJECT_ROOT / "output" / "rebuttal" / (
@@ -91,6 +102,7 @@ def main():
     off_w = defaultdict(float)   # sum(off_frac * n_accepted)
     acc_w = defaultdict(float)   # sum(n_accepted)
     recips = defaultdict(set)
+    dsets = defaultdict(set)
     emb_cache, norm_cache, vcache = {}, {}, {}
 
     for f in glob.glob(str(fwd / "*" / "*.npz")):
@@ -125,6 +137,7 @@ def main():
             off_w[(donor, fid)] += off * na
             acc_w[(donor, fid)] += na
             recips[(donor, fid)].add(recipient)
+            dsets[(donor, fid)].add(dataset)
 
     concepts = list(acc_w)
     dens = firing_density(set(c[0] for c in concepts))
@@ -135,8 +148,9 @@ def main():
             c[0], c[1],
             off_w[c] / acc_w[c],          # acceptance-weighted off-manifold fraction
             int(acc_w[c]),                 # total acceptance
-            len(recips[c]),                # universality
+            len(recips[c]),                # universality (# distinct recipients)
             dens.get(c, np.nan),           # firing density (labelability)
+            len(dsets[c]),                  # # distinct donor datasets
         ))
     off = np.array([r[2] for r in rows])
     den = np.array([r[5] for r in rows])
@@ -163,6 +177,35 @@ def main():
         m = ok & (off >= omin) & (den < dmax)
         print(f"  off>={omin:.1f} & density<{dmax:.2f}: {m.sum():4d} concepts "
               f"(univ>=5: {(m & (np.array([r[4] for r in rows])>=5)).sum()})")
+
+    if args.dump:
+        cell = [r for r in rows
+                if args.dump_off_lo <= r[2] < args.dump_off_hi
+                and args.dump_acc_lo <= r[3] <= args.dump_acc_hi]
+        # per-concept share of total off-manifold "contribution" mass. off_w[c] = sum
+        # over accepted (recipient, dataset) instances of (off_frac * n_accepted) -- an
+        # acceptance-weighted off-manifold energy-fraction mass. The 20.5% headline is
+        # this cell's share of that mass across ALL accepted concepts (not a true
+        # energy decomposition -- that was dropped as confounded, see 2026-08-02 handoff).
+        total_off_mass = sum(off_w.values())
+        cell_off_mass = sum(off_w[(r[0], r[1])] for r in cell)
+        out = args.dump_out or str(
+            PROJECT_ROOT / "output" / "rebuttal" / f"off_manifold_concept_dump_{args.arm}.csv")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as fh:
+            fh.write("donor,feat_id,off_frac,density,universality,n_datasets,acceptance,"
+                      "off_mass,off_mass_share,recipients\n")
+            for r in sorted(cell, key=lambda r: -off_w[(r[0], r[1])]):
+                c = (r[0], r[1])
+                fh.write(f"{r[0]},{r[1]},{r[2]:.4f},{r[5]:.4f},{r[4]},{r[6]},{r[3]},"
+                          f"{off_w[c]:.4f},{off_w[c] / total_off_mass:.6f},"
+                          f"\"{';'.join(sorted(recips[c]))}\"\n")
+        print(f"\n  --dump: {len(cell)} concepts in off in [{args.dump_off_lo},"
+              f"{args.dump_off_hi}) x acceptance [{args.dump_acc_lo:.0f},"
+              f"{args.dump_acc_hi:.0f}] -> {out}")
+        print(f"  cell off-mass share of all accepted concepts' off-mass: "
+              f"{cell_off_mass / total_off_mass:.1%}  "
+              f"(cell_off_mass={cell_off_mass:.1f}, total_off_mass={total_off_mass:.1f})")
 
 
 if __name__ == "__main__":
