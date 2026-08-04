@@ -54,6 +54,8 @@ DEFAULT_PROBES = [
     ("tabicl", "Bioresponse"),
 ]
 
+EXTRACT_SEED = 13  # matches the seed functional_decomposition.py uses
+
 
 def _extractor(model: str, device: str):
     """Extractor dispatch.
@@ -117,7 +119,9 @@ def layer_embeddings(model: str, dataset: str, X_train, y_train, X_query, task: 
     from models.layer_extraction import extract_all_layers, load_and_fit, sort_layer_names
 
     clf = load_and_fit(model, X_train, y_train, task=task, device="cuda")
-    layer_embs = extract_all_layers(model, clf, X_query, task=task)
+    # TabDPT's predict() draws n_ensembles retrieval contexts unseeded by default;
+    # pin it so re-extraction is reproducible (docs/reproducibility.md).
+    layer_embs = extract_all_layers(model, clf, X_query, task=task, seed=EXTRACT_SEED)
     names = sort_layer_names(list(layer_embs.keys()))
     idx = get_extraction_layer_taskaware(model, dataset)
     idx = min(max(idx, 0), len(names) - 1)

@@ -226,13 +226,22 @@ def get_layer_modules(model_name: str, clf: Any) -> OrderedDict:
 # Forward pass
 # ---------------------------------------------------------------------------
 
-def predict(clf: Any, X_query: np.ndarray, task: str = "classification"):
-    """Run forward pass on query data. Returns predictions."""
+def predict(clf: Any, X_query: np.ndarray, task: str = "classification", seed: int | None = None):
+    """Run forward pass on query data. Returns predictions.
+
+    TabDPT draws `n_ensembles` retrieval contexts per call and its predict()
+    takes `seed`, defaulting to None -- i.e. unseeded and not reproducible
+    between calls. Pass `seed` to pin it. Other models ignore the argument.
+    Default None preserves the historical behaviour of every existing caller.
+    """
+    kwargs = {}
+    if seed is not None and type(clf).__name__.startswith("TabDPT"):
+        kwargs["seed"] = seed
     with torch.no_grad():
         if task == "regression":
-            return clf.predict(X_query)
+            return clf.predict(X_query, **kwargs)
         else:
-            return clf.predict_proba(X_query)
+            return clf.predict_proba(X_query, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +254,7 @@ def extract_all_layers(
     X_query: np.ndarray,
     task: str = "classification",
     batch_size: int = 1024,
+    seed: int | None = None,
 ) -> dict[str, np.ndarray]:
     """Extract embeddings from all layers for query samples.
 
@@ -312,7 +322,7 @@ def extract_all_layers(
             handles.append(module.register_forward_hook(make_hook(name)))
 
         try:
-            predict(clf, X_batch, task)
+            predict(clf, X_batch, task, seed=seed)
         finally:
             for handle in handles:
                 handle.remove()
