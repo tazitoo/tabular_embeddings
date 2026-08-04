@@ -258,8 +258,8 @@ def readout(npz_path, feat, row, ratio, device):
     dimensionless ratio comes from the patch.
     """
     from scripts.rebuttal.functional_decomposition import _gc
-    from scripts.intervention.intervene_sae import SEQUENTIAL_MODELS
-    from scripts.intervention.ablation_sweep import batched_ablation_sequential
+    from scripts.intervention.intervene_lib import (
+        SEQUENTIAL_MODELS, batched_ablation_sequential)
 
     z = np.load(npz_path, allow_pickle=True)
     donor, recipient = str(z["strong_model"]), str(z["weak_model"])
@@ -346,12 +346,27 @@ def main():
 
     results = []
     for donor, feat in concepts:
+        try:
+            results.append(run_concept(donor, feat, args))
+        except Exception as exc:
+            # one concept failing must not discard the whole run's results
+            print(f"    FAILED {type(exc).__name__}: {exc}", flush=True)
+            results.append({"donor": donor, "feat": feat, "status": "error",
+                            "error": f"{type(exc).__name__}: {exc}"})
+        with open(args.out, "w") as fh:
+            json.dump(results, fh, indent=2, default=float)
+    print(f"\nwrote {args.out}")
+
+
+def run_concept(donor, feat, args):
+    if True:
         if donor in EXCLUDED_DONORS:
-            print(f"\n{donor} f{feat}: SKIPPED (donor excluded)"); continue
+            print(f"\n{donor} f{feat}: SKIPPED (donor excluded)")
+            return {"donor": donor, "feat": feat, "status": "excluded_donor"}
         cells = cells_for_concept(donor, feat, args.min_rows)
         if not cells:
             print(f"\n{donor} f{feat}: no cell with >= {args.min_rows} accepted rows")
-            results.append({"donor": donor, "feat": feat, "status": "no_cell"}); continue
+            return {"donor": donor, "feat": feat, "status": "no_cell"}
         recipient, dataset, acc_rows, npz_path = cells[0]
         print(f"\n{donor} f{feat} -> {recipient} / {dataset}  "
               f"({len(acc_rows)} accepted rows, {len(cells)} cells)", flush=True)
@@ -359,7 +374,8 @@ def main():
         X_ctx, y_ctx, X_query, _, _, task = load_dataset_context(donor, dataset,
                                                                  query_source="holdout")
         if hasattr(X_query, "iloc"):
-            print("    donor is a DataFrame model -- not supported here"); continue
+            print("    donor is a DataFrame model -- not supported here")
+            return {"donor": donor, "feat": feat, "status": "dataframe_donor"}
         sae, _ = load_sae(donor, device=args.device)
         with torch.no_grad():
             A = sae.encode(torch.tensor(np.asarray(load_test_embeddings(donor)[dataset],
@@ -394,9 +410,14 @@ def main():
                              row, feat, others, cols, args.max_vals, args.max_steps,
                              args.selectivity_tol, args.recon_bar)
             res["n_other_concepts"] = int(len(others))
+            # surface the guard numbers: a large drop means nothing without them
+            shift = max((s["max_other_shift"] for s in res["steps"]), default=0.0)
+            rec = max((s["recon_rel"] for s in res["steps"]), default=res["recon_rel_start"])
             print(f"    row {row}: a {res['a_start']:.3f} -> {res['a_final']:.3f} "
                   f"(drop {res['drop_frac']:.1%}, {res['n_cols_changed']} cols, "
-                  f"{res['stop_reason']})", flush=True)
+                  f"{res['stop_reason']}) | other-shift {shift:.3f} over "
+                  f"k-1={len(others)} | recon {res['recon_rel_start']:.3f}->{rec:.3f}",
+                  flush=True)
             if np.isfinite(res["ratio"]):
                 try:
                     res["readout"] = readout(npz_path, feat, row, res["ratio"], args.device)
@@ -423,11 +444,7 @@ def main():
                       f"other-shift p95={p['other_shift_p95']:.4f}", flush=True)
         except Exception as exc:
             entry["placebo"] = {"error": f"{type(exc).__name__}: {exc}"}
-        results.append(entry)
-
-    with open(args.out, "w") as fh:
-        json.dump(results, fh, indent=2, default=float)
-    print(f"\nwrote {args.out}")
+        return entry
 
 
 if __name__ == "__main__":
