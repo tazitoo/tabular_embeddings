@@ -257,7 +257,8 @@ def shift_metrics(a_base, a_new, others, feat):
             "n_others_moved_gt_10pct": int((rel > 0.10).sum())}
 
 
-def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac, max_levels):
+def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac, max_levels,
+                       probe_cols=None):
     """Pass 1: one standard step per column -> local sensitivity of c, in one forward.
 
     Continuous columns get +/- step_frac of their IQR, snapped to an observed value, so
@@ -270,7 +271,7 @@ def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac
     (how much c moves per unit of collateral) rather than by raw effect.
     """
     variants, meta = [], []
-    for j in range(X_query.shape[1]):
+    for j in (range(X_query.shape[1]) if probe_cols is None else probe_cols):
         v = X_query[~np.isnan(X_query[:, j]), j]
         if v.size == 0:
             continue
@@ -304,7 +305,7 @@ def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac
 
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, cat, sel_tol, recon_bar, batched=True, step_frac=0.5,
-               max_levels=6, top_m=8, max_cols=3):
+               max_levels=6, top_m=8, max_cols=3, probe_cols=None):
     """Two-pass search: column sensitivity, then combinations of the best columns.
 
     Pass 1 probes every column with a standard step (one batched forward) and ranks them
@@ -323,7 +324,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     ev = make_evaluator(donor, dataset, X_ctx, y_ctx, base, task, device, row, batched)
 
     sens = column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat,
-                              step_frac, max_levels)
+                              step_frac, max_levels, probe_cols=probe_cols)
     # best suppressing probe per column, then rank columns by selectivity
     per_col = {}
     for s in sens:
@@ -549,6 +550,18 @@ def main():
     ap.add_argument("--recon-bar", type=float, default=None)
     ap.add_argument("--step-frac", type=float, default=0.5,
                     help="standard step per continuous column, in IQR units (pass 1)")
+    ap.add_argument("--max-probe-cols", type=int, default=None,
+                    help="prefilter pass-1 probes to the top-N columns by rank "
+                         "correlation; essential for models that fail independence, "
+                         "where each probe costs its own forward")
+    ap.add_argument("--from-burndown", nargs="?", const=str(
+        PROJECT_ROOT / "output" / "rebuttal" / "patching_burndown.csv"), default=None,
+                    help="run every concept in the locked set instead of --concepts")
+    ap.add_argument("--donors", nargs="*", default=None,
+                    help="restrict to these donors (tabicl_v2 must run under tfm2)")
+    ap.add_argument("--shard", default=None, help="i/n -- take every n-th concept")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip concepts already present in --out")
     ap.add_argument("--check-independence", action="store_true",
                     help="verify query rows do not influence each other before trusting "
                          "the batched candidate evaluation")
@@ -556,11 +569,34 @@ def main():
     ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "rebuttal" / "patch_search.json"))
     args = ap.parse_args()
 
-    concepts = (PROBE_CONCEPTS if args.probe else
-                [(c.split(":")[0], int(c.split(":")[1])) for c in (args.concepts or [])])
-    torch.use_deterministic_algorithms(True)
+    if args.from_burndown:
+        import csv
+        concepts = [(r["donor"], int(r["feat_id"]))
+                    for r in csv.DictReader(open(args.from_burndown))]
+    elif args.probe:
+        concepts = PROBE_CONCEPTS
+    else:
+        concepts = [(c.split(":")[0], int(c.split(":")[1])) for c in (args.concepts or [])]
+    concepts = [c for c in concepts if c[0] not in EXCLUDED_DONORS]
+    if args.donors:
+        concepts = [c for c in concepts if c[0] in set(args.donors)]
+    if args.shard:
+        i, n = (int(x) for x in args.shard.split("/"))
+        concepts = concepts[i::n]
 
     results = []
+    done = set()
+    if args.resume and os.path.exists(args.out):
+        try:
+            results = json.load(open(args.out))
+            done = {(r["donor"], r["feat"]) for r in results}
+            print(f"resuming: {len(done)} concepts already done")
+        except Exception:
+            results = []
+    concepts = [c for c in concepts if c not in done]
+    print(f"{len(concepts)} concepts to run -> {args.out}")
+    torch.use_deterministic_algorithms(True)
+
     for donor, feat in concepts:
         try:
             results.append(run_concept(donor, feat, args))
@@ -600,6 +636,11 @@ def run_concept(donor, feat, args):
                                                    dtype=np.float32),
                                         device=args.device)).cpu().numpy().astype(np.float64)
         cat = column_types(donor, dataset, X_query)
+        # Prefilter which columns get a pass-1 probe. Free (rank correlation with the
+        # cached activation, no forwards) and essential for models that fail the
+        # independence check, where every probe costs its own forward.
+        probe_cols = (rank_columns(X_query, A[:, feat], args.max_probe_cols)
+                      if args.max_probe_cols else None)
         # placebo columns: the LOWEST-association ones by rank correlation with the
         # cached activation -- what an edit that should not matter for c already costs
         all_ranked = rank_columns(X_query, A[:, feat], X_query.shape[1])
@@ -632,7 +673,7 @@ def run_concept(donor, feat, args):
                              row, feat, others, cat, args.selectivity_tol, args.recon_bar,
                              batched=batched, step_frac=args.step_frac,
                              max_levels=args.max_vals, top_m=args.top_cols,
-                             max_cols=args.max_steps)
+                             max_cols=args.max_steps, probe_cols=probe_cols)
             res["n_other_concepts"] = int(len(others))
             # a large drop means nothing without the selectivity and in-sample numbers
             m = res["final_shift"]
