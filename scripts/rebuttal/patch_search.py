@@ -61,6 +61,7 @@ from scripts.intervention.intervene_lib import (
 )
 
 FWD = PROJECT_ROOT / "output" / "rebuttal" / "forward_deltas"
+IMPORTANCE = PROJECT_ROOT / "output" / "perrow_importance"
 ATOMS = PROJECT_ROOT / "output" / "transfer_caches" / "global_trained"
 EXTRACT_SEED = 13
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
@@ -436,6 +437,38 @@ def placebo_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
 
 # ── cell selection and readout ───────────────────────────────────────────────
 
+_IMP_CACHE: dict = {}
+
+
+def row_importance(donor, dataset, feat):
+    """This concept's importance at every row, from output/perrow_importance.
+
+    row_feature_drops[r, i] is the loss change when feature i is ablated at row r --
+    the same signal transfer_sweep_symmetric ranks its candidates by (:340, :577). It
+    is computed per (donor, dataset) independently of the recipient and of the greedy's
+    insertion order, and it is not censored by selected_features' 60-wide truncation,
+    which makes it the right basis for choosing which rows to patch.
+
+    Returns None when the dataset's tested feature set does not include this concept.
+    """
+    key = (donor, dataset)
+    if key not in _IMP_CACHE:
+        f = IMPORTANCE / donor / f"{dataset}.npz"
+        if not f.exists():
+            _IMP_CACHE[key] = None
+        else:
+            z = np.load(f, allow_pickle=True)
+            _IMP_CACHE[key] = (np.asarray(z["row_feature_drops"], dtype=np.float64),
+                               {int(v): i for i, v in enumerate(np.asarray(z["feature_indices"]))})
+    got = _IMP_CACHE[key]
+    if got is None:
+        return None
+    drops, fmap = got
+    if feat not in fmap:
+        return None
+    return drops[:, fmap[feat]]
+
+
 def cells_for_concept(donor, feat, min_rows):
     """(recipient, dataset, accepted rows) where this concept was actually deployed."""
     out = []
@@ -453,16 +486,21 @@ def cells_for_concept(donor, feat, min_rows):
         # TopK -- k is overloaded, so it is not used for this anywhere). The delta is a
         # sum over n_concepts terms, so it governs how much collateral movement dilutes
         # attribution of any single one.
-        rows = [(r, len(np.unique(sel[r][sel[r] >= 0])))   # (row, n_concepts)
-                for r in range(sel.shape[0]) if feat in set(sel[r][sel[r] >= 0].tolist())]
+        dataset = os.path.basename(f)[:-4]
+        imp = row_importance(donor, dataset, feat)
+        rows = [(r, float(abs(imp[r])) if imp is not None and r < len(imp) else float("nan"))
+                for r in range(sel.shape[0])
+                if feat in set(sel[r][sel[r] >= 0].tolist())]
         if len(rows) >= min_rows:
-            out.append((str(z["weak_model"]), os.path.basename(f)[:-4], rows, f))
-    # Rank by SIZE, largest first, and work down. This is deliberately independent of
-    # anything the search finds convenient: ranking on k selected the cells where
-    # attribution was easiest, which made the dataset a free parameter that determined
-    # the result. Size is a property of the deployment, fixed before any search runs,
-    # so the dataset a concept is explained in is never chosen to flatter the method.
-    out.sort(key=lambda t: (-len(t[2]), t[1]))
+            out.append((str(z["weak_model"]), dataset, rows, f))
+    # Rank by where this concept is most IMPORTANT, using the transfer's own per-row
+    # importance. Earlier rules ranked on cell size or on how many concepts shared the
+    # row; both were properties of the container rather than of the concept, and the
+    # size rule steered us onto rows whose recorded concept list is truncated at 60.
+    def cell_key(t):
+        vals = [v for _, v in t[2] if np.isfinite(v)]
+        return (-(max(vals) if vals else -np.inf), t[1])
+    out.sort(key=cell_key)
     return out
 
 
@@ -690,7 +728,7 @@ def run_concept(donor, feat, args):
         picks = sorted(by_ds.values(), key=lambda t: (-len(t[2]), t[1]))[:args.n_datasets]
         print(f"\n{donor} f{feat}: {len(cells)} cells over {len(by_ds)} datasets -> "
               f"top {len(picks)}: " +
-              ", ".join(f"{ds}({len(rk)}r,nc~{np.median([nc for _, nc in rk]):.0f},{rec})"
+              ", ".join(f"{ds}({len(rk)}r,imp_max={max((v for _, v in rk if np.isfinite(v)), default=float('nan')):.4f},{rec})"
                         for rec, ds, rk, _ in picks), flush=True)
 
         entry = {"donor": donor, "feat": feat, "n_cells": len(cells),
@@ -710,9 +748,14 @@ def run_concept(donor, feat, args):
 def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args):
     """Patch one concept in one dataset -- the unit where columns are comparable."""
     if True:
-        ns = [nc for _, nc in acc_rows_n]
+        imps = [v for _, v in acc_rows_n if np.isfinite(v)]
+        if not imps:
+            print(f"  {dataset} -> {recipient}: concept absent from this dataset's "
+                  f"perrow_importance -- cannot rank rows, skipping", flush=True)
+            return {"dataset": dataset, "recipient": recipient,
+                    "status": "no_importance_for_concept"}
         print(f"  {dataset} -> {recipient} ({len(acc_rows_n)} rows, "
-              f"n_concepts median={np.median(ns):.0f})", flush=True)
+              f"importance median={np.median(imps):.4f} max={max(imps):.4f})", flush=True)
 
         X_ctx, y_ctx, X_query, _, _, task = load_dataset_context(donor, dataset,
                                                                  query_source="holdout")
@@ -751,10 +794,15 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
         # Every row in the cell, up to the sample size -- no ordering by k. Selecting
         # rows on k picks the ones where attribution is easiest, which is the same
         # confound as selecting the dataset on k.
-        chosen = [r for r, _ in acc_rows_n][:args.n_rows]
+        # most important rows first -- the concept's own recorded importance, so the
+        # patch is attempted where it actually does work rather than wherever it happens
+        # to appear
+        chosen = [r for r, v in sorted(acc_rows_n, key=lambda t: -(t[1] if np.isfinite(t[1]) else -np.inf))
+                  ][:args.n_rows]
         entry = {"recipient": recipient, "dataset": dataset,
                  "n_accepted_rows": len(acc_rows_n),
-                 "n_concepts_median": float(np.median(ns)),
+                 "importance_median": float(np.median(imps)),
+                 "importance_max": float(max(imps)),
                  "n_categorical_cols": len(cat), "rows": [], "placebo": None}
         for row in chosen:
             row = int(row)
@@ -769,7 +817,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
             # a large drop means nothing without the selectivity and in-sample numbers
             m = res["final_shift"]
             rec = max((s["recon_rel"] for s in res["steps"]), default=res["recon_rel_start"])
-            print(f"    row {row} (n_concepts={len(others)+1}): drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
+            print(f"    row {row} (imp={dict(acc_rows_n).get(row, float('nan')):.4f}, n_co={len(others)+1}): drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
                   f"{res['stop_reason']}) | target {m['target_rel']:.1%} vs others "
                   f"med {m['other_rel_median']:.1%} p90 {m['other_rel_p90']:.1%} "
                   f"(>10%: {m['n_others_moved_gt_10pct']}/{len(others)}) | "
