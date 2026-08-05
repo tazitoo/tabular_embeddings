@@ -719,6 +719,15 @@ def run_concept(donor, feat, args):
         return entry
 
 
+def ordinal(i):
+    """1-based position in the greedy's acceptance order, for readable reports."""
+    if i is None:
+        return "?"
+    n = int(i) + 1
+    suf = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suf}"
+
+
 def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args):
     """Patch one concept in one dataset -- the unit where columns are comparable."""
     if True:
@@ -796,11 +805,22 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                              batched=batched, step_frac=args.step_frac,
                              max_levels=args.max_vals, top_m=args.top_cols,
                              max_cols=args.max_steps, probe_cols=probe_cols)
-            res["n_other_concepts"] = int(len(others))
+            res.update({"donor": donor, "feat": feat, "recipient": recipient,
+                        "dataset": dataset, "n_other_concepts": int(len(others)),
+                        "n_concepts_at_row": int(len(others)) + 1,
+                        "acceptance_rank": rank_of.get(row),
+                        "activation": act.get(row)})
             # a large drop means nothing without the selectivity and in-sample numbers
             m = res["final_shift"]
             rec = max((s["recon_rel"] for s in res["steps"]), default=res["recon_rel_start"])
-            print(f"    row {row} (rank={rank_of.get(row)}, act={act.get(row, float('nan')):.2f}, n_co={len(others)+1}): drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
+            # A row id alone is not a statement: the same row carries many concepts.
+            # Identify (donor, recipient, dataset, concept, row) and say what else was
+            # injected there.
+            print(f"    {donor} f{feat} -> {recipient} / {dataset} row {row}: "
+                  f"1 of {len(others)+1} concepts injected here, "
+                  f"accepted {ordinal(rank_of.get(row))}, act={act.get(row, float('nan')):.2f}",
+                  flush=True)
+            print(f"      drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
                   f"{res['stop_reason']}) | target {m['target_rel']:.1%} vs others "
                   f"med {m['other_rel_median']:.1%} p90 {m['other_rel_p90']:.1%} "
                   f"(>10%: {m['n_others_moved_gt_10pct']}/{len(others)}) | "
@@ -814,7 +834,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                         r = res["readout"]
                         cap = r.get('capture_of_ceiling')
                         cap_s = f"{cap:6.1%}" if cap is not None and np.isfinite(cap) else "   n/a"
-                        print(f"       gc {r['gc_deployed']:.4f} -> {r['gc_counterfactual']:.4f} "
+                        print(f"      gc(all {r['n_accepted']} concepts) {r['gc_deployed']:.4f} -> {r['gc_counterfactual']:.4f} "
                               f"| CEILING (ablate c) {r['gc_ceiling_ablated']:.4f} "
                               f"= {r['ceiling_effect']:+.4f} | patch {r['patch_effect']:+.4f} "
                               f"| capture {cap_s} | purity {r['attribution_purity']:.3f}",
