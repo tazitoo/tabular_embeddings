@@ -604,8 +604,8 @@ def main():
                     help="minimum accepted rows for a cell to be usable. Cells are "
                          "ranked largest-first, so this only excludes empties.")
     ap.add_argument("--selectivity-tol", type=float, default=None,
-                    help="max allowed shift in the other k-1; omit to record only "
-                         "(the probe measures the placebo null that sets this)")
+                    help="max allowed relative shift (p90) in the other accepted "
+                         "concepts; omit to record without constraining")
     ap.add_argument("--recon-bar", type=float, default=None)
     ap.add_argument("--step-frac", type=float, default=0.5,
                     help="standard step per continuous column, in IQR units (pass 1)")
