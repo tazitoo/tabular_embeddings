@@ -11,8 +11,6 @@ writing:
     divides by ~0. Seen at 8/20 rows for mitra.
   - purity > 1, which is possible (other concepts' shifts can partially cancel c's) but
     is not a "share" and must not be averaged as one.
-  - placebo rows inheriting the same near-zero denominator, which produced a reported
-    target movement of 198,990,863%.
   - readout failures when the chosen cell's RECIPIENT needs a different conda env than
     the donor (tabicl_v2 under tfm).
   - this sweep ran with the min_rows=8 cell filter, which raised the median searched k

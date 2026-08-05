@@ -402,39 +402,6 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "steps": [best] if best else []}
 
 
-def placebo_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
-                others, cols_low, max_vals):
-    """Edit a LOW-association column: what does touching the row at all cost?
-
-    This is the calibrator for the selectivity tolerance -- the repeat null is exactly
-    zero now that extraction is deterministic, so it cannot set a meaningful bar.
-    """
-    base = X_query.copy()
-    a0, _ = extract_acts(donor, dataset, X_ctx, y_ctx, base, task, device)
-    variants, meta = [], []
-    for c in cols_low:
-        for val in candidate_values(X_query, c, max_vals):
-            if np.isclose(val, base[row, c], equal_nan=True):
-                continue
-            r = base[row].copy(); r[c] = val
-            variants.append(r); meta.append((int(c), float(val)))
-    if not variants:
-        return None
-    Xq = np.vstack([base, np.asarray(variants, dtype=base.dtype)])
-    a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
-    off = len(base)
-    mets = [shift_metrics(a0[row], a[off + i], others, feat) for i in range(len(meta))]
-    tgt = [m["target_rel"] for m in mets]
-    oth = [m["other_rel_p90"] for m in mets]
-    return {"n": len(meta),
-            # what an IRRELEVANT edit already does -- the bar a real patch must clear
-            "target_rel_median": float(np.median(tgt)), "target_rel_p95": float(np.percentile(tgt, 95)),
-            "other_rel_p90_median": float(np.median(oth)),
-            "other_rel_p90_p95": float(np.percentile(oth, 95)),
-            "selectivity_ratio_median": float(np.median([m["selectivity_ratio"] for m in mets])),
-            "recon_rel_median": float(np.median(rel[off:]))}
-
-
 # ── cell selection and readout ───────────────────────────────────────────────
 
 _IMP_CACHE: dict = {}
@@ -775,10 +742,6 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
         # independence check, where every probe costs its own forward.
         probe_cols = (rank_columns(X_query, A[:, feat], args.max_probe_cols)
                       if args.max_probe_cols else None)
-        # placebo columns: the LOWEST-association ones by rank correlation with the
-        # cached activation -- what an edit that should not matter for c already costs
-        all_ranked = rank_columns(X_query, A[:, feat], X_query.shape[1])
-        low = list(reversed(all_ranked))[:3]
 
         # Batching is only valid when query rows are independent. Decide by measurement,
         # not by model name: mitra's 2D attention makes its rows interact (shift 2.44)
@@ -823,7 +786,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                  "n_accepted_rows": len(acc_rows_n),
                  "rank_best": int(min(ranks)), "rank_median": float(np.median(ranks)),
                  "row_activation": entry_act,
-                 "n_categorical_cols": len(cat), "rows": [], "placebo": None}
+                 "n_categorical_cols": len(cat), "rows": []}
         for row in chosen:
             row = int(row)
             others = np.array([int(f) for f in np.unique(sel[row][sel[row] >= 0])
@@ -861,21 +824,6 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                     print(f"       readout ERROR {type(exc).__name__}: {exc}", flush=True)
             entry["rows"].append(res)
 
-        try:
-            row0 = int(chosen[0])
-            others0 = np.array([int(f) for f in np.unique(sel[row0][sel[row0] >= 0])
-                                if int(f) != feat], dtype=int)
-            entry["placebo"] = placebo_row(donor, dataset, X_ctx, y_ctx, X_query, task,
-                                           args.device, row0, feat, others0, low, args.max_vals)
-            if entry["placebo"] and "n" in entry["placebo"]:
-                p = entry["placebo"]
-                print(f"    PLACEBO ({p['n']} edits, low-association cols): target moves "
-                      f"{p['target_rel_median']:.1%} (p95 {p['target_rel_p95']:.1%}), "
-                      f"others p90 {p['other_rel_p90_median']:.1%}, "
-                      f"sel-ratio {p['selectivity_ratio_median']:.2f}  "
-                      f"<- a real patch must beat this", flush=True)
-        except Exception as exc:
-            entry["placebo"] = {"error": f"{type(exc).__name__}: {exc}"}
         return entry
 
 
