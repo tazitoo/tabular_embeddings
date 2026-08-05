@@ -620,6 +620,9 @@ def main():
                     help="datasets to patch each concept in, ranked largest-first. "
                          "Columns are only comparable within a dataset, so this buys "
                          "variety, not a bigger pooled sample.")
+    ap.add_argument("--n-activation-bands", type=int, default=3,
+                    help="activation strata to spread the sampled rows over; 1 would "
+                         "characterise the concept from its top-activation rows alone")
     ap.add_argument("--n-rows", type=int, default=10,
                     help="rows patched per dataset; consistency across them is the "
                          "evidence that a column explains the concept")
@@ -796,10 +799,30 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
         # most important rows first -- the concept's own recorded importance, so the
         # patch is attempted where it actually does work rather than wherever it happens
         # to appear
-        chosen = [r for r, _ in sorted(acc_rows_n, key=lambda t: t[1])][:args.n_rows]
+        # Two axes. Acceptance rank says where the concept did the most work;
+        # activation says where it is legible enough to label and has headroom to
+        # suppress. Take rows stratified across activation bands rather than the top
+        # band alone, so the patch is not characterised from high-activation rows only,
+        # and within each band prefer the earliest-accepted row.
+        act = {r: float(A[r, feat]) for r, _ in acc_rows_n}
+        order = sorted(acc_rows_n, key=lambda t: -act[t[0]])
+        n_bands = min(args.n_activation_bands, len(order))
+        bands = np.array_split(np.array([r for r, _ in order], dtype=int), n_bands)
+        rank_of = dict(acc_rows_n)
+        per_band = max(1, args.n_rows // max(n_bands, 1))
+        chosen = []
+        for b in bands:
+            chosen += sorted(b.tolist(), key=lambda r: rank_of[r])[:per_band]
+        # top up from whatever is left, earliest-accepted first
+        if len(chosen) < args.n_rows:
+            rest = [r for r, _ in sorted(acc_rows_n, key=lambda t: t[1]) if r not in chosen]
+            chosen += rest[:args.n_rows - len(chosen)]
+        chosen = chosen[:args.n_rows]
+        entry_act = {int(r): act[r] for r in chosen}
         entry = {"recipient": recipient, "dataset": dataset,
                  "n_accepted_rows": len(acc_rows_n),
                  "rank_best": int(min(ranks)), "rank_median": float(np.median(ranks)),
+                 "row_activation": entry_act,
                  "n_categorical_cols": len(cat), "rows": [], "placebo": None}
         for row in chosen:
             row = int(row)
@@ -814,7 +837,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
             # a large drop means nothing without the selectivity and in-sample numbers
             m = res["final_shift"]
             rec = max((s["recon_rel"] for s in res["steps"]), default=res["recon_rel_start"])
-            print(f"    row {row} (rank={dict(acc_rows_n).get(row)}, n_co={len(others)+1}): drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
+            print(f"    row {row} (rank={rank_of.get(row)}, act={act.get(row, float('nan')):.2f}, n_co={len(others)+1}): drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
                   f"{res['stop_reason']}) | target {m['target_rel']:.1%} vs others "
                   f"med {m['other_rel_median']:.1%} p90 {m['other_rel_p90']:.1%} "
                   f"(>10%: {m['n_others_moved_gt_10pct']}/{len(others)}) | "
