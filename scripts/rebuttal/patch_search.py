@@ -64,6 +64,7 @@ FWD = PROJECT_ROOT / "output" / "rebuttal" / "forward_deltas"
 IMPORTANCE = PROJECT_ROOT / "output" / "perrow_importance"
 ATOMS = PROJECT_ROOT / "output" / "transfer_caches" / "global_trained"
 EXTRACT_SEED = 13
+EPS = 1e-7   # the constant already used by _gc and the transfer sweep
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
 # embeddings come from an unseeded retrieval draw, so re-extraction yields a
 # different draw and the injected delta moves ~59% (vs 0.13% for a deterministic
@@ -183,8 +184,8 @@ def candidate_values(X: np.ndarray, col: int, max_vals: int,
     if v.size == 0:
         return np.array([])
     uniq = np.unique(v)
-    if len(uniq) <= max_vals:
-        return uniq
+    if max_vals is None or len(uniq) <= max_vals:
+        return uniq            # None = the column's entire observed support
     qs = np.linspace(0.05, 0.95, max_vals) if interior else np.linspace(0.0, 1.0, max_vals)
     out = np.unique(np.quantile(v, qs, method="nearest"))
     if len(out) < max_vals:
@@ -264,6 +265,146 @@ def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, bat
     return batched_eval if batched else replace_eval
 
 
+def blast_radius(a_base, a_new, accepted_others):
+    """Movement in the OTHER accepted concepts, as one scale-free number.
+
+    Only concepts that fire AND were accepted have a term in delta_r, so they are the
+    only ones whose movement can reach the recipient. Restricted to that set, with the
+    patched concept excluded (we want it to move).
+
+    A vector norm rather than a per-concept quantile: |da_j|/|a_j| explodes when a
+    concept sits near zero -- that is what produced a reported 198,990,863% -- whereas
+    a near-zero component contributes near-zero to both numerator and denominator here.
+    No quantile means no arbitrary choice of 90 vs 95 vs max, and the whole distribution
+    contributes rather than one sampled point.
+    """
+    if len(accepted_others) == 0:
+        return 0.0
+    d = a_new[accepted_others] - a_base[accepted_others]
+    return float(np.linalg.norm(d) / (np.linalg.norm(a_base[accepted_others]) + EPS))
+
+
+def reversal(L_orig, L_transfer, L_mod):
+    """Fraction of the transfer's gain that the patch undid.
+
+    0 = the patch changed nothing; 1 = the recipient is back to its untransferred
+    prediction. Uses the transfer's own endpoints, so it needs no separate ablation and
+    carries no scale. The denominator is ~0 on rows where the transfer achieved nothing;
+    those rows carry no signal in either direction and are flagged rather than scored.
+    """
+    return float((L_mod - L_transfer) / (L_orig - L_transfer + EPS))
+
+
+def objective(drop_frac, rev, blast):
+    """drop x reversal / (1 + blast). Products and ratios of dimensionless terms, so
+    there are no weights to invent. `1 + blast` degrades smoothly to `drop x reversal`
+    for a clean patch instead of blowing up. Reversal is NOT clipped: a patch that moves
+    the recipient opposite to the transfer scores negative, which is correct."""
+    return float(drop_frac * rev / (1.0 + blast))
+
+
+def build_recip_shared(donor, recipient, dataset, device):
+    """Per-CELL recipient context: the tail, the atoms, and the donor's cached
+    activations. Built once per (recipient, dataset) -- the tail does not depend on the
+    row, and rebuilding it per row would dominate the cost.
+
+    Returns None when the recipient's readout does not reproduce the transfer (carte),
+    so the search runs donor-side only there rather than optimising against a number
+    that cannot be trusted.
+    """
+    if recipient in READOUT_EXCLUDED:
+        return None
+    zc = np.load(ATOMS / f"{donor}_to_{recipient}.npz", allow_pickle=True)
+    V = np.asarray(zc["virtual_atoms"], dtype=np.float64)
+    fmap = {int(f): i for i, f in enumerate(np.asarray(zc["feature_ids"]))}
+    _, std_w = load_norm_stats(recipient, dataset, device=device)
+    std_w = np.asarray(std_w.cpu(), dtype=np.float64)
+
+    sae, _ = load_sae(donor, device=device)
+    with torch.no_grad():
+        A = sae.encode(torch.tensor(np.asarray(load_test_embeddings(donor)[dataset],
+                                               dtype=np.float32),
+                                    device=device)).cpu().numpy().astype(np.float64)
+
+    splits = json.loads(SPLITS_PATH.read_text())
+    Xtr, ytr, Xq, _, _, task = load_dataset_context(recipient, dataset, splits)
+    if ytr.dtype == np.int32:
+        ytr = ytr.astype(np.int64)
+    layer = get_extraction_layer_taskaware(recipient, dataset=dataset)
+    cat_idx = None
+    if recipient in ("hyperfast", "tabpfn"):
+        from data.preprocessing import load_preprocessed, CACHE_DIR
+        try:
+            cat_idx = load_preprocessed(recipient, dataset, CACHE_DIR).cat_indices or None
+        except Exception:
+            pass
+    _reseed()
+    tail = build_tail(recipient, Xtr, ytr, Xq, layer, task, device, cat_indices=cat_idx,
+                      target_name=splits.get(dataset, {}).get("target", "target"))
+    return {"V": V, "fmap": fmap, "std_w": std_w, "A": A, "tail": tail, "Xq": Xq}
+
+
+def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, device):
+    """Per-ROW recipient context: this row's accepted atoms, signs, and the transfer's
+    own endpoints (L_orig, L_transfer) that `reversal` is scaled by."""
+    if shared is None:
+        return None
+    from scripts.intervention.intervene_lib import (
+        SEQUENTIAL_MODELS, batched_ablation_sequential)
+
+    V, fmap, std_w, A = shared["V"], shared["fmap"], shared["std_w"], shared["A"]
+    tail, Xq = shared["tail"], shared["Xq"]
+    z = np.load(npz_path, allow_pickle=True)
+    dd = np.asarray(z["deployed_delta"], dtype=np.float64)[row]
+    sel = np.asarray(z["selected_features"])[row]
+    fids = [int(f) for f in np.unique(sel[sel >= 0]) if int(f) in fmap]
+    if not fids:
+        return None
+    B = np.stack([V[fmap[f]] * std_w for f in fids])
+    c, *_ = np.linalg.lstsq(B.T, dd, rcond=None)   # signs are not cached; recover them
+
+    y = int(np.asarray(z["y_query"])[row])
+    pw, pi = np.asarray(z["preds_weak"])[row], np.asarray(z["preds_intervened"])[row]
+
+    def loss(p):
+        p = np.asarray(p)
+        if p.ndim >= 1 and p.size > 1:
+            return float(-np.log(np.clip(p[y], EPS, 1 - EPS)))
+        return float((float(p) - float(np.asarray(z["preds_strong"])[row])) ** 2)
+
+    def predict(deltas):
+        t = torch.tensor(np.asarray(deltas), dtype=torch.float32, device=device)
+        if isinstance(tail, SEQUENTIAL_MODELS):
+            return np.asarray(batched_ablation_sequential(tail, Xq[row:row+1], t, query_idx=row),
+                              dtype=np.float64)
+        return np.asarray(batched_intervention(tail, Xq[row:row+1], t, inject_context=False),
+                          dtype=np.float64)
+
+    return {"fids": fids, "B": B, "signs": np.sign(c),
+            "a_corpus": np.array([A[row, f] for f in fids]),
+            "a_re": {f: float(a_re[f]) for f in fids},   # our own baseline, for ratios
+            "predict": predict, "loss": loss,
+            "L_orig": loss(pw), "L_transfer": loss(pi), "row": int(row)}
+
+
+def recipient_reversal(recip, acts, feat):
+    """Measured reversal for a batch of candidate activation vectors.
+
+    For each candidate: rescale every accepted concept's term by its MEASURED ratio
+    (not just the patched concept's -- assuming the others held still is the assumption
+    under test), rebuild the delta, and run the recipient. One batched call for the
+    whole batch, so a pass costs one recipient forward regardless of candidate count.
+    """
+    d = []
+    for av in acts:
+        r_vec = np.array([
+            float(av[f] / recip["a_re"][f]) if abs(recip["a_re"][f]) > EPS else 1.0
+            for f in recip["fids"]])
+        d.append((recip["signs"] * recip["a_corpus"] * r_vec) @ recip["B"])
+    preds = recip["predict"](np.asarray(d))
+    return [reversal(recip["L_orig"], recip["L_transfer"], recip["loss"](p)) for p in preds]
+
+
 def shift_metrics(a_base, a_new, others, feat):
     """How much did the OTHER accepted concepts move, per concept and relative to their own scale?
 
@@ -337,14 +478,26 @@ def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac
 
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, cat, sel_tol, recon_bar, batched=True, step_frac=0.5,
-               max_levels=6, top_m=8, max_cols=3, probe_cols=None):
-    """Two-pass search: column sensitivity, then combinations of the best columns.
+               max_levels=6, top_m=8, max_cols=3, probe_cols=None,
+               recip_shared=None, recipient=None, npz_path=None):
+    """Greedy search over input (column, value) edits, scored on the joint objective.
 
-    Pass 1 probes every column with a standard step (one batched forward) and ranks them
-    by selectivity -- c's response per unit of collateral movement in the other k-1.
-    Pass 2 evaluates subsets of the top-ranked columns, each held at its pass-1 value,
-    in a second batched forward. Two forwards per row instead of a rescan per greedy
-    step, and the ranking optimises the thing we care about rather than raw suppression.
+    The search is over INPUT features and values. Concepts are measured, never searched:
+    the transfer's concept selection is fixed history, the context we intervene in.
+
+    Candidates are scored by  drop_frac * reversal / (1 + blast)  -- three MEASURED
+    terms, none computed. The recipient term cannot be derived from the donor side: the
+    delta is linear in the activations only for a fixed accepted set with fixed atoms,
+    the recipient's prediction is nonlinear in the delta, the mapping carries its own
+    normalisation, and the accepted set is itself a function of the activations. So the
+    recipient forward sits inside the loop -- that is the coupling, and it is why
+    tabicl <-> tabicl_v2 pairs cannot run in one process.
+
+    Cost stays two batched calls per pass regardless of candidate count: one donor
+    forward for all candidates, one recipient call for their deltas.
+
+    `recip` carries the recipient context. Without it only the donor-side terms exist
+    (carte cells, where the readout does not reproduce).
     """
     import itertools
 
@@ -354,6 +507,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     a_start = float(a_base_row[feat])
     x0 = base[row].copy()
     ev = make_evaluator(donor, dataset, X_ctx, y_ctx, base, task, device, row, batched)
+    # Built here, not by the caller: the ratios are taken against OUR re-extracted
+    # baseline, which only exists once the donor forward above has run.
+    recip = build_recip(recip_shared, donor, recipient, dataset, npz_path, row,
+                        a_base_row, device) if recip_shared is not None else None
 
     sens = column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat,
                               step_frac, max_levels, probe_cols=probe_cols)
@@ -376,24 +533,32 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     r[s["column"]] = s["value"]
                 combos.append(r); cmeta.append(sub)
         a, rel = ev(combos)
+        # One batched recipient call for every candidate's delta. The recipient term is
+        # measured, not derived: see the docstring on why it cannot be computed from the
+        # donor side.
+        revs = recipient_reversal(recip, a, feat) if recip else [float("nan")] * len(a)
         cands = []
         for i, sub in enumerate(cmeta):
             m = shift_metrics(a_base_row, a[i], others, feat)
             drop = a_start - float(a[i][feat])
-            ok = ((sel_tol is None or m["other_rel_p90"] <= sel_tol) and
-                  (recon_bar is None or float(rel[i]) <= recon_bar))
+            df = drop / a_start if a_start > 0 else float("nan")
+            bl = blast_radius(a_base_row, a[i], others)
+            rev = float(revs[i])
+            ok = recon_bar is None or float(rel[i]) <= recon_bar
             if drop > 0 and ok:
                 cands.append({"columns": [s["column"] for s in sub],
                               "values": [s["value"] for s in sub],
                               "activation_after": float(a[i][feat]), "drop": drop,
+                              "drop_frac": df, "blast": bl, "reversal": rev,
+                              # donor-only cells (carte) have no recipient term; scoring
+                              # falls back to suppression against blast so the search
+                              # still runs, and the record says the readout is absent.
+                              "score": objective(df, rev if np.isfinite(rev) else 1.0, bl),
                               "recon_rel": float(rel[i]),
                               "edit_distance": float(sum(s["edit_distance"] for s in sub)),
                               "_vec": a[i], **m})
         if cands:
-            # prefer the smallest edit among those achieving comparable suppression
-            top = max(c["drop"] for c in cands)
-            best = min([c for c in cands if c["drop"] >= 0.9 * top],
-                       key=lambda c: c["edit_distance"])
+            best = max(cands, key=lambda c: c["score"])
             stop = "fully_suppressed" if best["activation_after"] <= 0 else "best_combination"
         else:
             stop = "no_qualifying_combination"
@@ -610,23 +775,30 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe", action="store_true", help="run the 5 stratified concepts")
     ap.add_argument("--concepts", nargs="*", default=None, help="donor:feat pairs")
-    ap.add_argument("--n-datasets", type=int, default=3,
-                    help="datasets to patch each concept in, ranked largest-first. "
-                         "Columns are only comparable within a dataset, so this buys "
-                         "variety, not a bigger pooled sample.")
+    ap.add_argument("--n-datasets", type=int, default=None,
+                    help="datasets per concept; default ALL. Ranking is execution "
+                         "ORDER, not eligibility, so this is purely a budget dial -- "
+                         "lowering it stops earlier down an importance-ordered list, "
+                         "it does not make rows ineligible.")
     ap.add_argument("--n-activation-bands", type=int, default=3,
                     help="activation strata to spread the sampled rows over; 1 would "
                          "characterise the concept from its top-activation rows alone")
-    ap.add_argument("--n-rows", type=int, default=10,
-                    help="rows patched per dataset; consistency across them is the "
-                         "evidence that a column explains the concept")
-    ap.add_argument("--top-cols", type=int, default=8,
+    ap.add_argument("--n-rows", type=int, default=None,
+                    help="rows patched per dataset; default ALL. Budget dial, as above.")
+    ap.add_argument("--top-cols", type=int, default=None,
                     help="columns carried from the pass-1 sensitivity map into the "
-                         "pass-2 combination search")
-    ap.add_argument("--max-vals", type=int, default=6,
-                    help="candidate values per column, drawn from observed support")
+                         "pass-2 combination search; default ALL that suppress. This "
+                         "one is NOT a pure budget dial -- too small and a patch that "
+                         "exists is never found, which would show up as a false 'no "
+                         "qualifying patch' in the coverage figure.")
+    ap.add_argument("--max-vals", type=int, default=None,
+                    help="candidate values per column; default the column's ENTIRE "
+                         "observed support. Also a search-space limit, not a budget.")
     ap.add_argument("--max-steps", type=int, default=3,
-                    help="largest column-combination size tried in pass 2")
+                    help="largest column-combination size in pass 2. The one knob that "
+                         "cannot simply be maximised: pass 2 evaluates C(top_cols, size) "
+                         "combinations, so this is combinatorial in the column count. "
+                         "Raise it only with the cost measured.")
     ap.add_argument("--min-rows", type=int, default=1,
                     help="minimum accepted rows for a cell to be usable. Cells are "
                          "ranked largest-first, so this only excludes empties.")
@@ -793,6 +965,13 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
               f"{'batched' if batched else 'ROWS INTERACT -> per-candidate forwards'}",
               flush=True)
 
+        # Recipient tail built ONCE per cell -- it depends on (recipient, dataset), not
+        # on the row. None for carte, where the readout does not reproduce.
+        recip_shared = build_recip_shared(donor, recipient, dataset, args.device)
+        if recip_shared is None:
+            print(f"    readout unavailable for recipient={recipient}; "
+                  f"scoring donor-side only", flush=True)
+
         z = np.load(npz_path, allow_pickle=True)
         sel = np.asarray(z["selected_features"])
 
@@ -836,7 +1015,9 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                              row, feat, others, cat, args.selectivity_tol, args.recon_bar,
                              batched=batched, step_frac=args.step_frac,
                              max_levels=args.max_vals, top_m=args.top_cols,
-                             max_cols=args.max_steps, probe_cols=probe_cols)
+                             max_cols=args.max_steps, probe_cols=probe_cols,
+                             recip_shared=recip_shared, recipient=recipient,
+                             npz_path=npz_path)
             res.update({"donor": donor, "feat": feat, "recipient": recipient,
                         "dataset": dataset, "n_other_concepts": int(len(others)),
                         "n_concepts_at_row": int(len(others)) + 1,
