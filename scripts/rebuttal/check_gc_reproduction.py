@@ -76,8 +76,16 @@ def main():
     from scripts.intervention.intervene_lib import (
         SEQUENTIAL_MODELS, batched_ablation_sequential)
 
-    print(f"  {'row':>5s} {'cached gap_closed':>18s} {'recomputed gc':>15s} {'diff':>10s} {'strong_win':>11s}")
-    diffs = []
+    # Log the PREDICTION difference, not just the derived gc: gc clamps to [0,1] and
+    # divides by gap, so a gc difference could come from a tiny prediction change, a
+    # near-zero denominator, or a clamp, and those are indistinguishable downstream.
+    # preds_intervened is cached, so the transfer's own prediction is directly
+    # comparable. gap and moved are logged because gc is unstable when gap is small.
+    pi = np.asarray(z["preds_intervened"], dtype=np.float64)
+    EPS = 1e-7
+    print(f"  {'row':>5s} {'|pred-cached|':>14s} {'gap':>9s} {'moved_cache':>12s} "
+          f"{'moved_mine':>11s} {'gc_cache':>9s} {'gc_mine':>9s} {'clamp':>7s}")
+    diffs, pdiffs = [], []
     for r in rows:
         d = torch.tensor(dd[r][None, :], dtype=torch.float32, device=args.device)
         if isinstance(tail, SEQUENTIAL_MODELS):
@@ -86,13 +94,29 @@ def main():
         else:
             p = np.asarray(batched_intervention(tail, Xq[r:r+1], d, inject_context=False),
                            dtype=np.float64)
-        g = float(_gc(np.asarray(pw)[r], p[0], np.asarray(ps)[r], int(np.asarray(yq)[r])))
-        diffs.append(g - gcc[r])
-        print(f"  {r:5d} {gcc[r]:18.4f} {g:15.4f} {g-gcc[r]:10.4f} {str(bool(sw[r])):>11s}")
-    d = np.array(diffs)
-    print(f"\n  median |diff| = {np.median(np.abs(d)):.4f}   max |diff| = {np.abs(d).max():.4f}")
-    print("  Nonzero differences mean the readout does not reproduce the transfer, so")
-    print("  ceiling and capture are measured against a baseline the run never had.")
+        y = int(np.asarray(yq)[r])
+        g = float(_gc(np.asarray(pw)[r], p[0], np.asarray(ps)[r], y))
+        pd = float(np.abs(p[0] - pi[r]).max())        # my injection vs the transfer's own
+        bw, bs = np.asarray(pw)[r], np.asarray(ps)[r]
+        if bw.ndim >= 1 and bw.size > 1:              # classification
+            ol = -np.log(np.clip(bw[y], EPS, 1 - EPS))
+            tl = -np.log(np.clip(bs[y], EPS, 1 - EPS))
+            mv_mine = ol - (-np.log(np.clip(p[0][y], EPS, 1 - EPS)))
+            mv_cache = ol - (-np.log(np.clip(pi[r][y], EPS, 1 - EPS)))
+            gap = ol - tl
+        else:
+            gap = float((float(bw) - float(bs)) ** 2)
+            mv_mine = gap - float((float(p[0]) - float(bs)) ** 2)
+            mv_cache = gap - float((float(pi[r]) - float(bs)) ** 2)
+        clamp = "low" if mv_mine <= 0 else ("high" if gap > 1e-8 and mv_mine >= gap else "-")
+        diffs.append(g - gcc[r]); pdiffs.append(pd)
+        print(f"  {r:5d} {pd:14.2e} {gap:9.4f} {mv_cache:12.4f} {mv_mine:11.4f} "
+              f"{gcc[r]:9.4f} {g:9.4f} {clamp:>7s}")
+    d, q = np.array(diffs), np.array(pdiffs)
+    print(f"\n  prediction drift |mine - cached preds_intervened|: median {np.median(q):.2e}  max {q.max():.2e}")
+    print(f"  gc difference:                                     median {np.median(np.abs(d)):.4f}  max {np.abs(d).max():.4f}")
+    print("\n  Read together: small prediction drift with large gc differences means gc is")
+    print("  unstable (small gap or a clamp), not that the injection path is wrong.")
 
 
 if __name__ == "__main__":
