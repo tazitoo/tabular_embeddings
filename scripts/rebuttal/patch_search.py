@@ -37,8 +37,11 @@ effects carry extra uncertainty (substituting a reproducible draw moves the inje
 delta ~59%, vs 0.13% for a deterministic donor). Its donor-side patches are unaffected:
 whether an input edit suppresses the concept does not depend on the corpus draw.
 
-Usage:
-    python -m scripts.rebuttal.patch_search --probe --device cuda
+The canonical run takes NO arguments -- the defaults ARE the full process:
+
+    python -m scripts.rebuttal.patch_search
+
+Every flag below is a testing knob or a shard control for splitting work across hosts.
 """
 import argparse
 import glob
@@ -69,7 +72,7 @@ EXTRACT_SEED = 13
 # Use --park-donors to set it aside explicitly for a given run.
 EXCLUDED_DONORS: set[str] = set()
 
-# stratified across donors and both firing-density regimes; tabdpt excluded
+# stratified across donors and both firing-density regimes (--probe only)
 PROBE_CONCEPTS = [
     ("tabicl", 96), ("tabicl_v2", 228), ("mitra", 107), ("tabpfn", 56), ("tabicl", 158),
 ]
@@ -573,10 +576,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe", action="store_true", help="run the 5 stratified concepts")
     ap.add_argument("--concepts", nargs="*", default=None, help="donor:feat pairs")
-    ap.add_argument("--rows-per-concept", type=int, default=2)
-    ap.add_argument("--top-cols", type=int, default=6)
-    ap.add_argument("--max-vals", type=int, default=6)
-    ap.add_argument("--max-steps", type=int, default=3)
+    ap.add_argument("--rows-per-concept", type=int, default=20,
+                    help="rows to patch per concept; consistency across rows is the "
+                         "evidence, so the default is a sample, not a spot check")
+    ap.add_argument("--top-cols", type=int, default=8,
+                    help="columns carried from the pass-1 sensitivity map into the "
+                         "pass-2 combination search")
+    ap.add_argument("--max-vals", type=int, default=6,
+                    help="candidate values per column, drawn from observed support")
+    ap.add_argument("--max-steps", type=int, default=3,
+                    help="largest column-combination size tried in pass 2")
     ap.add_argument("--min-rows", type=int, default=1,
                     help="minimum accepted rows for a cell to be usable. Keep at 1: a "
                          "cell holding a single k=1 row beats a 40-row cell of k=60, "
@@ -592,16 +601,18 @@ def main():
                          "correlation; essential for models that fail independence, "
                          "where each probe costs its own forward")
     ap.add_argument("--from-burndown", nargs="?", const=str(
-        PROJECT_ROOT / "output" / "rebuttal" / "patching_burndown.csv"), default=None,
-                    help="run every concept in the locked set instead of --concepts")
+        PROJECT_ROOT / "output" / "rebuttal" / "patching_burndown.csv"),
+        default=str(PROJECT_ROOT / "output" / "rebuttal" / "patching_burndown.csv"),
+                    help="concept list; defaults to the locked set, so a bare run does "
+                         "the full sweep")
     ap.add_argument("--donors", nargs="*", default=None,
                     help="restrict to these donors (tabicl_v2 must run under tfm2)")
     ap.add_argument("--park-donors", nargs="*", default=None,
                     help="set these donors aside for this run; they are reported as "
                          "parked, never silently dropped")
     ap.add_argument("--shard", default=None, help="i/n -- take every n-th concept")
-    ap.add_argument("--resume", action="store_true",
-                    help="skip concepts already present in --out")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="recompute concepts already present in --out (default resumes)")
     ap.add_argument("--check-independence", action="store_true",
                     help="verify query rows do not influence each other before trusting "
                          "the batched candidate evaluation")
@@ -631,7 +642,7 @@ def main():
 
     results = []
     done = set()
-    if args.resume and os.path.exists(args.out):
+    if not args.no_resume and os.path.exists(args.out):
         try:
             results = json.load(open(args.out))
             done = {(r["donor"], r["feat"]) for r in results}
