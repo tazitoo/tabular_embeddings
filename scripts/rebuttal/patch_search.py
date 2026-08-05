@@ -458,13 +458,12 @@ def cells_for_concept(donor, feat, min_rows):
                 for r in range(sel.shape[0]) if feat in set(sel[r][sel[r] >= 0].tolist())]
         if len(rows) >= min_rows:
             out.append((str(z["weak_model"]), os.path.basename(f)[:-4], rows, f))
-    # Rank by the LOWEST k the cell contains, then by how many low-k rows it has.
-    # Ranking by cell size instead (or filtering on it) discards the very rows that
-    # make attribution possible: requiring >=8 accepted rows raised the median
-    # reachable k from 3 to 21 across the 276 concepts, and cost 216 of them their
-    # best row.
-    out.sort(key=lambda t: (min(k for _, k in t[2]),
-                            -sum(1 for _, k in t[2] if k <= 5)))
+    # Rank by SIZE, largest first, and work down. This is deliberately independent of
+    # anything the search finds convenient: ranking on k selected the cells where
+    # attribution was easiest, which made the dataset a free parameter that determined
+    # the result. Size is a property of the deployment, fixed before any search runs,
+    # so the dataset a concept is explained in is never chosen to flatter the method.
+    out.sort(key=lambda t: (-len(t[2]), t[1]))
     return out
 
 
@@ -587,9 +586,8 @@ def main():
     ap.add_argument("--max-steps", type=int, default=3,
                     help="largest column-combination size tried in pass 2")
     ap.add_argument("--min-rows", type=int, default=1,
-                    help="minimum accepted rows for a cell to be usable. Keep at 1: a "
-                         "cell holding a single k=1 row beats a 40-row cell of k=60, "
-                         "since purity is capped by k, not by row count.")
+                    help="minimum accepted rows for a cell to be usable. Cells are "
+                         "ranked largest-first, so this only excludes empties.")
     ap.add_argument("--selectivity-tol", type=float, default=None,
                     help="max allowed shift in the other k-1; omit to record only "
                          "(the probe measures the placebo null that sets this)")
@@ -715,9 +713,10 @@ def run_concept(donor, feat, args):
         z = np.load(npz_path, allow_pickle=True)
         sel = np.asarray(z["selected_features"])
 
-        # LOWEST-k rows first: purity is arithmetically capped by k, so patch the rows
-        # where isolating one concept is possible at all.
-        chosen = [r for r, _ in sorted(acc_rows_k, key=lambda t: t[1])][:args.rows_per_concept]
+        # Every row in the cell, up to the sample size -- no ordering by k. Selecting
+        # rows on k picks the ones where attribution is easiest, which is the same
+        # confound as selecting the dataset on k.
+        chosen = [r for r, _ in acc_rows_k][:args.rows_per_concept]
         entry = {"donor": donor, "feat": feat, "recipient": recipient, "dataset": dataset,
                  "n_accepted_rows": len(acc_rows_k), "k_median": float(np.median(ks)),
                  "n_categorical_cols": len(cat), "rows": [], "placebo": None}
