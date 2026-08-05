@@ -73,6 +73,25 @@ EXTRACT_SEED = 13
 # Use --park-donors to set it aside explicitly for a given run.
 EXCLUDED_DONORS: set[str] = set()
 
+# CARTE is the ONLY recipient excluded, and only from the READOUT. Its tail is REFIT
+# per dataset -- CARTETail.from_data "fit CARTE, capture hidden state" -- so a rebuild is
+# a different model and the cached July delta lands in an August embedding space. That
+# is a space mismatch, not numerical noise, so it cannot be differenced away. Measured
+# over the patching universe (gc_drift_sweep.py, 3 arms): full-path prediction drift
+# 3.22e-02, the largest of any recipient.
+#
+# Nothing else is filtered. Every other recipient's tail is frozen pretrained and
+# reproduces: tabdpt 0.00e+00, mitra 1.19e-07, tabpfn 6.42e-03, tabicl 1.22e-02
+# (tabicl_v2 untested -- its tails failed to build under tfm, and it needs tfm2).
+# An earlier allowlist of {mitra, tabdpt} was built on gc medians, which order these
+# models wrongly: tabicl's tail reproduces EXACTLY (0.00e+00) yet its gc median is 0.145,
+# because gc clamps and divides by a near-zero gap. That excluded good rows for a bad
+# reason and cut cells to 1-4 rows per concept.
+#
+# The DONOR-side patch is never affected: whether an input edit suppresses the concept
+# does not involve the recipient tail at all, so carte cells stay patchable.
+READOUT_EXCLUDED = {"carte"}
+
 # stratified across donors and both firing-density regimes (--probe only)
 PROBE_CONCEPTS = [
     ("tabicl", 96), ("tabicl_v2", 228), ("mitra", 107), ("tabpfn", 56), ("tabicl", 158),
@@ -470,7 +489,15 @@ def cells_for_concept(donor, feat, min_rows):
     # importance. Earlier rules ranked on cell size or on how many concepts shared the
     # row; both were properties of the container rather than of the concept, and the
     # size rule steered us onto rows whose recorded concept list is truncated at 60.
-    # best cell = the one where this concept was accepted earliest
+    # The single filter: prefer any recipient other than carte, since a carte cell
+    # yields a donor-side patch where another cell would yield a patch AND a readout.
+    # It has to be a filter rather than a sort preference -- expressed as a preference
+    # it was silently discarded by the dataset dedup downstream. Concepts with only
+    # carte cells keep them and get donor-side patches with the readout withheld.
+    usable = [c for c in out if c[0] not in READOUT_EXCLUDED]
+    if usable:
+        out = usable
+    # then earliest acceptance of this concept, then size
     out.sort(key=lambda t: (min(v for _, v in t[2]), -len(t[2]), t[1]))
     return out
 
@@ -695,11 +722,15 @@ def run_concept(donor, feat, args):
         # top N taken. Anchoring on the single densest dataset would explain each
         # concept in one place; this spreads the evidence without letting the search
         # choose where it is easiest.
+        # cells is already ranked; dedupe by dataset keeping the FIRST (best-ranked)
+        # occurrence and preserve that order. Re-sorting here by row count discarded
+        # both the recipient filter and the acceptance-rank ordering, so selection kept
+        # landing on the largest carte cell regardless of what was chosen upstream.
         by_ds = {}
         for rec, ds, rows_k, path in cells:
-            if ds not in by_ds or len(rows_k) > len(by_ds[ds][2]):
+            if ds not in by_ds:
                 by_ds[ds] = (rec, ds, rows_k, path)
-        picks = sorted(by_ds.values(), key=lambda t: (-len(t[2]), t[1]))[:args.n_datasets]
+        picks = list(by_ds.values())[:args.n_datasets]
         print(f"\n{donor} f{feat}: {len(cells)} cells over {len(by_ds)} datasets -> "
               f"top {len(picks)}: " +
               ", ".join(f"{ds}({len(rk)}r,best_rank={min(v for _, v in rk)},{rec})"
@@ -795,7 +826,8 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                  "n_accepted_rows": len(acc_rows_n),
                  "rank_best": int(min(ranks)), "rank_median": float(np.median(ranks)),
                  "row_activation": entry_act,
-                 "n_categorical_cols": len(cat), "rows": []}
+                 "n_categorical_cols": len(cat),
+                 "readout_usable": recipient not in READOUT_EXCLUDED, "rows": []}
         for row in chosen:
             row = int(row)
             others = np.array([int(f) for f in np.unique(sel[row][sel[row] >= 0])
@@ -826,7 +858,13 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                   f"(>10%: {m['n_others_moved_gt_10pct']}/{len(others)}) | "
                   f"sel-ratio {m['selectivity_ratio']:.2f} | "
                   f"recon {res['recon_rel_start']:.3f}->{rec:.3f}", flush=True)
-            if np.isfinite(res["ratio"]):
+            if recipient in READOUT_EXCLUDED:
+                res["readout"] = {"status": "recipient_readout_excluded",
+                                  "recipient": recipient,
+                                  "reason": "rebuilt tail does not reproduce the cached "
+                                            "transfer for this recipient; donor-side "
+                                            "suppression result is unaffected"}
+            elif np.isfinite(res["ratio"]):
                 try:
                     res["readout"] = readout(npz_path, feat, row, res["accepted_ratios"],
                                              args.device)
