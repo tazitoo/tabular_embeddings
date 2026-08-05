@@ -575,9 +575,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe", action="store_true", help="run the 5 stratified concepts")
     ap.add_argument("--concepts", nargs="*", default=None, help="donor:feat pairs")
-    ap.add_argument("--rows-per-concept", type=int, default=20,
-                    help="rows to patch per concept; consistency across rows is the "
-                         "evidence, so the default is a sample, not a spot check")
+    ap.add_argument("--datasets-per-concept", type=int, default=3,
+                    help="datasets to patch each concept in, ranked largest-first. "
+                         "Columns are only comparable within a dataset, so this buys "
+                         "variety, not a bigger pooled sample.")
+    ap.add_argument("--rows-per-dataset", type=int, default=10,
+                    help="rows patched per dataset; consistency across them is the "
+                         "evidence that a column explains the concept")
     ap.add_argument("--top-cols", type=int, default=8,
                     help="columns carried from the pass-1 sensitivity map into the "
                          "pass-2 combination search")
@@ -618,14 +622,16 @@ def main():
     ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "rebuttal" / "patch_search.json"))
     args = ap.parse_args()
 
-    if args.from_burndown:
-        import csv
-        concepts = [(r["donor"], int(r["feat_id"]))
-                    for r in csv.DictReader(open(args.from_burndown))]
+    # explicit --concepts wins; --probe next; otherwise the locked set, so a bare
+    # run does the full sweep
+    if args.concepts:
+        concepts = [(c.split(":")[0], int(c.split(":")[1])) for c in args.concepts]
     elif args.probe:
         concepts = PROBE_CONCEPTS
     else:
-        concepts = [(c.split(":")[0], int(c.split(":")[1])) for c in (args.concepts or [])]
+        import csv
+        concepts = [(r["donor"], int(r["feat_id"]))
+                    for r in csv.DictReader(open(args.from_burndown))]
     parked = set(args.park_donors or []) | EXCLUDED_DONORS
     n_parked = sum(1 for c in concepts if c[0] in parked)
     if n_parked:
@@ -673,17 +679,47 @@ def run_concept(donor, feat, args):
         if not cells:
             print(f"\n{donor} f{feat}: no cell with >= {args.min_rows} accepted rows")
             return {"donor": donor, "feat": feat, "status": "no_cell"}
-        recipient, dataset, acc_rows_k, npz_path = cells[0]
+        # Deterministic variety: one cell per DATASET (the largest, since donor-side
+        # activation does not depend on the recipient), datasets ranked largest-first,
+        # top N taken. Anchoring on the single densest dataset would explain each
+        # concept in one place; this spreads the evidence without letting the search
+        # choose where it is easiest.
+        by_ds = {}
+        for rec, ds, rows_k, path in cells:
+            if ds not in by_ds or len(rows_k) > len(by_ds[ds][2]):
+                by_ds[ds] = (rec, ds, rows_k, path)
+        picks = sorted(by_ds.values(), key=lambda t: (-len(t[2]), t[1]))[:args.datasets_per_concept]
+        print(f"\n{donor} f{feat}: {len(cells)} cells over {len(by_ds)} datasets -> "
+              f"top {len(picks)}: " +
+              ", ".join(f"{ds}({len(rk)}r,k~{np.median([k for _,k in rk]):.0f},{rec})"
+                        for rec, ds, rk, _ in picks), flush=True)
+
+        entry = {"donor": donor, "feat": feat, "n_cells": len(cells),
+                 "n_datasets_available": len(by_ds), "datasets": []}
+        for recipient, dataset, acc_rows_k, npz_path in picks:
+            try:
+                entry["datasets"].append(
+                    run_one_dataset(donor, feat, recipient, dataset, acc_rows_k,
+                                    npz_path, args))
+            except Exception as exc:
+                print(f"    {dataset}: FAILED {type(exc).__name__}: {exc}", flush=True)
+                entry["datasets"].append({"dataset": dataset, "recipient": recipient,
+                                          "error": f"{type(exc).__name__}: {exc}"})
+        return entry
+
+
+def run_one_dataset(donor, feat, recipient, dataset, acc_rows_k, npz_path, args):
+    """Patch one concept in one dataset -- the unit where columns are comparable."""
+    if True:
         ks = [k for _, k in acc_rows_k]
-        print(f"\n{donor} f{feat} -> {recipient} / {dataset}  "
-              f"({len(acc_rows_k)} accepted rows, {len(cells)} cells, "
-              f"k median={np.median(ks):.0f} min={min(ks)})", flush=True)
+        print(f"  {dataset} -> {recipient} ({len(acc_rows_k)} rows, "
+              f"k median={np.median(ks):.0f})", flush=True)
 
         X_ctx, y_ctx, X_query, _, _, task = load_dataset_context(donor, dataset,
                                                                  query_source="holdout")
         if hasattr(X_query, "iloc"):
             print("    donor is a DataFrame model -- not supported here")
-            return {"donor": donor, "feat": feat, "status": "dataframe_donor"}
+            return {"dataset": dataset, "status": "dataframe_donor"}
         sae, _ = load_sae(donor, device=args.device)
         with torch.no_grad():
             A = sae.encode(torch.tensor(np.asarray(load_test_embeddings(donor)[dataset],
@@ -716,8 +752,8 @@ def run_concept(donor, feat, args):
         # Every row in the cell, up to the sample size -- no ordering by k. Selecting
         # rows on k picks the ones where attribution is easiest, which is the same
         # confound as selecting the dataset on k.
-        chosen = [r for r, _ in acc_rows_k][:args.rows_per_concept]
-        entry = {"donor": donor, "feat": feat, "recipient": recipient, "dataset": dataset,
+        chosen = [r for r, _ in acc_rows_k][:args.rows_per_dataset]
+        entry = {"recipient": recipient, "dataset": dataset,
                  "n_accepted_rows": len(acc_rows_k), "k_median": float(np.median(ks)),
                  "n_categorical_cols": len(cat), "rows": [], "placebo": None}
         for row in chosen:
