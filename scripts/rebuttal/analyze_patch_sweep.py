@@ -76,18 +76,21 @@ def main():
             continue
         recips[e.get("recipient")] += 1
         for r in e["rows"]:
-            k = (r.get("n_other_concepts") or 0) + 1
+            n_concepts = (r.get("n_other_concepts") or 0) + 1
             a0 = r.get("a_start")
             fs = r.get("final_shift") or {}
             ro = r.get("readout") or {}
             rec = {"donor": e["donor"], "feat": e["feat"], "recipient": e.get("recipient"),
-                   "dataset": e.get("dataset"), "row": r.get("row"), "k": k,
+                   "dataset": e.get("dataset"), "row": r.get("row"),
+                   "n_concepts": n_concepts,
                    "a_start": a0, "drop_frac": r.get("drop_frac"),
                    "stop": r.get("stop_reason"),
                    "target_rel": fs.get("target_rel"), "other_p90": fs.get("other_rel_p90"),
                    "sel_ratio": fs.get("selectivity_ratio"),
                    "recon0": r.get("recon_rel_start"),
                    "purity": ro.get("attribution_purity"),
+                   "capture_of_ceiling": ro.get("capture_of_ceiling"),
+                   "ceiling_effect": ro.get("ceiling_effect"),
                    "gc0": ro.get("gc_deployed"), "gc1": ro.get("gc_counterfactual"),
                    "delta_moved": ro.get("delta_rel_change")}
             # --- audit -------------------------------------------------------
@@ -127,18 +130,20 @@ def main():
     good = [r for r in rows if not r.get("invalid")]
     if good:
         print("\nDISTRIBUTIONS over valid rows")
-        for nm in ("k", "drop_frac", "sel_ratio", "other_p90", "purity", "delta_moved"):
+        for nm in ("n_concepts", "drop_frac", "sel_ratio", "other_p90", "purity",
+                   "delta_moved", "capture_of_ceiling", "ceiling_effect"):
             v = FINITE([r[nm] for r in good])
             if len(v):
                 print(f"  {nm:12s} n={len(v):4d}  p25={np.percentile(v,25):8.3f} "
                       f"median={np.median(v):8.3f}  p75={np.percentile(v,75):8.3f}")
 
         # purity vs k -- the relationship the whole design turns on
-        print("\nPURITY vs k (does attribution survive as k grows?)")
+        print("\nPURITY vs n_concepts (does attribution survive as co-deployment grows?)")
         for lo, hi in [(1, 2), (3, 5), (6, 10), (11, 20), (21, 10**9)]:
-            sub = FINITE([r["purity"] for r in good if r["k"] and lo <= r["k"] <= hi
+            sub = FINITE([r["purity"] for r in good
+                          if r["n_concepts"] and lo <= r["n_concepts"] <= hi
                           and r["purity"] is not None])
-            band = f"k {lo}-{hi if hi < 10**9 else '+'}"
+            band = f"n_concepts {lo}-{hi if hi < 10**9 else '+'}"
             if len(sub):
                 print(f"  {band:10s} n={len(sub):4d}  median purity={np.median(sub):.3f}  "
                       f"frac>0.5: {np.mean(sub > 0.5):.0%}")
@@ -161,7 +166,7 @@ def main():
         for r in sorted([r for r in good if r["sel_ratio"] is not None],
                         key=lambda r: -r["sel_ratio"])[:8]:
             print(f"  {r['donor']:9s} f{r['feat']:<4d} -> {str(r['recipient']):9s} "
-                  f"{str(r['dataset'])[:22]:22s} row {r['row']:4d} k={r['k']:3d} "
+                  f"{str(r['dataset'])[:22]:22s} row {r['row']:4d} nc={r['n_concepts']:3d} "
                   f"drop={r['drop_frac']:.0%} sel={r['sel_ratio']:7.2f} "
                   f"purity={r['purity'] if r['purity'] is not None else float('nan'):.3f}")
 

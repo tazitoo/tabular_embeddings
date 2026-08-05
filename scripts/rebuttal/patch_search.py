@@ -449,12 +449,11 @@ def cells_for_concept(donor, feat, min_rows):
         sel = np.asarray(z["selected_features"])
         if sel.size == 0:
             continue
-        # k = how many concepts were accepted at that row. Purity is capped by it: the
-        # delta is a sum over k terms, so at k~60 even a 3x selectivity ratio yields
-        # purity < 0.09 because 59 small shifts outweigh one large one. k is skewed
-        # (median 6, a third of rows <= 3), so prefer cells offering LOW-k rows rather
-        # than cells with the most accepted rows.
-        rows = [(r, len(np.unique(sel[r][sel[r] >= 0])))
+        # n_concepts = how many concepts were accepted at that row (NOT the SAE's
+        # TopK -- k is overloaded, so it is not used for this anywhere). The delta is a
+        # sum over n_concepts terms, so it governs how much collateral movement dilutes
+        # attribution of any single one.
+        rows = [(r, len(np.unique(sel[r][sel[r] >= 0])))   # (row, n_concepts)
                 for r in range(sel.shape[0]) if feat in set(sel[r][sel[r] >= 0].tolist())]
         if len(rows) >= min_rows:
             out.append((str(z["weak_model"]), os.path.basename(f)[:-4], rows, f))
@@ -575,11 +574,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe", action="store_true", help="run the 5 stratified concepts")
     ap.add_argument("--concepts", nargs="*", default=None, help="donor:feat pairs")
-    ap.add_argument("--datasets-per-concept", type=int, default=3,
+    ap.add_argument("--n-datasets", type=int, default=3,
                     help="datasets to patch each concept in, ranked largest-first. "
                          "Columns are only comparable within a dataset, so this buys "
                          "variety, not a bigger pooled sample.")
-    ap.add_argument("--rows-per-dataset", type=int, default=10,
+    ap.add_argument("--n-rows", type=int, default=10,
                     help="rows patched per dataset; consistency across them is the "
                          "evidence that a column explains the concept")
     ap.add_argument("--top-cols", type=int, default=8,
@@ -688,18 +687,18 @@ def run_concept(donor, feat, args):
         for rec, ds, rows_k, path in cells:
             if ds not in by_ds or len(rows_k) > len(by_ds[ds][2]):
                 by_ds[ds] = (rec, ds, rows_k, path)
-        picks = sorted(by_ds.values(), key=lambda t: (-len(t[2]), t[1]))[:args.datasets_per_concept]
+        picks = sorted(by_ds.values(), key=lambda t: (-len(t[2]), t[1]))[:args.n_datasets]
         print(f"\n{donor} f{feat}: {len(cells)} cells over {len(by_ds)} datasets -> "
               f"top {len(picks)}: " +
-              ", ".join(f"{ds}({len(rk)}r,k~{np.median([k for _,k in rk]):.0f},{rec})"
+              ", ".join(f"{ds}({len(rk)}r,nc~{np.median([nc for _, nc in rk]):.0f},{rec})"
                         for rec, ds, rk, _ in picks), flush=True)
 
         entry = {"donor": donor, "feat": feat, "n_cells": len(cells),
                  "n_datasets_available": len(by_ds), "datasets": []}
-        for recipient, dataset, acc_rows_k, npz_path in picks:
+        for recipient, dataset, acc_rows_n, npz_path in picks:
             try:
                 entry["datasets"].append(
-                    run_one_dataset(donor, feat, recipient, dataset, acc_rows_k,
+                    run_one_dataset(donor, feat, recipient, dataset, acc_rows_n,
                                     npz_path, args))
             except Exception as exc:
                 print(f"    {dataset}: FAILED {type(exc).__name__}: {exc}", flush=True)
@@ -708,12 +707,12 @@ def run_concept(donor, feat, args):
         return entry
 
 
-def run_one_dataset(donor, feat, recipient, dataset, acc_rows_k, npz_path, args):
+def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args):
     """Patch one concept in one dataset -- the unit where columns are comparable."""
     if True:
-        ks = [k for _, k in acc_rows_k]
-        print(f"  {dataset} -> {recipient} ({len(acc_rows_k)} rows, "
-              f"k median={np.median(ks):.0f})", flush=True)
+        ns = [nc for _, nc in acc_rows_n]
+        print(f"  {dataset} -> {recipient} ({len(acc_rows_n)} rows, "
+              f"n_concepts median={np.median(ns):.0f})", flush=True)
 
         X_ctx, y_ctx, X_query, _, _, task = load_dataset_context(donor, dataset,
                                                                  query_source="holdout")
@@ -752,9 +751,10 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_k, npz_path, args)
         # Every row in the cell, up to the sample size -- no ordering by k. Selecting
         # rows on k picks the ones where attribution is easiest, which is the same
         # confound as selecting the dataset on k.
-        chosen = [r for r, _ in acc_rows_k][:args.rows_per_dataset]
+        chosen = [r for r, _ in acc_rows_n][:args.n_rows]
         entry = {"recipient": recipient, "dataset": dataset,
-                 "n_accepted_rows": len(acc_rows_k), "k_median": float(np.median(ks)),
+                 "n_accepted_rows": len(acc_rows_n),
+                 "n_concepts_median": float(np.median(ns)),
                  "n_categorical_cols": len(cat), "rows": [], "placebo": None}
         for row in chosen:
             row = int(row)
@@ -769,7 +769,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_k, npz_path, args)
             # a large drop means nothing without the selectivity and in-sample numbers
             m = res["final_shift"]
             rec = max((s["recon_rel"] for s in res["steps"]), default=res["recon_rel_start"])
-            print(f"    row {row} (k={len(others)+1}): drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
+            print(f"    row {row} (n_concepts={len(others)+1}): drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
                   f"{res['stop_reason']}) | target {m['target_rel']:.1%} vs others "
                   f"med {m['other_rel_median']:.1%} p90 {m['other_rel_p90']:.1%} "
                   f"(>10%: {m['n_others_moved_gt_10pct']}/{len(others)}) | "
