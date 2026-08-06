@@ -296,8 +296,8 @@ def reversal(L_orig, L_transfer, L_mod):
     return float((L_mod - L_transfer) / (L_orig - L_transfer + EPS))
 
 
-def objective(drop_frac, rev, blast):
-    """drop x sqrt(reversal) / (1 + blast).
+def objective(drop_frac, rev, blast, recon_excess=0.0):
+    """drop x sqrt(reversal) / ((1 + blast) x (1 + recon_excess)).
 
     Products and ratios of dimensionless terms, so there are no weights to invent.
     sqrt compresses reversal's range: undoing the whole transfer scores 1.0 while
@@ -306,12 +306,21 @@ def objective(drop_frac, rev, blast):
     `1 + blast` degrades smoothly to `drop x sqrt(rev)` for a clean patch rather than
     blowing up as blast -> 0.
 
+    `recon_excess` is the IN-SAMPLE term: how far the patch inflates the SAE's
+    reconstruction error above this row's own baseline, max(0, recon'/recon0 - 1).
+    Relative rather than absolute because the baseline level is model-specific (0.12
+    for tabpfn, 0.57 for tabicl_v2), and one-sided because reconstructing BETTER than
+    the original row is not a problem. Without it the search can suppress the concept
+    by pushing the row somewhere the dictionary cannot represent, which is the
+    objective being exploited rather than evidence about the concept -- the same
+    failure as an off-manifold patch.
+
     Reversal is not clipped and the sqrt is sign-preserving: a patch that moves the
     recipient opposite to the transfer scores negative, which is correct.
     """
     r = float(rev)
     root = math.copysign(math.sqrt(abs(r)), r) if np.isfinite(r) else float("nan")
-    return float(drop_frac * root / (1.0 + blast))
+    return float(drop_frac * root / ((1.0 + blast) * (1.0 + max(0.0, recon_excess))))
 
 
 def build_recip_shared(donor, recipient, dataset, device):
@@ -555,16 +564,22 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             df = drop / a_start if a_start > 0 else float("nan")
             bl = blast_radius(a_base_row, a[i], others)
             rev = float(revs[i])
+            # in-sample term: inflation of SAE reconstruction error over THIS row's
+            # baseline, one-sided (reconstructing better than the original is fine)
+            r0 = float(rel0[row])
+            rex = max(0.0, float(rel[i]) / r0 - 1.0) if r0 > EPS else 0.0
             ok = recon_bar is None or float(rel[i]) <= recon_bar
             if drop > 0 and ok:
                 cands.append({"columns": [s["column"] for s in sub],
                               "values": [s["value"] for s in sub],
                               "activation_after": float(a[i][feat]), "drop": drop,
                               "drop_frac": df, "blast": bl, "reversal": rev,
+                              "recon_excess": rex,
                               # donor-only cells (carte) have no recipient term; scoring
                               # falls back to suppression against blast so the search
                               # still runs, and the record says the readout is absent.
-                              "score": objective(df, rev if np.isfinite(rev) else 1.0, bl),
+                              "score": objective(df, rev if np.isfinite(rev) else 1.0,
+                                                 bl, rex),
                               "recon_rel": float(rel[i]),
                               "edit_distance": float(sum(s["edit_distance"] for s in sub)),
                               "_vec": a[i], **m})
