@@ -46,6 +46,7 @@ Every flag below is a testing knob or a shard control for splitting work across 
 import argparse
 import glob
 import json
+import math
 import os
 from collections import defaultdict
 
@@ -296,11 +297,21 @@ def reversal(L_orig, L_transfer, L_mod):
 
 
 def objective(drop_frac, rev, blast):
-    """drop x reversal / (1 + blast). Products and ratios of dimensionless terms, so
-    there are no weights to invent. `1 + blast` degrades smoothly to `drop x reversal`
-    for a clean patch instead of blowing up. Reversal is NOT clipped: a patch that moves
-    the recipient opposite to the transfer scores negative, which is correct."""
-    return float(drop_frac * rev / (1.0 + blast))
+    """drop x sqrt(reversal) / (1 + blast).
+
+    Products and ratios of dimensionless terms, so there are no weights to invent.
+    sqrt compresses reversal's range: undoing the whole transfer scores 1.0 while
+    removing one concept's share scores ~0.026, and the square root narrows that 38x
+    spread to ~6x so the recipient term informs the choice without dictating it.
+    `1 + blast` degrades smoothly to `drop x sqrt(rev)` for a clean patch rather than
+    blowing up as blast -> 0.
+
+    Reversal is not clipped and the sqrt is sign-preserving: a patch that moves the
+    recipient opposite to the transfer scores negative, which is correct.
+    """
+    r = float(rev)
+    root = math.copysign(math.sqrt(abs(r)), r) if np.isfinite(r) else float("nan")
+    return float(drop_frac * root / (1.0 + blast))
 
 
 def build_recip_shared(donor, recipient, dataset, device):
