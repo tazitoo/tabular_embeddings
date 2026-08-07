@@ -610,6 +610,19 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # smaller -- same size, less suppression, which is a pure loss. "Tied" has to
             # mean tied on what the patch is FOR.
             #
+            # Order is (n_cols, edit_distance), and that order is the whole point.
+            # edit_distance is a SUM over the edited columns, so keying on it first
+            # minimises total edit MAGNITUDE, not patch size -- and `len(columns)` as a
+            # second element is inert, because it only breaks EXACT float ties in a sum of
+            # floats. Written the other way round, the "minimal-edit tie-break" never
+            # selected on column count at all; the drop from 74% to 48% three-column
+            # patches was a side effect of fewer columns usually summing to less. It also
+            # let a same-size candidate with a smaller magnitude and worse suppression win,
+            # which is what happened on 291 rows.
+            #
+            # Fewest columns first is also the criterion the appendix needs: a one-column
+            # patch shown in full is legible, a three-column one is a list.
+            #
             # nan scores sort to the bottom rather than winning by position: max() and
             # min() both compare with <, which is False against nan either way, so a nan
             # silently survives as "best" if it is seen first.
@@ -620,7 +633,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             near = [c for c in cands if _s(c) >= floor] or cands
             d_top = max(_d(c) for c in near)
             near = [c for c in near if _d(c) >= d_top - drop_tol] or near
-            best = min(near, key=lambda c: (c["edit_distance"], len(c["columns"])))
+            best = min(near, key=lambda c: (len(c["columns"]), c["edit_distance"]))
             stop = "fully_suppressed" if best["activation_after"] <= 0 else "best_combination"
         else:
             stop = "no_qualifying_combination"
