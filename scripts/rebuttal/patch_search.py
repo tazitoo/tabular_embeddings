@@ -512,7 +512,7 @@ def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, cat, sel_tol, recon_bar, batched=True, step_frac=0.5,
                max_levels=6, top_m=8, max_cols=3, probe_cols=None,
-               recip_shared=None, recipient=None, npz_path=None, tie_band=0.10):
+               recip_shared=None, recipient=None, npz_path=None, tie_band=0.10, drop_tol=0.01):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -597,20 +597,29 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                               "edit_distance": float(sum(s["edit_distance"] for s in sub)),
                               "_vec": a[i], **m})
         if cands:
-            # Minimal-edit tie-break: among candidates within `tie_band` of the best
-            # score, take the smallest edit. Without it, max(score) has no reason to
-            # prefer a 1-column patch over a 3-column one that scores marginally higher,
-            # and the measured result was that 74% of chosen patches used all 3 columns
-            # while drop was already 1.000 at ONE column -- the extra columns bought
-            # nothing on the target and cost blast (0.113 -> 0.208), edit distance
-            # (0.51 -> 3.92) and overshoot (27% -> 45%).
+            # Minimal-edit tie-break: among candidates that achieve the SAME suppression
+            # and score within `tie_band` of the best, take the smallest edit. Without it,
+            # max(score) has no reason to prefer a 1-column patch over a 3-column one that
+            # scores marginally higher, and 74% of chosen patches used all 3 columns while
+            # the 1- and 2-column patches suppressed just as completely (drop 1.000).
+            #
+            # The suppression gate is not decoration. A band on the SCORE alone lets the
+            # tie-break pay for a smaller edit with the target itself, because drop_frac is
+            # a factor of the score: measured over 2,112 rows, a 10% score band regressed
+            # suppression on 19.3% of them, and on 291 of those the patch was not even
+            # smaller -- same size, less suppression, which is a pure loss. "Tied" has to
+            # mean tied on what the patch is FOR.
+            #
             # nan scores sort to the bottom rather than winning by position: max() and
             # min() both compare with <, which is False against nan either way, so a nan
             # silently survives as "best" if it is seen first.
             _s = lambda c: c["score"] if np.isfinite(c["score"]) else -np.inf
+            _d = lambda c: c["drop_frac"] if np.isfinite(c["drop_frac"]) else -np.inf
             top = max(_s(c) for c in cands)
             floor = top - tie_band * abs(top) if np.isfinite(top) else -np.inf
             near = [c for c in cands if _s(c) >= floor] or cands
+            d_top = max(_d(c) for c in near)
+            near = [c for c in near if _d(c) >= d_top - drop_tol] or near
             best = min(near, key=lambda c: (c["edit_distance"], len(c["columns"])))
             stop = "fully_suppressed" if best["activation_after"] <= 0 else "best_combination"
         else:
@@ -847,6 +856,12 @@ def main():
     ap.add_argument("--max-vals", type=int, default=None,
                     help="candidate values per column; default the column's ENTIRE "
                          "observed support. Also a search-space limit, not a budget.")
+    ap.add_argument("--drop-tol", type=float, default=0.01,
+                    help="a candidate counts as tied on SUPPRESSION only if its drop_frac "
+                         "is within this of the best in the score band. Without the gate "
+                         "the tie-break buys a smaller edit with the target: a 0.10 score "
+                         "band alone cost suppression on 19.3%% of rows, 291 of which did "
+                         "not even get a smaller patch.")
     ap.add_argument("--tie-band", type=float, default=0.10,
                     help="candidates within this fraction of the best score are treated "
                          "as tied, and the SMALLEST edit among them wins. Right-sizes "
@@ -1075,7 +1090,8 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                              max_levels=args.max_vals, top_m=args.top_cols,
                              max_cols=args.max_steps, probe_cols=probe_cols,
                              recip_shared=recip_shared, recipient=recipient,
-                             npz_path=npz_path, tie_band=args.tie_band)
+                             npz_path=npz_path, tie_band=args.tie_band,
+                             drop_tol=args.drop_tol)
             res.update({"donor": donor, "feat": feat, "recipient": recipient,
                         "dataset": dataset, "n_other_concepts": int(len(others)),
                         "n_concepts_at_row": int(len(others)) + 1,
