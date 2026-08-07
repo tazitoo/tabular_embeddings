@@ -199,23 +199,39 @@ def candidate_values(X: np.ndarray, col: int, max_vals: int,
 
 
 def column_types(model: str, dataset: str, X: np.ndarray) -> set[int]:
-    """Categorical column indices, from the preprocessing cache where it declares them.
+    """Categorical column indices, exactly as THIS model's preprocessing declared them.
 
-    A "standard step" is meaningless for an ordinal-coded categorical -- moving code 2
-    to 2.5 names no category, and even 2->3 is not a step of any size. Those columns get
-    alternative observed LEVELS instead of a gradient.
+    A "standard step" is meaningless for a categorical -- the values are pandas .cat.codes
+    (preprocessing._df_to_float32), assigned by category order and carrying no magnitude,
+    so moving code 2 to 2.5 names no category and 2->3 is not a step of any size. Those
+    columns get alternative observed LEVELS instead of a gradient.
+
+    Which columns those are is NOT ours to decide. The patch edits X_query, which IS the
+    per-model preprocessed matrix the model ingests, so the only classification that
+    produces matched predictions is the one that pipeline used. This previously ANNOTATED
+    the cache with a "<=20 unique integer values" heuristic, which disagreed with
+    preprocessing in both directions:
+
+      MIC/tabpfn      cache declares 88 categorical (the layout is 23 numeric then 88
+                      categorical); the heuristic called it 103, reclassifying 15 columns
+                      that AutoGluon parsed as NUMERIC and that the model ingests as
+                      numeric.
+      Amazon/tabicl   cache declares 0, and the heuristic agreed -- but only because the
+                      columns are ID codes with cardinality far above 20.
+
+    Note that cat_indices is model-dependent BY CONSTRUCTION, and correctly so:
+    _preprocess_autogluon median-imputes for TabICL and Mitra and then clears cat_indices,
+    because after imputation the values are no longer category codes. TabPFN and TabDPT
+    (nan_safe) keep them. So the same dataset is 88 categorical for tabpfn and 0 for
+    tabicl. That is not an inconsistency to repair by borrowing the nan_safe model's
+    indices -- it is what each model actually receives, and borrowing would impose a
+    structure the model never sees.
+
+    No fallback: if the cache cannot be read, the classification is unknown and the run
+    must fail rather than silently searching the wrong value space.
     """
-    cat: set[int] = set()
-    try:
-        from data.preprocessing import load_preprocessed, CACHE_DIR
-        cat = set(load_preprocessed(model, dataset, CACHE_DIR).cat_indices or [])
-    except Exception:
-        pass
-    for j in range(X.shape[1]):
-        v = X[~np.isnan(X[:, j]), j]
-        if j not in cat and v.size and len(np.unique(v)) <= 20 and np.allclose(v, np.round(v)):
-            cat.add(j)
-    return cat
+    from data.preprocessing import load_preprocessed, CACHE_DIR
+    return set(load_preprocessed(model, dataset, CACHE_DIR).cat_indices or [])
 
 
 def nearest_observed(X: np.ndarray, col: int, target: float) -> float:
