@@ -182,6 +182,50 @@ def _df_to_float32(df: pd.DataFrame) -> tuple[np.ndarray, list[int]]:
     return out, cat_indices
 
 
+@dataclass
+class FittedPreprocessor:
+    """The fitted outer preprocessing, kept so a NEW raw row can be put through it.
+
+    The feature generator was previously fit, used, and dropped on the floor: only the
+    transformed arrays were cached. That is fine for training, but it means anything
+    wanting to construct a new model input -- an edited row for an intervention, say --
+    has to either edit the preprocessed matrix directly or reimplement the mapping back
+    to raw values. Both drift from what the model actually ingests. Holding the fitted
+    objects removes the choice: raw row in, model input out, by the same code that built
+    the cache.
+
+    fg       AutoMLPipelineFeatureGenerator, fit on X_train
+    imputer  median SimpleImputer, or None when the model is NaN-safe
+    """
+    fg: object
+    imputer: object | None
+    cat_indices: list[int]
+
+    def transform(self, X: pd.DataFrame) -> np.ndarray:
+        """Raw DataFrame -> the float32 matrix the model ingests."""
+        out, _ = _df_to_float32(self.fg.transform(X))
+        if self.imputer is not None:
+            out = self.imputer.transform(out)
+        return np.asarray(out, dtype=np.float32)
+
+
+def fit_preprocessor(X_train: pd.DataFrame, nan_safe: bool) -> FittedPreprocessor:
+    """Fit the outer preprocessing on train. The single definition of that fit."""
+    from autogluon.features.generators import AutoMLPipelineFeatureGenerator
+
+    fg = AutoMLPipelineFeatureGenerator(verbosity=0)
+    X_train_proc = fg.fit_transform(X_train)
+    X_train_np, cat_indices = _df_to_float32(X_train_proc)
+
+    imputer = None
+    if not nan_safe:
+        imputer = SimpleImputer(strategy="median")
+        imputer.fit(X_train_np)
+        cat_indices = []  # imputed values are no longer meaningful category codes
+
+    return FittedPreprocessor(fg=fg, imputer=imputer, cat_indices=cat_indices)
+
+
 def _preprocess_autogluon(
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
@@ -193,22 +237,8 @@ def _preprocess_autogluon(
     Applies median imputation when nan_safe=False (TabICL, Mitra).
     Returns empty cat_indices after imputation — category codes are gone.
     """
-    from autogluon.features.generators import AutoMLPipelineFeatureGenerator
-
-    fg = AutoMLPipelineFeatureGenerator(verbosity=0)
-    X_train_proc = fg.fit_transform(X_train)
-    X_test_proc = fg.transform(X_test)
-
-    X_train_np, cat_indices = _df_to_float32(X_train_proc)
-    X_test_np, _ = _df_to_float32(X_test_proc)
-
-    if not nan_safe:
-        imp = SimpleImputer(strategy="median")
-        X_train_np = imp.fit_transform(X_train_np)
-        X_test_np = imp.transform(X_test_np)
-        cat_indices = []  # imputed values are no longer meaningful category codes
-
-    return X_train_np, X_test_np, cat_indices
+    pre = fit_preprocessor(X_train, nan_safe=nan_safe)
+    return pre.transform(X_train), pre.transform(X_test), pre.cat_indices
 
 
 def _preprocess_hyperfast(
