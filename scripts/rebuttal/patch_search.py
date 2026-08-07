@@ -255,24 +255,50 @@ def nearest_observed(X: np.ndarray, col: int, target: float) -> float:
     return float(v[np.argmin(np.abs(v - target))])
 
 
-def edit_distance(X: np.ndarray, col: int, old: float, new: float) -> float:
-    """Size of an edit in units of the column's own spread, so columns are comparable.
+def edit_distance(X: np.ndarray, col: int, old: float, new: float,
+                  categorical: bool = False) -> float:
+    """How costly is this edit, in the column's own terms.
 
-    Must always return a finite number. The minimal-edit tie-break picks with
-    min(key=(edit_distance, n_cols)), and a nan compares False against everything, so a
-    nan candidate is neither smaller nor larger than its rivals -- min() then keeps
-    whichever it happened to see first and the tie-break silently does nothing. In the
-    v3 sweep that hit 1.9% of rows, via `old` being NaN: the original cell is MISSING,
-    so the edit fills a hole rather than moving a value. Measured from the column's
-    median, which is what "no value" is worth in the column's own units.
+    CATEGORICAL columns get the surprisal of the level moved TO, -log p(new), in nats.
+    The values are pandas .cat.codes -- nominal labels whose order is assignment order --
+    so |code_new - code_old| is arithmetic on labels and any scale built from it is
+    meaningless. Measured on MIC, dividing by the code IQR made the identical operation
+    (flip a binary column) cost between 1.0 and 9.1 across columns purely on class
+    balance, and made a 15-level column's level change cost 0.118, i.e. cheaper than any
+    binary flip. Surprisal uses only the frequency of the destination level, so it needs
+    no ordering: moving to a rarer level is a bigger edit, moving to a common one is a
+    small one.
+
+    CONTINUOUS columns keep |new - old| / IQR, with std as the fallback when the IQR
+    degenerates. There the order is real and the magnitude means something.
+
+    The two are NOT commensurable, and summing them across a mixed row mixes nats with
+    IQR-multiples. That is tolerated deliberately: edit distance never enters the
+    objective, and it is the SECOND key of the tie-break behind the column count, which
+    is well defined. It ranks candidates that are already tied on the objective and on
+    suppression; it does not decide what a good patch is.
+
+    Must always return a finite number. The tie-break picks with min(), and a nan
+    compares False against everything, so a nan candidate is neither smaller nor larger
+    than its rivals and min() keeps whichever it saw first -- the tie-break then silently
+    does nothing. In the v3 sweep that hit 1.9% of rows via `old` being NaN: the original
+    cell is MISSING, so the edit fills a hole rather than moving a value.
     """
     v = X[~np.isnan(X[:, col]), col]
-    scale = float(np.subtract(*np.percentile(v, [75, 25]))) if v.size else 0.0
+    if v.size == 0:
+        return 0.0
+    if categorical:
+        # Frequency of the destination level. An unseen level floors at one occurrence,
+        # so it is the most expensive edit available rather than an infinite one.
+        p = max(int(np.count_nonzero(v == new)), 1) / float(v.size)
+        d = -math.log(p)
+        return float(d) if np.isfinite(d) else 0.0
+    scale = float(np.subtract(*np.percentile(v, [75, 25])))
     if scale <= 1e-12:
-        scale = float(np.std(v)) if v.size else 1.0
+        scale = float(np.std(v)) or 1.0
     ref = float(old)
     if not np.isfinite(ref):
-        ref = float(np.median(v)) if v.size else float(new)
+        ref = float(np.median(v))
     d = abs(float(new) - ref) / max(scale, 1e-9)
     return float(d) if np.isfinite(d) else 0.0
 
@@ -532,7 +558,8 @@ def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac
         d = float(a_base_row[feat] - a[i][feat])          # positive = suppresses
         out.append({"column": j, "value": val, "drop": d,
                     "activation_after": float(a[i][feat]), "recon_rel": float(rel[i]),
-                    "edit_distance": edit_distance(X_query, j, x0[j], val),
+                    "edit_distance": edit_distance(X_query, j, x0[j], val,
+                                                   categorical=j in cat),
                     # effect on c per unit of collateral: the quantity we actually want
                     "selectivity": d / (m["other_rel_p90"] + 1e-6), **m})
     return out
