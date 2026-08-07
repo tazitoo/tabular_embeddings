@@ -109,10 +109,23 @@ def _reseed():
 
 
 def extract_acts(donor, dataset, X_ctx, y_ctx, X_query, task, device):
-    """SAE activations + relative reconstruction error for a batch of query rows."""
+    """SAE activations + relative reconstruction error for a batch of query rows.
+
+    The fit must match the one that built the corpus, or the re-extracted activation is
+    not comparable to the cached one it is measured against. 04_extract_all_layers passes
+    cat_indices for tabpfn and hyperfast, which sets TabPFN's
+    categorical_features_indices and changes the preprocessing at the head of the model
+    (88 of MIC's 111 columns). Omitting it here fit TabPFN as if every column were
+    numeric, so a_start was produced by a differently configured model than a_corpus.
+    """
     from models.layer_extraction import extract_all_layers, load_and_fit, sort_layer_names
     _reseed()
-    clf = load_and_fit(donor, X_ctx, y_ctx, task=task, device=device)
+    fit_kwargs = {}
+    if donor in ("tabpfn", "hyperfast"):
+        ci = sorted(column_types(donor, dataset, np.asarray(X_query)))
+        if ci:
+            fit_kwargs["cat_indices"] = ci
+    clf = load_and_fit(donor, X_ctx, y_ctx, task=task, device=device, **fit_kwargs)
     embs = extract_all_layers(donor, clf, X_query, task=task, seed=EXTRACT_SEED)
     names = sort_layer_names(list(embs.keys()))
     idx = min(max(get_extraction_layer_taskaware(donor, dataset), 0), len(names) - 1)
