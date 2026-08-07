@@ -499,7 +499,7 @@ def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, cat, sel_tol, recon_bar, batched=True, step_frac=0.5,
                max_levels=6, top_m=8, max_cols=3, probe_cols=None,
-               recip_shared=None, recipient=None, npz_path=None):
+               recip_shared=None, recipient=None, npz_path=None, tie_band=0.10):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -584,7 +584,17 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                               "edit_distance": float(sum(s["edit_distance"] for s in sub)),
                               "_vec": a[i], **m})
         if cands:
-            best = max(cands, key=lambda c: c["score"])
+            # Minimal-edit tie-break: among candidates within `tie_band` of the best
+            # score, take the smallest edit. Without it, max(score) has no reason to
+            # prefer a 1-column patch over a 3-column one that scores marginally higher,
+            # and the measured result was that 74% of chosen patches used all 3 columns
+            # while drop was already 1.000 at ONE column -- the extra columns bought
+            # nothing on the target and cost blast (0.113 -> 0.208), edit distance
+            # (0.51 -> 3.92) and overshoot (27% -> 45%).
+            top = max(c["score"] for c in cands)
+            floor = top - tie_band * abs(top) if np.isfinite(top) else -np.inf
+            near = [c for c in cands if c["score"] >= floor] or cands
+            best = min(near, key=lambda c: (c["edit_distance"], len(c["columns"])))
             stop = "fully_suppressed" if best["activation_after"] <= 0 else "best_combination"
         else:
             stop = "no_qualifying_combination"
@@ -820,6 +830,11 @@ def main():
     ap.add_argument("--max-vals", type=int, default=None,
                     help="candidate values per column; default the column's ENTIRE "
                          "observed support. Also a search-space limit, not a budget.")
+    ap.add_argument("--tie-band", type=float, default=0.10,
+                    help="candidates within this fraction of the best score are treated "
+                         "as tied, and the SMALLEST edit among them wins. Right-sizes "
+                         "the patch: drop already saturates at 1.000 with one column, "
+                         "so without this the search takes ~4x larger edits for nothing.")
     ap.add_argument("--max-steps", type=int, default=3,
                     help="largest column-combination size in pass 2. The one knob that "
                          "cannot simply be maximised: pass 2 evaluates C(top_cols, size) "
@@ -1043,7 +1058,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                              max_levels=args.max_vals, top_m=args.top_cols,
                              max_cols=args.max_steps, probe_cols=probe_cols,
                              recip_shared=recip_shared, recipient=recipient,
-                             npz_path=npz_path)
+                             npz_path=npz_path, tie_band=args.tie_band)
             res.update({"donor": donor, "feat": feat, "recipient": recipient,
                         "dataset": dataset, "n_other_concepts": int(len(others)),
                         "n_concepts_at_row": int(len(others)) + 1,
