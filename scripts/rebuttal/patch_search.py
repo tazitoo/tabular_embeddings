@@ -227,12 +227,25 @@ def nearest_observed(X: np.ndarray, col: int, target: float) -> float:
 
 
 def edit_distance(X: np.ndarray, col: int, old: float, new: float) -> float:
-    """Size of an edit in units of the column's own spread, so columns are comparable."""
+    """Size of an edit in units of the column's own spread, so columns are comparable.
+
+    Must always return a finite number. The minimal-edit tie-break picks with
+    min(key=(edit_distance, n_cols)), and a nan compares False against everything, so a
+    nan candidate is neither smaller nor larger than its rivals -- min() then keeps
+    whichever it happened to see first and the tie-break silently does nothing. In the
+    v3 sweep that hit 1.9% of rows, via `old` being NaN: the original cell is MISSING,
+    so the edit fills a hole rather than moving a value. Measured from the column's
+    median, which is what "no value" is worth in the column's own units.
+    """
     v = X[~np.isnan(X[:, col]), col]
     scale = float(np.subtract(*np.percentile(v, [75, 25]))) if v.size else 0.0
     if scale <= 1e-12:
         scale = float(np.std(v)) if v.size else 1.0
-    return abs(float(new) - float(old)) / max(scale, 1e-9)
+    ref = float(old)
+    if not np.isfinite(ref):
+        ref = float(np.median(v)) if v.size else float(new)
+    d = abs(float(new) - ref) / max(scale, 1e-9)
+    return float(d) if np.isfinite(d) else 0.0
 
 
 # ── the search ───────────────────────────────────────────────────────────────
@@ -591,9 +604,13 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # while drop was already 1.000 at ONE column -- the extra columns bought
             # nothing on the target and cost blast (0.113 -> 0.208), edit distance
             # (0.51 -> 3.92) and overshoot (27% -> 45%).
-            top = max(c["score"] for c in cands)
+            # nan scores sort to the bottom rather than winning by position: max() and
+            # min() both compare with <, which is False against nan either way, so a nan
+            # silently survives as "best" if it is seen first.
+            _s = lambda c: c["score"] if np.isfinite(c["score"]) else -np.inf
+            top = max(_s(c) for c in cands)
             floor = top - tie_band * abs(top) if np.isfinite(top) else -np.inf
-            near = [c for c in cands if c["score"] >= floor] or cands
+            near = [c for c in cands if _s(c) >= floor] or cands
             best = min(near, key=lambda c: (c["edit_distance"], len(c["columns"])))
             stop = "fully_suppressed" if best["activation_after"] <= 0 else "best_combination"
         else:
