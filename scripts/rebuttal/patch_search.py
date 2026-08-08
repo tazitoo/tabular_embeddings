@@ -177,6 +177,26 @@ def rank_columns(X: np.ndarray, a: np.ndarray, top_k: int) -> list[int]:
     return [int(j) for j in np.argsort(-np.asarray(scores))[:top_k]]
 
 
+def candidate_levels(X: np.ndarray, col: int, max_vals: int) -> np.ndarray:
+    """The most FREQUENT observed levels of a nominal column, commonest first.
+
+    Categorical values are .cat.codes, so quantiles of them select by code magnitude --
+    an arbitrary ordering that has nothing to do with which levels are plausible. Two
+    columns holding the same categories in a different assignment order would get
+    different candidate sets.
+
+    Frequency is the ordering that exists without an axis, and it is the same quantity
+    the edit cost uses: -log p(level). Selecting by frequency and costing by frequency
+    agree, so the search proposes the cheap, typical destinations first rather than
+    proposing by code order and then being surprised at the price.
+    """
+    v = X[~np.isnan(X[:, col]), col]
+    if v.size == 0:
+        return np.array([])
+    u, c = np.unique(v, return_counts=True)
+    return u[np.argsort(-c)][:max_vals] if max_vals is not None else u[np.argsort(-c)]
+
+
 def candidate_values(X: np.ndarray, col: int, max_vals: int,
                      interior: bool = True) -> np.ndarray:
     """Values that actually OCCUR in the column, weighted by how typical they are.
@@ -537,7 +557,7 @@ def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac
         if v.size == 0:
             continue
         if j in cat:
-            vals = [val for val in candidate_values(X_query, j, max_levels)
+            vals = [val for val in candidate_levels(X_query, j, max_levels)
                     if not np.isclose(val, x0[j], equal_nan=True)]
         else:
             iqr = float(np.subtract(*np.percentile(v, [75, 25]))) or float(np.std(v)) or 1.0
