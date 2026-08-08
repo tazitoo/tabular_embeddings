@@ -53,6 +53,7 @@ from collections import defaultdict
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import numpy as np
+import pandas as pd
 import torch
 
 from scripts._project_root import PROJECT_ROOT
@@ -290,6 +291,95 @@ def candidate_values(v: np.ndarray, max_vals: int,
                 picked.append(x)
         out = np.array(sorted(picked))
     return out
+
+
+class Space:
+    """The columns the search edits, and how an edited row becomes a model input.
+
+    Two spaces, one interface:
+
+      preprocessed  cols are the float32 columns the model ingests; materialize is the
+                    identity. What the search has always done.
+      raw           cols are the ORIGINAL table columns; materialize pushes an edited raw
+                    row through the fitted AutoGluon generator, so the model input is
+                    produced by the same code that built the corpus rather than assembled
+                    by hand.
+
+    Raw is the better space to define a patch in for three reasons the preprocessed space
+    cannot give:
+
+      1. A patch becomes model-independent. "Set ROLE_FAMILY to X" is one edit for every
+         donor; only the transform differs. In preprocessed space the SAME column is
+         categorical for tabpfn and numeric for tabicl, because imputation clears
+         cat_indices, so the two donors search different spaces over identical data.
+      2. Cross-column consistency is automatic. Editing one preprocessed column while a
+         derived column still holds the old value makes a row the pipeline could never
+         emit. Transforming from raw cannot produce one.
+      3. Categorical typing comes from the raw dtype, which is what the generator itself
+         keys on, instead of from cat_indices after the fact.
+    """
+
+    def __init__(self, cols, names, cat, materialize):
+        self.cols = cols            # list of 1-D arrays, one per column
+        self.names = names          # column labels: ints (preprocessed) or names (raw)
+        self.cat = cat              # positional indices of categorical columns
+        self.materialize = materialize   # list[row values] -> float32 model input
+        self.n_cols = len(cols)
+        self.n_rows = len(cols[0]) if cols else 0
+
+    def row(self, i):
+        return [c[i] for c in self.cols]
+
+
+def preprocessed_space(model, dataset, X_query):
+    """The existing space: edit the matrix the model ingests, no transform."""
+    cat = column_types(model, dataset, X_query)
+    return Space(cols=[X_query[:, j] for j in range(X_query.shape[1])],
+                 names=list(range(X_query.shape[1])), cat=cat,
+                 materialize=lambda rows: np.asarray(rows, dtype=np.float32))
+
+
+def raw_space(model, dataset, splits, row_indices, X_query_pp):
+    """Edit the ORIGINAL table; the fitted generator produces the model input.
+
+    Refuses to return a space whose transform does not reproduce X_query exactly. If the
+    generator rebuilt from raw disagrees with the cached matrix, then every activation,
+    every SAE code and every cached delta was computed on different inputs, and a patch
+    measured here would not be a patch on the published run. verify_preprocessor_refit
+    established this holds for all 204 (model, dataset) pairs; this re-checks the actual
+    query rows in use, since that is the slice the search perturbs.
+    """
+    from data.extended_loader import _load_tabarena_cached_v2
+    from data.preprocessing import NAN_SAFE_MODELS, fit_preprocessor
+
+    cached = _load_tabarena_cached_v2(dataset)
+    if cached is None:
+        raise FileNotFoundError(f"no raw TabArena cache for {dataset}")
+    X_df, _ = cached
+    train_idx = np.array(splits[dataset]["train_indices"])
+    X_train_raw = X_df.iloc[train_idx].reset_index(drop=True)
+    X_query_raw = X_df.iloc[np.asarray(row_indices)].reset_index(drop=True)
+
+    pre = fit_preprocessor(X_train_raw, nan_safe=model in NAN_SAFE_MODELS)
+    got = pre.transform(X_query_raw)
+    ok_nan = np.array_equal(np.isnan(got), np.isnan(X_query_pp))
+    ok_val = ok_nan and np.array_equal(got[~np.isnan(got)], X_query_pp[~np.isnan(X_query_pp)])
+    if not ok_val:
+        raise RuntimeError(
+            f"{model}/{dataset}: refit generator does not reproduce X_query "
+            f"(shape {got.shape} vs {X_query_pp.shape}, nan_pattern_ok={ok_nan}). "
+            "Raw-space patching would edit a different input than the corpus used.")
+
+    names = list(X_query_raw.columns)
+    cat = {j for j, c in enumerate(names)
+           if not pd.api.types.is_numeric_dtype(X_query_raw[c])}
+    cols = [X_query_raw[c].to_numpy() for c in names]
+
+    def materialize(rows):
+        df = pd.DataFrame({c: [r[j] for r in rows] for j, c in enumerate(names)})
+        return pre.transform(df.astype(X_query_raw.dtypes.to_dict()))
+
+    return Space(cols=cols, names=names, cat=cat, materialize=materialize)
 
 
 def column_types(model: str, dataset: str, X: np.ndarray) -> set[int]:
