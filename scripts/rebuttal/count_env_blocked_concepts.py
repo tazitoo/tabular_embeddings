@@ -43,18 +43,28 @@ def main():
     want = {(r["donor"], int(r["feat_id"])) for r in csv.DictReader(open(args.burndown))}
     print(f"concepts in the locked cell: {len(want)}\n")
 
-    # concept -> set of recipients it has a deployed cell with
+    # concept -> set of (recipient, dataset) it has a deployed cell with
     recips = defaultdict(set)
+    cells = defaultdict(set)
+    rows = defaultdict(dict)
     for f in sorted(glob.glob(str(FWD / "*" / "*.npz"))):
         z = np.load(f, allow_pickle=True)
         if "selected_features" not in z.files or z["selected_features"].size == 0:
             continue
         donor, recipient = str(z["strong_model"]), str(z["weak_model"])
         sel = z["selected_features"]
-        present = {int(x) for x in np.unique(sel) if x >= 0}
-        for fid in present:
+        ds_name = os.path.basename(f)[:-4]
+        # ROW counts, not presence: a concept can keep a cell under a restriction and
+        # still be too thin to patch there. Rows are what the search actually consumes.
+        per_fid = defaultdict(int)
+        for r in range(sel.shape[0]):
+            for fid in {int(x) for x in sel[r] if x >= 0}:
+                per_fid[fid] += 1
+        for fid, nrows in per_fid.items():
             if (donor, fid) in want:
                 recips[(donor, fid)].add(recipient)
+                cells[(donor, fid)].add((recipient, ds_name))
+                rows[(donor, fid)][(recipient, ds_name)] = nrows
 
     no_cells = [c for c in want if c not in recips]
     counts = defaultdict(list)
@@ -94,6 +104,79 @@ def main():
           f"suppression never involve the recipient.")
     print(f"  readout-blocked:      {blocked}. Report as patch-without-readout, not as "
           f"'no qualifying patch found'.")
+    classification_only(want, cells, rows)
+
+
+def classification_only(want, cells, rows):
+    """What a classification-only restriction would cost.
+
+    Asked because a concept that only ever appears in regression cells cannot be
+    generalised across task types from this sweep -- but the cost has to be counted
+    before the restriction is worth making.
+    """
+    import json
+    from scripts.intervention.intervene_lib import SPLITS_PATH
+    splits = json.loads(SPLITS_PATH.read_text())
+    task_of = {d: splits[d].get("task_type", "?") for d in splits}
+
+    n = len(want)
+    all_cells = sum(len(v) for v in cells.values())
+    clf_cells, reg_cells = 0, 0
+    only_reg, mixed, only_clf = [], [], []
+    ds_seen, ds_reg = set(), set()
+    for c, cs in cells.items():
+        t = {task_of.get(d, "?") for _, d in cs}
+        for _, d in cs:
+            ds_seen.add(d)
+            if task_of.get(d) != "classification":
+                ds_reg.add(d)
+        k = sum(1 for _, d in cs if task_of.get(d) == "classification")
+        clf_cells += k
+        reg_cells += len(cs) - k
+        if k == 0:
+            only_reg.append(c)
+        elif k < len(cs):
+            mixed.append(c)
+        else:
+            only_clf.append(c)
+
+    print("\n\nIF RESTRICTED TO CLASSIFICATION DATASETS")
+    print(f"  datasets in play: {len(ds_seen)}, of which non-classification: {len(ds_reg)}")
+    print(f"  cells: {all_cells} total -> {clf_cells} kept, {reg_cells} dropped "
+          f"({reg_cells/max(all_cells,1):.1%})")
+    print(f"\n  {'concepts with ONLY classification cells':<44s} {len(only_clf):4d} "
+          f"({len(only_clf)/n:.1%})  unaffected")
+    print(f"  {'concepts with a mix (lose cells, keep some)':<44s} {len(mixed):4d} "
+          f"({len(mixed)/n:.1%})  narrower, still patchable")
+    print(f"  {'concepts with ONLY regression cells':<44s} {len(only_reg):4d} "
+          f"({len(only_reg)/n:.1%})  LOST entirely")
+    for c in sorted(only_reg)[:10]:
+        print(f"       {c[0]} f{c[1]}   {sorted(cells[c])[:3]}")
+    if len(only_reg) > 10:
+        print(f"       ... and {len(only_reg)-10} more")
+
+    # Row coverage. Cells surviving a restriction says nothing about whether enough ROWS
+    # survive with them -- a concept can keep three cells of two rows each.
+    tot_all, tot_clf = [], []
+    for c in want:
+        rr = rows.get(c, {})
+        tot_all.append(sum(rr.values()))
+        tot_clf.append(sum(n for (rec, d), n in rr.items()
+                           if task_of.get(d) == "classification"))
+    a, b = np.array(tot_all), np.array(tot_clf)
+    print(f"\n  accepted ROWS per concept   {'all':>10s} {'clf-only':>10s}")
+    for q in (5, 25, 50, 75, 95):
+        print(f"    p{q:<3d}                     {np.percentile(a,q):10.0f} "
+              f"{np.percentile(b,q):10.0f}")
+    print(f"    total                    {a.sum():10d} {b.sum():10d}  "
+          f"({b.sum()/max(a.sum(),1):.1%} kept)")
+    print(f"\n  concepts below a row floor  {'all':>10s} {'clf-only':>10s}")
+    for thr in (10, 30, 60, 100):
+        print(f"    < {thr:<4d} rows              {int((a<thr).sum()):10d} "
+              f"{int((b<thr).sum()):10d}")
+    print(f"\n  the sweep draws up to n_datasets(3) x n_rows(10) = 30 rows per concept,")
+    print(f"  so a concept under ~30 rows is already sampling everything it has.")
+    return only_reg
 
 
 if __name__ == "__main__":
