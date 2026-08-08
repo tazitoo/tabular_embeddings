@@ -155,23 +155,40 @@ def plot_single_model_appendix(model_name: str, matrix: np.ndarray, output_path:
 
 def plot_model_evidence(model_key: str, display_name: str, batch_data: dict,
                         cka_matrix: np.ndarray = None, optimal_layer: int = None,
-                        n_layers_config: int = None, output_path: Path = None):
+                        n_layers_config: int = None, output_path: Path = None,
+                        task_filter: str = None):
     """
     Generate publication-quality 3-panel evidence figure for a single model.
 
-    Uses ALL datasets from batch analysis (8-15 per model) to robustly justify
-    the extraction layer choice.
+    Uses ALL datasets from batch analysis (38 cls or 51 combined per model)
+    to robustly justify the extraction layer choice.
 
     Panel A: Representative CKA heatmap (if available)
     Panel B: CKA drift from L0 for ALL datasets (individual + mean + critical layer)
     Panel C: Distribution of critical depths across datasets
+
+    If ``task_filter`` is given (e.g. ``"classification"`` or ``"regression"``),
+    only datasets of that task type are included; this matches the round-10
+    SAE corpus, which selects extraction layers per (n_layers, task) variant.
     """
     import json
 
-    datasets = list(batch_data.keys())
-    n_datasets = len(datasets)
+    # Optional task filter (read TabArena splits to map dataset → task type).
+    task_lookup = {}
+    if task_filter is not None:
+        splits_path = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
+        if splits_path.exists():
+            splits = json.loads(splits_path.read_text())
+            task_lookup = {ds: s.get("task_type") for ds, s in splits.items()}
 
-    # Get number of layers from first dataset
+    datasets = sorted(batch_data.keys())
+    if task_filter is not None and task_lookup:
+        datasets = [d for d in datasets if task_lookup.get(d) == task_filter]
+        if not datasets:
+            print(f"  task filter '{task_filter}' removed all datasets; skipping {model_key}")
+            return
+
+    # Get number of layers from first surviving dataset
     first = batch_data[datasets[0]]
     n_layers = first['n_layers']
 
@@ -180,13 +197,17 @@ def plot_model_evidence(model_key: str, display_name: str, batch_data: dict,
     profiles = []
     critical_depths = []
     critical_layers = []
-    for ds_name, r in batch_data.items():
+    kept_datasets = []
+    for ds_name in datasets:
+        r = batch_data[ds_name]
         profile = np.array(r['l0_cka_profile'])
         if len(profile) != n_layers:
             continue
         profiles.append(profile)
         critical_depths.append(r['critical_depth_frac'])
         critical_layers.append(r['critical_layer'])
+        kept_datasets.append(ds_name)
+    datasets = kept_datasets
     n_datasets = len(profiles)  # update to filtered count
 
     mean_profile = np.mean(profiles, axis=0)
@@ -334,40 +355,97 @@ def plot_model_evidence(model_key: str, display_name: str, batch_data: dict,
     plt.close()
 
 
+def _load_round10_layer(model_key: str) -> int | None:
+    """Read the actual round-10 extraction layer from the SAE training norm stats.
+
+    Returns the modal layer across datasets (single value for fixed-layer
+    models; for tabula8b, which has a bimodal distribution, returns the
+    most common layer). Falls back to None if the norm stats file is absent.
+    """
+    norm_path = (PROJECT_ROOT / "output" / "sae_training_round10"
+                 / f"{model_key}_taskaware_norm_stats.npz")
+    if not norm_path.exists():
+        return None
+    stats = np.load(norm_path, allow_pickle=True)
+    if "layers" not in stats.files:
+        return None
+    layers = stats["layers"].tolist()
+    # Modal value handles tabula8b's mixed L13/L10 case
+    return int(max(set(layers), key=layers.count))
+
+
 def plot_all_model_appendix_figures():
     """Generate individual appendix figures for all models using batch analysis data."""
     import json
-    import sys
-    
-    # Load optimal layer config
-    try:
-        from config import load_optimal_layers
-        optimal_config = load_optimal_layers()
-    except (ImportError, FileNotFoundError):
-        optimal_config = {}
 
-    # Model configurations
+    # Model configurations. ``task_filter`` matches the round-10 grouping used
+    # to pick the extraction layer; ``json_key`` overrides the default
+    # ``layerwise_depth_analysis_<model_key>.json`` file. ``round10_key``
+    # selects which norm_stats file to read for the extraction layer.
     models = {
-        'tabpfn': {'name': 'TabPFN', 'heatmap_key': 'tabpfn_adult'},
-        'tabicl': {'name': 'TabICL', 'heatmap_key': 'tabicl_adult'},
-        'mitra': {'name': 'Mitra', 'heatmap_key': 'mitra_adult'},
-        'tabdpt': {'name': 'TabDPT', 'heatmap_key': 'tabdpt_adult'},
-        'carte': {'name': 'CARTE', 'heatmap_key': 'carte_SpeedDating'},
-        'hyperfast': {'name': 'HyperFast', 'heatmap_key': 'hyperfast_adult'},
-        'tabula8b': {'name': 'Tabula-8B', 'heatmap_key': None},
+        'tabpfn': {
+            'name': 'TabPFN',
+            'heatmap_key': 'tabpfn_adult',
+            'task_filter': 'classification',  # cls=24 layers; reg=18 layers handled separately
+            'round10_key': 'tabpfn',
+        },
+        'tabicl': {
+            'name': 'TabICL',
+            'heatmap_key': 'tabicl_adult',
+            'task_filter': None,  # classification-only model
+            'round10_key': 'tabicl',
+        },
+        'mitra': {
+            'name': 'Mitra',
+            'heatmap_key': 'mitra_adult',
+            'task_filter': 'classification',
+            'round10_key': 'mitra',
+        },
+        'mitra_regressor': {
+            'name': 'Mitra (regressor)',
+            'heatmap_key': None,
+            'task_filter': None,
+            'round10_key': 'mitra',  # same norm stats; regressor reuses Mitra L12
+            'json_key': 'mitra_regression',  # different depth-analysis source file
+        },
+        'tabdpt': {
+            'name': 'TabDPT',
+            'heatmap_key': 'tabdpt_adult',
+            'task_filter': None,
+            'round10_key': 'tabdpt',
+        },
+        'carte': {
+            'name': 'CARTE',
+            'heatmap_key': 'carte_SpeedDating',
+            'task_filter': None,
+            'round10_key': 'carte',
+        },
+        'hyperfast': {
+            'name': 'HyperFast',
+            'heatmap_key': 'hyperfast_adult',
+            'task_filter': None,  # cls-only
+            'round10_key': 'hyperfast',
+        },
+        'tabula8b': {
+            'name': 'Tabula-8B',
+            'heatmap_key': None,
+            'task_filter': None,
+            'round10_key': 'tabula8b',
+        },
     }
 
     for model_key, config in models.items():
-        # Load batch analysis data
-        json_path = OUTPUT_DIR / f"layerwise_depth_analysis_{model_key}.json"
+        json_key = config.get('json_key', model_key)
+        json_path = OUTPUT_DIR / f"layerwise_depth_analysis_{json_key}.json"
         if not json_path.exists():
-            print(f"Skipping {config['name']}: batch analysis not found")
+            print(f"Skipping {config['name']}: batch analysis not found ({json_path.name})")
             continue
 
         with open(json_path) as f:
             batch_data = json.load(f)
+        # Strip _summary block if present (mitra_regression includes one).
+        batch_data = {k: v for k, v in batch_data.items() if not k.startswith("_")}
 
-        # Load CKA matrix for heatmap (if available)
         cka_matrix = None
         if config['heatmap_key']:
             npz_path = OUTPUT_DIR / f"layerwise_cka_{config['heatmap_key']}.npz"
@@ -375,10 +453,10 @@ def plot_all_model_appendix_figures():
                 data = np.load(npz_path)
                 cka_matrix = data['cka_matrix']
 
-        # Get optimal layer from config
-        optimal_layer = None
-        if model_key in optimal_config:
-            optimal_layer = optimal_config[model_key]['optimal_layer']
+        optimal_layer = _load_round10_layer(config['round10_key'])
+        if optimal_layer is None:
+            print(f"  warning: no round-10 norm stats for {config['round10_key']}; skipping {model_key}")
+            continue
 
         output_path = OUTPUT_DIR / f"layerwise_cka_appendix_{model_key}"
         plot_model_evidence(
@@ -388,6 +466,7 @@ def plot_all_model_appendix_figures():
             cka_matrix=cka_matrix,
             optimal_layer=optimal_layer,
             output_path=output_path,
+            task_filter=config['task_filter'],
         )
 
 

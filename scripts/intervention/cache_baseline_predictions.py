@@ -83,10 +83,14 @@ def run_dataset(
     dataset: str,
     splits: dict,
     device: str,
+    query_source: str,
+    max_context: int,
 ) -> dict:
     """Build the tail, capture baseline predictions, return cache payload."""
     X_train, y_train, X_query, y_query, row_indices, task = load_dataset_context(
         model_key, dataset, splits,
+        query_source=query_source,
+        max_context=max_context,
     )
 
     # Mitra cross_entropy expects int64 labels (mirrors perrow_importance.py)
@@ -146,11 +150,17 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--query-source", choices=["holdout", "train_noncontext", "train_all", "all_cached"], default="holdout")
+    parser.add_argument("--max-context", type=int, default=1024)
     args = parser.parse_args()
 
     splits = json.loads(SPLITS_PATH.read_text())
-    per_ds = load_test_embeddings(args.model)
-    datasets = sorted(per_ds.keys())
+    if args.query_source == "holdout":
+        per_ds = load_test_embeddings(args.model)
+        datasets = sorted(per_ds.keys())
+    else:
+        per_ds = None
+        datasets = sorted(splits.keys())
     if args.datasets:
         datasets = [d for d in datasets if d in args.datasets]
 
@@ -161,6 +171,8 @@ def main():
     logger.info(f"  Datasets: {len(datasets)}")
     logger.info(f"  Output:   {out_dir}")
     logger.info(f"  Device:   {args.device}")
+    logger.info(f"  Query:    {args.query_source}")
+    logger.info(f"  Max ctx:  {args.max_context}")
 
     n_ok = 0
     n_skip = 0
@@ -168,16 +180,18 @@ def main():
 
     for i, ds in enumerate(datasets):
         out_path = out_dir / f"{ds}.npz"
-        expected_n = len(per_ds[ds])
+        expected_n = len(per_ds[ds]) if per_ds is not None and ds in per_ds else None
 
-        if args.resume and out_path.exists() and _valid_existing(out_path, expected_n):
+        if args.resume and expected_n is not None and out_path.exists() and _valid_existing(out_path, expected_n):
             logger.info(f"[{i+1}/{len(datasets)}] {ds}: SKIP (exists, {expected_n} rows)")
             n_skip += 1
             continue
 
         logger.info(f"\n[{i+1}/{len(datasets)}] {ds}")
         try:
-            result = run_dataset(args.model, ds, splits, args.device)
+            result = run_dataset(
+                args.model, ds, splits, args.device, args.query_source, args.max_context
+            )
             np.savez_compressed(str(out_path), **result)
             logger.info(f"  -> {out_path.name}: {len(result['row_indices'])} rows saved")
             n_ok += 1

@@ -315,6 +315,8 @@ class TabPFNTail:
         clf.fit(X_context, y_context)
         model = clf.model_
         layers = model.transformer_encoder.layers
+        if extraction_layer >= len(layers):
+            extraction_layer = len(layers) - 1
 
         captured = {}
 

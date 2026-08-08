@@ -37,6 +37,7 @@ from data.extended_loader import _load_tabarena_cached_v2
 from data.preprocessing import CACHE_DIR, load_preprocessed
 from models.layer_extraction import extract_all_layers, load_and_fit, sort_layer_names
 from scripts._project_root import PROJECT_ROOT
+from scripts.intervention.context_sampling import select_context_indices
 
 SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training_round9" / "embeddings"
@@ -197,6 +198,10 @@ def main():
                         help="Max query rows per forward pass (default: 1024)")
     parser.add_argument("--datasets", nargs="+", default=None,
                         help="Specific datasets (default: all in splits)")
+    parser.add_argument("--query-source", choices=["holdout", "train_noncontext", "train_all", "all_cached"], default="holdout",
+                        help="Which rows to embed as queries.")
+    parser.add_argument("--output-root", type=Path, default=OUTPUT_DIR,
+                        help="Root directory for extracted embeddings.")
     parser.add_argument("--save-chunk-size", type=int, default=None,
                         help="Process this many query rows per chunk, flushing "
                              "to disk between chunks to limit RAM usage. "
@@ -217,7 +222,7 @@ def main():
         dataset_names = [d for d in dataset_names if splits[d]["task_type"] == "classification"]
         print(f"TabICL v1: filtered to {len(dataset_names)} classification datasets")
 
-    out_dir = OUTPUT_DIR / args.model
+    out_dir = args.output_root / args.model
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Extracting all layers: {args.model}")
@@ -226,6 +231,7 @@ def main():
     print(f"  Batch size:  {args.batch_size}")
     print(f"  Datasets:    {len(dataset_names)}")
     print(f"  Device:      {args.device}")
+    print(f"  Query:       {args.query_source}")
     print()
 
     success = skipped = errors = 0
@@ -252,16 +258,44 @@ def main():
                     skipped += 1
                     continue
                 X_df, y = cached
-                X_ctx_df = X_df.iloc[train_idx].reset_index(drop=True)
-                X_test_df = X_df.iloc[test_indices].reset_index(drop=True)
-                y_ctx = y[train_idx]
-
-                # Subsample context rows
-                if len(X_ctx_df) > args.max_context:
-                    rng = np.random.RandomState(42)
-                    idx = rng.choice(len(X_ctx_df), args.max_context, replace=False)
-                    X_ctx_df = X_ctx_df.iloc[idx].reset_index(drop=True)
-                    y_ctx = y_ctx[idx]
+                X_train_df = X_df.iloc[train_idx].reset_index(drop=True)
+                y_train_all = y[train_idx]
+                if args.query_source == "holdout":
+                    X_ctx_df = X_train_df
+                    y_ctx = y_train_all
+                    if len(X_ctx_df) > args.max_context:
+                        ctx_local = select_context_indices(
+                            n_rows=len(X_ctx_df),
+                            y_train=np.asarray(y_ctx),
+                            max_context=args.max_context,
+                            task=task_type,
+                            dataframe_style=True,
+                        )
+                        X_ctx_df = X_ctx_df.iloc[ctx_local].reset_index(drop=True)
+                        y_ctx = y_ctx[ctx_local]
+                    query_row_indices = test_indices
+                    X_query = X_df.iloc[query_row_indices].reset_index(drop=True)
+                else:
+                    ctx_local = select_context_indices(
+                        n_rows=len(X_train_df),
+                        y_train=np.asarray(y_train_all),
+                        max_context=args.max_context,
+                        task=task_type,
+                        dataframe_style=True,
+                    )
+                    X_ctx_df = X_train_df.iloc[ctx_local].reset_index(drop=True)
+                    y_ctx = y_train_all[ctx_local]
+                    if args.query_source == "train_noncontext":
+                        query_local = np.setdiff1d(np.arange(len(X_train_df)), ctx_local)
+                        query_row_indices = train_idx[query_local]
+                        X_query = X_train_df.iloc[query_local].reset_index(drop=True)
+                    elif args.query_source == "train_all":
+                        query_local = np.arange(len(X_train_df))
+                        query_row_indices = train_idx[query_local]
+                        X_query = X_train_df.iloc[query_local].reset_index(drop=True)
+                    else:
+                        query_row_indices = np.concatenate([train_idx, test_indices])
+                        X_query = X_df.iloc[query_row_indices].reset_index(drop=True)
 
                 fit_kwargs = {}
                 if model_key == "tabula8b":
@@ -273,14 +307,37 @@ def main():
                 )
                 n_ctx_used = len(X_ctx_df)
                 n_train_total = len(train_idx)
-                X_test = X_test_df
+                X_test = X_query
             else:
                 # Standard path: load from preprocessing cache
                 data = load_preprocessed(args.model, ds_name, CACHE_DIR)
-
-                X_ctx, y_ctx = sample_context(
-                    data.X_train, data.y_train, args.max_context, task_type
-                )
+                if args.query_source == "holdout":
+                    X_ctx, y_ctx = sample_context(
+                        data.X_train, data.y_train, args.max_context, task_type
+                    )
+                    query_row_indices = test_indices
+                    X_test = data.X_test
+                else:
+                    ctx_local = select_context_indices(
+                        n_rows=len(data.X_train),
+                        y_train=np.asarray(data.y_train),
+                        max_context=args.max_context,
+                        task=task_type,
+                        dataframe_style=False,
+                    )
+                    X_ctx = data.X_train[ctx_local]
+                    y_ctx = data.y_train[ctx_local]
+                    if args.query_source == "train_noncontext":
+                        query_local = np.setdiff1d(np.arange(len(data.X_train)), ctx_local)
+                        X_test = data.X_train[query_local]
+                        query_row_indices = train_idx[query_local]
+                    elif args.query_source == "train_all":
+                        query_local = np.arange(len(data.X_train))
+                        X_test = data.X_train[query_local]
+                        query_row_indices = train_idx[query_local]
+                    else:
+                        X_test = np.concatenate([data.X_train, data.X_test], axis=0)
+                        query_row_indices = np.concatenate([train_idx, test_indices])
 
                 fit_kwargs = {}
                 if data.cat_indices and model_key in ("tabpfn", "hyperfast"):
@@ -292,7 +349,6 @@ def main():
                 )
                 n_ctx_used = len(X_ctx)
                 n_train_total = len(data.X_train)
-                X_test = data.X_test
 
             # Decide: chunked (memmap) vs in-memory extraction
             n_test = len(X_test)
@@ -305,7 +361,7 @@ def main():
                 n_layers, _, dim = extract_chunked(
                     args.model, clf, X_test, task=task_type,
                     chunk_size=chunk_size, out_path=out_path,
-                    test_indices=test_indices,
+                    test_indices=query_row_indices,
                     n_ctx_used=n_ctx_used, n_train_total=n_train_total,
                     batch_size=args.batch_size,
                 )
@@ -322,9 +378,10 @@ def main():
                 dim = layer_embs[layer_names[0]].shape[1] if layer_names else "?"
                 save_dict = {
                     "layer_names": np.array(layer_names, dtype=str),
-                    "row_indices": test_indices,
+                    "row_indices": query_row_indices,
                     "n_context": np.array(n_ctx_used),
                     "task_type": np.array(task_type),
+                    "query_source": np.array(args.query_source),
                 }
                 for name, emb in layer_embs.items():
                     save_dict[name] = emb.astype(np.float32)
@@ -336,7 +393,7 @@ def main():
             n_total = n_train_total + len(test_indices)
             print(f"[{i+1}/{len(dataset_names)}] {ds_name}: "
                   f"{layer_names_count} layers, "
-                  f"holdout={len(test_indices)}/{n_total} rows, "
+                  f"query={len(query_row_indices)}/{n_total} rows, "
                   f"dim={dim}, ctx={n_ctx_used}/{n_train_total} ({dt:.1f}s)")
             success += 1
 

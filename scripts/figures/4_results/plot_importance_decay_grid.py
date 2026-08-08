@@ -230,7 +230,7 @@ def main() -> None:
     )
     print("Plot order:", ", ".join(DISPLAY[m] for m in order))
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 5.2), sharey=True, sharex="row")
+    fig, axes = plt.subplots(2, 2, figsize=(10, 5.2), sharey=True, sharex=True)
     top_left, top_right = axes[0]
     bot_left, bot_right = axes[1]
 
@@ -264,6 +264,14 @@ def main() -> None:
     axes[0, 0].set_ylabel("Mean $|\\Delta\\text{pred}|$ (LOO)")
     axes[1, 0].set_ylabel("Mean $|\\Delta\\text{pred}|$ (step)")
     top_left.legend(fontsize=8, loc="upper right", ncol=1, frameon=True)
+
+    # Uniform x-axis range across all 4 panels (top row goes further out
+    # than bottom in the raw data, but 1–300 covers the meaningful decay
+    # for both). Bottom-row greedy walks end by rank 20 so they render
+    # with trailing whitespace; that's fine for visual comparability.
+    for ax_row in axes:
+        for ax in ax_row:
+            ax.set_xlim(1, 300)
 
     fig.tight_layout()
 

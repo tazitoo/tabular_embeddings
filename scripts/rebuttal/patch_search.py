@@ -977,7 +977,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
 
     a_now_vec = best.pop("_vec") if best else a_base_row.copy()
     a_now = float(best["activation_after"]) if best else a_start
-    cur = x0.copy()
+    cur = list(x0)
     if best:
         for c, v in zip(best["columns"], best["values"]):
             cur[c] = v
@@ -989,7 +989,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "ratio": (a_now / a_start) if a_start > 0 else float("nan"),
             "drop_frac": (1.0 - a_now / a_start) if a_start > 0 else float("nan"),
             "recon_rel_start": float(rel0[row]), "stop_reason": stop,
-            "patched_row": cur.tolist(),
+            # in the SPACE's columns: preprocessed values, or raw table values under
+            # --space raw, where the row is reportable as-is with no inversion.
+            "patched_row": [x.item() if hasattr(x, "item") else x for x in cur],
+            "patched_columns": [str(space.names[c]) for c in best["columns"]] if best else [],
             "n_cols_changed": len(best["columns"]) if best else 0,
             "best": best, "sensitivity_top": ranked[:5],
             "n_probes": len(sens), "n_sensitive_columns": len(per_col),

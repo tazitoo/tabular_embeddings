@@ -19,6 +19,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 from scripts._project_root import PROJECT_ROOT
 from scripts.paper._paper_repo import paper_figure_path
@@ -39,6 +40,8 @@ OUTPUT_NAME = "row_intervention_scatter.pdf"
 BASE_COLOR = "#aaaaaa"
 INTERV_COLOR = "black"
 LINE_COLOR = "#666666"
+ABLATION_COLOR = "#D55E00"  # Okabe-Ito vermillion (matches panel (b))
+TRANSFER_COLOR = "#0072B2"  # Okabe-Ito blue (matches panel (b))
 
 DISPLAY_NAMES = {
     "tabpfn": "TabPFN", "mitra": "Mitra", "tabicl": "TabICL",
@@ -108,7 +111,7 @@ def main():
     for feat, pred in zip(ab_feats, ab_preds):
         ax.annotate(
             "", xy=(pred, p_weak), xytext=(prev_x, p_weak),
-            arrowprops=dict(arrowstyle="-|>", color=LINE_COLOR, lw=1.0,
+            arrowprops=dict(arrowstyle="-|>", color=ABLATION_COLOR, lw=1.5,
                             shrinkA=4, shrinkB=3),
         )
         ax.plot(pred, p_weak, "o", color=INTERV_COLOR, markersize=2.5,
@@ -131,7 +134,7 @@ def main():
         if i == 0:
             ax.annotate(
                 "", xy=(p_strong, pred), xytext=(p_strong, prev_y),
-                arrowprops=dict(arrowstyle="-|>", color=LINE_COLOR, lw=1.0,
+                arrowprops=dict(arrowstyle="-|>", color=TRANSFER_COLOR, lw=1.5,
                                 shrinkA=4, shrinkB=3),
             )
         ax.plot(p_strong, pred, "o", color=INTERV_COLOR, markersize=2.5,
@@ -173,6 +176,13 @@ def main():
         transform=ax.transAxes, ha="left", va="top",
         fontsize=11, fontweight="bold",
     )
+
+    legend_handles = [
+        Line2D([0], [0], color=ABLATION_COLOR, lw=1.5, label="ablation"),
+        Line2D([0], [0], color=TRANSFER_COLOR, lw=1.5, label="transfer"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper center", fontsize=8,
+              frameon=True, framealpha=0.9, handlelength=1.8)
 
     local_path = OUTPUT_DIR / OUTPUT_NAME
     paper_path = paper_figure_path("4_results", OUTPUT_NAME)

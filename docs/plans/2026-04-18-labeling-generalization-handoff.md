@@ -136,6 +136,97 @@ evidence.
 Snapshots at
 `output/contrastive_examples/mitra/f92_{label,mesh_state}_Apairing.json`.
 
+### f_92 with quality-cache dataset selection (pairings on)
+
+Third f_92 run, swapping the top-5 dataset selection from `n_active`
+(which included `hiva_agnostic`) to `--dataset-selection quality`,
+which uses `scripts/concepts/dataset_quality_cache.py`. Quality
+selection replaced `hiva_agnostic` with `maternal_health_risk` in
+the top-5. All other pipeline knobs unchanged.
+
+Datasets used: `['splice', 'NATICUSdroid', 'maternal_health_risk', 'SDSS17', 'APSFailure']`.
+
+| dataset | pre-pairing | with pairings | quality + pairings |
+|---|---|---|---|
+| SDSS17 | 0.50 | 0.60 | 0.40 |
+| NATICUSdroid | 0.50 | 0.40 | 0.20 |
+| splice | 0.50 | 0.50 | 0.40 |
+| APSFailure | 0.10 | 0.40 | **0.80** |
+| hiva_agnostic | 0.50 | 0.60 | — |
+| maternal_health_risk | — | — | 0.10 |
+| **overall (macro)** | **0.42** | **0.50** | **0.38** |
+
+Quality-cache-based dataset selection **hurt** overall macro-acc
+(-0.12 vs pairing-only). APSFailure improved dramatically
+(0.40→0.80) — its upper-tail-saturation signal is the cleanest
+and paired with NATICUSdroid directly resolved the density-direction
+conflict — but the other four datasets got worse.
+
+Judge still converged at round 2 with the same polarity-agnostic
+synthesis structure. Final label:
+*"Activating rows pile within-row mass at each column's dominant
+marginal mode (upper-tail percentiles for numerics, majority levels
+for categoricals) with low within-row diversity, while contrast rows
+disperse values across mid-range or rare-minority bins."*
+
+`maternal_health_risk` (new in this run) was the worst performer at
+0.10. Only 6 columns + small test set — the quality cache's scoring
+evidently rates it high on per-dataset separability of f_92
+activations but its 5+5 held-out rows are noisier than hiva_agnostic's.
+
+Takeaway: **the n_active-based selection (which hiva_agnostic
+passes) was the better dataset mix for f_92.** Quality-cache
+selection does not dominate n_active-based selection on a held-out
+validator; they trade wins and losses per-dataset. Keep
+`--dataset-selection auto` (which prefers quality when cache exists)
+as the default, but do not treat the quality cache as a strict
+improvement.
+
+Snapshots at
+`output/contrastive_examples/mitra/f92_{label,mesh_state}_Aquality.json`.
+
+Agent-call cost: 11 per-dataset calls (5 r1 + 5 r2 + 1 synthesis), 2
+judge calls, 1 validator call. Same as pairing-only f_92. Both
+converge at r2.
+
+### f_92 validator re-run at n_act=n_con=10 (was 5)
+
+The three variants above differed by 0.12 in macro-acc at 5+5
+validator rows. With only 10 rows per dataset per class, a single
+row flip moves the dataset score by 0.10, which at 5 datasets moves
+the macro by 0.02 — so three random validator resamples could
+easily produce this spread by chance.
+
+Rebuilt validator at 10+10 (100 rows total) for each variant's
+dataset selection, re-ran validator agent on each label, same SAE
+snapshot, same preprocessing, same held-out-row seeding scheme:
+
+| variant                  | 5+5   | **10+10** |
+|---|---|---|
+| pre-pairing (A)          | 0.42  | 0.47      |
+| pairing-only (Apairing)  | 0.50  | **0.56**  |
+| quality+pairing (Aquality) | 0.38 | 0.53      |
+
+Ranking flipped between quality and pre-pairing: at 10+10, the
+quality-cache variant is the second-best, not the worst. Spread
+across variants shrank 0.12 → 0.09, consistent with halving per-
+dataset standard error.
+
+Conclusion: **the 5+5 sensitivity was mostly validator variance,
+not a real dataset-selection signal.** Pairing-on beats pairing-off
+stably (+0.09 on n_active selection, +0.15 on quality selection).
+Quality-cache vs n_active dataset selection is within noise at
+10+10 (0.53 vs 0.56). Keep `--dataset-selection auto` as default.
+
+Snapshots at
+`output/contrastive_examples/mitra/f92_{label,mesh_state}_{A,Apairing,Aquality}_v10.json`.
+
+Action item: **run the remaining four features' validators at
+10+10** (f_6, f_11, f_36, f_86) so the reported table is on the
+lower-variance protocol. Rebuild each validator CSV set with
+`--n-act 10 --n-con 10`; re-dispatch validator agents; update
+snapshots. Keep the 5+5 numbers as a footnote if useful.
+
 State + label snapshots on disk:
 - `output/contrastive_examples/mitra/f11_label_A.json`
 - `output/contrastive_examples/mitra/f11_mesh_state_A.json`

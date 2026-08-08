@@ -62,7 +62,7 @@ Update default matching file paths in all consumers:
 1. Code changes (steps 01, 02, downstream paths)
 2. Rerun step 01 -> new matching file
 3. Rerun steps 02-05 (concept graph, grouping)
-4. Rerun ablation, transfer, importance on workers
+4. Rerun ablation and transfer (importance is not dependent on a matching) on workers
 5. Update figures/tables
 6. Defer labeling (step 06) to later sessions
 

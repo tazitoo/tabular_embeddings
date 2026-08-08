@@ -103,12 +103,9 @@ def main() -> None:
          np.linspace(0, 1.0, 33), None, None),
     ]
 
-    for ax, field, title, xlabel, bins, xlim, clip_range in panel_cfg:
-        # Stacked histograms: pass all 4 datasets together so matplotlib
-        # stacks them at each bin.
-        all_vals = []
-        labels = []
-        colors = []
+    def draw_panel(ax, field, title, xlabel, bins, xlim, clip_range,
+                   *, show_legend, show_title=True, square=False, panel_tag=None):
+        all_vals, labels, colors = [], [], []
         for label, _sweep_dir, face, _alpha in SOURCES:
             recs = loaded[label]
             vals = _finite([getattr(r, field) for r in recs])
@@ -119,14 +116,32 @@ def main() -> None:
             colors.append(face)
         ax.hist(all_vals, bins=bins, histtype="barstacked",
                 color=colors, label=labels, edgecolor="white", lw=0.3)
-        ax.set_title(title, fontsize=10)
+        if show_title:
+            ax.set_title(title, fontsize=10)
         ax.set_xlabel(xlabel, fontsize=9)
         if xlim is not None:
             ax.set_xlim(*xlim)
         ax.grid(True, which="major", ls=":", alpha=0.4)
+        ax.set_ylabel("(pair, dataset) count", fontsize=9)
+        if square:
+            ax.set_box_aspect(1)
+        if panel_tag is not None:
+            ax.text(
+                0.03, 0.97, panel_tag,
+                transform=ax.transAxes, ha="left", va="top",
+                fontsize=11, fontweight="bold",
+            )
+        if show_legend:
+            legend_kwargs = dict(fontsize=7, frameon=True, framealpha=0.9)
+            if panel_tag is not None:
+                legend_kwargs.update(loc="upper left",
+                                     bbox_to_anchor=(0.03, 0.88))
+            else:
+                legend_kwargs["loc"] = "upper left"
+            ax.legend(**legend_kwargs)
 
-    axes[0].set_ylabel("(pair, dataset) count", fontsize=9)
-    axes[0].legend(fontsize=7, loc="upper left", frameon=True, framealpha=0.9)
+    for i, (ax, *cfg) in enumerate(panel_cfg):
+        draw_panel(ax, *cfg, show_legend=(i == 0))
 
     fig.tight_layout()
 
@@ -136,6 +151,18 @@ def main() -> None:
     for path in (local_path, paper_path):
         fig.savefig(path, dpi=200, bbox_inches="tight")
         print(f"Wrote {path}")
+
+    panel_slugs = ("gap_closed", "concepts_used", "acceptance")
+    panel_tags = {"gap_closed": "(b)"}
+    for slug, (_ax, *cfg) in zip(panel_slugs, panel_cfg):
+        pfig, pax = plt.subplots(figsize=(3.8, 3.6), constrained_layout=True)
+        draw_panel(pax, *cfg, show_legend=True, show_title=False, square=True,
+                   panel_tag=panel_tags.get(slug))
+        name = f"intervention_distributions_{slug}.pdf"
+        for path in (OUTPUT_DIR / name, paper_figure_path("4_results", name)):
+            pfig.savefig(path, dpi=200, bbox_inches="tight")
+            print(f"Wrote {path}")
+        plt.close(pfig)
 
 
 if __name__ == "__main__":

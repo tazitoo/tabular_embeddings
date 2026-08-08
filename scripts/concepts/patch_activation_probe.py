@@ -37,6 +37,37 @@ from scripts.concepts.row_source import load_row_source_row_indices
 from scripts.intervention.context_sampling import select_context_indices
 from models.mitra_embeddings import MitraEmbeddingExtractor
 
+
+def _embedding_extractor_for_model(model: str, device: str):
+    if model == "mitra":
+        return MitraEmbeddingExtractor(
+            device=device,
+            n_estimators=1,
+            fine_tune=False,
+            seed=MITRA_SEED,
+        )
+    if model == "tabpfn":
+        from models.tabpfn_embeddings import TabPFNEmbeddingExtractor
+
+        return TabPFNEmbeddingExtractor(device=device)
+    if model == "tabicl":
+        from models.tabicl_embeddings import TabICLEmbeddingExtractor
+
+        return TabICLEmbeddingExtractor(device=device)
+    if model == "tabicl_v2":
+        from models.tabicl_v2_embeddings import TabICLV2EmbeddingExtractor
+
+        return TabICLV2EmbeddingExtractor(device=device)
+    if model == "tabdpt":
+        from models.tabdpt_embeddings import TabDPTEmbeddingExtractor
+
+        return TabDPTEmbeddingExtractor(device=device)
+    if model == "carte":
+        from models.carte_embeddings import CARTEEmbeddingExtractor
+
+        return CARTEEmbeddingExtractor(device=device)
+    raise NotImplementedError(f"Unsupported patch model: {model}")
+
 CONTRASTIVE_DIR = PROJECT_ROOT / "output" / "contrastive_examples"
 MITRA_SEED = 13
 MITRA_CONTEXT_ROWS = 1024
@@ -97,11 +128,8 @@ def _encode_frame_for_matching(df: pd.DataFrame) -> tuple[np.ndarray, list[str]]
     return np.column_stack(cols).astype(np.float32), names
 
 
-def _load_raw_mitra_context_query(model: str, dataset: str):
+def _load_raw_context_query(model: str, dataset: str):
     """Load raw rows aligned with the row source used by contrastive evidence."""
-    if model != "mitra":
-        raise NotImplementedError("raw context/query loader currently supports mitra")
-
     from data.extended_loader import load_tabarena_dataset
     from sklearn.preprocessing import LabelEncoder
 
@@ -134,6 +162,11 @@ def _load_raw_mitra_context_query(model: str, dataset: str):
     X_query = X.iloc[row_indices].reset_index(drop=True)
     y_query = y_encoded[row_indices]
     return X_context, y_context, X_query, y_query, row_indices, task
+
+
+def _load_raw_mitra_context_query(model: str, dataset: str):
+    """Backward-compatible name for the generic raw context/query loader."""
+    return _load_raw_context_query(model, dataset)
 
 
 def _column_separation_scores(
@@ -278,15 +311,7 @@ def _extract_feature_activations(
     dataset: str,
     device: str,
 ) -> np.ndarray:
-    if model != "mitra":
-        raise NotImplementedError("patch_activation_probe currently supports --model mitra")
-
-    extractor = MitraEmbeddingExtractor(
-        device=device,
-        n_estimators=1,
-        fine_tune=False,
-        seed=MITRA_SEED,
-    )
+    extractor = _embedding_extractor_for_model(model, device)
     result = extractor.extract_embeddings(
         X_context,
         y_context,
@@ -516,6 +541,9 @@ def _datasets_for_feature(
     task_filter: str,
 ) -> list[str]:
     ctx_path = CONTRASTIVE_DIR / model / f"f{feat}_context.json"
+    if not ctx_path.exists():
+        print(f"Missing contrastive context for {model} f{feat}: {ctx_path}", flush=True)
+        return []
     ctx = json.loads(ctx_path.read_text())
     datasets = []
     stats = ctx.get("dataset_stats") or {}

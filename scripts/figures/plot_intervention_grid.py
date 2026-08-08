@@ -44,9 +44,6 @@ OUTPUT_DIR = PROJECT_ROOT / "output" / "figures" / "intervention_grid"
 SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
 
 
-MITRA_MAX_FEATURES = 500  # autogluon/tabular/models/mitra/mitra_model.py:194
-
-
 def _pair_npz(sweep_dir: Path, a: str, b: str, dataset: str) -> Path | None:
     for pair_name in (f"{min(a, b)}_vs_{max(a, b)}",
                       f"{a}_vs_{b}", f"{b}_vs_{a}"):
@@ -54,6 +51,9 @@ def _pair_npz(sweep_dir: Path, a: str, b: str, dataset: str) -> Path | None:
         if p.exists():
             return p
     return None
+
+
+MITRA_DIM_EMBEDDING = 512  # autogluon mitra dim_embedding default; SelectKBest target
 
 
 def _dataset_n_features(dataset: str) -> int | None:
@@ -70,32 +70,43 @@ def _dataset_n_features(dataset: str) -> int | None:
 
 
 def _degenerate_reason(dataset: str, model_a: str, model_b: str) -> str:
-    """Return a human-readable reason string for a degenerate pair.
+    """Return a human-readable reason for a stub/degenerate pair.
 
-    Priority:
-    1. Mitra + n_features > 500: exceeds AutoGluon's documented cap
-       (autogluon/tabular/models/mitra/mitra_model.py:194).
-    2. Identify which specific model has constant output and name it —
-       without claiming a known cause when we don't have one.
-    3. Fall back to generic "degenerate" when neither applies.
+    Mitra's `MitraClassifier` (sklearn interface) handles datasets with
+    >512 features via SelectKBest truncation, so the framework-level cap
+    in mitra_model.py does NOT block extraction. But on some high-feature
+    datasets (e.g. Bioresponse, 1776 features) the SelectKBest-truncated
+    input is sufficiently out-of-distribution for Mitra that its
+    predictions collapse to a near-constant value (AUC ≈ 0.5). When that
+    happens we name the mechanism explicitly.
     """
     from scripts.figures.plot_intervention_example_3panel import _broken_model
-
-    if "mitra" in (model_a, model_b):
-        nf = _dataset_n_features(dataset)
-        if nf is not None and nf > MITRA_MAX_FEATURES:
-            return (f"Mitra requires n_features < {MITRA_MAX_FEATURES}"
-                    f"\n(dataset has {nf})")
     broken = _broken_model(dataset, model_a, model_b)
-    if broken is not None:
-        return f"{broken} collapsed\n(constant output)"
-    return "degenerate"
+    if broken is None:
+        return "degenerate"
+    if broken.lower() == "mitra":
+        nf = _dataset_n_features(dataset)
+        if nf is not None and nf > MITRA_DIM_EMBEDDING:
+            return (f"Mitra constant after SelectKBest"
+                    f"\n(truncation {nf} \u2192 {MITRA_DIM_EMBEDDING})")
+    return f"{broken} constant output"
 
 
 def _draw_missing(ax, label: str, why: str):
-    ax.text(0.5, 0.5, why, ha="center", va="center",
-            fontsize=6, color="#999999", transform=ax.transAxes)
+    """Blank panel with a small 'see caption' note.
+
+    Matches the square 0-1 aspect of populated panels so the grid layout
+    stays uniform. The actual reason (`why`) is written to a sidecar
+    manifest by the grid renderer so it can be embedded in the LaTeX
+    figure caption.
+    """
+    ax.text(0.5, 0.5, "see caption", ha="center", va="center",
+            fontsize=5, color="#bbbbbb", style="italic",
+            transform=ax.transAxes)
     ax.set_title(label, fontsize=6, pad=2, color="#999999")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_aspect("equal", adjustable="box")
     ax.set_xticks([])
     ax.set_yticks([])
 
@@ -149,13 +160,15 @@ def _render_one(dataset: str, task_type: str,
     axes = axes.flatten()
 
     found = 0
+    blanks = []  # list of (label, reason) for the sidecar manifest
     for idx, (a, b) in enumerate(pairs):
         ax = axes[idx]
         label = f"{DISPLAY_NAMES.get(a, a)} vs {DISPLAY_NAMES.get(b, b)}"
         ap = _pair_npz(ablation_dir, a, b, dataset)
         tp = _pair_npz(transfer_dir, a, b, dataset)
-        if ap is None or tp is None:
+        if ap is None and tp is None:
             _draw_missing(ax, label, "no data")
+            blanks.append((label, "no ablation or transfer NPZ available"))
             continue
 
         try:
@@ -163,7 +176,9 @@ def _render_one(dataset: str, task_type: str,
                 ax, ap, tp, marker_size=4.0, base_size=6.0,
             )
         except KeyError:
-            _draw_missing(ax, label, _degenerate_reason(dataset, a, b))
+            reason = _degenerate_reason(dataset, a, b)
+            _draw_missing(ax, label, reason)
+            blanks.append((label, reason.replace("\n", " ")))
             continue
 
         disp_s = DISPLAY_NAMES.get(strong, strong)
@@ -172,6 +187,10 @@ def _render_one(dataset: str, task_type: str,
         # from baseline preds but there are no intervention arrows.
         if n_wins == 0:
             title = f"{disp_s} vs {disp_w}  (tied)"
+        elif ap is None:
+            title = f"{disp_s} \u2192 {disp_w}  ({n_drawn}/{n_wins}, transfer only)"
+        elif tp is None:
+            title = f"{disp_s} \u2192 {disp_w}  ({n_drawn}/{n_wins}, ablation only)"
         else:
             title = f"{disp_s} \u2192 {disp_w}  ({n_drawn}/{n_wins})"
         ax.set_title(title, fontsize=6, pad=2)
@@ -202,6 +221,14 @@ def _render_one(dataset: str, task_type: str,
     for path in outputs:
         fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
+
+    # Sidecar manifest: { dataset, blanks: [{pair, reason}, ...] }
+    # Written next to each PDF so the LaTeX caption can be edited from it.
+    manifest = {"dataset": dataset, "blanks": [
+        {"pair": label, "reason": reason} for label, reason in blanks
+    ]}
+    for path in outputs:
+        path.with_suffix(".json").write_text(json.dumps(manifest, indent=2))
     print(f"Saved {dataset}: {found}/{n_pairs} pairs → {outputs[-1]}")
 
 

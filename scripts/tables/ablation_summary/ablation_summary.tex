@@ -1,20 +1,20 @@
 \begin{table}[h]
 \centering
 \small
-\caption{Ablation results by strong model, sorted by number of comparisons. $N$ = comparisons where the model is strong. \emph{gc} = mean gap closed. $\Delta$ = trained $-$ random baseline (net learned signal). $K$ = mean concepts ablated.}
+\caption{Ablation results by strong model, sorted by $N$. $gc/gc_R$ = mean gap closed using trained/random SAEs. $K/K_R$ = mean concepts ablated using trained/random SAEs.}
 \label{tab:ablation_summary}
-\begin{tabular}{lrlll}
+\begin{tabular}{lrllll}
 \toprule
-Model (when strong) & $N$ & gc & $\Delta$ (gc $-$ random) & $K$ \\
+Model (when strong) & $N$ & gc & $gc_R$ & $K$ & $K_R$ \\
 \midrule
-TabICL-v2 & 172 & 0.99 $\pm$ 0.03 & 0.26 $\pm$ 0.21 & 1.9 $\pm$ 1.5 \\
-TabPFN & 133 & 0.98 $\pm$ 0.07 & 0.51 $\pm$ 0.22 & 2.8 $\pm$ 3.7 \\
-TabDPT & 120 & 0.95 $\pm$ 0.12 & 0.42 $\pm$ 0.17 & 3.1 $\pm$ 2.2 \\
-TabICL & 111 & 0.97 $\pm$ 0.09 & 0.33 $\pm$ 0.23 & 1.6 $\pm$ 1.0 \\
-Mitra & 82 & 0.74 $\pm$ 0.17 & 0.28 $\pm$ 0.21 & 2.4 $\pm$ 1.5 \\
-CARTE & 11 & 0.84 $\pm$ 0.13 & 0.42 $\pm$ 0.14 & 3.7 $\pm$ 2.3 \\
+TabICL-v2 & 185 & 0.99 $\pm$ 0.07 & 0.73 $\pm$ 0.22 & 2.2 $\pm$ 2.8 & 11.6 $\pm$ 6.4 \\
+TabPFN & 149 & 0.98 $\pm$ 0.09 & 0.47 $\pm$ 0.23 & 2.9 $\pm$ 5.0 & 11.6 $\pm$ 6.1 \\
+TabDPT & 137 & 0.94 $\pm$ 0.15 & 0.53 $\pm$ 0.21 & 3.4 $\pm$ 2.7 & 6.1 $\pm$ 3.5 \\
+TabICL & 124 & 0.96 $\pm$ 0.11 & 0.64 $\pm$ 0.20 & 1.9 $\pm$ 3.3 & 14.5 $\pm$ 7.4 \\
+Mitra & 88 & 0.74 $\pm$ 0.17 & 0.46 $\pm$ 0.22 & 2.3 $\pm$ 1.4 & 3.1 $\pm$ 3.5 \\
+CARTE & 16 & 0.72 $\pm$ 0.30 & 0.40 $\pm$ 0.21 & 4.9 $\pm$ 3.9 & 9.3 $\pm$ 5.2 \\
 \midrule
-Overall & 629 & 0.94 $\pm$ 0.13 & 0.36 $\pm$ 0.23 & 2.4 $\pm$ 2.3 \\
+Overall & 699 & 0.93 $\pm$ 0.15 & 0.58 $\pm$ 0.24 & 2.6 $\pm$ 3.4 & 9.9 $\pm$ 6.9 \\
 \bottomrule
 \end{tabular}
 \end{table}

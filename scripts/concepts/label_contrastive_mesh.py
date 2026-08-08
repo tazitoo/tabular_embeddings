@@ -4,7 +4,7 @@
 Topology
     n agents (one per dataset where feature f_i fires) arranged in a ring.
     Round 1: each agent sees its own CSV + preprocessing context, writes a
-             proto-label (10-25 words).
+             shape-level proto-label.
     Round k (k >= 2): each agent sees its own CSV AND peer (i - peer_offset)
              at offset (k-1) mod n: previous label + peer's dataset summary.
     Synthesizer (final step): a single agent receives all n final labels and
@@ -40,15 +40,26 @@ from scripts._project_root import PROJECT_ROOT
 CONTRASTIVE_DIR = PROJECT_ROOT / "output" / "contrastive_examples"
 CONVERGENCE_THRESHOLD = 0.80  # diagnostic only; judge decides when to stop
 MAX_ROUNDS = 5
-LABEL_WORDS_MIN, LABEL_WORDS_MAX = 10, 25
+LABEL_OUTPUT_INSTRUCTION = (
+    "Write a single-sentence label of 10-25 words that is specific enough to "
+    "classify unseen activating vs non-activating rows."
+)
 VALID_LABEL_FORMATS = {"sentence", "rules"}
 DEFAULT_LABEL_FORMAT = "sentence"
+VALID_JUDGE_PROMPT_FAMILIES = {
+    "baseline_v2",
+    "judge_concrete_heterogeneity_fallback",
+    "judge_positive_anchor_v1",
+    "judge_positive_boundary_v1",
+    "judge_generalization_v1",
+}
+DEFAULT_JUDGE_PROMPT_FAMILY = "baseline_v2"
 NOMIC_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
 JUDGE_SAMPLE_SEED = 13
 PEER_SAMPLE_N_ACT = 3
 PEER_SAMPLE_N_CON = 3
-JUDGE_SAMPLE_N_ACT = 2
-JUDGE_SAMPLE_N_CON = 2
+DEFAULT_JUDGE_SAMPLE_N_ACT = 2
+DEFAULT_JUDGE_SAMPLE_N_CON = 2
 RINGLITE_SELF_SAMPLE_N_ACT = 3
 RINGLITE_SELF_SAMPLE_N_CON = 3
 
@@ -69,7 +80,7 @@ PROMPT_ORDER_SEQUENCES = {
 VALID_PROMPT_ORDERS = set(PROMPT_ORDER_SEQUENCES)
 DEFAULT_PROMPT_ORDER = "A"
 
-VALID_ARCHES = {"baseline", "ringlite", "ringlite_freeze"}
+VALID_ARCHES = {"baseline", "ringlite", "ringlite_freeze", "solo_refine"}
 DEFAULT_ARCH = "baseline"
 
 VALID_PAIRINGS = {"on", "off"}
@@ -82,6 +93,93 @@ _PREDICTION_COLUMNS = {
     "pred_value",
     "pred_abs_err",
 }
+_PROMPT_METADATA_COLUMNS = {
+    "band",
+    "activation",
+    "feature_pre_act",
+    "decoder_cosine",
+    "active_likeness_score",
+    "row_idx",
+}
+
+_POSITIVE_SCORE_TIERS = {"positive_weak", "positive_medium", "positive_strong"}
+_NEGATIVE_SCORE_TIERS = {"negative_hard", "negative_medium", "negative_easy"}
+_STRATIFIED_NONFIRE_TIERS = {"near_boundary", "decoder_aligned", "far_control"}
+
+
+def _population_weight_for_validator_kind(kind: str, dataset_stats: dict) -> Optional[float]:
+    """Return the full candidate-population weight represented by a validator kind.
+
+    Scored validators deliberately balance tiers in the sample. This helper maps
+    those tiers back to their natural prevalence in the full selected dataset
+    pool: positive tiers split active rows; negative tiers split inactive rows.
+    """
+    quality = dataset_stats.get("dataset_quality") or {}
+    n_active = quality.get("n_active")
+    n_inactive = quality.get("n_inactive")
+    if n_active is None or n_inactive is None:
+        return None
+    n_active = float(n_active)
+    n_inactive = float(n_inactive)
+    if kind in _POSITIVE_SCORE_TIERS:
+        return n_active / len(_POSITIVE_SCORE_TIERS)
+    if kind in _NEGATIVE_SCORE_TIERS:
+        return n_inactive / len(_NEGATIVE_SCORE_TIERS)
+    if kind == "activating":
+        return n_active
+    if kind in {"random_nonfire", "contrast"}:
+        return n_inactive
+    if kind in _STRATIFIED_NONFIRE_TIERS:
+        return n_inactive / len(_STRATIFIED_NONFIRE_TIERS)
+    return None
+
+
+def _validator_population_metrics(per_ds_kind_counts: dict, feat_context: dict) -> dict:
+    """Compute robustness and natural-prevalence metrics for validator results."""
+    ds_context = feat_context.get("dataset_stats") or {}
+    balanced_accs: list[float] = []
+    weighted_correct = 0.0
+    weighted_total = 0.0
+    per_dataset_population: dict[str, dict] = {}
+
+    for ds, kind_counts in per_ds_kind_counts.items():
+        ds_weighted_correct = 0.0
+        ds_weighted_total = 0.0
+        for kind, stats in kind_counts.items():
+            if not stats.get("total"):
+                continue
+            acc = stats["correct"] / stats["total"]
+            balanced_accs.append(acc)
+            weight = _population_weight_for_validator_kind(kind, ds_context.get(ds, {}))
+            if weight is None:
+                continue
+            weighted_correct += acc * weight
+            weighted_total += weight
+            ds_weighted_correct += acc * weight
+            ds_weighted_total += weight
+        if ds_weighted_total:
+            per_dataset_population[ds] = {
+                "population_weighted_accuracy": ds_weighted_correct / ds_weighted_total,
+                "population_weight_total": ds_weighted_total,
+            }
+
+    population_macro = None
+    if per_dataset_population:
+        population_macro = sum(
+            v["population_weighted_accuracy"] for v in per_dataset_population.values()
+        ) / len(per_dataset_population)
+
+    return {
+        "balanced_tier_macro": (
+            sum(balanced_accs) / len(balanced_accs) if balanced_accs else None
+        ),
+        "population_weighted_accuracy": (
+            weighted_correct / weighted_total if weighted_total else None
+        ),
+        "population_weighted_accuracy_macro_dataset": population_macro,
+        "population_weight_total": weighted_total if weighted_total else None,
+        "per_dataset_population": per_dataset_population,
+    }
 
 _NOMIC_MODEL = None
 
@@ -120,6 +218,11 @@ class ContrastiveMeshPipeline:
     prompt_order: str = DEFAULT_PROMPT_ORDER
     label_format: str = DEFAULT_LABEL_FORMAT
     pairings_mode: str = DEFAULT_PAIRINGS
+    judge_prompt_family: str = DEFAULT_JUDGE_PROMPT_FAMILY
+    judge_sample_n_act: int = DEFAULT_JUDGE_SAMPLE_N_ACT
+    judge_sample_n_con: int = DEFAULT_JUDGE_SAMPLE_N_CON
+    validator_tag: str = ""
+    agent_band_prediction: bool = False
 
     def __post_init__(self):
         # Validate any explicitly-passed knob values; state overrides on resume.
@@ -131,6 +234,15 @@ class ContrastiveMeshPipeline:
             raise ValueError(f"label_format={self.label_format!r} not one of {sorted(VALID_LABEL_FORMATS)}")
         if self.pairings_mode not in VALID_PAIRINGS:
             raise ValueError(f"pairings_mode={self.pairings_mode!r} not one of {sorted(VALID_PAIRINGS)}")
+        if self.judge_prompt_family not in VALID_JUDGE_PROMPT_FAMILIES:
+            raise ValueError(
+                "judge_prompt_family="
+                f"{self.judge_prompt_family!r} not one of {sorted(VALID_JUDGE_PROMPT_FAMILIES)}"
+            )
+        if self.judge_sample_n_act < 1 or self.judge_sample_n_con < 1:
+            raise ValueError(
+                "judge_sample_n_act and judge_sample_n_con must both be >= 1"
+            )
         self._model_dir = self.contrastive_dir / self.model
         ctx_path = self._model_dir / f"f{self.feat_idx}_context.json"
         self.feat_context = json.loads(ctx_path.read_text())
@@ -159,6 +271,19 @@ class ContrastiveMeshPipeline:
         self.prompt_order = data.get("prompt_order", DEFAULT_PROMPT_ORDER)
         self.label_format = data.get("label_format", DEFAULT_LABEL_FORMAT)
         self.pairings_mode = data.get("pairings_mode", DEFAULT_PAIRINGS)
+        self.judge_prompt_family = data.get(
+            "judge_prompt_family", DEFAULT_JUDGE_PROMPT_FAMILY
+        )
+        self.judge_sample_n_act = data.get(
+            "judge_sample_n_act", self.judge_sample_n_act
+        )
+        self.judge_sample_n_con = data.get(
+            "judge_sample_n_con", self.judge_sample_n_con
+        )
+        self.validator_tag = data.get("validator_tag", self.validator_tag)
+        self.agent_band_prediction = data.get(
+            "agent_band_prediction", self.agent_band_prediction
+        )
         self.rounds = data.get("rounds", [])
         self.similarities = data.get("similarities", [])
         self.judge_verdicts = data.get("judge_verdicts", [])
@@ -173,6 +298,11 @@ class ContrastiveMeshPipeline:
             "prompt_order": self.prompt_order,
             "label_format": self.label_format,
             "pairings_mode": self.pairings_mode,
+            "judge_prompt_family": self.judge_prompt_family,
+            "judge_sample_n_act": self.judge_sample_n_act,
+            "judge_sample_n_con": self.judge_sample_n_con,
+            "validator_tag": self.validator_tag,
+            "agent_band_prediction": self.agent_band_prediction,
             "datasets": self.datasets,
             "rounds": self.rounds,
             "similarities": self.similarities,
@@ -203,10 +333,31 @@ class ContrastiveMeshPipeline:
 
     @staticmethod
     def _drop_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
-        cols = [c for c in df.columns if c not in _PREDICTION_COLUMNS]
+        cols = [c for c in df.columns if c not in _PREDICTION_COLUMNS | _PROMPT_METADATA_COLUMNS]
         return df.loc[:, cols]
 
-    def _prompt_csv_text(self, df: pd.DataFrame) -> str:
+    @staticmethod
+    def _with_evidence_ids(df: pd.DataFrame) -> pd.DataFrame:
+        """Attach stable prompt-local IDs without revealing hidden selection metadata."""
+        counters = {"activating": 0, "contrast": 0}
+        evidence_ids: list[str] = []
+        for label in df.get("label", []):
+            label_str = str(label)
+            if label_str == "activating":
+                evidence_ids.append(f"a{counters['activating']:03d}")
+                counters["activating"] += 1
+            elif label_str == "contrast":
+                evidence_ids.append(f"c{counters['contrast']:03d}")
+                counters["contrast"] += 1
+            else:
+                evidence_ids.append(f"r{len(evidence_ids):03d}")
+        out = df.copy()
+        out.insert(0, "evidence_id", evidence_ids)
+        return out
+
+    def _prompt_csv_text(self, df: pd.DataFrame, *, evidence_ids: bool = False) -> str:
+        if evidence_ids:
+            df = self._with_evidence_ids(df)
         return self._drop_prediction_columns(df).to_csv(index=False)
 
     def _dataset_block(self, ds: str, *, full_csv: bool) -> str:
@@ -229,23 +380,31 @@ class ContrastiveMeshPipeline:
                 f"p25={target.get('p25')}, p50={target.get('p50')}, p75={target.get('p75')}"
             )
         if full_csv:
-            csv_text = self._prompt_csv_text(pd.read_csv(self.csv_paths[ds]))
+            csv_text = self._prompt_csv_text(
+                pd.read_csv(self.csv_paths[ds]),
+                evidence_ids=self.agent_band_prediction,
+            )
             note = (
                 "Each numeric cell is annotated as 'value (pXX)' = pXX percentile in the SAE "
                 "training split. Each categorical/binary cell is 'value (freq Y.YY)' = prevalence "
                 "of that value in training.\n"
+                "Activating rows are positive examples where the concept is present over a range "
+                "of strengths. Contrast rows are non-activating examples showing multiple ways "
+                "the concept does not appear.\n"
             )
+            if self.agent_band_prediction:
+                note += (
+                    "Rows include an evidence_id only so you can classify hidden evidence roles. "
+                    "You are not shown activation bands, activations, decoder scores, or source metadata.\n"
+                )
             return f"{header}\n\n{note}\nContrastive CSV ({self.csv_paths[ds].name}):\n{csv_text}"
         df = pd.read_csv(self.csv_paths[ds])
         act = df[df.label == "activating"]
         con = df[df.label == "contrast"]
-        band_counts = act["band"].value_counts().to_dict() if "band" in df.columns else {}
-        band_str = ", ".join(f"{b}={c}" for b, c in sorted(band_counts.items())) or "unstratified"
         return (
             f"{header}\n"
-            f"  activating rows: {len(act)} ({band_str}; "
-            f"activation range [{act['activation'].min():.2f}, {act['activation'].max():.2f}])\n"
-            f"  contrast rows: {len(con)}"
+            f"  activating rows: {len(act)} concept-present examples across strengths\n"
+            f"  contrast rows: {len(con)} concept-absent examples"
         )
 
     def _sampled_dataset_block(
@@ -280,6 +439,8 @@ class ContrastiveMeshPipeline:
         note = (
             "Numeric cells: 'value (pXX)' = pXX percentile in training.\n"
             "Categorical cells: 'value (freq Y.YY)' = training prevalence.\n"
+            "Activating rows are positive examples where the concept is present over a range of strengths.\n"
+            "Contrast rows are non-activating examples showing multiple ways the concept does not appear.\n"
             "These rows are a normalized evidence packet for this round, not the full CSV.\n"
         )
         return (
@@ -337,7 +498,94 @@ class ContrastiveMeshPipeline:
             "    Exhaust the combinations before concluding anything is shared."
         )
 
+    @staticmethod
+    def _monosemantic_theme_block() -> str:
+        return (
+            "MONOSEMANTIC THEME TARGET\n"
+            "  * Aim for one coherent concept theme that explains why these rows fire.\n"
+            "  * State the recurring structural motif itself, not commentary about whether the\n"
+            "    evidence is clean, noisy, coherent, portable, mixed, or difficult.\n"
+            "  * Do NOT output subtype inventories or branch lists like 'one subtype..., another\n"
+            "    subtype...'.\n"
+            "  * Do NOT hide behind pipeline-language abstractions like 'cleaner structure',\n"
+            "    'broader profile', 'shared core', 'internally coherent standout structure', or\n"
+            "    similar meta descriptions unless failure is unavoidable.\n"
+            "  * If evidence is mixed, choose the narrowest concrete theme that still survives;\n"
+            "    leave residual heterogeneity to judge notes, not the label itself.\n"
+        )
+
+    def _judge_final_label_guidance_block(self) -> str:
+        if self.judge_prompt_family == "baseline_v2":
+            return (
+                "  * If the signal is genuinely heterogeneous, abstract to the shared semantic core rather\n"
+                "    than smoothing over contradictions with directional phrasing.\n"
+            )
+        if self.judge_prompt_family == "judge_concrete_heterogeneity_fallback":
+            return (
+                "  * If the signal is genuinely heterogeneous, state the broadest concrete row-level\n"
+                "    regime that still survives across datasets; put residual heterogeneity in\n"
+                "    overall_note instead of abstracting to a vague 'shared core' or other meta label.\n"
+            )
+        if self.judge_prompt_family == "judge_positive_anchor_v1":
+            return (
+                "  * Anchor the final label on the recurring activating-side regime first.\n"
+                "    Do not make the label mainly about what activating rows avoid or what contrasts do\n"
+                "    unless that absence-first framing is the clearest supported separator in most datasets.\n"
+                "  * When you mention the contrast side, keep it as a short supporting clause rather than\n"
+                "    the main theme of the label.\n"
+            )
+        if self.judge_prompt_family == "judge_positive_boundary_v1":
+            return (
+                "  * Non-activating rows are contrast evidence: they are provided to clarify which\n"
+                "    positive row-level structures are actually associated with SAE firing. They may\n"
+                "    still share many superficial or contextual properties with activating rows. Use\n"
+                "    them only to sharpen the positive firing pattern, not to define the concept as\n"
+                "    an absence.\n"
+                "  * In positive_evidence, state what activating rows consistently contain.\n"
+                "  * In contrast_boundary, state what similar-looking non-activating rows may contain\n"
+                "    that is not sufficient for firing.\n"
+                "  * final_label must be a positive description of the firing pattern, not an\n"
+                "    absence-based label.\n"
+            )
+        if self.judge_prompt_family == "judge_generalization_v1":
+            return (
+                "  * Imagine this final label will be tested on unseen rows: some where the SAE\n"
+                "    feature fires and some where it does not. The label should support accurate\n"
+                "    classification of those unseen rows, as determined by the evidence here.\n"
+                "  * Infer the broadest positive concept that explains the activating rows, including\n"
+                "    weaker or less obvious activations, while still excluding structures that appear\n"
+                "    in contrast rows.\n"
+                "  * Do not make the label so narrow that it only covers the cleanest activating\n"
+                "    examples. Do not make it so broad that it also covers contrast examples.\n"
+                "  * In positive_evidence, state what positive structure appears across activating rows.\n"
+                "  * In contrast_calibration, state what contrast rows show is not sufficient for firing.\n"
+                "  * In generalization_rationale, explain why the final label should work on unseen\n"
+                "    firing and non-firing rows.\n"
+                "  * final_label must be a positive description of the inferred firing pattern.\n"
+            )
+        raise ValueError(
+            f"Unsupported judge_prompt_family={self.judge_prompt_family!r}"
+        )
+
     def _output_block(self) -> str:
+        if self.agent_band_prediction:
+            return (
+                "Output ONLY JSON matching this structure. No preamble, no markdown.\n"
+                "{\n"
+                '  "label": "<shape-only label>",\n'
+                '  "positive_strength": [\n'
+                '    {"evidence_id": "a000", "bin": "strong_positive" | "medium_positive" | "weak_positive"}\n'
+                "  ],\n"
+                '  "contrast_closeness": [\n'
+                '    {"evidence_id": "c000", "bin": "near_contrast" | "mid_contrast" | "far_contrast"}\n'
+                "  ],\n"
+                '  "rank_rationale": "<brief shape-only rationale for the hidden evidence ranking>"\n'
+                "}\n"
+                "Classify every evidence_id in your own dataset evidence. Strong/medium/weak "
+                "positive means concept-present strength, not whether the row activates. "
+                "Near/mid/far contrast means concept-absent closeness to the positive pattern, "
+                "not whether the row fires."
+            )
         if self.label_format == "rules":
             return (
                 "Output ONLY the rule set. No preamble, no explanation.\n"
@@ -352,9 +600,8 @@ class ContrastiveMeshPipeline:
                 "analysis of the evidence."
             )
         return (
-            f"Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words) "
-            "describing the structural / distributional fingerprint. No column names. No domain terms. "
-            "No preamble, no explanation."
+            f"Output ONLY the label. {LABEL_OUTPUT_INSTRUCTION} "
+            "No column names. No domain terms. No preamble, no explanation."
         )
 
     @staticmethod
@@ -375,15 +622,26 @@ class ContrastiveMeshPipeline:
         )
         task = (
             "TASK\n"
-            "The CSV has a 'band' column: 'top' (highest activations), 'p90' (~90th percentile\n"
-            "of activating rows), 'p80' (~80th percentile), or 'contrast' (feature does NOT fire).\n"
+            "Rows labelled 'activating' are positive examples: the SAE concept is present in all\n"
+            "of them, over a range of firing strengths. Rows labelled 'contrast' are non-activating\n"
+            "examples: they show multiple ways the concept does not appear. The concept theme you\n"
+            "propose should be present in all activating examples and absent from the contrast examples.\n"
             "Each cell is annotated with its marginal position in the SAE training split:\n"
             "  - numeric: 'value (pXX)' means XX-th percentile\n"
             "  - categorical/binary: 'value (freq Y.YY)' means that category/value occurs at rate Y.YY\n"
             "The dataset header shows the training-split target base rates. Compare the target\n"
-            "values seen in the activating rows to the base rate to judge target enrichment.\n"
-            "Note whether the pattern holds at p80/p90 too, or only at top activations."
+            "values seen in the activating rows to the base rate to judge target enrichment."
         )
+        if self.agent_band_prediction:
+            task += (
+                "\nYou are not shown activation bands or contrast source metadata. As a diagnostic,\n"
+                "infer the hidden evidence role for each evidence_id while generating the label:\n"
+                "  - activating evidence: strong_positive, medium_positive, or weak_positive\n"
+                "  - contrast evidence: near_contrast, mid_contrast, or far_contrast\n"
+                "Use this ranking exercise to inspect the evidence more carefully. The final label\n"
+                "should still describe the theme present in all activating evidence and absent from\n"
+                "all contrast evidence."
+            )
         blocks = {
             "header": header,
             "preprocessing": self._preprocessing_block(),
@@ -509,6 +767,12 @@ class ContrastiveMeshPipeline:
             "If your data contradicts theirs at the shape level, hold your ground but sharpen.\n"
             f"Goal: a {'necessary-and-sufficient rule set' if self.label_format == 'rules' else 'label'} expressible in structural terms that fits both datasets."
         )
+        if self.agent_band_prediction:
+            task += (
+                "\nYou are again not shown activation bands or contrast source metadata. Re-rank the\n"
+                "evidence_ids in your own dataset evidence as strong/medium/weak positive and\n"
+                "near/mid/far contrast, then revise the label using any judge corrections."
+            )
         output = self._output_block()
         blocks = {
             "header": header,
@@ -526,6 +790,8 @@ class ContrastiveMeshPipeline:
         return self._assemble(blocks, self.prompt_order)
 
     def round_prompts(self, round_num: int) -> list[str]:
+        if self.arch == "solo_refine":
+            return [self.solo_refine_prompt(round_num)]
         n = len(self.datasets)
         if round_num == 1:
             return [self.round1_prompt(ds) for ds in self.datasets]
@@ -567,6 +833,8 @@ class ContrastiveMeshPipeline:
 
     def active_datasets_for_round(self, round_num: int) -> list[str]:
         """Datasets that need worker prompts for a given round."""
+        if self.arch == "solo_refine":
+            return ["__all_datasets__"]
         if round_num <= 1 or self.arch != "ringlite_freeze":
             return list(self.datasets)
         prev_idx = round_num - 2
@@ -590,7 +858,12 @@ class ContrastiveMeshPipeline:
                 f"Next round is {len(self.rounds) + 1}, got round_num={round_num}"
             )
         active = self.active_datasets_for_round(round_num)
-        if round_num == 1 or self.arch != "ringlite_freeze":
+        if self.arch == "solo_refine":
+            expected = 1
+            if len(labels) != expected:
+                raise ValueError(f"ARCH={self.arch} round {round_num} expects {expected} label, got {len(labels)}")
+            clean = [_strip_label(labels[0])]
+        elif round_num == 1 or self.arch != "ringlite_freeze":
             expected = len(self.datasets)
             if len(labels) != expected:
                 raise ValueError(f"Expected {expected} labels, got {len(labels)}")
@@ -628,7 +901,9 @@ class ContrastiveMeshPipeline:
         """Deterministically sample activating + contrast rows for (round, ds).
 
         Activating rows are stratified across bands (top / p90 / p80) when
-        possible so the sample reflects the full firing range.
+        possible so the sample reflects the full firing range. Contrast rows
+        are likewise stratified when contrast-band labels are available, so
+        hard negatives and far controls are both visible to workers/judges.
         Seeds are derived from round + stable hash(ds) + purpose so peer
         and judge samples are independent (prevents agents from memorising
         the judge's sample set).
@@ -645,7 +920,21 @@ class ContrastiveMeshPipeline:
         # Stratified activating sample: one per band first, then top-up randomly.
         act_rows = []
         if "band" in act.columns:
-            for band in ("top", "p90", "p80"):
+            preferred_act_bands = (
+                "positive_weak",
+                "positive_medium",
+                "positive_strong",
+                "top",
+                "p90",
+                "p80",
+            )
+            observed = set(act.band.dropna().astype(str))
+            ordered_act_bands = [b for b in preferred_act_bands if b in observed]
+            ordered_act_bands.extend(
+                b for b in sorted(observed)
+                if b not in set(ordered_act_bands)
+            )
+            for band in ordered_act_bands:
                 pool = act[act.band == band]
                 if len(pool) == 0 or len(act_rows) >= n_act:
                     continue
@@ -656,10 +945,40 @@ class ContrastiveMeshPipeline:
             act_rows.append(act.iloc[pick])
             remaining_act_ids.discard(pick)
 
-        # Contrast: simple random without replacement.
-        n_con_take = min(n_con, len(con))
-        con_idx = rng.choice(len(con), size=n_con_take, replace=False) if n_con_take else []
-        con_rows = [con.iloc[int(i)] for i in con_idx]
+        # Stratified contrast sample: one per negative band first, then top-up.
+        con_rows = []
+        if "band" in con.columns:
+            preferred_bands = (
+                "negative_hard",
+                "negative_medium",
+                "negative_easy",
+                "near_boundary",
+                "decoder_aligned",
+                "far_control",
+                "contrast",
+            )
+            seen = set()
+            ordered_bands = [
+                b for b in preferred_bands
+                if b in set(con.band.dropna().astype(str))
+            ]
+            ordered_bands.extend(
+                b for b in sorted(con.band.dropna().astype(str).unique())
+                if b not in set(ordered_bands)
+            )
+            for band in ordered_bands:
+                if band in seen or len(con_rows) >= n_con:
+                    continue
+                seen.add(band)
+                pool = con[con.band.astype(str) == band]
+                if len(pool) == 0:
+                    continue
+                con_rows.append(pool.iloc[int(rng.integers(len(pool)))])
+        remaining_con_ids = set(range(len(con))) - {r.name for r in con_rows}
+        while len(con_rows) < n_con and remaining_con_ids:
+            pick = int(rng.choice(list(remaining_con_ids)))
+            con_rows.append(con.iloc[pick])
+            remaining_con_ids.discard(pick)
 
         def _to_csv(rows):
             if not rows:
@@ -716,14 +1035,18 @@ class ContrastiveMeshPipeline:
         sections = []
         for ds, lab in zip(self.datasets, labels):
             samples = self._sample_rows_for(
-                round_num, ds, JUDGE_SAMPLE_N_ACT, JUDGE_SAMPLE_N_CON, purpose="judge",
+                round_num,
+                ds,
+                self.judge_sample_n_act,
+                self.judge_sample_n_con,
+                purpose="judge",
             )
             history = self._prior_rounds_history_block(ds, round_num)
             section = (
                 f"=== {ds} ===\n"
                 f"label: \"{lab}\"\n\n"
-                f"sampled activating rows ({JUDGE_SAMPLE_N_ACT}):\n{samples['act']}\n"
-                f"sampled contrast rows ({JUDGE_SAMPLE_N_CON}):\n{samples['con']}"
+                f"sampled activating rows ({self.judge_sample_n_act}):\n{samples['act']}\n"
+                f"sampled contrast rows ({self.judge_sample_n_con}):\n{samples['con']}"
             )
             if history:
                 section += f"\n\n{history}"
@@ -731,36 +1054,52 @@ class ContrastiveMeshPipeline:
         data_block = "\n\n".join(sections)
         remaining = MAX_ROUNDS - round_num
         ds_list = ", ".join(f'"{ds}"' for ds in self.datasets)
+        positive_boundary_schema = (
+            '  "positive_evidence": "<what activating rows consistently contain>",\n'
+            '  "contrast_boundary": "<what similar-looking non-activating rows may contain that is not sufficient for firing>",\n'
+            if self.judge_prompt_family == "judge_positive_boundary_v1"
+            else ""
+        )
+        generalization_schema = (
+            '  "positive_evidence": "<what positive structure appears across activating rows>",\n'
+            '  "contrast_calibration": "<what contrast rows show is not sufficient for firing>",\n'
+            '  "generalization_rationale": "<why the final label should work on unseen firing and non-firing rows>",\n'
+            if self.judge_prompt_family == "judge_generalization_v1"
+            else ""
+        )
         return (
             f"You are the judge for SAE feature f_{self.feat_idx} ({self.preprocessing.get('model', self.model)}) "
             f"labeling round {round_num} of max {MAX_ROUNDS}.\n\n"
             f"{self._preprocessing_block()}\n\n"
             f"Each of the {len(self.datasets)} per-dataset agents produced a label this round and "
-            "randomly sampled one activating row + one contrast row from its own contrastive CSV.\n"
+            "sampled activating rows + contrast rows from its own contrastive CSV.\n"
             "Row cells are annotated: numeric 'value (pXX)' = percentile in training; "
             "categorical 'value (freq Y.YY)' = training prevalence.\n"
-            "Rows do not include downstream prediction columns.\n\n"
+            "Rows do not include downstream prediction columns or row-selection metadata.\n"
+            "Activating rows are positive examples where the concept is present over a range of strengths. "
+            "Contrast rows are non-activating examples showing multiple ways the concept does not appear.\n\n"
             f"{data_block}\n\n"
             "TASK\n"
             f"For each dataset independently, check whether the agent's {'rule set' if self.label_format == 'rules' else 'label'} claims distinguish "
-            "that dataset's activating row from its contrast row — in any combination of inputs "
+            "that dataset's activating rows from its contrast rows — in any combination of inputs "
             "(percentile positions, categorical frequencies), or labels (target).\n"
-            "A claim survives only if it separates the two rows.\n\n"
+            "A claim survives only if its theme is present in the activating examples and absent from "
+            "the contrast examples.\n\n"
             f"Then decide whether the {len(self.datasets)} per-dataset {'rule sets' if self.label_format == 'rules' else 'labels'} share a cross-dataset distinguishing pattern the "
             "sampled rows corroborate. If so, the overall verdict is 'done'; otherwise 'continue' "
             f"(rounds remaining: {remaining}).\n\n"
             f"FINAL CONSENSUS {'RULE SET' if self.label_format == 'rules' else 'LABEL'}\n"
             "If overall_verdict is 'done', OR this is the final round "
             f"({'YES' if remaining == 0 else 'no'}), you must also write a 'final_label' — "
-            f"{'a plain-text RULE SET with bullets under a \"RULE SET\" header' if self.label_format == 'rules' else f'a single-sentence consensus label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words)'} "
+            f"{'a plain-text RULE SET with bullets under a \"RULE SET\" header' if self.label_format == 'rules' else 'a consensus label'} "
             "that describes what distinguishes activating from contrast rows across the datasets, in "
             "shape-only language. You have watched the agents revise for up to 5 rounds, you have "
             "sampled fresh evidence each round, and you have the cross-dataset view; this is "
             "your synthesis, not a vote among the agents' outputs.\n"
+            f"  * {LABEL_OUTPUT_INSTRUCTION}\n"
             "  * Capture the concept's MEANING overall, not activation strength.\n"
             "  * If a cross-dataset pattern holds on all sampled pairs, state it plainly.\n"
-            "  * If the signal is genuinely heterogeneous, abstract to the shared semantic core rather\n"
-            "    than smoothing over contradictions with directional phrasing.\n"
+            f"{self._judge_final_label_guidance_block()}"
             "  * No column names. No domain terms. Use structural language.\n"
             "  * In rules mode, the final rule set must contain ONLY direct row-level structural rules.\n"
             "    Put all commentary about strongest subtype, secondary subtype, portability, unresolved\n"
@@ -811,6 +1150,8 @@ class ContrastiveMeshPipeline:
             "{\n"
             '  "overall_verdict": "done" | "continue",\n'
             '  "overall_note": "<1-3 sentences on cross-dataset pattern or what\'s missing>",\n'
+            f"{positive_boundary_schema}"
+            f"{generalization_schema}"
             '  "final_label": "<required if verdict=done OR final round; else omit>",\n'
             '  "per_dataset": {\n'
             f"    // one entry for each of: {ds_list}\n"
@@ -856,6 +1197,62 @@ class ContrastiveMeshPipeline:
             )
         )
 
+    def solo_refine_prompt(self, round_num: int) -> str:
+        """Prompt a single synthesizer/judge that sees all worker evidence directly."""
+        data_block = "\n\n".join(
+            f"=== {ds} ===\n{self._dataset_block(ds, full_csv=True)}"
+            for ds in self.datasets
+        )
+        prior_block = ""
+        if round_num > 1 and self.rounds:
+            prior_label = self.rounds[-1][0]
+            prior_note = ""
+            if self.judge_verdicts:
+                prior_note = self.judge_verdicts[-1].get("note", "")
+            prior_block = (
+                "PRIOR DRAFT\n"
+                f"previous_label: \"{prior_label}\"\n"
+                f"previous_note: {prior_note or '(none)'}\n\n"
+            )
+        return (
+            f"You are the single synthesizer/judge for SAE feature f_{self.feat_idx} "
+            f"({self.preprocessing.get('model', self.model)} model).\n"
+            "This architecture ablation removes the per-dataset worker agents. You must inspect "
+            "all datasets directly, write the current best cross-dataset label yourself, and "
+            "decide whether another refinement round is needed.\n\n"
+            f"{self._preprocessing_block()}\n\n"
+            f"{prior_block}"
+            f"{data_block}\n\n"
+            "TASK\n"
+            "Write the current best single cross-dataset label for what distinguishes activating "
+            "from contrast rows across ALL datasets.\n"
+            "  * Keep the same target as the baseline: one structural / distributional label, not "
+            "    commentary about the evidence or the pipeline.\n"
+            "  * No column names. No domain terms. Use shape-only language.\n"
+            "  * Ignore column ordering and names; focus on row-level regimes such as tail-lean, "
+            "    distributed saturation, sparsity, spread, clustering, repeated extremes, and "
+            "    cross-column co-firing structure.\n"
+            "  * Include only properties that distinguish activating from contrast rows across "
+            "    the datasets. Shared properties are not feature-level signals.\n"
+            "  * If the evidence is heterogeneous, keep the label on the broadest concrete "
+            "    row-level regime that still survives across datasets; put residual caveats in "
+            "    overall_note instead of in the label.\n"
+            "  * Use another round only if a concrete structural uncertainty remains that you "
+            "    would resolve by reconsidering the same evidence.\n\n"
+            "OUTPUT FORMAT (strict)\n"
+            "Output a single fenced JSON block (```json ... ```). Nothing before or after.\n\n"
+            "```json\n"
+            "{\n"
+            '  "overall_verdict": "done" | "continue",\n'
+            '  "overall_note": "<1-3 sentences on what is stable or what remains unresolved>",\n'
+            '  "current_label": "<shape-only label>",\n'
+            '  "final_label": "<required if verdict=done OR final round; else omit>"\n'
+            "}\n"
+            "```\n"
+            "If this is the final round, final_label is required even if uncertainty remains. "
+            "When overall_verdict is 'done', final_label should usually match current_label."
+        )
+
     @staticmethod
     def _extract_json(text: str) -> dict:
         """Pull the first fenced JSON block out of agent text output.
@@ -878,6 +1275,20 @@ class ContrastiveMeshPipeline:
                 f"Failed to parse JSON from judge output: {e}. "
                 f"First 400 chars of block: {raw[:400]!r}"
             ) from e
+
+    @staticmethod
+    def _load_response_file(path: Path) -> dict:
+        """Load either a plain JSON object file or a fenced JSON response."""
+        raw = path.read_text()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return ContrastiveMeshPipeline._extract_json(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"Response file {path} must decode to a JSON object; got {type(parsed).__name__}."
+            )
+        return parsed
 
     def record_judge_response(self, response: dict) -> None:
         """Record the judge's structured response for the latest round.
@@ -922,9 +1333,45 @@ class ContrastiveMeshPipeline:
         self.judge_verdicts.append({
             "verdict": verdict,
             "note": (response.get("overall_note") or "").strip(),
+            "positive_evidence": (response.get("positive_evidence") or "").strip(),
+            "contrast_boundary": (response.get("contrast_boundary") or "").strip(),
+            "contrast_calibration": (response.get("contrast_calibration") or "").strip(),
+            "generalization_rationale": (response.get("generalization_rationale") or "").strip(),
             "final_label": final_label,
             "per_dataset": {ds: per_ds[ds] for ds in self.datasets},
             "next_round_pairings": pairings,
+        })
+        self._save_state()
+
+    def record_solo_refine_response(self, response: dict) -> None:
+        """Record a single-model self-refinement verdict."""
+        if len(self.judge_verdicts) >= len(self.rounds):
+            raise ValueError(
+                f"Already recorded {len(self.judge_verdicts)} solo verdicts for "
+                f"{len(self.rounds)} rounds; record a new round first."
+            )
+        verdict = response.get("overall_verdict")
+        if verdict not in ("done", "continue"):
+            raise ValueError(
+                f"overall_verdict must be 'done' or 'continue', got {verdict!r}"
+            )
+        current_label = (response.get("current_label") or "").strip()
+        if not current_label:
+            raise ValueError("current_label is required for solo_refine")
+        round_just_judged = len(self.judge_verdicts) + 1
+        final_label_required = (verdict == "done") or (round_just_judged >= MAX_ROUNDS)
+        final_label = (response.get("final_label") or "").strip() or None
+        if final_label_required and not final_label:
+            raise ValueError(
+                f"final_label required when verdict='done' or final round "
+                f"(round {round_just_judged} of {MAX_ROUNDS}) but was missing/empty."
+            )
+        self.judge_verdicts.append({
+            "verdict": verdict,
+            "note": (response.get("overall_note") or "").strip(),
+            "final_label": final_label,
+            "per_dataset": {},
+            "next_round_pairings": {},
         })
         self._save_state()
 
@@ -935,17 +1382,29 @@ class ContrastiveMeshPipeline:
         return len(self.rounds) >= MAX_ROUNDS
 
     # ── Held-out validator ─────────────────────────────────────────────
+    def _validator_tag_part(self) -> str:
+        return f"_{self.validator_tag}" if self.validator_tag else ""
+
     def _validator_csv_paths(self) -> dict:
+        tag = self._validator_tag_part()
         return {
-            ds: self._model_dir / f"f{self.feat_idx}_validator_{ds}.csv"
+            ds: self._model_dir / f"f{self.feat_idx}_validator{tag}_{ds}.csv"
             for ds in self.datasets
         }
 
     def _validator_truth(self) -> dict:
-        p = self._model_dir / f"f{self.feat_idx}_validator_truth.json"
+        tag = self._validator_tag_part()
+        p = self._model_dir / f"f{self.feat_idx}_validator{tag}_truth.json"
         if not p.exists():
             return {}
-        return json.loads(p.read_text())
+        payload = json.loads(p.read_text())
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            ds: rows
+            for ds, rows in payload.items()
+            if not str(ds).startswith("_")
+        }
 
     def validator_prompt(self) -> str:
         """Prompt a judge-independent validator with held-out rows + final label.
@@ -1034,7 +1493,15 @@ class ContrastiveMeshPipeline:
             raise ValueError(f"Cannot decode prediction value: {val!r}")
 
         per_ds_stats: dict = {}
+        per_kind_counts: dict[str, dict[str, int]] = {}
+        per_ds_kind_counts: dict[str, dict[str, dict[str, int]]] = {}
         tot_tp = tot_fp = tot_tn = tot_fn = 0
+
+        def _actual_and_kind(entry):
+            if isinstance(entry, dict):
+                return bool(entry.get("fires")), str(entry.get("kind", "unknown"))
+            return bool(entry), "activating" if bool(entry) else "random_nonfire"
+
         for ds, ds_truth in truth.items():
             preds_list = per_ds_resp.get(ds) or []
             preds = {p.get("row_id"): _decode(p) for p in preds_list}
@@ -1044,12 +1511,38 @@ class ContrastiveMeshPipeline:
                     f"Validator response for {ds} missing row_ids: {sorted(missing_rows)}"
                 )
             tp = fp = tn = fn = 0
-            for row_id, actual in ds_truth.items():
+            for row_id, truth_entry in ds_truth.items():
+                actual, kind = _actual_and_kind(truth_entry)
                 pred = preds[row_id]
                 if actual and pred: tp += 1
                 elif actual and not pred: fn += 1
                 elif (not actual) and pred: fp += 1
                 else: tn += 1
+                kind_stats = per_kind_counts.setdefault(
+                    kind,
+                    {"total": 0, "correct": 0, "tp": 0, "fp": 0, "tn": 0, "fn": 0},
+                )
+                ds_kind_stats = per_ds_kind_counts.setdefault(ds, {}).setdefault(
+                    kind,
+                    {"total": 0, "correct": 0, "tp": 0, "fp": 0, "tn": 0, "fn": 0},
+                )
+                kind_stats["total"] += 1
+                ds_kind_stats["total"] += 1
+                if actual == pred:
+                    kind_stats["correct"] += 1
+                    ds_kind_stats["correct"] += 1
+                if actual and pred:
+                    kind_stats["tp"] += 1
+                    ds_kind_stats["tp"] += 1
+                elif actual and not pred:
+                    kind_stats["fn"] += 1
+                    ds_kind_stats["fn"] += 1
+                elif (not actual) and pred:
+                    kind_stats["fp"] += 1
+                    ds_kind_stats["fp"] += 1
+                else:
+                    kind_stats["tn"] += 1
+                    ds_kind_stats["tn"] += 1
             total = tp + fp + tn + fn
             per_ds_stats[ds] = {
                 "total": total,
@@ -1083,9 +1576,44 @@ class ContrastiveMeshPipeline:
             "f1": f1,
             "tp": tot_tp, "fp": tot_fp, "tn": tot_tn, "fn": tot_fn,
         }
+        per_kind_stats = {
+            kind: {
+                **stats,
+                "accuracy": stats["correct"] / stats["total"] if stats["total"] else 0.0,
+                "precision": (
+                    stats["tp"] / (stats["tp"] + stats["fp"])
+                    if (stats["tp"] + stats["fp"]) else None
+                ),
+                "recall": (
+                    stats["tp"] / (stats["tp"] + stats["fn"])
+                    if (stats["tp"] + stats["fn"]) else None
+                ),
+            }
+            for kind, stats in sorted(per_kind_counts.items())
+        }
+        population_metrics = _validator_population_metrics(
+            per_ds_kind_counts,
+            self.feat_context,
+        )
+        overall.update(
+            {
+                "balanced_tier_macro": population_metrics["balanced_tier_macro"],
+                "population_weighted_accuracy": population_metrics["population_weighted_accuracy"],
+                "population_weighted_accuracy_macro_dataset": population_metrics[
+                    "population_weighted_accuracy_macro_dataset"
+                ],
+                "population_weight_total": population_metrics["population_weight_total"],
+                "negative_hard_accuracy": (
+                    per_kind_stats.get("negative_hard", {}).get("accuracy")
+                ),
+            }
+        )
         self.validator_results = {
             "overall": overall,
             "per_dataset": per_ds_stats,
+            "per_kind": per_kind_stats,
+            "per_dataset_population": population_metrics["per_dataset_population"],
+            "validator_tag": self.validator_tag,
             "note": (response.get("overall_note") or "").strip(),
             "label_graded": self.final_label(),
         }
@@ -1218,7 +1746,7 @@ class ContrastiveMeshPipeline:
             "    joint regime; a percentile × target pair; a column-subset × rarity pattern).\n"
             "    Exhaust those combinations before settling on a label.\n\n"
             f"{'In rules mode, output only direct row-level structural rules. Put any commentary about strongest subtype, secondary subtype, portability, unresolved disagreement, or heterogeneity outside the rule set; do not include it in the final output.\\n\\n' if self.label_format == 'rules' else ''}"
-            f"{self._output_block() if self.label_format == 'rules' else f'Output ONLY a single-sentence label ({LABEL_WORDS_MIN}-{LABEL_WORDS_MAX} words). Shape-level language only. No column names. No preamble.'}"
+            f"{self._output_block() if self.label_format == 'rules' else f'Output ONLY the label. {LABEL_OUTPUT_INSTRUCTION} Shape-level language only. No column names. No preamble.'}"
         ).replace("{idx}", str(self.feat_idx))
 
     def record_synthesis(self, label: str) -> None:
@@ -1239,6 +1767,10 @@ class ContrastiveMeshPipeline:
             "prompt_order": self.prompt_order,
             "label_format": self.label_format,
             "pairings_mode": self.pairings_mode,
+            "judge_prompt_family": self.judge_prompt_family,
+            "judge_sample_n_act": self.judge_sample_n_act,
+            "judge_sample_n_con": self.judge_sample_n_con,
+            "validator_tag": self.validator_tag,
             "label": label,
             "label_source": (
                 "synthesis" if self.synthesis and label == self.synthesis
@@ -1269,6 +1801,71 @@ def _strip_label(s: str) -> str:
         if s.startswith(prefix):
             s = s[len(prefix):].strip()
     return s
+
+
+def _next_task_payload(pipe: ContrastiveMeshPipeline) -> dict:
+    if pipe.validator_results is not None:
+        return {
+            "status": "done",
+            "next_action": "complete",
+            "model": pipe.model,
+            "feat_idx": pipe.feat_idx,
+            "final_label": pipe.final_label(),
+            "validator_results": pipe.validator_results,
+        }
+
+    if pipe.is_done():
+        return {
+            "status": "ready",
+            "next_action": "validator",
+            "model": pipe.model,
+            "feat_idx": pipe.feat_idx,
+            "final_label": pipe.final_label(),
+            "prompt": pipe.validator_prompt(),
+            "response_contract": {
+                "record_command": "record-validator",
+                "expects": "raw model output containing one fenced ```json``` block",
+            },
+        }
+
+    if len(pipe.judge_verdicts) < len(pipe.rounds):
+        round_num = len(pipe.rounds)
+        return {
+            "status": "ready",
+            "next_action": "judge",
+            "model": pipe.model,
+            "feat_idx": pipe.feat_idx,
+            "round_num": round_num,
+            "prompt": pipe.judge_prompt(round_num),
+            "response_contract": {
+                "record_command": "record-judge",
+                "expects": "raw model output containing one fenced ```json``` block",
+            },
+        }
+
+    round_num = pipe.next_round_number()
+    active = pipe.active_datasets_for_round(round_num)
+    prompts = pipe.round_prompts(round_num)
+    return {
+        "status": "ready",
+        "next_action": "worker_round",
+        "model": pipe.model,
+        "feat_idx": pipe.feat_idx,
+        "round_num": round_num,
+        "active_datasets": active,
+        "tasks": [
+            {
+                "role": "worker",
+                "dataset": ds,
+                "prompt": prompt,
+            }
+            for ds, prompt in zip(active, prompts)
+        ],
+        "response_contract": {
+            "record_command": "record",
+            "expects": "JSON list of label strings in active_datasets order",
+        },
+    }
 
 
 def _cli():
@@ -1304,9 +1901,56 @@ def _cli():
             f"ring rotation (default: {DEFAULT_PAIRINGS})."
         ),
     )
+    init_p.add_argument(
+        "--judge-prompt-family",
+        default=DEFAULT_JUDGE_PROMPT_FAMILY,
+        choices=sorted(VALID_JUDGE_PROMPT_FAMILIES),
+        help=(
+            "Judge final-label synthesis wording family "
+            f"(default: {DEFAULT_JUDGE_PROMPT_FAMILY})."
+        ),
+    )
+    init_p.add_argument(
+        "--judge-sample-n-act",
+        type=int,
+        default=DEFAULT_JUDGE_SAMPLE_N_ACT,
+        help=(
+            "Number of sampled activating rows per dataset shown to the judge "
+            f"(default: {DEFAULT_JUDGE_SAMPLE_N_ACT})."
+        ),
+    )
+    init_p.add_argument(
+        "--judge-sample-n-con",
+        type=int,
+        default=DEFAULT_JUDGE_SAMPLE_N_CON,
+        help=(
+            "Number of sampled contrast rows per dataset shown to the judge "
+            f"(default: {DEFAULT_JUDGE_SAMPLE_N_CON})."
+        ),
+    )
+    init_p.add_argument(
+        "--validator-tag",
+        default="",
+        help="Optional validator artifact tag, e.g. 'hard' uses fN_validator_hard_*.csv.",
+    )
+    init_p.add_argument(
+        "--agent-band-prediction",
+        action="store_true",
+        help=(
+            "Ask workers to predict hidden positive-strength and contrast-closeness bins "
+            "from evidence IDs while producing labels."
+        ),
+    )
 
     show = sub.add_parser("show-round", help="Show prompts for a specific round")
     show.add_argument("--round", type=int, required=True)
+    sub.add_parser(
+        "next-task",
+        help=(
+            "Emit structured JSON describing the next required worker/judge/"
+            "validator action for single-session orchestration."
+        ),
+    )
 
     record = sub.add_parser("record", help="Record labels for the next round")
     record.add_argument("--labels-file", type=Path, required=True,
@@ -1345,9 +1989,22 @@ def _cli():
             prompt_order=args.prompt_order,
             label_format=args.label_format,
             pairings_mode=args.pairings,
+            judge_prompt_family=args.judge_prompt_family,
+            judge_sample_n_act=args.judge_sample_n_act,
+            judge_sample_n_con=args.judge_sample_n_con,
+            validator_tag=args.validator_tag,
+            agent_band_prediction=args.agent_band_prediction,
         )
         pipe._save_state()
-        print(f"arch={pipe.arch}  prompt_order={pipe.prompt_order}  label_format={pipe.label_format}  pairings={pipe.pairings_mode}")
+        print(
+            "arch="
+            f"{pipe.arch}  prompt_order={pipe.prompt_order}  "
+            f"label_format={pipe.label_format}  pairings={pipe.pairings_mode}  "
+            f"judge_prompt_family={pipe.judge_prompt_family}  "
+            f"judge_rows={pipe.judge_sample_n_act}+{pipe.judge_sample_n_con}  "
+            f"validator_tag={pipe.validator_tag or '(default)'}  "
+            f"agent_band_prediction={pipe.agent_band_prediction}"
+        )
         print(f"Datasets (n={len(pipe.datasets)}): {pipe.datasets}")
         prompts = pipe.round_prompts(1)
         for ds, p in zip(pipe.datasets, prompts):
@@ -1359,11 +2016,20 @@ def _cli():
 
     if args.cmd == "show-round":
         active = pipe.active_datasets_for_round(args.round)
-        print(f"arch={pipe.arch}  prompt_order={pipe.prompt_order}  label_format={pipe.label_format}  pairings={pipe.pairings_mode}")
+        print(
+            "arch="
+            f"{pipe.arch}  prompt_order={pipe.prompt_order}  "
+            f"label_format={pipe.label_format}  pairings={pipe.pairings_mode}  "
+            f"judge_prompt_family={pipe.judge_prompt_family}  "
+            f"judge_rows={pipe.judge_sample_n_act}+{pipe.judge_sample_n_con}  "
+            f"agent_band_prediction={pipe.agent_band_prediction}"
+        )
         print(f"Active datasets for round {args.round} (n={len(active)}): {active}")
         prompts = pipe.round_prompts(args.round)
         for ds, p in zip(active, prompts):
             print(f"\n===== round {args.round} / {ds} =====\n{p}")
+    elif args.cmd == "next-task":
+        print(json.dumps(_next_task_payload(pipe), indent=2))
     elif args.cmd == "record":
         labels = json.loads(args.labels_file.read_text())
         sim = pipe.record_round(labels)
@@ -1376,13 +2042,23 @@ def _cli():
             sim_str = f"cosine={sim:.4f}" if sim is not None else "cosine=-"
             v_str = f"judge={verdict['verdict']}" if verdict else "judge=pending"
             print(f"Round {i}: {sim_str}  {v_str}")
-            for ds, lab in zip(pipe.datasets, round_labels):
-                print(f"  [{ds}] {lab}")
+            if pipe.arch == "solo_refine":
+                if round_labels:
+                    print(f"  [all_datasets] {round_labels[0]}")
+            else:
+                for ds, lab in zip(pipe.datasets, round_labels):
+                    print(f"  [{ds}] {lab}")
             if verdict and verdict.get("note"):
                 print(f"  judge note: {verdict['note']}")
         if pipe.synthesis:
             print(f"\nSynthesized: {pipe.synthesis}")
-        print(f"arch={pipe.arch}  prompt_order={pipe.prompt_order}  label_format={pipe.label_format}  pairings={pipe.pairings_mode}")
+        print(
+            "arch="
+            f"{pipe.arch}  prompt_order={pipe.prompt_order}  "
+            f"label_format={pipe.label_format}  pairings={pipe.pairings_mode}  "
+            f"judge_prompt_family={pipe.judge_prompt_family}  "
+            f"judge_rows={pipe.judge_sample_n_act}+{pipe.judge_sample_n_con}"
+        )
         print(f"Next active datasets: {pipe.active_datasets_for_round(pipe.next_round_number())}")
         print(f"Done: {pipe.is_done()}   Rounds: {len(pipe.rounds)}/{MAX_ROUNDS}")
     elif args.cmd == "save-label":
@@ -1400,8 +2076,7 @@ def _cli():
     elif args.cmd == "show-judge":
         print(pipe.judge_prompt(args.round))
     elif args.cmd == "record-judge":
-        raw = args.response_file.read_text()
-        parsed = ContrastiveMeshPipeline._extract_json(raw)
+        parsed = ContrastiveMeshPipeline._load_response_file(args.response_file)
         pipe.record_judge_response(parsed)
         v = pipe.judge_verdicts[-1]
         print(f"Recorded round-{len(pipe.judge_verdicts)} verdict: {v['verdict']}")
@@ -1411,16 +2086,23 @@ def _cli():
     elif args.cmd == "show-validator":
         print(pipe.validator_prompt())
     elif args.cmd == "record-validator":
-        raw = args.response_file.read_text()
-        parsed = ContrastiveMeshPipeline._extract_json(raw)
+        parsed = ContrastiveMeshPipeline._load_response_file(args.response_file)
         result = pipe.record_validator_response(parsed)
         o = result["overall"]
         # Headline metric for HP sweeps: micro accuracy + macro + f1
         prec_str = f"{o['precision']:.3f}" if o['precision'] is not None else "--"
         rec_str  = f"{o['recall']:.3f}"    if o['recall']    is not None else "--"
         f1_str   = f"{o['f1']:.3f}"        if o['f1']        is not None else "--"
+        balanced = o.get("balanced_tier_macro")
+        pop_weighted = o.get("population_weighted_accuracy")
+        hard_neg = o.get("negative_hard_accuracy")
+        balanced_str = f"{balanced:.3f}" if isinstance(balanced, (int, float)) else "--"
+        pop_str = f"{pop_weighted:.3f}" if isinstance(pop_weighted, (int, float)) else "--"
+        hard_neg_str = f"{hard_neg:.3f}" if isinstance(hard_neg, (int, float)) else "--"
         print(f"HEADLINE  accuracy(micro)={o['accuracy']:.3f}  "
-              f"accuracy(macro)={o['accuracy_macro']:.3f}  f1={f1_str}")
+              f"accuracy(macro)={o['accuracy_macro']:.3f}  "
+              f"balanced_tier={balanced_str}  population_weighted={pop_str}  "
+              f"negative_hard={hard_neg_str}  f1={f1_str}")
         print(f"          {o['correct']}/{o['total']} correct  "
               f"precision={prec_str}  recall={rec_str}")
         print()

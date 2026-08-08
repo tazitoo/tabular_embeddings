@@ -45,6 +45,25 @@ python compare_embeddings.py --suite relbench
 - **PMLB**: 110 datasets across 33 domains, `data/extended_loader.py`
 - **Probing**: 16 controlled synthetic generators, `data/extended_loader.py`
 
+## Scripts Layout
+
+Scripts are organized into thematic subdirectories under `scripts/`:
+
+| Directory | Purpose | Key files |
+|-----------|---------|-----------|
+| `embeddings/` | Extraction, layer CKA, training data | `extract_layer_embeddings`, `build_sae_training_data` |
+| `sae/` | SAE training, sweeps, architecture | `compare_sae_cross_model`, `sae_tabarena_sweep` |
+| `concepts/` | Analysis, labeling, hierarchy, probes | `label_concepts`, `row_level_probes` |
+| `matching/` | Cross-model feature matching | `match_sae_features`, `match_cross_model_features` |
+| `intervention/` | Ablation, transfer, importance | `intervene_sae`, `transfer_concepts` |
+| `figures/` | All plot/figure scripts | `figure_concept_hierarchy`, `plot_sae_pareto_frontier` |
+| `tables/` | LaTeX table generators | `sae_tables`, `table1/`, `table2/` |
+| `paper/` | Paper-specific figures (unchanged) | `sec1/`, `sec4/`, `appendix_c/` |
+
+A backward-compatibility shim in `scripts/__init__.py` redirects old-style imports
+(e.g. `from scripts.compare_sae_cross_model import ...`) to new locations automatically.
+`scripts/_project_root.py` provides a canonical `PROJECT_ROOT` for all scripts.
+
 ## Code Conventions
 
 - **Never default to CPU for PyTorch training.** All scripts that call `train_sae`, model extraction, or any torch training loop must accept `--device` and default to `cuda` (or auto-detect). Running on CPU is never acceptable.
@@ -64,18 +83,6 @@ python compare_embeddings.py --suite relbench
 | Mitra | 2D attention transformer (72M) | `pip install 'autogluon.tabular[mitra]'` | Classification + Regression |
 | MotherNet | Hypernetwork (generates MLP) | `git clone microsoft/ticl && pip install -e .` | Classification |
 | CARTE | Graph transformer (star graph GNN) | `pip install carte-ai` | Classification + Regression |
-
-## Dependencies
-
-- tabpfn (requires HF token)
-- hyperfast (manual weight download)
-- tabicl, tabdpt, carte-ai (pip install)
-- autogluon.tabular[mitra] (for Mitra model)
-- mothernet (from microsoft/ticl repo)
-- torch, numpy, pandas, scikit-learn, matplotlib
-- openml (for TabArena datasets)
-- relbench (for RelBench datasets, `pip install relbench`)
-- pmlb (for PMLB datasets, `pip install pmlb`)
 
 ## Distributed Execution
 - Running on CPU is never a good idea.

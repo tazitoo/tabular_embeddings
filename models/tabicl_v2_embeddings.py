@@ -52,6 +52,7 @@ class TabICLV2EmbeddingExtractor(EmbeddingExtractor):
         X_query: np.ndarray,
         layers: Optional[List[str]] = None,
         task: str = "classification",
+        cat_feature_indices: Optional[List[int]] = None,
     ) -> EmbeddingResult:
         """Extract embeddings from TabICL v2's ICL predictor.
 
@@ -63,11 +64,17 @@ class TabICLV2EmbeddingExtractor(EmbeddingExtractor):
         if self._model is None or self._task != task:
             self.load_model(task=task)
 
-        X_context = np.asarray(X_context, dtype=np.float32)
+        X_ctx_np, _ = self._to_numpy_with_label_encoding(
+            X_context,
+            cat_feature_indices,
+        )
+        X_q_np, _ = self._to_numpy_with_label_encoding(
+            X_query,
+            cat_feature_indices,
+        )
         y_context = np.asarray(y_context, dtype=np.float32 if task == "regression" else np.int64)
-        X_query = np.asarray(X_query, dtype=np.float32)
-        X_context = np.nan_to_num(X_context, nan=0.0, posinf=0.0, neginf=0.0)
-        X_query = np.nan_to_num(X_query, nan=0.0, posinf=0.0, neginf=0.0)
+        X_context = np.nan_to_num(X_ctx_np, nan=0.0, posinf=0.0, neginf=0.0)
+        X_query = np.nan_to_num(X_q_np, nan=0.0, posinf=0.0, neginf=0.0)
 
         n_query = len(X_query)
         self._model.fit(X_context, y_context)

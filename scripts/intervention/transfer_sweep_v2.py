@@ -342,7 +342,14 @@ def run_dataset(
             for i in range(len(feature_ids))
             if computed_mask[i]
         }
-        r2_global = 0.0
+        # concept_map_r2 added to caches in build_transfer_caches.py.
+        # Older caches without the field fall back to NaN (was 0.0 before
+        # the field existed; never recompute here since landmarks aren't kept).
+        r2_global = (
+            float(cache["concept_map_r2"])
+            if "concept_map_r2" in cache.files
+            else float("nan")
+        )
         d_target = atoms_weak.shape[1]
         # Stand-in so the result dict's len(filt_pairs) reports the cache's
         # landmark count. Not used for anything else in the cache-loading path.

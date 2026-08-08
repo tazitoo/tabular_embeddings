@@ -82,32 +82,40 @@ def main():
 
     # Load random baseline and index by (pair, dataset)
     random_gc = {}
+    random_k = {}
     if RANDOM_DIR.exists():
         random_results = load_ablation_results(RANDOM_DIR)
         print(f"Random:  {len(random_results)} entries")
-        for strong, pair, dataset, gc, _ in random_results:
+        for strong, pair, dataset, gc, mean_k in random_results:
             random_gc[(pair, dataset)] = gc
+            if mean_k is not None:
+                random_k[(pair, dataset)] = mean_k
     else:
-        print("WARNING: no random baseline directory, delta will be raw gc")
+        print("WARNING: no random baseline directory, gc_R/K_R will be missing")
 
     # Group by strong model
     by_model_gc = defaultdict(list)
     by_model_k = defaultdict(list)
-    by_model_delta = defaultdict(list)
+    by_model_random = defaultdict(list)
+    by_model_random_k = defaultdict(list)
     for strong, pair, dataset, gc, mean_k in trained:
         by_model_gc[strong].append(gc)
         if mean_k is not None:
             by_model_k[strong].append(mean_k)
         rgc = random_gc.get((pair, dataset))
         if rgc is not None:
-            by_model_delta[strong].append(gc - rgc)
+            by_model_random[strong].append(rgc)
+        rk = random_k.get((pair, dataset))
+        if rk is not None:
+            by_model_random_k[strong].append(rk)
 
     # Sort by N descending
     model_stats = []
     for model, gcs in by_model_gc.items():
         display = DISPLAY.get(model, model)
         ks = by_model_k.get(model, [])
-        deltas = by_model_delta.get(model, [])
+        randoms = by_model_random.get(model, [])
+        random_ks = by_model_random_k.get(model, [])
         model_stats.append({
             "key": model,
             "display": display,
@@ -116,30 +124,39 @@ def main():
             "std_gc": np.std(gcs),
             "mean_k": np.mean(ks) if ks else 0,
             "std_k": np.std(ks) if ks else 0,
-            "mean_delta": np.mean(deltas) if deltas else None,
-            "std_delta": np.std(deltas) if deltas else None,
-            "n_delta": len(deltas),
+            "mean_gc_r": np.mean(randoms) if randoms else None,
+            "std_gc_r": np.std(randoms) if randoms else None,
+            "n_random": len(randoms),
+            "mean_k_r": np.mean(random_ks) if random_ks else None,
+            "std_k_r": np.std(random_ks) if random_ks else None,
         })
     model_stats.sort(key=lambda x: -x["n"])
 
     # Print summary
-    print(f"\n{'Model':<15s} {'N':>4s} {'Mean gc':>12s} {'Δ(t-r)':>12s} {'Mean K':>12s}")
-    print("-" * 60)
+    print(f"\n{'Model':<15s} {'N':>4s} {'gc':>12s} {'gc_R':>12s} {'K':>12s} {'K_R':>12s}")
+    print("-" * 75)
     for s in model_stats:
-        delta_str = f"{s['mean_delta']:.3f}±{s['std_delta']:.3f}" if s["mean_delta"] is not None else "---"
+        gc_r_str = (f"{s['mean_gc_r']:.3f}±{s['std_gc_r']:.3f}"
+                    if s["mean_gc_r"] is not None else "---")
+        k_r_str = (f"{s['mean_k_r']:.1f}±{s['std_k_r']:.1f}"
+                   if s["mean_k_r"] is not None else "---")
         print(f"{s['display']:<15s} {s['n']:>4d} "
               f"{s['mean_gc']:.3f}±{s['std_gc']:.3f} "
-              f"{delta_str:>12s} "
-              f"{s['mean_k']:.1f}±{s['std_k']:.1f}")
+              f"{gc_r_str:>12s} "
+              f"{s['mean_k']:.1f}±{s['std_k']:.1f}".ljust(60) +
+              f"{k_r_str:>12s}")
     all_gcs = [gc for _, _, _, gc, _ in trained]
     all_ks = [k for _, _, _, _, k in trained if k is not None]
-    all_deltas = [gc - random_gc.get((pair, ds), gc) for _, pair, ds, gc, _ in trained
-                  if (pair, ds) in random_gc]
-    print("-" * 60)
+    all_randoms = [random_gc[(pair, ds)] for _, pair, ds, _, _ in trained
+                   if (pair, ds) in random_gc]
+    all_random_ks = [random_k[(pair, ds)] for _, pair, ds, _, _ in trained
+                     if (pair, ds) in random_k]
+    print("-" * 75)
     print(f"{'Overall':<15s} {len(all_gcs):>4d} "
           f"{np.mean(all_gcs):.3f}±{np.std(all_gcs):.3f} "
-          f"{np.mean(all_deltas):.3f}±{np.std(all_deltas):.3f} "
-          f"{np.mean(all_ks):.1f}±{np.std(all_ks):.1f}")
+          f"{np.mean(all_randoms):.3f}±{np.std(all_randoms):.3f} "
+          f"{np.mean(all_ks):.1f}±{np.std(all_ks):.1f}".ljust(60) +
+          f"{np.mean(all_random_ks):.1f}±{np.std(all_random_ks):.1f}".rjust(12))
 
     # Generate LaTeX
     lines = []
@@ -147,36 +164,40 @@ def main():
     lines.append(r"\centering")
     lines.append(r"\small")
     lines.append(
-        r"\caption{Ablation results by strong model, sorted by number of comparisons. "
-        r"$N$ = comparisons where the model is strong. "
-        r"\emph{gc} = mean gap closed. "
-        r"$\Delta$ = trained $-$ random baseline (net learned signal). "
-        r"$K$ = mean concepts ablated.}"
+        r"\caption{Ablation results by strong model, sorted by $N$. "
+        r"$gc/gc_R$ = mean gap closed using trained/random SAEs. "
+        r"$K/K_R$ = mean concepts ablated using trained/random SAEs.}"
     )
     lines.append(r"\label{tab:ablation_summary}")
-    lines.append(r"\begin{tabular}{lrlll}")
+    lines.append(r"\begin{tabular}{lrllll}")
     lines.append(r"\toprule")
-    lines.append(r"Model (when strong) & $N$ & gc & $\Delta$ (gc $-$ random) & $K$ \\")
+    lines.append(r"Model (when strong) & $N$ & gc & $gc_R$ & $K$ & $K_R$ \\")
     lines.append(r"\midrule")
 
     for s in model_stats:
-        delta_str = (f"{s['mean_delta']:.2f} $\\pm$ {s['std_delta']:.2f}"
-                     if s["mean_delta"] is not None else "---")
+        gc_r_str = (f"{s['mean_gc_r']:.2f} $\\pm$ {s['std_gc_r']:.2f}"
+                    if s["mean_gc_r"] is not None else "---")
+        k_r_str = (f"{s['mean_k_r']:.1f} $\\pm$ {s['std_k_r']:.1f}"
+                   if s["mean_k_r"] is not None else "---")
         lines.append(
             f"{s['display']} & {s['n']} & "
             f"{s['mean_gc']:.2f} $\\pm$ {s['std_gc']:.2f} & "
-            f"{delta_str} & "
-            f"{s['mean_k']:.1f} $\\pm$ {s['std_k']:.1f} \\\\"
+            f"{gc_r_str} & "
+            f"{s['mean_k']:.1f} $\\pm$ {s['std_k']:.1f} & "
+            f"{k_r_str} \\\\"
         )
 
     lines.append(r"\midrule")
-    delta_overall = (f"{np.mean(all_deltas):.2f} $\\pm$ {np.std(all_deltas):.2f}"
-                     if all_deltas else "---")
+    gc_r_overall = (f"{np.mean(all_randoms):.2f} $\\pm$ {np.std(all_randoms):.2f}"
+                    if all_randoms else "---")
+    k_r_overall = (f"{np.mean(all_random_ks):.1f} $\\pm$ {np.std(all_random_ks):.1f}"
+                   if all_random_ks else "---")
     lines.append(
         f"Overall & {len(all_gcs)} & "
         f"{np.mean(all_gcs):.2f} $\\pm$ {np.std(all_gcs):.2f} & "
-        f"{delta_overall} & "
-        f"{np.mean(all_ks):.1f} $\\pm$ {np.std(all_ks):.1f} \\\\"
+        f"{gc_r_overall} & "
+        f"{np.mean(all_ks):.1f} $\\pm$ {np.std(all_ks):.1f} & "
+        f"{k_r_overall} \\\\"
     )
     lines.append(r"\bottomrule")
     lines.append(r"\end{tabular}")

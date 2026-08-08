@@ -9,8 +9,9 @@ a judge-gated iteration loop and a held-out validator.
 ```
   +------------------+    +----------------+    +---------------+    +---------------+
   | contrastive CSVs | -> | round-1 agents | -> | judge (round) | -> | final label   |
-  | + validator CSVs |    | + ring rounds  |    | + calibration |    | (judge-       |
-  +------------------+    +----------------+    +---------------+    |  synthesized) |
+  | + validator CSVs |    | + ring rounds  |    | + calibration |    | (usually      |
+  +------------------+    +----------------+    +---------------+    |  judge-       |
+                                                                     |  authored)    |
                                                                      +-------+-------+
                                                                              |
                                                               +--------------+-------------+
@@ -30,9 +31,16 @@ a judge-gated iteration loop and a held-out validator.
 ## Build contrastive and validator CSVs
 
 ```bash
+# Build the global dataset-quality cache (all models by default, or pass --models ...)
+python -m scripts.concepts.build_dataset_quality_cache --models mitra --device cpu
+
 # Contrastive CSVs (activating + nearest-non-activating rows, annotated)
 python -m scripts.concepts.build_contrastive_examples \
     --model mitra --features 11 --device cpu
+
+# Contrastive CSVs using the dataset-quality cache for top-k dataset selection
+python -m scripts.concepts.build_contrastive_examples \
+    --model mitra --features 11 --device cpu --dataset-selection quality
 
 # Held-out validator CSVs (rows NOT in the contrastive set)
 python -m scripts.concepts.build_contrastive_examples \
@@ -48,15 +56,58 @@ Output under `output/contrastive_examples/{model}/`:
 | `f{feat}_validator_{dataset}.csv`     | Held-out rows (no label/band/activation/row_idx; opaque r000..rNNN row_ids; shuffled) |
 | `f{feat}_validator_truth.json`        | `{dataset: {row_id: actual_fires_bool}}` for grading |
 
+### Dataset-quality cache
+
+`build_dataset_quality_cache.py` writes a global cache at
+`output/concept_labeling/dataset_quality_cache.json`. For each
+`(model, feature, dataset)` pair it stores:
+
+- activation support (`n_active`, `fire_rate`, `inactive_rate`)
+- activation-tail mass (`pct_top`, `pct_p90`, `pct_p80`, `pct_p70`)
+- activation summary (`max/mean/p90/p99` on positive activations)
+- contrastive-separation proxies
+- prediction-spread statistics
+- final `labeling_quality_score`
+
+`build_contrastive_examples.py` supports three selection modes:
+
+- `--dataset-selection n_active`: old behavior, choose top datasets by `n_active`
+- `--dataset-selection quality`: prefer cache-backed ranking; pair with `--require-quality-cache` to fail instead of falling back
+- `--dataset-selection auto`: prefer the cache, fall back to `n_active`
+
+Use `--require-quality-cache` if you want the build to fail instead of falling
+back when the cache is missing or incomplete.
+
 ## Run the labeling loop
 
 All commands take `--model X --feat N`.
+
+For autonomous work, use the state-machine CLI instead of the nested runner:
+
+- `python -m scripts.concepts.label_contrastive_mesh --model X --feat N init ...`
+- `python -m scripts.concepts.label_contrastive_mesh --model X --feat N next-task`
+- `record`, `record-judge`, and `record-validator` to advance state after the
+  outer session writes its responses
+
+`next-task` emits structured JSON for the next required worker round, judge
+step, validator step, or completion state, so the outer Codex session can drive
+the full loop without spawning child `codex exec` processes.
+
+Architecture mode is selected via `ARCH`:
+
+| `ARCH` | Behavior |
+|--------|----------|
+| `baseline` | Original quality baseline. Round 1 and ring rounds send each worker its own full contrastive CSV. |
+| `ringlite` | Round 1 unchanged; rounds 2..N replace each worker's full own-dataset CSV with a normalized sampled self-evidence packet. |
+| `ringlite_freeze` | `ringlite` plus later rounds only dispatch workers for datasets whose previous judge verdict was not `accept`; accepted datasets keep their previous-round label unchanged. |
+
+Default is `ARCH=baseline`. The active architecture is persisted in `f{feat}_mesh_state.json` and `f{feat}_label.json`; if you resume a run with a different `ARCH`, the CLI will refuse and ask you to reset or resume with the matching mode.
 
 ### Round 1
 
 ```bash
 # Prints n per-dataset prompts (one per dataset the feature fires on)
-python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 init
+ARCH=baseline python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 init
 ```
 
 Dispatch n agents in parallel (one per dataset). Each agent reads its prompt
@@ -64,14 +115,14 @@ and returns a single 10-25 word shape-only label. Collect the n labels into a
 JSON list in dataset order:
 
 ```bash
-python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 \
+ARCH=baseline python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 \
     record --labels-file /path/to/round1_labels.json
 ```
 
 ### Judge
 
 ```bash
-python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 show-judge
+ARCH=baseline python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 show-judge
 ```
 
 The judge prompt embeds, per dataset, `JUDGE_SAMPLE_N_ACT` + `JUDGE_SAMPLE_N_CON`
@@ -84,7 +135,7 @@ tagged claims. When `overall_verdict` is `done` or we're in the final round,
 it must also emit `final_label`.
 
 ```bash
-python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 \
+ARCH=baseline python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 \
     record-judge --response-file /path/to/judge_output.txt
 ```
 
@@ -93,25 +144,33 @@ python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 \
 If the judge returns `continue`:
 
 ```bash
-python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 \
+ARCH=baseline python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 \
     show-round --round 2
 ```
 
+`show-round` prints the active dataset order for that round. For `ARCH=baseline` and `ARCH=ringlite`, that list is always the full `datasets_used` order. For `ARCH=ringlite_freeze`, it may be a strict subset after the judge accepts some datasets.
+
 Each round-k agent (for k >= 2) sees:
 
-- Its own full contrastive CSV.
+- Its own evidence packet.
 - A peer's ~3+3 sampled rows (selected randomly per round, excluded from the
   judge's sample pool).
 - Its own per-dataset judge feedback from round k-1, with certainty tags.
 - The peer's per-dataset judge feedback.
 
+Own evidence packet by architecture:
+- `baseline`: full own contrastive CSV.
+- `ringlite` / `ringlite_freeze`: a sampled self packet (`RINGLITE_SELF_SAMPLE_N_ACT` + `RINGLITE_SELF_SAMPLE_N_CON`) with the same dataset metadata and annotation semantics as the full CSV.
+
 Dispatch, record, judge, repeat. Stop when judge says `done` or when `rounds
 == MAX_ROUNDS`.
+
+For `ARCH=ringlite_freeze`, `record --labels-file ...` expects labels only for the active datasets printed by `show-round`, in that exact order. The pipeline carries forward prior labels for frozen datasets automatically.
 
 ### Save label
 
 ```bash
-python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 save-label
+ARCH=baseline python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 save-label
 ```
 
 Writes `output/contrastive_examples/{model}/f{feat}_label.json`:
@@ -135,7 +194,7 @@ Writes `output/contrastive_examples/{model}/f{feat}_label.json`:
 ### Validator
 
 ```bash
-python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 show-validator
+ARCH=baseline python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 show-validator
 ```
 
 Validator agent sees the final label + n datasets of shuffled held-out rows
@@ -145,12 +204,34 @@ Validator agent sees the final label + n datasets of shuffled held-out rows
 should fire in a dataset").
 
 ```bash
-python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 \
+ARCH=baseline python -m scripts.concepts.label_contrastive_mesh --model mitra --feat 11 \
     record-validator --response-file /path/to/validator_output.txt
 ```
 
 Writes per-dataset accuracy/precision/recall plus overall micro accuracy,
 macro accuracy, and f1 into the state file and into `save-label` output.
+
+### Automated end-to-end runner
+
+For autonomous Codex work, prefer the state-machine path in
+`label_contrastive_mesh.py` plus the top-level supervisor in
+`label_experiments/run_autonomous_codex.py`.
+
+Treat `scripts.concepts.run_label_contrastive_mesh_codex` as legacy
+convenience, not the recommended autonomous path.
+
+For a hardened fresh-generation pass, use:
+
+```bash
+python label_experiments/run_fresh_state_machine.py run \
+    --model mitra \
+    --feat 11 \
+    --arch baseline
+```
+
+That runner uses `next-task` as the orchestration contract and turns each
+worker / judge / validator step into a separate schema-constrained `codex exec`
+microcall with per-task artifacts and retries.
 
 ## Hyperparameters
 
@@ -158,11 +239,13 @@ Configured in `scripts/concepts/label_contrastive_mesh.py`:
 
 | HP | Value | What it controls |
 |----|-------|------------------|
+| `ARCH` | `baseline` | Architecture mode: `baseline`, `ringlite`, or `ringlite_freeze` |
 | `MAX_ROUNDS` | 5 | Cap on judge-gated iteration. Judge may stop earlier with `done`. |
 | `JUDGE_SAMPLE_N_ACT` | 2 | Activating rows per dataset the judge sees each round |
 | `JUDGE_SAMPLE_N_CON` | 2 | Contrast rows per dataset the judge sees each round |
 | `PEER_SAMPLE_N_ACT` | 3 | Activating rows a ring peer shares (rounds 2+) |
 | `PEER_SAMPLE_N_CON` | 3 | Contrast rows a ring peer shares (rounds 2+) |
+| `RINGLITE_SELF_SAMPLE_N_ACT/CON` | 3/3 | Activating / contrast rows in a worker's own normalized self packet for `ringlite*` rounds 2+ |
 | `CONVERGENCE_THRESHOLD` | 0.80 | Cosine threshold — diagnostic only, judge decides stopping |
 | `LABEL_WORDS_MIN/MAX` | 10/25 | Per-agent label length |
 | `JUDGE_SAMPLE_SEED` | 13 | Deterministic-sampling salt |
@@ -174,7 +257,34 @@ Validator defaults (CLI flags on `build_contrastive_examples.py --validator`):
 | `--n-act` | 5 (held-out activating rows per dataset) |
 | `--n-con` | 5 (held-out non-activating rows per dataset) |
 
-## Baseline result (2026-04-17)
+## PROMPT_ORDER sweep (2026-04-18)
+
+Section ordering in round-1 and ring prompts is configurable via the
+`PROMPT_ORDER` environment variable (A / B / C). We ran the full pipeline on
+mitra/f_11 for each, using the same validator CSVs and opus for all agent
+calls.
+
+| Order | Section order (round-1) | Done at | micro / macro / f1 | Per-dataset acc |
+|-------|-------------------------|---------|--------------------|-----------------|
+| **A** (default) | evidence → task → shape → contrast → output | r5 (hit `MAX_ROUNDS`; judge still `continue`) | **0.660 / 0.660 / 0.667** | hazelnut 0.80, NATICUS 0.80, students 0.60, Marketing 0.60, splice 0.50 |
+| B | task → output → shape → contrast → evidence | r3 (done) | 0.500 / 0.500 / 0.419 | hazelnut 0.60, NATICUS 0.40, students 0.60, Marketing 0.60, splice 0.30 |
+| C | evidence → contrast → shape → task → output | r4 (done) | 0.560 / 0.560 / 0.542 | hazelnut 0.60, NATICUS 0.40, students 0.60, Marketing 0.50, splice 0.70 |
+
+**Observations.**
+- A (current default) is strongest by 10–16 pts of validator accuracy. Evidence first, instructions last.
+- B (task + output up front, evidence at the end) is worst. B triggered an earlier judge `done` (round 3), but the label that gets saved is less predictive — the judge is easier to satisfy when labels sound coherent but data arrives late.
+- C (contrast discipline before shape-only, task/output last) is middle. Putting the contrast instruction closer to evidence doesn't help; agents over-emphasize contrast-shape claims that don't generalize.
+- **Earlier `done` does not correlate with higher validator accuracy** — it's a cheaper-but-worse signal.
+- `students_dropout` is the most label-forgiving dataset (0.60 in all three). `NATICUSdroid` and `splice` swing by 0.4 pts across orderings.
+
+**Final labels per ordering:**
+- **A:** "Activating rows present a stable shape-level fingerprint on a localized column subset paired with confident predictions; contrasts share the skeleton but break one component."
+- **B:** "Activating rows concentrate structural mass on a localized column subset via rare-level co-firing, tight mid-band percentiles, or adjacent-position identity runs absent in contrasts."
+- **C:** "Activating rows place a small column subset within a coordinated localized band while remaining cells sit at majority-prevalence or mid-range; contrasts disperse that subset toward wider, rarer, or extreme positions."
+
+Decision: **keep `PROMPT_ORDER=A` as default.** B and C retained as options for future sweeps.
+
+## Initial Validator Sanity Check (Obsolete Baseline, 2026-04-17)
 
 Pipeline run on **mitra / f_11** (features 5 datasets: NATICUSdroid,
 hazelnut-spread-contaminant-detection, students_dropout_and_academic_success,
@@ -187,7 +297,7 @@ Marketing_Campaign, splice):
 | 3 | 0.884 | 5 accept (all stable cross-round claims) | continue |
 | 4 | 0.875 | 4 accept, 1 revise | **done** |
 
-**Final label** (judge-synthesized at round 4):
+**Final label** (judge-authored at round 4):
 > Activating rows concentrate a localized column subset at its modal or rare co-firing signature with confident-correct predictions, while contrasts break the localization or spread into extreme tails.
 
 **Validator (5 datasets × 5 activating + 5 contrast held-out rows = 50 rows):**
@@ -209,36 +319,24 @@ but the resulting meta-label is too abstract to classify held-out rows above
 chance. The validator catches this gap: without it, the judge's `done` verdict
 would silently anchor a 52%-predictive label as the answer.
 
-## PROMPT_ORDER sweep (2026-04-18)
+## Current Tuning Baseline
 
-Section ordering in round-1 and ring prompts is configurable via the
-`PROMPT_ORDER` environment variable (A / B / C). We ran the full pipeline on
-mitra/f_11 for each, using the same validator CSVs and opus for all agent
-calls.
+Use the current multi-feature `PROMPT_ORDER=A`, all-opus baseline rather than a single `f_11` run.
 
-| Order | Section order (round-1) | Done at | micro / macro / f1 | Per-dataset acc |
-|-------|-------------------------|---------|--------------------|-----------------|
-| **A** (default) | evidence → task → shape → contrast → output | r5 (continue) | **0.660 / 0.660 / 0.667** | hazelnut 0.80, NATICUS 0.80, students 0.60, Marketing 0.60, splice 0.50 |
-| B | task → output → shape → contrast → evidence | r3 (done) | 0.500 / 0.500 / 0.419 | hazelnut 0.60, NATICUS 0.40, students 0.60, Marketing 0.60, splice 0.30 |
-| C | evidence → contrast → shape → task → output | r4 (done) | 0.560 / 0.560 / 0.542 | hazelnut 0.60, NATICUS 0.40, students 0.60, Marketing 0.50, splice 0.70 |
+Completed features so far:
 
-**Observations.**
-- A (current default) is strongest by 10–16 pts of validator accuracy. Evidence first, instructions last.
-- B (task + output up front, evidence at the end) is worst. B triggered an earlier judge `done` (round 3), but the label that gets saved is less predictive — the judge is easier to satisfy when labels sound coherent but data arrives late.
-- C (contrast discipline before shape-only, task/output last) is middle. Putting the contrast instruction closer to evidence doesn't help; agents over-emphasize contrast-shape claims that don't generalize.
-- **Earlier `done` does not correlate with higher validator accuracy** — it's a cheaper-but-worse signal.
-- `students_dropout` is the most label-forgiving dataset (0.60 in all three). `NATICUSdroid` and `splice` swing by 0.4 pts across orderings.
+| Feature | micro | macro | f1 |
+|---------|-------|-------|----|
+| `f_11` | 0.660 | 0.660 | 0.667 |
+| `f_6`  | 0.660 | 0.660 | 0.691 |
+| `f_36` | 0.680 | 0.680 | 0.680 |
 
-**Final labels per ordering:**
-- **A:** "Activating rows present a stable shape-level fingerprint on a localized column subset paired with confident predictions; contrasts share the skeleton but break one component."
-- **B:** "Activating rows concentrate structural mass on a localized column subset via rare-level co-firing, tight mid-band percentiles, or adjacent-position identity runs absent in contrasts."
-- **C:** "Activating rows place a small column subset within a coordinated localized band while remaining cells sit at majority-prevalence or mid-range; contrasts disperse that subset toward wider, rarer, or extreme positions."
+Aggregate baseline over `n=3` completed features:
+- micro accuracy = `0.667 ± 0.009` (range `0.660..0.680`)
+- macro accuracy = `0.667 ± 0.009` (range `0.660..0.680`)
+- f1 = `0.679 ± 0.010` (range `0.667..0.691`)
 
-Decision: **keep `PROMPT_ORDER=A` as default.** B and C retained as options for future sweeps.
-
-## HP tuning baseline
-
-Use `(micro, macro, f1) = (0.660, 0.660, 0.667)` — PROMPT_ORDER=A, all opus — as the baseline when sweeping one knob at a time. Knobs worth trying next:
+Treat this mean ± spread as the current tuning baseline when sweeping one knob at a time. Knobs worth trying next:
 
 | Knob | Current | Candidates |
 |------|---------|------------|

@@ -80,7 +80,11 @@ Following the original vec2vec paper:
 python compare_embeddings.py --dataset adult --models tabpfn hyperfast
 ```
 
-### 3. Sparse Autoencoder Analysis
+### 3. Intervention & Causal Analysis
+
+We test whether SAE features causally drive model predictions via ablation (zeroing features) and transfer (injecting one model's concepts into another). See [docs/intervention_pipeline.md](docs/intervention_pipeline.md) for the full pipeline.
+
+### 4. Sparse Autoencoder Analysis
 
 Inspired by mechanistic interpretability ([Anthropic, 2023](https://transformer-circuits.pub/2023/monosemantic-features)), we train SAEs to extract interpretable "concepts" from embeddings.
 
@@ -95,7 +99,7 @@ Inspired by mechanistic interpretability ([Anthropic, 2023](https://transformer-
 python compare_sae_concepts.py --dataset adult --dict-expansion 4
 ```
 
-### 4. Feature Geometry
+### 5. Feature Geometry
 
 Following [The Geometry of Concepts](https://arxiv.org/abs/2410.19750):
 - Eigenvalue spectrum (power law)

@@ -129,7 +129,7 @@ def _broken_model(dataset: str, model_a: str, model_b: str) -> str | None:
     return None
 
 
-def draw_intervention_cell(ax, ablation_path: Path, transfer_path: Path,
+def draw_intervention_cell(ax, ablation_path: Path | None, transfer_path: Path | None,
                            marker_size: float = 6.0, base_size: float = 10.0):
     """Draw the combined-intervention L-shape scatter onto `ax`.
 
@@ -137,19 +137,32 @@ def draw_intervention_cell(ax, ablation_path: Path, transfer_path: Path,
     so this function can be reused by both the 3-panel example script and
     the per-dataset grid script.
 
+    Either path may be None, in which case the corresponding arm of the
+    L-shape (horizontal for ablation, vertical for transfer) is omitted.
+    The other arm and the grey baseline scatter are still drawn.
+
     Returns (n_drawn, n_strong_wins, strong_model, weak_model, is_regression).
     When the NPZ is a tied/degenerate stub (no preds_strong/weak), falls
     back to baseline preds from perrow_importance and draws the grey
     scatter only (no arrows). Returns n_drawn=0 in that case.
     """
-    d_a = np.load(ablation_path, allow_pickle=True)
-    d_t = np.load(transfer_path, allow_pickle=True)
+    if ablation_path is None and transfer_path is None:
+        raise KeyError("both ablation and transfer paths are None")
+    # Use whichever NPZ exists for baseline preds; both files store the
+    # same preds_strong/preds_weak/y_query/strong_model/weak_model fields.
+    d_meta = np.load(
+        ablation_path if ablation_path is not None else transfer_path,
+        allow_pickle=True,
+    )
+    d_a = np.load(ablation_path, allow_pickle=True) if ablation_path else None
+    d_t = np.load(transfer_path, allow_pickle=True) if transfer_path else None
 
     # Tied/degenerate pair: preds_* are not written; fall back to baselines.
-    if "preds_strong" not in d_a.keys() or str(d_a.get("metric_name", "")) == "degenerate":
-        strong = str(d_a["strong_model"])
-        weak = str(d_a["weak_model"])
-        fb = _load_baseline_preds_tied(ablation_path.stem, strong, weak)
+    if "preds_strong" not in d_meta.keys() or str(d_meta.get("metric_name", "")) == "degenerate":
+        strong = str(d_meta["strong_model"])
+        weak = str(d_meta["weak_model"])
+        stem_path = ablation_path if ablation_path is not None else transfer_path
+        fb = _load_baseline_preds_tied(stem_path.stem, strong, weak)
         if fb is None:
             # Either missing baseline file OR one model is saturated /
             # near-constant (degenerate, not genuinely tied) — the
@@ -174,26 +187,34 @@ def draw_intervention_cell(ax, ablation_path: Path, transfer_path: Path,
         ax.set_aspect("equal", adjustable="box")
         return (0, 0, strong, weak, is_regression)
 
-    y = d_a["y_query"].astype(int)
-    p_s = _scalar(d_a["preds_strong"], y)
-    p_w = _scalar(d_a["preds_weak"], y)
+    y = d_meta["y_query"].astype(int)
+    p_s = _scalar(d_meta["preds_strong"], y)
+    p_w = _scalar(d_meta["preds_weak"], y)
     # Both files use 'preds_intervened' — in ablation_sweep it's the strong
     # model after ablating its concepts (x-coordinate changes); in
     # transfer_sweep it's the weak model after injecting mapped strong
     # concepts (y-coordinate changes).
-    p_abl = _scalar(d_a["preds_intervened"], y)
-    p_trf = _scalar(d_t["preds_intervened"], y)
+    p_abl = _scalar(d_a["preds_intervened"], y) if d_a is not None else None
+    p_trf = _scalar(d_t["preds_intervened"], y) if d_t is not None else None
 
-    strong_wins = d_a["strong_wins"]
-    ok_a = d_a["optimal_k"]
-    ok_t = d_t["optimal_k"]
-    mask = strong_wins & (ok_a > 0) & (ok_t > 0)
+    strong_wins = d_meta["strong_wins"]
+    ok_a = d_a["optimal_k"] if d_a is not None else np.zeros_like(strong_wins, dtype=int)
+    ok_t = d_t["optimal_k"] if d_t is not None else np.zeros_like(strong_wins, dtype=int)
+    if d_a is not None and d_t is not None:
+        mask = strong_wins & (ok_a > 0) & (ok_t > 0)
+    elif d_a is not None:
+        mask = strong_wins & (ok_a > 0)
+    else:
+        mask = strong_wins & (ok_t > 0)
 
-    is_regression = d_a["preds_strong"].ndim == 1 or (
-        d_a["preds_strong"].ndim == 2 and d_a["preds_strong"].shape[1] == 1
+    is_regression = d_meta["preds_strong"].ndim == 1 or (
+        d_meta["preds_strong"].ndim == 2 and d_meta["preds_strong"].shape[1] == 1
     )
     if is_regression:
-        all_vals = np.concatenate([p_s, p_w, p_abl, p_trf])
+        vals = [p_s, p_w]
+        if p_abl is not None: vals.append(p_abl)
+        if p_trf is not None: vals.append(p_trf)
+        all_vals = np.concatenate(vals)
         lo = all_vals.min() - 0.05 * (all_vals.max() - all_vals.min())
         hi = all_vals.max() + 0.05 * (all_vals.max() - all_vals.min())
     else:
@@ -210,22 +231,26 @@ def draw_intervention_cell(ax, ablation_path: Path, transfer_path: Path,
                edgecolors="none", zorder=2)
 
     for i in np.flatnonzero(mask):
-        ax.plot([p_s[i], p_abl[i]], [p_w[i], p_w[i]],
-                color=LINE_COLOR, lw=0.5, alpha=0.4, zorder=3)
-        ax.plot([p_s[i], p_s[i]], [p_w[i], p_trf[i]],
-                color=LINE_COLOR, lw=0.5, alpha=0.4, zorder=3)
+        if p_abl is not None:
+            ax.plot([p_s[i], p_abl[i]], [p_w[i], p_w[i]],
+                    color=LINE_COLOR, lw=0.5, alpha=0.4, zorder=3)
+        if p_trf is not None:
+            ax.plot([p_s[i], p_s[i]], [p_w[i], p_trf[i]],
+                    color=LINE_COLOR, lw=0.5, alpha=0.4, zorder=3)
 
-    ax.scatter(p_abl[mask], p_w[mask], c=INTERV_COLOR, s=marker_size,
-               alpha=0.7, edgecolors="none", zorder=4)
-    ax.scatter(p_s[mask], p_trf[mask], c=INTERV_COLOR, s=marker_size,
-               alpha=0.7, edgecolors="none", zorder=4)
+    if p_abl is not None:
+        ax.scatter(p_abl[mask], p_w[mask], c=INTERV_COLOR, s=marker_size,
+                   alpha=0.7, edgecolors="none", zorder=4)
+    if p_trf is not None:
+        ax.scatter(p_s[mask], p_trf[mask], c=INTERV_COLOR, s=marker_size,
+                   alpha=0.7, edgecolors="none", zorder=4)
 
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_aspect("equal", adjustable="box")
 
     return (int(mask.sum()), int(strong_wins.sum()),
-            str(d_a["strong_model"]), str(d_a["weak_model"]), is_regression)
+            str(d_meta["strong_model"]), str(d_meta["weak_model"]), is_regression)
 
 
 def draw_panel(ax, ablation_path: Path, transfer_path: Path, tag: str, title: str):

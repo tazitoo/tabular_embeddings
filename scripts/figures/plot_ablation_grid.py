@@ -29,8 +29,8 @@ OUTPUT_DIR = PROJECT_ROOT / "output" / "figures" / "ablation_sweep"
 SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
 
 
-def _draw_panel(ax, npz_path: Path):
-    """Draw one ablation scatter panel on the given axes."""
+def _draw_panel(ax, npz_path: Path, _is_transfer: bool = False):
+    """Draw one intervention scatter panel on the given axes."""
     data = np.load(npz_path, allow_pickle=True)
 
     # Handle degenerate results (n_strong_wins=0, no predictions saved)
@@ -96,13 +96,20 @@ def _draw_panel(ax, npz_path: Path):
         ax.axvline(event_rate, color="#cccccc", lw=0.5, ls=":", zorder=1)
 
     # All rows: gray with transparency
+    # x=strong P(correct), y=weak P(correct)
     ax.scatter(p_s, p_w, c="#aaaaaa", s=10, alpha=0.35, edgecolors="none", zorder=2)
 
     # Intervened positions: black, smaller
     sw_mod = strong_wins & modified
     if sw_mod.any():
-        ax.scatter(p_i[sw_mod], p_w[sw_mod], c="black", s=6, alpha=0.7,
-                   edgecolors="none", zorder=4)
+        if _is_transfer:
+            # Transfer: x=strong (unchanged), y=intervened weak (moves up)
+            ax.scatter(p_s[sw_mod], p_i[sw_mod], c="black", s=6, alpha=0.7,
+                       edgecolors="none", zorder=4)
+        else:
+            # Ablation: x=intervened strong (moves left), y=weak (unchanged)
+            ax.scatter(p_i[sw_mod], p_w[sw_mod], c="black", s=6, alpha=0.7,
+                       edgecolors="none", zorder=4)
 
     # y=x line
     ax.plot([lo, hi], [lo, hi], "k--", lw=0.5, alpha=0.4)
@@ -174,8 +181,9 @@ def main():
         if not npz_path.exists():
             npz_path = args.sweep_dir / f"{b}_vs_{a}" / f"{args.dataset}.npz"
 
+        is_transfer = "transfer" in str(args.sweep_dir)
         if npz_path.exists():
-            _draw_panel(ax, npz_path)
+            _draw_panel(ax, npz_path, _is_transfer=is_transfer)
             found += 1
         else:
             _draw_empty_panel(ax, a, b)
@@ -184,7 +192,8 @@ def main():
     for idx in range(n_pairs, len(axes)):
         axes[idx].set_visible(False)
 
-    fig.suptitle(f"{args.dataset} — pairwise ablation ({found}/{n_pairs} pairs)",
+    mode = "transfer" if is_transfer else "ablation"
+    fig.suptitle(f"{args.dataset} — pairwise {mode} ({found}/{n_pairs} pairs)",
                  fontsize=10, y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.99], h_pad=0.8, w_pad=0.5)
 

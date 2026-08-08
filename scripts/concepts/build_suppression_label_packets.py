@@ -127,9 +127,21 @@ def _render_loo_table(lines: list[str], title: str, items: list[dict]) -> None:
     lines.append("")
 
 
+def _display_model(model: str) -> str:
+    return {
+        "carte": "CARTE",
+        "mitra": "Mitra",
+        "tabdpt": "TabDPT",
+        "tabicl": "TabICL",
+        "tabicl_v2": "TabICL-v2",
+        "tabpfn": "TabPFN",
+    }.get(model, model)
+
+
 def _render_markdown(packet: dict) -> str:
+    display_model = _display_model(str(packet["model"]))
     lines = [
-        f"# Mitra f{packet['feat']} Suppression Evidence",
+        f"# {display_model} f{packet['feat']} Suppression Evidence",
         "",
         "Rows are optimized donor-replacement tests. For each activating row, selected fields",
         "were copied from a matched non-activating donor row until SAE activation dropped or no",
