@@ -1079,6 +1079,15 @@ def cells_for_concept(donor, feat, min_rows):
     usable = [c for c in out if c[0] not in READOUT_EXCLUDED]
     if usable:
         out = usable
+    # Same shape of rule for the env. tabicl and tabicl_v2 cannot share an env, so a cell
+    # whose RECIPIENT is tabicl_v2 cannot run in a tfm arm no matter what the donor is.
+    # Filtering here rather than failing later keeps coverage: the concept picks a cell it
+    # CAN run instead of losing that dataset entirely. Concepts whose every cell needs the
+    # other env keep them, are reported as env_mismatch by run_one_dataset, and are picked
+    # up by the arm running that interpreter -- a visible hole, not a silent one.
+    runnable = [c for c in out if required_env(donor, c[0]) == current_env()]
+    if runnable:
+        out = runnable
     # then earliest acceptance of this concept, then size
     out.sort(key=lambda t: (min(v for _, v in t[2]), -len(t[2]), t[1]))
     return out
@@ -1365,8 +1374,31 @@ def ordinal(i):
     return f"{n}{suf}"
 
 
+def required_env(*models) -> str:
+    """The env a cell needs: the MOST RESTRICTIVE over every model it touches.
+
+    tabicl and tabicl_v2 cannot coexist in one env, so tabicl_v2 anywhere in the cell --
+    as donor OR as recipient -- forces tfm2. Selection previously keyed the env off the
+    DONOR alone, so a tabicl_v2 RECIPIENT was dispatched to tfm and died building its
+    tail with `TabICL.__init__() got an unexpected keyword argument 'num_quantiles'`,
+    which is v1 being handed a v2 argument. The cell was then lost from the sweep.
+    """
+    return "tfm2" if any(m == "tabicl_v2" for m in models) else "tfm"
+
+
+def current_env() -> str:
+    return os.path.basename(os.environ.get("CONDA_PREFIX", "")) or "unknown"
+
+
 def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args):
     """Patch one concept in one dataset -- the unit where columns are comparable."""
+    need = required_env(donor, recipient)
+    have = current_env()
+    if have != need:
+        # Reported, never silent: an env-skipped cell is a hole in the sweep and has to
+        # be visible as one so the arm can be re-run under the right interpreter.
+        return {"dataset": dataset, "recipient": recipient,
+                "status": f"env_mismatch: needs {need}, running {have}"}
     if True:
         ranks = [v for _, v in acc_rows_n]
         print(f"  {dataset} -> {recipient} ({len(acc_rows_n)} rows, "
