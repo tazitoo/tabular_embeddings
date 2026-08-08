@@ -1211,10 +1211,14 @@ def main():
     ap.add_argument("--max-vals", type=int, default=None,
                     help="candidate values per column; default the column's ENTIRE "
                          "observed support. Also a search-space limit, not a budget.")
-    ap.add_argument("--space", choices=("preprocessed", "raw"), default="preprocessed",
-                    help="which columns the search edits. 'raw' edits the original table "
-                         "and transforms through the fitted generator; it is verified to "
-                         "reproduce X_query exactly and refuses to run if it does not.")
+    ap.add_argument("--space", choices=("raw", "preprocessed"), default="raw",
+                    help="which columns the search edits. RAW is the canonical path: it "
+                         "edits the original table and transforms through the fitted "
+                         "generator, so the model input is produced by the code that "
+                         "built the corpus, the patch is model-independent, and the "
+                         "reported columns and values are the table's own. Verified to "
+                         "reproduce X_query exactly, and refuses to run if it does not. "
+                         "'preprocessed' is kept only to reproduce pre-v7 sweeps.")
     ap.add_argument("--drop-tol", type=float, default=0.01,
                     help="a candidate counts as tied on SUPPRESSION only if its drop_frac "
                          "is within this of the best in the score band. Without the gate "
