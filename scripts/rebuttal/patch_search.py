@@ -207,6 +207,84 @@ def _present(v: np.ndarray) -> np.ndarray:
     return np.array([x for x in a.tolist() if x is not None and x == x], dtype=object)
 
 
+def column_histogram(v: np.ndarray, categorical: bool, nbins: int = 20):
+    """(representative observed value, count) per occupied bin of the column.
+
+    One object for both types: a categorical column's bins ARE its levels, a numeric
+    column's are equal-width bins over the observed range. Only OCCUPIED bins are
+    returned, so every representative is a value the column actually takes -- which is
+    the in-support rule the search has always had, and it also means no count is ever
+    zero, so log freq needs no flooring.
+
+    The representative is the observed value nearest the bin's median, not the bin
+    centre, which would be a value that may occur nowhere.
+    """
+    v = _present(v)
+    if v.size == 0:
+        return np.array([]), np.array([])
+    if categorical:
+        u, c = np.unique(v, return_counts=True)
+        return u, c
+    v = v.astype(float)
+    lo, hi = float(v.min()), float(v.max())
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        u, c = np.unique(v, return_counts=True)
+        return u, c
+    edges = np.linspace(lo, hi, nbins + 1)
+    which = np.clip(np.digitize(v, edges) - 1, 0, nbins - 1)
+    reps, cnts = [], []
+    for b in range(nbins):
+        m = which == b
+        n = int(m.sum())
+        if n == 0:
+            continue
+        vals = v[m]
+        reps.append(float(vals[np.argmin(np.abs(vals - np.median(vals)))]))
+        cnts.append(n)
+    return np.asarray(reps), np.asarray(cnts)
+
+
+def step_pool(v: np.ndarray, x0, max_vals: int, categorical: bool, nbins: int = 20):
+    """Destinations available from where this row sits, with their step in log freq.
+
+    There is no requested step size and no snapping. The column's histogram, read from
+    x0's own bin, IS the menu: every other occupied bin is a destination carrying its own
+    dL = |log count(dest) - log count(x0)|. So a step size parameter (step_frac) does not
+    exist to be chosen -- it was only ever an artefact of pretending we pick a step when
+    we are picking from what the column offers.
+
+    Returns (value, dL) sorted by dL, thinned to max_vals spread across the RANGE of
+    available dL rather than clustered: several destinations at similar rarity are
+    several near-identical edits and give pass 2 no more choice than one.
+
+    dL == 0 destinations are returned too, and are valid patch values -- they simply
+    cannot carry a slope, since the denominator vanishes. Pass 1 drops them; pass 2 does
+    not have to.
+    """
+    reps, cnts = column_histogram(v, categorical, nbins)
+    if reps.size == 0:
+        return []
+    if categorical:
+        hit = np.where(reps == x0)[0]
+    else:
+        try:
+            hit = np.array([int(np.argmin(np.abs(reps.astype(float) - float(x0))))])
+        except (TypeError, ValueError):
+            hit = np.array([], dtype=int)
+    if hit.size == 0:
+        return []
+    L = np.log(cnts.astype(float))
+    L0 = L[hit[0]]
+    cand = [(reps[b], float(abs(L[b] - L0)))
+            for b in range(len(reps)) if b != hit[0]]
+    if not cand:
+        return []
+    cand.sort(key=lambda t: t[1])
+    if max_vals is not None and len(cand) > max_vals:
+        cand = [cand[i] for i in np.linspace(0, len(cand) - 1, max_vals).astype(int)]
+    return cand
+
+
 def candidate_levels(v: np.ndarray, max_vals: int) -> np.ndarray:
     """Levels spread across a nominal column's MASS, the same way candidate_values is.
 
@@ -475,7 +553,7 @@ def edit_distance(v: np.ndarray, old, new, categorical: bool = False) -> float:
 
 # ── the search ───────────────────────────────────────────────────────────────
 
-def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, batched):
+def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, space, task, device, row, batched):
     """Evaluate candidate rows -> (activations, recon_rel), one entry per candidate.
 
     batched=True appends every candidate as an extra query row, so a whole greedy step
@@ -488,13 +566,17 @@ def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, bat
     base = X_query
 
     def batched_eval(variants):
-        Xq = np.vstack([base, np.asarray(variants, dtype=base.dtype)])
+        # variants are rows in the SPACE's columns; materialize turns them into the
+        # matrix the model ingests -- identity for the preprocessed space, the fitted
+        # AutoGluon transform for the raw space.
+        Xq = np.vstack([base, np.asarray(space.materialize(variants), dtype=base.dtype)])
         a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
         return a[len(base):], rel[len(base):]
 
     def replace_eval(variants):
         acts, recs = [], []
-        for v in variants:
+        mat = np.asarray(space.materialize(variants), dtype=base.dtype)
+        for v in mat:
             Xq = base.copy()
             Xq[row] = v
             a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
@@ -688,55 +770,75 @@ def shift_metrics(a_base, a_new, others, feat):
             "n_others_moved_gt_10pct": int((rel > 0.10).sum())}
 
 
-def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac, max_levels,
-                       probe_cols=None):
-    """Pass 1: one standard step per column -> local sensitivity of c, in one forward.
+def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
+                       probe_cols=None, nbins=20):
+    """Pass 1: how much can each column move THIS concept, per unit of log frequency.
 
-    Continuous columns get +/- step_frac of their IQR, snapped to an observed value, so
-    the response is a finite-difference gradient in comparable units across columns.
-    Categorical columns get alternative observed levels instead, since a "step" in
-    ordinal-code space is not a step of any size.
+    Both column types are probed the same way. The column's histogram, read from where
+    this row sits, supplies the destinations and their steps dL = |log count(dest) -
+    log count(x0)|; there is no chosen step size, so continuous and categorical columns
+    are no longer probed at incomparable magnitudes. Previously continuous columns got
+    +/- 0.5 IQR -- a cost pinned near 0.5 by construction -- while categorical columns
+    got levels spread across the whole distribution, costing 1.5 to 8.5 nats. Categorical
+    columns then produced larger responses and outranked continuous ones for reasons that
+    had nothing to do with which column controls the concept.
 
-    Returns one record per (column, value) probe, carrying both the concept's response
-    and the other k-1 concepts' response -- so columns can be ranked by SELECTIVITY
-    (how much c moves per unit of collateral) rather than by raw effect.
+    Slopes are ONE-SIDED and first order for both types:
+
+        g = (a_c(x0) - a_c(x')) / dL          positive = suppresses
+
+    Centred differencing was considered and rejected: it exists only for continuous
+    columns, so the ranking would compare a second-order estimate against a first-order
+    one. One-sided everywhere also means log freq never has to act as a signed coordinate,
+    which it cannot -- it peaks at the mode and falls either side.
+
+    Ranking is on the concept ALONE. This used to rank by selectivity, concept movement
+    per unit of collateral, which applies the objective's blast penalty inside the
+    generator: a column that moves c hard and others hard was discarded at pass 1, so
+    pass 2 never discovered that a milder step down the same column is selective. The
+    blast that disqualified it was a property of the probe's size, not of the column. The
+    other concepts' response is still measured and returned, because pass 2 needs blast
+    per candidate and selectivity_ratio remains a useful diagnostic -- it is simply not
+    what orders the columns.
+
+    dL == 0 destinations carry no slope (the denominator vanishes) and are dropped here.
+    They remain legitimate patch values for pass 2, which does not divide by anything.
     """
     variants, meta = [], []
-    for j in (range(X_query.shape[1]) if probe_cols is None else probe_cols):
-        v = X_query[~np.isnan(X_query[:, j]), j]
-        if v.size == 0:
-            continue
-        if j in cat:
-            vals = [val for val in candidate_levels(v, max_levels)
-                    if not _same(val, x0[j])]
-        else:
-            iqr = float(np.subtract(*np.percentile(v, [75, 25]))) or float(np.std(v)) or 1.0
-            vals = []
-            for sgn in (-1.0, 1.0):
-                cand = nearest_observed(v, x0[j] + sgn * step_frac * iqr)
-                if not _same(cand, x0[j]):
-                    vals.append(cand)
-        for val in dict.fromkeys(vals):
-            r = x0.copy(); r[j] = val
-            variants.append(r); meta.append((int(j), float(val)))
+    for j in (range(space.n_cols) if probe_cols is None else probe_cols):
+        col = space.cols[j]
+        pool = step_pool(col, x0[j], max_levels, categorical=j in space.cat, nbins=nbins)
+        for val, dL in pool:
+            if _same(val, x0[j]) or not np.isfinite(dL):
+                continue
+            r = list(x0); r[j] = val
+            variants.append(r); meta.append((int(j), val, float(dL)))
     if not variants:
         return []
     a, rel = ev(variants)
     out = []
-    for i, (j, val) in enumerate(meta):
+    for i, (j, val, dL) in enumerate(meta):
         m = shift_metrics(a_base_row, a[i], others, feat)
         d = float(a_base_row[feat] - a[i][feat])          # positive = suppresses
-        out.append({"column": j, "value": val, "drop": d,
-                    "activation_after": float(a[i][feat]), "recon_rel": float(rel[i]),
-                    "edit_distance": edit_distance(v, x0[j], val,
-                                                   categorical=j in cat),
-                    # effect on c per unit of collateral: the quantity we actually want
-                    "selectivity": d / (m["other_rel_p90"] + 1e-6), **m})
+        col = space.cols[j]
+        rec = {"column": j, "column_name": str(space.names[j]), "value": val,
+               "drop": d, "delta_log_freq": dL,
+               # the pass-1 statistic: response per unit of log frequency, one-sided.
+               # comparable across columns AND across column types, which is the whole
+               # point of measuring the step in log freq.
+               "slope": (d / dL) if dL > 0 else float("nan"),
+               "activation_after": float(a[i][feat]), "recon_rel": float(rel[i]),
+               # edit_distance is per-column: `v` used to leak from the probe loop, so
+               # every record was scored against the LAST probed column's distribution.
+               "edit_distance": edit_distance(col, x0[j], val, categorical=j in space.cat),
+               "selectivity": d / (m["other_rel_p90"] + 1e-6)}
+        rec.update(m)
+        out.append(rec)
     return out
 
 
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
-               others, cat, sel_tol, recon_bar, batched=True, step_frac=0.5,
+               others, space, sel_tol, recon_bar, batched=True,
                max_levels=6, top_m=8, max_cols=3, probe_cols=None,
                recip_shared=None, recipient=None, npz_path=None, tie_band=0.10, drop_tol=0.01):
     """Greedy search over input (column, value) edits, scored on the joint objective.
@@ -764,30 +866,39 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     a0, rel0 = extract_acts(donor, dataset, X_ctx, y_ctx, base, task, device)
     a_base_row = a0[row].copy()
     a_start = float(a_base_row[feat])
-    x0 = base[row].copy()
-    ev = make_evaluator(donor, dataset, X_ctx, y_ctx, base, task, device, row, batched)
+    x0 = space.row(row)   # the row in the SPACE's columns, not the model's
+    ev = make_evaluator(donor, dataset, X_ctx, y_ctx, base, space, task, device, row, batched)
     # Built here, not by the caller: the ratios are taken against OUR re-extracted
     # baseline, which only exists once the donor forward above has run.
     recip = build_recip(recip_shared, donor, recipient, dataset, npz_path, row,
                         a_base_row, device) if recip_shared is not None else None
 
-    sens = column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat,
-                              step_frac, max_levels, probe_cols=probe_cols)
-    # best suppressing probe per column, then rank columns by selectivity
+    sens = column_sensitivity(ev, space, x0, a_base_row, feat, others,
+                              max_levels, probe_cols=probe_cols)
+    # Rank on the CONCEPT alone -- response per unit of log frequency. The objective
+    # balances drop against blast, reconstruction and the recipient effect in pass 2,
+    # where it has the whole menu to balance across; doing it here discards a column
+    # because one probe of it happened to be large.
+    #
+    # Per column we keep the probe with the largest slope: pass 1 exists to answer "can
+    # this column move the concept", and the steepest response answers it. The
+    # smallest-step probe would be the more accurate derivative but answers a question
+    # we are not asking.
     per_col = {}
     for s in sens:
-        if s["drop"] <= 0:
+        if s["drop"] <= 0 or not np.isfinite(s["slope"]):
             continue
-        if s["column"] not in per_col or s["selectivity"] > per_col[s["column"]]["selectivity"]:
+        cur = per_col.get(s["column"])
+        if cur is None or s["slope"] > cur["slope"]:
             per_col[s["column"]] = s
-    ranked = sorted(per_col.values(), key=lambda s: -s["selectivity"])[:top_m]
+    ranked = sorted(per_col.values(), key=lambda s: -s["slope"])[:top_m]
 
     best, stop = None, "no_sensitive_column"
     if ranked:
         combos, cmeta = [], []
         for size in range(1, max_cols + 1):
             for sub in itertools.combinations(ranked, size):
-                r = x0.copy()
+                r = list(x0)
                 for s in sub:
                     r[s["column"]] = s["value"]
                 combos.append(r); cmeta.append(sub)
@@ -1095,6 +1206,10 @@ def main():
     ap.add_argument("--max-vals", type=int, default=None,
                     help="candidate values per column; default the column's ENTIRE "
                          "observed support. Also a search-space limit, not a budget.")
+    ap.add_argument("--space", choices=("preprocessed", "raw"), default="preprocessed",
+                    help="which columns the search edits. 'raw' edits the original table "
+                         "and transforms through the fitted generator; it is verified to "
+                         "reproduce X_query exactly and refuses to run if it does not.")
     ap.add_argument("--drop-tol", type=float, default=0.01,
                     help="a candidate counts as tied on SUPPRESSION only if its drop_frac "
                          "is within this of the best in the score band. Without the gate "
@@ -1118,8 +1233,6 @@ def main():
                     help="max allowed relative shift (p90) in the other accepted "
                          "concepts; omit to record without constraining")
     ap.add_argument("--recon-bar", type=float, default=None)
-    ap.add_argument("--step-frac", type=float, default=0.5,
-                    help="standard step per continuous column, in IQR units (pass 1)")
     ap.add_argument("--max-probe-cols", type=int, default=None,
                     help="prefilter pass-1 probes to the top-N columns by rank "
                          "correlation; essential for models that fail independence, "
@@ -1250,7 +1363,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
         print(f"  {dataset} -> {recipient} ({len(acc_rows_n)} rows, "
               f"acceptance rank best={min(ranks)} median={np.median(ranks):.0f})", flush=True)
 
-        X_ctx, y_ctx, X_query, _, _, task = load_dataset_context(donor, dataset,
+        X_ctx, y_ctx, X_query, _, row_indices, task = load_dataset_context(donor, dataset,
                                                                  query_source="holdout")
         if hasattr(X_query, "iloc"):
             print("    donor is a DataFrame model -- not supported here")
@@ -1260,7 +1373,18 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
             A = sae.encode(torch.tensor(np.asarray(load_test_embeddings(donor)[dataset],
                                                    dtype=np.float32),
                                         device=args.device)).cpu().numpy().astype(np.float64)
-        cat = column_types(donor, dataset, X_query)
+        # The space the search edits. --space raw defines the patch on the ORIGINAL
+        # table and pushes each edited row back through the fitted AutoGluon generator,
+        # so the model input is produced by the same code that built the corpus. It also
+        # makes the patch model-independent: MIC is 94 categorical columns for every
+        # donor in raw space, where preprocessed space calls it 88 for tabpfn/tabdpt and
+        # 0 for tabicl/mitra, so two donors otherwise search different spaces over
+        # identical data.
+        if args.space == "raw":
+            space = raw_space(donor, dataset, splits, row_indices, X_query)
+        else:
+            space = preprocessed_space(donor, dataset, X_query)
+        cat = space.cat
         # Prefilter which columns get a pass-1 probe. Free (rank correlation with the
         # cached activation, no forwards) and essential for models that fail the
         # independence check, where every probe costs its own forward.
@@ -1324,8 +1448,8 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
             others = np.array([int(f) for f in np.unique(sel[row][sel[row] >= 0])
                                if int(f) != feat], dtype=int)
             res = search_row(donor, dataset, X_ctx, y_ctx, X_query, task, args.device,
-                             row, feat, others, cat, args.selectivity_tol, args.recon_bar,
-                             batched=batched, step_frac=args.step_frac,
+                             row, feat, others, space, args.selectivity_tol, args.recon_bar,
+                             batched=batched,
                              max_levels=args.max_vals, top_m=args.top_cols,
                              max_cols=args.max_steps, probe_cols=probe_cols,
                              recip_shared=recip_shared, recipient=recipient,
