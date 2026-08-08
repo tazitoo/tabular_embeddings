@@ -1038,7 +1038,17 @@ def row_importance(donor, dataset, feat):
     return drops[:, fmap[feat]]
 
 
-def cells_for_concept(donor, feat, min_rows):
+def _task_of(dataset):
+    global _SPLITS_CACHE
+    if _SPLITS_CACHE is None:
+        _SPLITS_CACHE = json.loads(SPLITS_PATH.read_text())
+    return _SPLITS_CACHE.get(dataset, {}).get("task_type", "?")
+
+
+_SPLITS_CACHE = None
+
+
+def cells_for_concept(donor, feat, min_rows, task_filter=None):
     """(recipient, dataset, accepted rows) where this concept was actually deployed."""
     out = []
     for f in sorted(glob.glob(str(FWD / "*" / "*.npz"))):
@@ -1089,6 +1099,20 @@ def cells_for_concept(donor, feat, min_rows):
     runnable = [c for c in out if required_env(donor, c[0]) == current_env()]
     if runnable:
         out = runnable
+    # Task-type split. Classification and regression are swept SEPARATELY so a concept's
+    # evidence is not pooled across heads: whether a concept means the same thing when
+    # the output head changes is the generalisation question, and pooling assumes the
+    # answer. Filtering rather than sorting, for the same reason as the carte rule -- a
+    # preference gets silently dropped by the dataset dedup downstream.
+    #
+    # STRICT, unlike the carte and env filters above. Those fall back to the full set
+    # because a donor-side patch on an awkward cell beats no patch at all. A fallback
+    # here would hand a regression sweep its classification cells and silently undo the
+    # split: measured, tabicl f158 came back with 6 "regression" cells that were all
+    # classification. A concept with no cells of this task type has none, and that is the
+    # honest answer.
+    if task_filter and task_filter != "all":
+        out = [c for c in out if _task_of(c[1]) == task_filter]
     # then earliest acceptance of this concept, then size
     out.sort(key=lambda t: (min(v for _, v in t[2]), -len(t[2]), t[1]))
     return out
@@ -1221,6 +1245,15 @@ def main():
     ap.add_argument("--max-vals", type=int, default=None,
                     help="candidate values per column; default the column's ENTIRE "
                          "observed support. Also a search-space limit, not a budget.")
+    ap.add_argument("--task", choices=("classification", "regression", "all"),
+                    default="classification",
+                    help="sweep one task type at a time. Classification and regression "
+                         "are kept SEPARATE because whether a concept means the same "
+                         "thing when the output head changes IS the generalisation "
+                         "question -- pooling them assumes the answer. Restricting to "
+                         "classification costs no concepts (0 of 335 have only regression "
+                         "cells), 16.8%% of cells and 10.8%% of rows; it does leave 14 "
+                         "concepts under 30 rows, up from 5.")
     ap.add_argument("--space", choices=("raw", "preprocessed"), default="raw",
                     help="which columns the search edits. RAW is the canonical path: it "
                          "edits the original table and transforms through the fitted "
@@ -1329,7 +1362,7 @@ def run_concept(donor, feat, args):
         if donor in EXCLUDED_DONORS:
             print(f"\n{donor} f{feat}: SKIPPED (donor excluded)")
             return {"donor": donor, "feat": feat, "status": "excluded_donor"}
-        cells = cells_for_concept(donor, feat, args.min_rows)
+        cells = cells_for_concept(donor, feat, args.min_rows, args.task)
         if not cells:
             print(f"\n{donor} f{feat}: no cell with >= {args.min_rows} accepted rows")
             return {"donor": donor, "feat": feat, "status": "no_cell"}
