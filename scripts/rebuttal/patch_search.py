@@ -48,6 +48,7 @@ import glob
 import json
 import math
 import os
+from pathlib import Path
 from collections import defaultdict
 
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -1393,7 +1394,18 @@ def required_env(*models) -> str:
 
 
 def current_env() -> str:
-    return os.path.basename(os.environ.get("CONDA_PREFIX", "")) or "unknown"
+    """Which conda env is running, derived from the INTERPRETER, not the environment.
+
+    CONDA_PREFIX is only set by `conda activate`. Every cluster launch invokes the
+    interpreter by absolute path -- /home/brian/anaconda3/envs/tfm/bin/python -m ... --
+    so CONDA_PREFIX is empty and this returned "unknown". Paired with the env guard that
+    meant EVERY cell was skipped as env_mismatch: five arms finished in minutes, wrote
+    their output files, and reported success having done no work at all.
+    """
+    import sys
+    # sys.prefix is the env root whether or not conda activated it:
+    # /home/brian/anaconda3/envs/tfm -> "tfm".
+    return os.path.basename(sys.prefix) or "unknown"
 
 
 def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args):
@@ -1403,6 +1415,12 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
     if need is None:
         return {"dataset": dataset, "recipient": recipient,
                 "status": "env_impossible: tabicl and tabicl_v2 cannot share an env"}
+    if have == "unknown":
+        # Refuse rather than skip. An undetectable env cannot be compared to a
+        # requirement, and treating that as a mismatch silently empties the whole sweep.
+        raise RuntimeError(
+            f"cannot determine the running conda env from {os.sys.executable!r}; "
+            "the env guard would skip every cell and the run would look successful")
     if have != need:
         # Reported, never silent: an env-skipped cell is a hole in the sweep and has to
         # be visible as one so the arm can be re-run under the right interpreter.
