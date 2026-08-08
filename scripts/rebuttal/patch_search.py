@@ -178,23 +178,43 @@ def rank_columns(X: np.ndarray, a: np.ndarray, top_k: int) -> list[int]:
 
 
 def candidate_levels(X: np.ndarray, col: int, max_vals: int) -> np.ndarray:
-    """The most FREQUENT observed levels of a nominal column, commonest first.
+    """Levels spread across a nominal column's MASS, the same way candidate_values is.
 
-    Categorical values are .cat.codes, so quantiles of them select by code magnitude --
-    an arbitrary ordering that has nothing to do with which levels are plausible. Two
-    columns holding the same categories in a different assignment order would get
-    different candidate sets.
+    Categorical values are .cat.codes, so quantiling them selects by code magnitude -- an
+    arbitrary ordering with nothing to do with which levels are plausible. But the fix is
+    not "take the commonest": that makes max_vals mean a different thing per column type,
+    a SPREAD over the range for continuous columns and a HEAD of the distribution for
+    categorical ones. Pairing an upper-decile value with a modal level is not a pair.
 
-    Frequency is the ordering that exists without an axis, and it is the same quantity
-    the edit cost uses: -log p(level). Selecting by frequency and costing by frequency
-    agree, so the search proposes the cheap, typical destinations first rather than
-    proposing by code order and then being surprised at the price.
+    The operation candidate_values performs is "pick max_vals values at even intervals of
+    the column's mass". A nominal column has no value axis to walk, but it has a
+    frequency-rank axis, which is the only ordering it does have -- and the same one the
+    edit cost uses, -log p(level). So the levels are ordered by frequency, and the same
+    interior quantiles are taken over cumulative mass. max_vals then means one thing in
+    both paths: how many points are spread across what the column actually contains.
+
+    Coverage rather than head-of-distribution matters because the search needs candidates
+    that can MOVE the concept. Restricted to the 6 commonest of 1765 levels it can only
+    reach 12% of the mass, and a concept only suppressible by a less common level is out
+    of reach by construction.
     """
     v = X[~np.isnan(X[:, col]), col]
     if v.size == 0:
         return np.array([])
     u, c = np.unique(v, return_counts=True)
-    return u[np.argsort(-c)][:max_vals] if max_vals is not None else u[np.argsort(-c)]
+    order = np.argsort(-c, kind="stable")
+    u, c = u[order], c[order]
+    if max_vals is None or len(u) <= max_vals:
+        return u
+    cum = np.cumsum(c) / float(c.sum())
+    idx = np.clip(np.searchsorted(cum, np.linspace(0.05, 0.95, max_vals)), 0, len(u) - 1)
+    picked = list(dict.fromkeys(idx.tolist()))
+    for k in range(len(u)):        # collapse top-up, in frequency order
+        if len(picked) >= max_vals:
+            break
+        if k not in picked:
+            picked.append(k)
+    return u[np.array(picked[:max_vals], dtype=int)]
 
 
 def candidate_values(X: np.ndarray, col: int, max_vals: int,
