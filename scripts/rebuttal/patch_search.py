@@ -1383,7 +1383,13 @@ def required_env(*models) -> str:
     tail with `TabICL.__init__() got an unexpected keyword argument 'num_quantiles'`,
     which is v1 being handed a v2 argument. The cell was then lost from the sweep.
     """
-    return "tfm2" if any(m == "tabicl_v2" for m in models) else "tfm"
+    ms = set(models)
+    if "tabicl" in ms and "tabicl_v2" in ms:
+        # No env hosts both, so there is no interpreter to route this cell to. Returning
+        # tfm2 here would be a lie in the other direction: tabicl v1 is absent from tfm2,
+        # so the cell would fail there exactly as it fails in tfm.
+        return None
+    return "tfm2" if "tabicl_v2" in ms else "tfm"
 
 
 def current_env() -> str:
@@ -1394,6 +1400,9 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
     """Patch one concept in one dataset -- the unit where columns are comparable."""
     need = required_env(donor, recipient)
     have = current_env()
+    if need is None:
+        return {"dataset": dataset, "recipient": recipient,
+                "status": "env_impossible: tabicl and tabicl_v2 cannot share an env"}
     if have != need:
         # Reported, never silent: an env-skipped cell is a hole in the sweep and has to
         # be visible as one so the arm can be re-run under the right interpreter.
