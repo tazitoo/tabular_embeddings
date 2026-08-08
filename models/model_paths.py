@@ -80,10 +80,15 @@ def get_model_path(model_name: str, task: str = "classification") -> str:
     if task == "regression":
         task_key = f"{model_name}_regressor"
         if task_key in _REGISTRY:
-            try:
-                return _resolve(task_key)
-            except FileNotFoundError:
-                pass
+            # NO fallback to the classifier. A registered regressor that is missing on
+            # this host is a missing asset, not a reason to hand back a model trained for
+            # the other task: TabICLRegressor loaded the v2 CLASSIFIER, and the failure
+            # surfaced 51 times as `assert self.max_classes == 0, "predict_stats is only
+            # applicable for regression tasks"` from inside tabicl, which names neither
+            # the checkpoint nor the host. Silently substituting a classification
+            # checkpoint for a regression one also cannot be detected downstream -- the
+            # run simply produces wrong numbers.
+            return _resolve(task_key)
 
     return _resolve(model_name)
 
