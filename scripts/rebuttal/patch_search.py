@@ -226,8 +226,20 @@ def candidate_values(X: np.ndarray, col: int, max_vals: int,
         # Snapping collapses quantiles onto the same value in skewed columns (90% zeros
         # -> two candidates). Top up with evenly spaced OBSERVED values so the search
         # keeps its coverage without proposing anything that does not occur.
+        #
+        # Topping up must not OVERSHOOT the cap: `extra` holds max_vals values and the
+        # union of it with `out` was returned whole, so a column could come back with 10
+        # or 11 candidates when 6 were asked for. That silently inflated the probe budget
+        # per column, and unevenly -- skewed columns, the ones that trigger this branch,
+        # got the most. Quantile picks are kept first, then extras fill to exactly the cap.
         extra = uniq[np.linspace(0, len(uniq) - 1, max_vals).astype(int)]
-        out = np.unique(np.concatenate([out, extra]))
+        picked = list(dict.fromkeys(out.tolist()))
+        for x in extra.tolist():
+            if len(picked) >= max_vals:
+                break
+            if x not in picked:
+                picked.append(x)
+        out = np.array(sorted(picked))
     return out
 
 
