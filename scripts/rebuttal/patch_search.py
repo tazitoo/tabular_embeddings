@@ -177,7 +177,36 @@ def rank_columns(X: np.ndarray, a: np.ndarray, top_k: int) -> list[int]:
     return [int(j) for j in np.argsort(-np.asarray(scores))[:top_k]]
 
 
-def candidate_levels(X: np.ndarray, col: int, max_vals: int) -> np.ndarray:
+def _same(a, b) -> bool:
+    """Is a proposed value the one already there? Works for strings and for NaN.
+
+    np.isclose(..., equal_nan=True) was used, which raises on raw string labels and
+    treats two distinct category codes as equal when they are numerically close. A raw
+    edit is an identity change, not a numeric one.
+    """
+    if isinstance(a, str) or isinstance(b, str):
+        return a == b
+    fa, fb = float(a), float(b)
+    if np.isnan(fa) or np.isnan(fb):
+        return np.isnan(fa) and np.isnan(fb)
+    return bool(np.isclose(fa, fb))
+
+
+def _present(v: np.ndarray) -> np.ndarray:
+    """Observed values of a column, missing dropped, for either space.
+
+    Preprocessed columns are float and mark missing with NaN. RAW columns may hold
+    strings, where np.isnan raises, and mark missing with None as well as NaN. This is
+    the one place that difference is handled, so every helper below works unchanged on a
+    raw column of category labels and on a float32 code column.
+    """
+    a = np.asarray(v)
+    if a.dtype.kind in "fc":
+        return a[~np.isnan(a)]
+    return np.array([x for x in a.tolist() if x is not None and x == x], dtype=object)
+
+
+def candidate_levels(v: np.ndarray, max_vals: int) -> np.ndarray:
     """Levels spread across a nominal column's MASS, the same way candidate_values is.
 
     Categorical values are .cat.codes, so quantiling them selects by code magnitude -- an
@@ -198,7 +227,7 @@ def candidate_levels(X: np.ndarray, col: int, max_vals: int) -> np.ndarray:
     reach 12% of the mass, and a concept only suppressible by a less common level is out
     of reach by construction.
     """
-    v = X[~np.isnan(X[:, col]), col]
+    v = _present(v)
     if v.size == 0:
         return np.array([])
     u, c = np.unique(v, return_counts=True)
@@ -217,7 +246,7 @@ def candidate_levels(X: np.ndarray, col: int, max_vals: int) -> np.ndarray:
     return u[np.array(picked[:max_vals], dtype=int)]
 
 
-def candidate_values(X: np.ndarray, col: int, max_vals: int,
+def candidate_values(v: np.ndarray, max_vals: int,
                      interior: bool = True) -> np.ndarray:
     """Values that actually OCCUR in the column, weighted by how typical they are.
 
@@ -234,7 +263,7 @@ def candidate_values(X: np.ndarray, col: int, max_vals: int,
     3. Do not force the extremes. linspace(0,1) always includes min and max, biasing the
        search toward the most violent legal edit; interior quantiles avoid that.
     """
-    v = X[~np.isnan(X[:, col]), col]
+    v = _present(v)
     if v.size == 0:
         return np.array([])
     uniq = np.unique(v)
@@ -299,16 +328,15 @@ def column_types(model: str, dataset: str, X: np.ndarray) -> set[int]:
     return set(load_preprocessed(model, dataset, CACHE_DIR).cat_indices or [])
 
 
-def nearest_observed(X: np.ndarray, col: int, target: float) -> float:
+def nearest_observed(v: np.ndarray, target: float) -> float:
     """Snap a proposed value onto the nearest value the column actually takes."""
-    v = X[~np.isnan(X[:, col]), col]
+    v = _present(v)
     if v.size == 0:
         return float(target)
     return float(v[np.argmin(np.abs(v - target))])
 
 
-def edit_distance(X: np.ndarray, col: int, old: float, new: float,
-                  categorical: bool = False) -> float:
+def edit_distance(v: np.ndarray, old, new, categorical: bool = False) -> float:
     """How costly is this edit, in the column's own terms.
 
     CATEGORICAL columns get the surprisal of the level moved TO, -log p(new), in nats.
@@ -336,7 +364,7 @@ def edit_distance(X: np.ndarray, col: int, old: float, new: float,
     does nothing. In the v3 sweep that hit 1.9% of rows via `old` being NaN: the original
     cell is MISSING, so the edit fills a hole rather than moving a value.
     """
-    v = X[~np.isnan(X[:, col]), col]
+    v = _present(v)
     if v.size == 0:
         return 0.0
     if categorical:
@@ -589,14 +617,14 @@ def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac
         if v.size == 0:
             continue
         if j in cat:
-            vals = [val for val in candidate_levels(X_query, j, max_levels)
-                    if not np.isclose(val, x0[j], equal_nan=True)]
+            vals = [val for val in candidate_levels(v, max_levels)
+                    if not _same(val, x0[j])]
         else:
             iqr = float(np.subtract(*np.percentile(v, [75, 25]))) or float(np.std(v)) or 1.0
             vals = []
             for sgn in (-1.0, 1.0):
-                cand = nearest_observed(X_query, j, x0[j] + sgn * step_frac * iqr)
-                if not np.isclose(cand, x0[j], equal_nan=True):
+                cand = nearest_observed(v, x0[j] + sgn * step_frac * iqr)
+                if not _same(cand, x0[j]):
                     vals.append(cand)
         for val in dict.fromkeys(vals):
             r = x0.copy(); r[j] = val
@@ -610,7 +638,7 @@ def column_sensitivity(ev, X_query, x0, a_base_row, feat, others, cat, step_frac
         d = float(a_base_row[feat] - a[i][feat])          # positive = suppresses
         out.append({"column": j, "value": val, "drop": d,
                     "activation_after": float(a[i][feat]), "recon_rel": float(rel[i]),
-                    "edit_distance": edit_distance(X_query, j, x0[j], val,
+                    "edit_distance": edit_distance(v, x0[j], val,
                                                    categorical=j in cat),
                     # effect on c per unit of collateral: the quantity we actually want
                     "selectivity": d / (m["other_rel_p90"] + 1e-6), **m})
