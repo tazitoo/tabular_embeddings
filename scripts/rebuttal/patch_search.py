@@ -417,7 +417,7 @@ def preprocessed_space(model, dataset, X_query):
                  materialize=lambda rows: np.asarray(rows, dtype=np.float32))
 
 
-def raw_space(model, dataset, splits, row_indices, X_query_pp):
+def raw_space(model, dataset, row_indices, X_query_pp, splits=None):
     """Edit the ORIGINAL table; the fitted generator produces the model input.
 
     Refuses to return a space whose transform does not reproduce X_query exactly. If the
@@ -430,6 +430,8 @@ def raw_space(model, dataset, splits, row_indices, X_query_pp):
     from data.extended_loader import _load_tabarena_cached_v2
     from data.preprocessing import NAN_SAFE_MODELS, fit_preprocessor
 
+    if splits is None:
+        splits = json.loads(SPLITS_PATH.read_text())
     cached = _load_tabarena_cached_v2(dataset)
     if cached is None:
         raise FileNotFoundError(f"no raw TabArena cache for {dataset}")
@@ -1384,7 +1386,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
         # 0 for tabicl/mitra, so two donors otherwise search different spaces over
         # identical data.
         if args.space == "raw":
-            space = raw_space(donor, dataset, splits, row_indices, X_query)
+            space = raw_space(donor, dataset, row_indices, X_query)
         else:
             space = preprocessed_space(donor, dataset, X_query)
         cat = space.cat
