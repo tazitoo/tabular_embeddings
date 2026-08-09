@@ -571,20 +571,45 @@ def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, space, task, device, r
     model-specific and goes stale silently; checking the actual batch cannot.
     """
     base = X_query
+    window = len(base)
     unmodified = space.row(row)
 
     def evaluate(variants):
-        rows = [unmodified] + list(variants)
-        Xq = np.vstack([base, np.asarray(space.materialize(rows), dtype=base.dtype)])
-        a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
-        out = a[len(base):]
-        drift = float(np.abs(out[0] - a_ref).max())
-        if drift > tol:
-            raise RuntimeError(
-                f"{donor}/{dataset} row {row}: the unmodified row moved {drift:.3e} "
-                f"(tol {tol:.0e}) in a batch of {len(variants)} candidates. The query "
-                "window perturbed it, so every candidate in this batch is unmeasurable.")
-        return out[1:], rel[len(base) + 1:]
+        """Candidates are cycled through a window of exactly len(X_query) rows.
+
+        The window NEVER grows. Candidates replace rows inside it and the dataset's own
+        rows fill any remainder, so every forward -- the baseline pass, every greedy step,
+        every concept -- runs on a query set of the size the corpus was built at. Growing
+        it was the defect: pass 1 probed every column by default, reaching 4,139 rows on
+        hiva_agnostic where the dataset has 200, and the model then saw a query set twenty
+        times anything it was calibrated on.
+
+        Padding SHORT datasets up to 200 was measured and rejected. It is safe for tabicl
+        and tabdpt but not in general: tabpfn moves 1.23e-01 and mitra 2.59e+00 when anneal
+        is padded 86 -> 200, while both are clean on MIC 162 -> 200. No rule separates
+        those cases, so the window is simply the dataset's own size.
+
+        Cost is ceil(n_candidates / (window - 1)) forwards instead of one, and that is the
+        honest price of the single forward having produced unusable numbers.
+        """
+        acts, recons = [], []
+        per = window - 1                       # one slot reserved for the canary
+        for i in range(0, len(variants), per):
+            chunk = list(variants[i:i + per])
+            rows = [unmodified] + chunk
+            j = 0
+            while len(rows) < window:          # fill with the dataset's OWN rows
+                rows.append(space.row(j)); j += 1
+            Xq = np.asarray(space.materialize(rows), dtype=base.dtype)
+            a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
+            drift = float(np.abs(a[0] - a_ref).max())
+            if drift > tol:
+                raise RuntimeError(
+                    f"{donor}/{dataset} row {row}: the unmodified row moved {drift:.3e} "
+                    f"(tol {tol:.0e}) in a window of {window} holding {len(chunk)} "
+                    "candidates. Every candidate measured beside it is unmeasurable.")
+            acts.append(a[1:1 + len(chunk)]); recons.append(rel[1:1 + len(chunk)])
+        return np.concatenate(acts), np.concatenate(recons)
 
     return evaluate
 
