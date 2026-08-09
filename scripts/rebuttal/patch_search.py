@@ -683,10 +683,11 @@ def build_recip_shared(donor, recipient, dataset, device):
     cat_idx = None
     if recipient in ("hyperfast", "tabpfn"):
         from data.preprocessing import load_preprocessed, CACHE_DIR
-        try:
-            cat_idx = load_preprocessed(recipient, dataset, CACHE_DIR).cat_indices or None
-        except Exception:
-            pass
+        # No swallow. An unreadable cache means the recipient tail would be built without
+        # cat_indices -- a differently configured model, silently. That is the same defect
+        # as the donor-side fit bug, and it cannot be detected downstream: the run does not
+        # crash, it just produces predictions from a model we did not intend.
+        cat_idx = load_preprocessed(recipient, dataset, CACHE_DIR).cat_indices or None
     _reseed()
     tail = build_tail(recipient, Xtr, ytr, Xq, layer, task, device, cat_indices=cat_idx,
                       target_name=splits.get(dataset, {}).get("target", "target"))
@@ -1201,10 +1202,11 @@ def readout(npz_path, feat, row, ratios, device):
     cat_idx = None
     if recipient in ("hyperfast", "tabpfn"):
         from data.preprocessing import load_preprocessed, CACHE_DIR
-        try:
-            cat_idx = load_preprocessed(recipient, dataset, CACHE_DIR).cat_indices or None
-        except Exception:
-            pass
+        # No swallow. An unreadable cache means the recipient tail would be built without
+        # cat_indices -- a differently configured model, silently. That is the same defect
+        # as the donor-side fit bug, and it cannot be detected downstream: the run does not
+        # crash, it just produces predictions from a model we did not intend.
+        cat_idx = load_preprocessed(recipient, dataset, CACHE_DIR).cat_indices or None
     _reseed()
     tail = build_tail(recipient, Xtr, ytr, Xq, layer, task, device, cat_indices=cat_idx,
                       target_name=splits.get(dataset, {}).get("target", "target"))
@@ -1507,15 +1509,30 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
         probe_cols = (rank_columns(X_query, A[:, feat], args.max_probe_cols)
                       if args.max_probe_cols else None)
 
-        # Batching is only valid when query rows are independent. Decide by measurement,
-        # not by model name: mitra's 2D attention makes its rows interact (shift 2.44)
-        # while tabpfn/tabicl are exactly 0.00.
+        # This check TESTS THE WRONG PROPERTY and must be replaced, not patched. It
+        # appends duplicate rows, so it measures sensitivity to query-set SIZE. Measured
+        # directly, mitra is exactly invariant to query row ORDER (0.00e+00) and to which
+        # other rows share the window (companions A vs B, 0.00e+00) at fixed count; the
+        # 2.42 shift appears only when the count changes. So rows do not interact -- the
+        # search's choice to APPEND candidates is what breaks, and appending is ours.
+        #
+        # The claim previously written here, that mitra's 2D attention makes query rows
+        # interact, was inferred from the symptom and never checked. It was wrong, and it
+        # justified a per-candidate path costing ~48 forwards per step on that arm.
+        #
+        # No silent path switch. A failure raises with its measurement: degrading quietly
+        # to a slower path let an unexplained result stand as an architectural constraint
+        # for the whole sweep without anyone having to justify it.
         ind = check_independence(donor, dataset, X_ctx, y_ctx, X_query, task, args.device)
-        batched = ind["independent"]
         print(f"    independence: base shift={ind['base_rows_max_shift']:.2e} "
-              f"dup shift={ind['duplicate_vs_original_max_shift']:.2e} -> "
-              f"{'batched' if batched else 'ROWS INTERACT -> per-candidate forwards'}",
-              flush=True)
+              f"dup shift={ind['duplicate_vs_original_max_shift']:.2e}", flush=True)
+        if not ind["independent"]:
+            raise RuntimeError(
+                f"{donor}/{dataset}: appending to the query set moves the base rows by "
+                f"{ind['base_rows_max_shift']:.2e}. The evaluator must fill a FIXED-SIZE "
+                "window by replacing rows instead of appending; do not fall back to a "
+                "per-candidate path.")
+        batched = True
 
         # Recipient tail built ONCE per cell -- it depends on (recipient, dataset), not
         # on the row. None for carte, where the readout does not reproduce.
