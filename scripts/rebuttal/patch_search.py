@@ -1013,7 +1013,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "best": best, "sensitivity_top": ranked[:5],
             "n_probes": len(sens), "n_sensitive_columns": len(per_col),
             "final_shift": shift_metrics(a_base_row, a_now_vec, others, feat),
-            "accepted_ratios": ratios, "batched": bool(batched),
+            "accepted_ratios": ratios,
             "steps": [best] if best else []}
 
 
@@ -1305,9 +1305,6 @@ def main():
     ap.add_argument("--shard", default=None, help="i/n -- take every n-th concept")
     ap.add_argument("--no-resume", action="store_true",
                     help="recompute concepts already present in --out (default resumes)")
-    ap.add_argument("--check-independence", action="store_true",
-                    help="verify query rows do not influence each other before trusting "
-                         "the batched candidate evaluation")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "rebuttal" / "patch_search.json"))
     args = ap.parse_args()
