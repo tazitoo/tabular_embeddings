@@ -67,6 +67,12 @@ FWD = PROJECT_ROOT / "output" / "rebuttal" / "forward_deltas"
 IMPORTANCE = PROJECT_ROOT / "output" / "perrow_importance"
 ATOMS = PROJECT_ROOT / "output" / "transfer_caches" / "global_trained"
 EXTRACT_SEED = 13
+# Close enough to the target to stop. Mirrors transfer_sweep_v2's gc_tolerance=0.99, which
+# breaks its greedy once gap-closed reaches 0.99 rather than spending steps on the last
+# sliver. Fixed, not a flag: it is a property of the convention, not something to tune per
+# run. Here the target is the recipient's ORIGINAL pre-transfer prediction, so reversal
+# >= this means the patch has undone the transfer at that row.
+REVERSAL_TOLERANCE = 0.99
 EPS = 1e-7   # the constant already used by _gc and the transfer sweep
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
 # embeddings come from an unseeded retrieval draw, so re-extraction yields a
@@ -843,7 +849,7 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, space, sel_tol, recon_bar, batched=True,
                max_levels=6, top_m=8, max_cols=3, probe_cols=None,
-               recip_shared=None, recipient=None, npz_path=None, tie_band=0.10, drop_tol=0.01):
+               recip_shared=None, recipient=None, npz_path=None):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -963,19 +969,15 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             if not scored:
                 stop = "no_improving_candidate" if committed else "no_qualifying_combination"
                 break
-            # Same tie-break as before, now applied per STEP rather than across
-            # combinations: among candidates within tie_band of the step's best AND tied
-            # on suppression within drop_tol, take the smallest edit. Gating on drop
-            # matters because drop_frac is a factor of the score, so a band on the score
-            # alone lets the tie-break pay for a smaller edit with the target itself.
+            # No tie-break. It existed to counteract enumeration's bias toward larger
+            # combinations -- there was always a 3-column combo scoring marginally higher,
+            # so 74% of patches used all three. Greedy adds a column only when it improves
+            # the objective, so size is governed by the stopping rule instead, and within a
+            # step every candidate has the same column count so that half of the key was
+            # inert anyway. --drop-tol went with it: it only existed to stop the tie-break
+            # paying for a smaller edit with suppression.
             _s = lambda c: c["score"] if np.isfinite(c["score"]) else -np.inf
-            _d = lambda c: c["drop_frac"] if np.isfinite(c["drop_frac"]) else -np.inf
-            top = max(_s(c) for c in scored)
-            floor = top - tie_band * abs(top) if np.isfinite(top) else -np.inf
-            near = [c for c in scored if _s(c) >= floor] or scored
-            d_top = max(_d(c) for c in near)
-            near = [c for c in near if _d(c) >= d_top - drop_tol] or near
-            step_best = min(near, key=lambda c: (len(c["columns"]), c["edit_distance"]))
+            step_best = max(scored, key=_s)
             # commit only on improvement, as the transfer greedy does
             if best is not None and _s(step_best) <= _s(best):
                 stop = "no_improvement"
@@ -986,6 +988,11 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             stop = ("fully_suppressed" if best["activation_after"] <= 0
                     else "best_combination")
             if best["activation_after"] <= 0:
+                break
+            # Target reached: stop rather than keep committing columns for a sliver of
+            # reversal, which is what gc_tolerance does for the transfer greedy.
+            if np.isfinite(best["reversal"]) and best["reversal"] >= REVERSAL_TOLERANCE:
+                stop = "reversal_target_reached"
                 break
 
     a_now_vec = best.pop("_vec") if best else a_base_row.copy()
@@ -1272,17 +1279,6 @@ def main():
                          "reported columns and values are the table's own. Verified to "
                          "reproduce X_query exactly, and refuses to run if it does not. "
                          "'preprocessed' is kept only to reproduce pre-v7 sweeps.")
-    ap.add_argument("--drop-tol", type=float, default=0.01,
-                    help="a candidate counts as tied on SUPPRESSION only if its drop_frac "
-                         "is within this of the best in the score band. Without the gate "
-                         "the tie-break buys a smaller edit with the target: a 0.10 score "
-                         "band alone cost suppression on 19.3%% of rows, 291 of which did "
-                         "not even get a smaller patch.")
-    ap.add_argument("--tie-band", type=float, default=0.10,
-                    help="candidates within this fraction of the best score are treated "
-                         "as tied, and the SMALLEST edit among them wins. Right-sizes "
-                         "the patch: drop already saturates at 1.000 with one column, "
-                         "so without this the search takes ~4x larger edits for nothing.")
     ap.add_argument("--max-steps", type=int, default=3,
                     help="largest column-combination size in pass 2. The one knob that "
                          "cannot simply be maximised: pass 2 evaluates C(top_cols, size) "
@@ -1573,8 +1569,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                              max_levels=args.max_vals, top_m=args.top_cols,
                              max_cols=args.max_steps, probe_cols=probe_cols,
                              recip_shared=recip_shared, recipient=recipient,
-                             npz_path=npz_path, tie_band=args.tie_band,
-                             drop_tol=args.drop_tol)
+                             npz_path=npz_path)
             res.update({"donor": donor, "feat": feat, "recipient": recipient,
                         "dataset": dataset, "n_other_concepts": int(len(others)),
                         "n_concepts_at_row": int(len(others)) + 1,
