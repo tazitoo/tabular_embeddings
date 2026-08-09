@@ -73,6 +73,9 @@ EXTRACT_SEED = 13
 # run. Here the target is the recipient's ORIGINAL pre-transfer prediction, so reversal
 # >= this means the patch has undone the transfer at that row.
 REVERSAL_TOLERANCE = 0.99
+# The unmodified row rides in every batch and must reproduce to this. Same threshold the
+# old runtime independence check used, kept so the number means the same thing.
+CANARY_TOL = 1e-4
 EPS = 1e-7   # the constant already used by _gc and the transfer sweep
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
 # embeddings come from an unseeded retrieval draw, so re-extraction yields a
@@ -150,24 +153,6 @@ def extract_acts(donor, dataset, X_ctx, y_ctx, X_query, task, device):
 
 
 # ── search space ─────────────────────────────────────────────────────────────
-
-def check_independence(donor, dataset, X_ctx, y_ctx, X_query, task, device, n_dup=8):
-    """Does appending candidate rows change the base rows' activations?
-
-    The search evaluates a whole greedy step in ONE forward by appending every candidate
-    as an extra query row. That is only valid if query rows do not influence each other.
-    Verified rather than assumed: embed the base set, then the base set with `n_dup` of
-    its own rows appended, and check (a) the base rows are unchanged and (b) each
-    duplicate matches its original.
-    """
-    a_base, _ = extract_acts(donor, dataset, X_ctx, y_ctx, X_query, task, device)
-    dup_idx = np.linspace(0, len(X_query) - 1, n_dup).astype(int)
-    Xq = np.vstack([X_query, X_query[dup_idx]])
-    a_aug, _ = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
-    base_shift = float(np.abs(a_aug[:len(X_query)] - a_base).max())
-    dup_shift = float(np.abs(a_aug[len(X_query):] - a_base[dup_idx]).max())
-    return {"base_rows_max_shift": base_shift, "duplicate_vs_original_max_shift": dup_shift,
-            "independent": bool(base_shift < 1e-4 and dup_shift < 1e-4)}
 
 
 def rank_columns(X: np.ndarray, a: np.ndarray, top_k: int) -> list[int]:
@@ -562,37 +547,46 @@ def edit_distance(v: np.ndarray, old, new, categorical: bool = False) -> float:
 
 # ── the search ───────────────────────────────────────────────────────────────
 
-def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, space, task, device, row, batched):
+def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, space, task, device, row,
+                   a_ref, tol=CANARY_TOL):
     """Evaluate candidate rows -> (activations, recon_rel), one entry per candidate.
 
-    batched=True appends every candidate as an extra query row, so a whole greedy step
-    costs one forward. That is only valid when query rows do not influence each other:
-    tabpfn and tabicl pass check_independence exactly (shift 0.00e+00), but MITRA FAILS
-    it (shift 2.44) because its 2D attention lets query rows attend to one another.
-    For those models fall back to replacing the target row and paying one forward per
-    candidate -- slow, but the only correct option.
+    ONE path. There is no batched-vs-per-candidate branch and no fallback: a run that
+    quietly switches evaluation method produces numbers whose meaning depends on a
+    decision nobody saw. The previous branch sent mitra down a per-candidate path costing
+    ~48 forwards per greedy step, on the strength of a check that measured the wrong
+    property, and it took a whole sweep before anyone asked why.
+
+    Every batch carries the UNMODIFIED row under test as its first entry, and its
+    activation is compared against `a_ref`. That is a canary, not a correction -- it is
+    not differenced out, because differencing would absorb exactly the effect we need to
+    know about. If the unmodified row does not reproduce, the batch perturbed it, so every
+    candidate measured alongside it is suspect and the run stops.
+
+    This is what makes a shared window safe to use at all. The query set grows with the
+    candidate count, and that count varies per row: pass 1 probes every column by default,
+    which reaches 3,939 appended rows on wide datasets. tabpfn is stable to 48 appended
+    rows and shifts 4.99e-02 at 128 -- above tolerance, and 45.9% of its rows exceed 128.
+    A fixed "safe" window size cannot be trusted for that, because the threshold is
+    model-specific and goes stale silently; checking the actual batch cannot.
     """
     base = X_query
+    unmodified = space.row(row)
 
-    def batched_eval(variants):
-        # variants are rows in the SPACE's columns; materialize turns them into the
-        # matrix the model ingests -- identity for the preprocessed space, the fitted
-        # AutoGluon transform for the raw space.
-        Xq = np.vstack([base, np.asarray(space.materialize(variants), dtype=base.dtype)])
+    def evaluate(variants):
+        rows = [unmodified] + list(variants)
+        Xq = np.vstack([base, np.asarray(space.materialize(rows), dtype=base.dtype)])
         a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
-        return a[len(base):], rel[len(base):]
+        out = a[len(base):]
+        drift = float(np.abs(out[0] - a_ref).max())
+        if drift > tol:
+            raise RuntimeError(
+                f"{donor}/{dataset} row {row}: the unmodified row moved {drift:.3e} "
+                f"(tol {tol:.0e}) in a batch of {len(variants)} candidates. The query "
+                "window perturbed it, so every candidate in this batch is unmeasurable.")
+        return out[1:], rel[len(base) + 1:]
 
-    def replace_eval(variants):
-        acts, recs = [], []
-        mat = np.asarray(space.materialize(variants), dtype=base.dtype)
-        for v in mat:
-            Xq = base.copy()
-            Xq[row] = v
-            a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
-            acts.append(a[row]); recs.append(rel[row])
-        return np.asarray(acts), np.asarray(recs)
-
-    return batched_eval if batched else replace_eval
+    return evaluate
 
 
 def blast_radius(a_base, a_new, accepted_others):
@@ -848,7 +842,7 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
 
 
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
-               others, space, sel_tol, recon_bar, batched=True,
+               others, space, sel_tol, recon_bar,
                max_levels=6, top_m=8, max_cols=3, probe_cols=None,
                recip_shared=None, recipient=None, npz_path=None):
     """Greedy search over input (column, value) edits, scored on the joint objective.
@@ -877,7 +871,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     a_base_row = a0[row].copy()
     a_start = float(a_base_row[feat])
     x0 = space.row(row)   # the row in the SPACE's columns, not the model's
-    ev = make_evaluator(donor, dataset, X_ctx, y_ctx, base, space, task, device, row, batched)
+    ev = make_evaluator(donor, dataset, X_ctx, y_ctx, base, space, task, device, row,
+                        a_base_row)
     # Built here, not by the caller: the ratios are taken against OUR re-extracted
     # baseline, which only exists once the donor forward above has run.
     recip = build_recip(recip_shared, donor, recipient, dataset, npz_path, row,
@@ -1509,30 +1504,6 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
         probe_cols = (rank_columns(X_query, A[:, feat], args.max_probe_cols)
                       if args.max_probe_cols else None)
 
-        # This check TESTS THE WRONG PROPERTY and must be replaced, not patched. It
-        # appends duplicate rows, so it measures sensitivity to query-set SIZE. Measured
-        # directly, mitra is exactly invariant to query row ORDER (0.00e+00) and to which
-        # other rows share the window (companions A vs B, 0.00e+00) at fixed count; the
-        # 2.42 shift appears only when the count changes. So rows do not interact -- the
-        # search's choice to APPEND candidates is what breaks, and appending is ours.
-        #
-        # The claim previously written here, that mitra's 2D attention makes query rows
-        # interact, was inferred from the symptom and never checked. It was wrong, and it
-        # justified a per-candidate path costing ~48 forwards per step on that arm.
-        #
-        # No silent path switch. A failure raises with its measurement: degrading quietly
-        # to a slower path let an unexplained result stand as an architectural constraint
-        # for the whole sweep without anyone having to justify it.
-        ind = check_independence(donor, dataset, X_ctx, y_ctx, X_query, task, args.device)
-        print(f"    independence: base shift={ind['base_rows_max_shift']:.2e} "
-              f"dup shift={ind['duplicate_vs_original_max_shift']:.2e}", flush=True)
-        if not ind["independent"]:
-            raise RuntimeError(
-                f"{donor}/{dataset}: appending to the query set moves the base rows by "
-                f"{ind['base_rows_max_shift']:.2e}. The evaluator must fill a FIXED-SIZE "
-                "window by replacing rows instead of appending; do not fall back to a "
-                "per-candidate path.")
-        batched = True
 
         # Recipient tail built ONCE per cell -- it depends on (recipient, dataset), not
         # on the row. None for carte, where the readout does not reproduce.
@@ -1582,7 +1553,6 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                if int(f) != feat], dtype=int)
             res = search_row(donor, dataset, X_ctx, y_ctx, X_query, task, args.device,
                              row, feat, others, space, args.selectivity_tol, args.recon_bar,
-                             batched=batched,
                              max_levels=args.max_vals, top_m=args.top_cols,
                              max_cols=args.max_steps, probe_cols=probe_cols,
                              recip_shared=recip_shared, recipient=recipient,
