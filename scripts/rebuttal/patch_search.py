@@ -897,86 +897,96 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     ranked = sorted(per_col.values(), key=lambda s: -s["slope"])[:top_m]
 
     best, stop = None, "no_sensitive_column"
+    committed = []          # list of the sensitivity records already applied
     if ranked:
-        combos, cmeta = [], []
-        for size in range(1, max_cols + 1):
-            for sub in itertools.combinations(ranked, size):
+        # GREEDY, commit-and-re-probe, structurally the same loop transfer_sweep_v2 runs
+        # over concepts. Each step evaluates every not-yet-committed column ON TOP of what
+        # is already applied, in one batched forward plus one batched recipient call, then
+        # commits the best surviving candidate.
+        #
+        # Replaces enumerating every combination of up to max_cols columns. Enumeration
+        # assumes the columns' effects ADD -- it scores each combination from the ORIGINAL
+        # row, so it never sees that a column's effect changes once another has been
+        # applied. Re-probing is what makes the coupling visible, and it is not more
+        # expensive: 92 combinations at 8 columns and 3 steps against ~3 x 8 here.
+        #
+        # Values stay pinned to the pass-1 winner per column. Searching values in
+        # combination is the next version; this one first establishes that greedy plus the
+        # crossing guard behaves.
+        pool = list(ranked)
+        for _ in range(max_cols):
+            if not pool:
+                break
+            rows_, meta_ = [], []
+            for cand in pool:
                 r = list(x0)
-                for s in sub:
+                for s in committed + [cand]:
                     r[s["column"]] = s["value"]
-                combos.append(r); cmeta.append(sub)
-        a, rel = ev(combos)
-        # One batched recipient call for every candidate's delta. The recipient term is
-        # measured, not derived: see the docstring on why it cannot be computed from the
-        # donor side.
-        revs = recipient_reversal(recip, a, feat) if recip else [float("nan")] * len(a)
-        cands = []
-        for i, sub in enumerate(cmeta):
-            m = shift_metrics(a_base_row, a[i], others, feat)
-            drop = a_start - float(a[i][feat])
-            df = drop / a_start if a_start > 0 else float("nan")
-            bl = blast_radius(a_base_row, a[i], others)
-            rev = float(revs[i])
-            # in-sample term: inflation of SAE reconstruction error over THIS row's
-            # baseline, one-sided (reconstructing better than the original is fine)
-            r0 = float(rel0[row])
-            rex = max(0.0, float(rel[i]) / r0 - 1.0) if r0 > EPS else 0.0
-            ok = recon_bar is None or float(rel[i]) <= recon_bar
-            if drop > 0 and ok:
-                cands.append({"columns": [s["column"] for s in sub],
-                              "values": [s["value"] for s in sub],
-                              "activation_after": float(a[i][feat]), "drop": drop,
-                              "drop_frac": df, "blast": bl, "reversal": rev,
-                              "recon_excess": rex,
-                              # donor-only cells (carte) have no recipient term; scoring
-                              # falls back to suppression against blast so the search
-                              # still runs, and the record says the readout is absent.
-                              "score": objective(df, rev if np.isfinite(rev) else 1.0,
-                                                 bl, rex),
-                              "recon_rel": float(rel[i]),
-                              "edit_distance": float(sum(s["edit_distance"] for s in sub)),
-                              "_vec": a[i], **m})
-        if cands:
-            # Minimal-edit tie-break: among candidates that achieve the SAME suppression
-            # and score within `tie_band` of the best, take the smallest edit. Without it,
-            # max(score) has no reason to prefer a 1-column patch over a 3-column one that
-            # scores marginally higher, and 74% of chosen patches used all 3 columns while
-            # the 1- and 2-column patches suppressed just as completely (drop 1.000).
-            #
-            # The suppression gate is not decoration. A band on the SCORE alone lets the
-            # tie-break pay for a smaller edit with the target itself, because drop_frac is
-            # a factor of the score: measured over 2,112 rows, a 10% score band regressed
-            # suppression on 19.3% of them, and on 291 of those the patch was not even
-            # smaller -- same size, less suppression, which is a pure loss. "Tied" has to
-            # mean tied on what the patch is FOR.
-            #
-            # Order is (n_cols, edit_distance), and that order is the whole point.
-            # edit_distance is a SUM over the edited columns, so keying on it first
-            # minimises total edit MAGNITUDE, not patch size -- and `len(columns)` as a
-            # second element is inert, because it only breaks EXACT float ties in a sum of
-            # floats. Written the other way round, the "minimal-edit tie-break" never
-            # selected on column count at all; the drop from 74% to 48% three-column
-            # patches was a side effect of fewer columns usually summing to less. It also
-            # let a same-size candidate with a smaller magnitude and worse suppression win,
-            # which is what happened on 291 rows.
-            #
-            # Fewest columns first is also the criterion the appendix needs: a one-column
-            # patch shown in full is legible, a three-column one is a list.
-            #
-            # nan scores sort to the bottom rather than winning by position: max() and
-            # min() both compare with <, which is False against nan either way, so a nan
-            # silently survives as "best" if it is seen first.
+                rows_.append(r); meta_.append(cand)
+            a, rel = ev(rows_)
+            revs = recipient_reversal(recip, a, feat) if recip else [float("nan")] * len(a)
+            scored = []
+            for i, cand in enumerate(meta_):
+                m = shift_metrics(a_base_row, a[i], others, feat)
+                drop = a_start - float(a[i][feat])
+                df = drop / a_start if a_start > 0 else float("nan")
+                bl = blast_radius(a_base_row, a[i], others)
+                rev = float(revs[i])
+                r0 = float(rel0[row])
+                rex = max(0.0, float(rel[i]) / r0 - 1.0) if r0 > EPS else 0.0
+                if drop <= 0 or (recon_bar is not None and float(rel[i]) > recon_bar):
+                    continue
+                # CROSSING GUARD, the convention transfer_sweep_v2 already uses: it
+                # rejects any candidate whose intervened prediction goes PAST the strong
+                # prediction, and _gc clamps gap_closed to [0,1]. The patch's target is the
+                # recipient's ORIGINAL pre-transfer prediction, and reversal > 1 is exactly
+                # "crossed past it", so the same guard applies here.
+                #
+                # It also repairs the objective without changing it: sqrt(reversal) is a
+                # sound reward BELOW the target and only misbehaves above, so removing the
+                # crossings removes the region where it selects the wrong candidate. That
+                # region was 26.1% of chosen patches.
+                if np.isfinite(rev) and rev > 1.0:
+                    continue
+                cols = [s["column"] for s in committed + [cand]]
+                scored.append({"columns": cols,
+                               "values": [s["value"] for s in committed + [cand]],
+                               "activation_after": float(a[i][feat]), "drop": drop,
+                               "drop_frac": df, "blast": bl, "reversal": rev,
+                               "recon_excess": rex,
+                               "score": objective(df, rev if np.isfinite(rev) else 1.0,
+                                                  bl, rex),
+                               "recon_rel": float(rel[i]),
+                               "edit_distance": float(sum(s["edit_distance"]
+                                                          for s in committed + [cand])),
+                               "_cand": cand, "_vec": a[i], **m})
+            if not scored:
+                stop = "no_improving_candidate" if committed else "no_qualifying_combination"
+                break
+            # Same tie-break as before, now applied per STEP rather than across
+            # combinations: among candidates within tie_band of the step's best AND tied
+            # on suppression within drop_tol, take the smallest edit. Gating on drop
+            # matters because drop_frac is a factor of the score, so a band on the score
+            # alone lets the tie-break pay for a smaller edit with the target itself.
             _s = lambda c: c["score"] if np.isfinite(c["score"]) else -np.inf
             _d = lambda c: c["drop_frac"] if np.isfinite(c["drop_frac"]) else -np.inf
-            top = max(_s(c) for c in cands)
+            top = max(_s(c) for c in scored)
             floor = top - tie_band * abs(top) if np.isfinite(top) else -np.inf
-            near = [c for c in cands if _s(c) >= floor] or cands
+            near = [c for c in scored if _s(c) >= floor] or scored
             d_top = max(_d(c) for c in near)
             near = [c for c in near if _d(c) >= d_top - drop_tol] or near
-            best = min(near, key=lambda c: (len(c["columns"]), c["edit_distance"]))
-            stop = "fully_suppressed" if best["activation_after"] <= 0 else "best_combination"
-        else:
-            stop = "no_qualifying_combination"
+            step_best = min(near, key=lambda c: (len(c["columns"]), c["edit_distance"]))
+            # commit only on improvement, as the transfer greedy does
+            if best is not None and _s(step_best) <= _s(best):
+                stop = "no_improvement"
+                break
+            best = step_best
+            committed.append(best.pop("_cand"))
+            pool = [c for c in pool if c["column"] != committed[-1]["column"]]
+            stop = ("fully_suppressed" if best["activation_after"] <= 0
+                    else "best_combination")
+            if best["activation_after"] <= 0:
+                break
 
     a_now_vec = best.pop("_vec") if best else a_base_row.copy()
     a_now = float(best["activation_after"]) if best else a_start
