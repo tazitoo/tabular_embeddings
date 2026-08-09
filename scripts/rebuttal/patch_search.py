@@ -1355,6 +1355,15 @@ def main():
         with open(args.out, "w") as fh:
             json.dump(results, fh, indent=2, default=float)
     print(f"\nwrote {args.out}")
+    # Terminal marker, and the ONLY thing that means this run finished. The output file
+    # is rewritten after every concept so a killed run leaves a complete-looking JSON,
+    # and "no process on the host" is not completion either -- two v8 arms were SIGHUP'd
+    # mid-sweep, left partial output, reported no error, and were read as finished. That
+    # cost 34 concepts and 233 rows before the gap showed up in the coverage accounting.
+    # Counts are on the line so a truncated run cannot be mistaken for a whole one.
+    done = sum(1 for r in results if not r.get("status"))
+    print(f"DONE {args.out} concepts={len(results)} ok={done} "
+          f"errors={len(results) - done}", flush=True)
 
 
 def run_concept(donor, feat, args):
