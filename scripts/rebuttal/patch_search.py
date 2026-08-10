@@ -867,7 +867,7 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
 
 
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
-               others, space, sel_tol, recon_bar,
+               others, space, sel_tol, recon_bar, value_search=True,
                max_levels=6, top_m=8, max_cols=3, probe_cols=None,
                recip_shared=None, recipient=None, npz_path=None):
     """Greedy search over input (column, value) edits, scored on the joint objective.
@@ -923,6 +923,26 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             per_col[s["column"]] = s
     ranked = sorted(per_col.values(), key=lambda s: -s["slope"])[:top_m]
 
+    # The columns are ranked by their BEST probe, but every probed value on those columns
+    # is kept. Pass 1 already measured them; discarding all but the maximum is what left
+    # pass 2 with nothing but maximum-suppression candidates, so a row whose strongest
+    # edit overshoots had no milder edit to fall back on and returned no patch at all.
+    #
+    # Costs nothing extra in forwards: top_cols(8) x max_vals(6) = 48 candidates against
+    # ~199 usable window slots, so a greedy step is still one forward on any dataset with
+    # a full window. `values` is one entry per column when value_search is off, which is
+    # exactly the previous behaviour.
+    by_col = defaultdict(list)
+    for s in sens:
+        if s["drop"] <= 0 or not np.isfinite(s["slope"]):
+            continue
+        by_col[s["column"]].append(s)
+    if value_search:
+        for c in by_col:
+            by_col[c].sort(key=lambda s: -s["slope"])
+    else:
+        by_col = {c: [per_col[c]] for c in per_col}
+
     best, stop = None, "no_sensitive_column"
     committed = []          # list of the sensitivity records already applied
     if ranked:
@@ -940,7 +960,11 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         # Values stay pinned to the pass-1 winner per column. Searching values in
         # combination is the next version; this one first establishes that greedy plus the
         # crossing guard behaves.
-        pool = list(ranked)
+        # The pool is (column, value) pairs, not columns: every probed value on each
+        # still-uncommitted ranked column. With value_search off there is one value per
+        # column and this is the previous behaviour exactly.
+        open_cols = [s["column"] for s in ranked]
+        pool = [v for c in open_cols for v in by_col[c]]
         for _ in range(max_cols):
             if not pool:
                 break
@@ -1005,7 +1029,11 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 break
             best = step_best
             committed.append(best.pop("_cand"))
-            pool = [c for c in pool if c["column"] != committed[-1]["column"]]
+            # A committed column leaves the pool entirely -- every value of it, not just
+            # the one taken. Re-editing a column already patched would compound edits on
+            # one input rather than search the row.
+            open_cols = [c for c in open_cols if c != committed[-1]["column"]]
+            pool = [v for c in open_cols for v in by_col[c]]
             stop = ("fully_suppressed" if best["activation_after"] <= 0
                     else "best_combination")
             if best["activation_after"] <= 0:
@@ -1293,6 +1321,12 @@ def main():
                          "classification costs no concepts (0 of 335 have only regression "
                          "cells), 16.8%% of cells and 10.8%% of rows; it does leave 14 "
                          "concepts under 30 rows, up from 5.")
+    ap.add_argument("--no-value-search", action="store_true",
+                    help="offer each ranked column only its single most-suppressive value, "
+                         "as the search did before values were searched. Kept to reproduce "
+                         "the v9 baseline; the default searches every probed value, which "
+                         "costs no extra forwards (8 columns x 6 values = 48 candidates "
+                         "against ~199 window slots).")
     ap.add_argument("--space", choices=("raw", "preprocessed"), default="raw",
                     help="which columns the search edits. RAW is the canonical path: it "
                          "edits the original table and transforms through the fitted "
@@ -1578,7 +1612,8 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                              max_levels=args.max_vals, top_m=args.top_cols,
                              max_cols=args.max_steps, probe_cols=probe_cols,
                              recip_shared=recip_shared, recipient=recipient,
-                             npz_path=npz_path)
+                             npz_path=npz_path,
+                             value_search=not args.no_value_search)
             res.update({"donor": donor, "feat": feat, "recipient": recipient,
                         "dataset": dataset, "n_other_concepts": int(len(others)),
                         "n_concepts_at_row": int(len(others)) + 1,
