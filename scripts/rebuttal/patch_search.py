@@ -199,6 +199,61 @@ def _present(v: np.ndarray) -> np.ndarray:
     return np.array([x for x in a.tolist() if x is not None and x == x], dtype=object)
 
 
+def lattice_step(v: np.ndarray, tol: float = 1e-9):
+    """The spacing a column's values sit on, or None if it is genuinely continuous.
+
+    Decides whether a proposed value may be INTERPOLATED. The "never invent a value" rule
+    was written for ordinal-coded categoricals, where an interpolated code names no
+    category, and was then applied to every column type because there was one path. A
+    genuine float does not have that failure mode: 0.235 between an observed 0.23 and 0.24
+    is a value the column can take and the model can ingest.
+
+    The case that does need snapping is a float-typed column that is discrete underneath --
+    0.5 increments, currency in cents, counts stored as floats. Interpolating those
+    produces values the column never takes. That is detectable rather than assumed: if
+    every gap between consecutive distinct values is a whole multiple of the smallest gap,
+    the column is on a lattice.
+    """
+    u = np.unique(_present(v).astype(float))
+    if u.size < 3:
+        return None
+    d = np.diff(u)
+    d = d[d > tol]
+    if d.size == 0:
+        return None
+    g = float(d.min())
+    if g <= tol:
+        return None
+    return g if np.allclose(d / g, np.round(d / g), atol=1e-6) else None
+
+
+def line_search_values(v: np.ndarray, x0: float, direction: float,
+                       n_points: int) -> np.ndarray:
+    """Values from x0 out to the marginal's edge, for a dense scan of one column.
+
+    The extent is the column's OBSERVED RANGE, not the point where pass-1 gradients stop
+    being favourable. Those gradients are first-order main effects measured on the
+    unpatched row; using them to bound the scan lets an estimate taken somewhere else veto
+    a region the conditioned evaluation never gets to see. Direction is theirs to set,
+    extent is not.
+
+    Snapped to the lattice where one exists, interpolated where the column is genuinely
+    continuous. Snapping to values observed IN X_query would cap the scan at 200 distinct
+    targets regardless of how fine we want it, since that is all the query set holds.
+    """
+    w = _present(v).astype(float)
+    if w.size == 0 or not np.isfinite(x0):
+        return np.array([])
+    edge = float(w.max()) if direction > 0 else float(w.min())
+    if not np.isfinite(edge) or abs(edge - float(x0)) <= 0:
+        return np.array([])
+    grid = np.linspace(float(x0), edge, n_points + 1)[1:]     # exclude x0 itself
+    step = lattice_step(w)
+    if step is not None:
+        grid = np.round((grid - float(x0)) / step) * step + float(x0)
+    return np.unique(grid)
+
+
 def column_histogram(v: np.ndarray, categorical: bool, nbins: int = 20):
     """(representative observed value, count) per occupied bin of the column.
 
@@ -868,7 +923,7 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
 
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, space, sel_tol, recon_bar, value_search=True,
-               max_levels=6, top_m=8, probe_cols=None,
+               max_levels=6, top_m=8, probe_cols=None, n_line=16,
                recip_shared=None, recipient=None, npz_path=None):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
@@ -938,6 +993,30 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             continue
         by_col[s["column"]].append(s)
     if value_search:
+        # Dense line search on the CONTINUOUS columns. Pass 1's probes are a coarse grid;
+        # they set the direction -- the sign of the move that suppressed -- and the scan
+        # runs from the row's current value out to the marginal's edge in that direction.
+        # The extent is deliberately not bounded by where those gradients stop being
+        # favourable: they are first-order main effects from the unpatched row, and using
+        # them to veto a region means the conditioned evaluation never sees it.
+        #
+        # Categoricals have no line to walk, so their pool stays the admissible level set.
+        for c in list(by_col):
+            if c in space.cat or not by_col[c]:
+                continue
+            lead = max(by_col[c], key=lambda s: s["slope"])
+            direction = np.sign(float(lead["value"]) - float(x0[c]))
+            if direction == 0:
+                continue
+            col = space.cols[c]
+            seen = {float(s["value"]) for s in by_col[c]}
+            for val in line_search_values(col, float(x0[c]), direction, n_line):
+                if float(val) in seen or _same(val, x0[c]):
+                    continue
+                by_col[c].append({"column": c, "value": float(val), "slope": lead["slope"],
+                                  "drop": lead["drop"], "delta_log_freq": np.nan,
+                                  "edit_distance": edit_distance(col, x0[c], val,
+                                                                 categorical=False)})
         for c in by_col:
             by_col[c].sort(key=lambda s: -s["slope"])
     else:
@@ -1331,6 +1410,12 @@ def main():
                          "classification costs no concepts (0 of 335 have only regression "
                          "cells), 16.8%% of cells and 10.8%% of rows; it does leave 14 "
                          "concepts under 30 rows, up from 5.")
+    ap.add_argument("--n-line", type=int, default=16,
+                    help="points in the dense line search along each continuous column, "
+                         "from the row's current value to the marginal's edge in the "
+                         "direction pass 1 found suppressing. Snapped to the column's "
+                         "lattice where it has one, interpolated where it is genuinely "
+                         "continuous.")
     ap.add_argument("--no-value-search", action="store_true",
                     help="offer each ranked column only its single most-suppressive value, "
                          "as the search did before values were searched. Kept to reproduce "
@@ -1615,7 +1700,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
             res = search_row(donor, dataset, X_ctx, y_ctx, X_query, task, args.device,
                              row, feat, others, space, args.selectivity_tol, args.recon_bar,
                              max_levels=args.max_vals, top_m=args.top_cols,
-                             probe_cols=probe_cols,
+                             probe_cols=probe_cols, n_line=args.n_line,
                              recip_shared=recip_shared, recipient=recipient,
                              npz_path=npz_path,
                              value_search=not args.no_value_search)
