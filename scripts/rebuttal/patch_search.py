@@ -924,6 +924,7 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, space, sel_tol, recon_bar, value_search=True,
                max_levels=6, top_m=8, probe_cols=None, n_line=16,
+               uninhibited=False,
                recip_shared=None, recipient=None, npz_path=None):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
