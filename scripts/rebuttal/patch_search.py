@@ -868,7 +868,7 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
 
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, space, sel_tol, recon_bar, value_search=True,
-               max_levels=6, top_m=8, max_cols=3, probe_cols=None,
+               max_levels=6, top_m=8, probe_cols=None,
                recip_shared=None, recipient=None, npz_path=None):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
@@ -951,7 +951,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         # is already applied, in one batched forward plus one batched recipient call, then
         # commits the best surviving candidate.
         #
-        # Replaces enumerating every combination of up to max_cols columns. Enumeration
+        # Replaces enumerating every combination of columns. Enumeration
         # assumes the columns' effects ADD -- it scores each combination from the ORIGINAL
         # row, so it never sees that a column's effect changes once another has been
         # applied. Re-probing is what makes the coupling visible, and it is not more
@@ -965,9 +965,19 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         # column and this is the previous behaviour exactly.
         open_cols = [s["column"] for s in ranked]
         pool = [v for c in open_cols for v in by_col[c]]
-        for _ in range(max_cols):
-            if not pool:
-                break
+        # No cap on how many columns a patch may edit. The greedy is already bounded by
+        # the pool -- top_m columns, each leaving once committed -- and it stops on its own
+        # when nothing improves, the target is reached, or the concept is fully suppressed.
+        # A separate max_steps=3 overrode those rules on 27.3% of v10 patches: rows still
+        # improving when the loop ran out of iterations, recorded as if they had stopped by
+        # choice. It was also a leftover from enumeration, where it existed to keep
+        # C(top_m, k) from exploding; greedy has no explosion to control, since a step
+        # costs one forward whether it commits the first column or the sixth.
+        #
+        # Deliberately not replaced with a smaller cap "for interpretability". If
+        # suppressing a concept takes six columns, that is what it costs, and deciding
+        # otherwise in advance hides the cost rather than reducing it.
+        while pool:
             rows_, meta_ = [], []
             for cand in pool:
                 r = list(x0)
@@ -1335,11 +1345,6 @@ def main():
                          "reported columns and values are the table's own. Verified to "
                          "reproduce X_query exactly, and refuses to run if it does not. "
                          "'preprocessed' is kept only to reproduce pre-v7 sweeps.")
-    ap.add_argument("--max-steps", type=int, default=3,
-                    help="largest column-combination size in pass 2. The one knob that "
-                         "cannot simply be maximised: pass 2 evaluates C(top_cols, size) "
-                         "combinations, so this is combinatorial in the column count. "
-                         "Raise it only with the cost measured.")
     ap.add_argument("--min-rows", type=int, default=1,
                     help="minimum accepted rows for a cell to be usable. Cells are "
                          "ranked largest-first, so this only excludes empties.")
@@ -1610,7 +1615,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
             res = search_row(donor, dataset, X_ctx, y_ctx, X_query, task, args.device,
                              row, feat, others, space, args.selectivity_tol, args.recon_bar,
                              max_levels=args.max_vals, top_m=args.top_cols,
-                             max_cols=args.max_steps, probe_cols=probe_cols,
+                             probe_cols=probe_cols,
                              recip_shared=recip_shared, recipient=recipient,
                              npz_path=npz_path,
                              value_search=not args.no_value_search)
