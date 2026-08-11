@@ -923,7 +923,7 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
 
 def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, space, sel_tol, recon_bar, value_search=True,
-               max_levels=6, top_m=8, probe_cols=None, n_line=16,
+               max_levels=6, top_m=8, probe_cols=None, n_line=192,
                uninhibited=False,
                recip_shared=None, recipient=None, npz_path=None):
     """Greedy search over input (column, value) edits, scored on the joint objective.
@@ -1064,11 +1064,21 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         # Values stay pinned to the pass-1 winner per column. Searching values in
         # combination is the next version; this one first establishes that greedy plus the
         # crossing guard behaves.
-        # The pool is (column, value) pairs, not columns: every probed value on each
-        # still-uncommitted ranked column. With value_search off there is one value per
-        # column and this is the previous behaviour exactly.
-        open_cols = [s["column"] for s in ranked]
-        pool = [v for c in open_cols for v in by_col[c]]
+        # PER-COLUMN LINE SEARCH. Columns are taken in pass-1 slope order, and each gets
+        # ONE forward spending the whole window on its own values, conditioned on the
+        # columns already fixed.
+        #
+        # What this replaces: a pool of (column, value) pairs across all ranked columns,
+        # evaluated together. That split the window eight ways, leaving 16 points to cover
+        # an entire marginal -- a spacing of about a sixteenth of the column's range, which
+        # steps over any narrow band where the concept actually responds. It was neither a
+        # search over combinations nor a search over values, just a sparse sample of the
+        # product space, and it could not resolve what it was looking for.
+        #
+        # Cost is one forward per column ADDED. A 3-column patch costs 3 forwards plus
+        # pass 1, about what the pooled version spent, at an order of magnitude more
+        # resolution; a row that stops at one column pays for one.
+        col_order = [s["column"] for s in ranked]
         # No cap on how many columns a patch may edit. The greedy is already bounded by
         # the pool -- top_m columns, each leaving once committed -- and it stops on its own
         # when nothing improves, the target is reached, or the concept is fully suppressed.
@@ -1081,13 +1091,16 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         # Deliberately not replaced with a smaller cap "for interpretability". If
         # suppressing a concept takes six columns, that is what it costs, and deciding
         # otherwise in advance hides the cost rather than reducing it.
-        while pool:
+        for cand_col in col_order:
             rows_, meta_ = [], []
-            for cand in pool:
+            for cand in by_col.get(cand_col, []):
                 r = list(x0)
-                for s in committed + [cand]:
+                for s in committed:
                     r[s["column"]] = s["value"]
+                r[cand_col] = cand["value"]
                 rows_.append(r); meta_.append(cand)
+            if not rows_:
+                continue
             a, rel = ev(rows_)
             revs = recipient_reversal(recip, a, feat) if recip else [float("nan")] * len(a)
             scored = []
@@ -1126,8 +1139,12 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                                           for s in committed + [cand])),
                                "_cand": cand, "_vec": a[i], **m})
             if not scored:
-                stop = "no_improving_candidate" if committed else "no_qualifying_combination"
-                break
+                # This column offered nothing admissible. Skip it and try the next: the
+                # ranking is a first-order estimate from the unpatched row, so one column
+                # failing says nothing about the rest.
+                if not committed:
+                    stop = "no_qualifying_combination"
+                continue
             # No tie-break. It existed to counteract enumeration's bias toward larger
             # combinations -- there was always a 3-column combo scoring marginally higher,
             # so 74% of patches used all three. Greedy adds a column only when it improves
@@ -1137,17 +1154,15 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # paying for a smaller edit with suppression.
             _s = lambda c: c["score"] if np.isfinite(c["score"]) else -np.inf
             step_best = max(scored, key=_s)
-            # commit only on improvement, as the transfer greedy does
+            # Commit only on improvement, as the transfer greedy does -- but SKIP rather
+            # than stop, for the same reason as above. Columns are visited once each, in
+            # rank order, and the search ends when the pool is exhausted or the concept is
+            # suppressed.
             if best is not None and _s(step_best) <= _s(best):
                 stop = "no_improvement"
-                break
+                continue
             best = step_best
             committed.append(best.pop("_cand"))
-            # A committed column leaves the pool entirely -- every value of it, not just
-            # the one taken. Re-editing a column already patched would compound edits on
-            # one input rather than search the row.
-            open_cols = [c for c in open_cols if c != committed[-1]["column"]]
-            pool = [v for c in open_cols for v in by_col[c]]
             stop = ("fully_suppressed" if best["activation_after"] <= 0
                     else "best_combination")
             if best["activation_after"] <= 0:
@@ -1440,10 +1455,13 @@ def main():
                          "every observed level on categoricals rather than only those whose "
                          "pass-1 probe suppressed. Costs 2-4 forwards per greedy step "
                          "instead of 1, measured over the datasets in play.")
-    ap.add_argument("--n-line", type=int, default=16,
-                    help="points in the dense line search along each continuous column, "
-                         "from the row's current value to the marginal's edge in the "
-                         "direction pass 1 found suppressing. Snapped to the column's "
+    ap.add_argument("--n-line", type=int, default=192,
+                    help="points in the line search along ONE continuous column, per "
+                         "direction, from the row's current value toward the marginal's "
+                         "edge. Sized to fill the query window, since each column now gets "
+                         "its own forward -- it was 16 when eight columns shared one "
+                         "window, a spacing of a sixteenth of the range that stepped over "
+                         "any narrow band the concept responds in. Snapped to the column's "
                          "lattice where it has one, interpolated where it is genuinely "
                          "continuous.")
     ap.add_argument("--no-value-search", action="store_true",
