@@ -1002,21 +1002,45 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         #
         # Categoricals have no line to walk, so their pool stays the admissible level set.
         for c in list(by_col):
-            if c in space.cat or not by_col[c]:
+            if not by_col[c]:
                 continue
             lead = max(by_col[c], key=lambda s: s["slope"])
-            direction = np.sign(float(lead["value"]) - float(x0[c]))
-            if direction == 0:
-                continue
             col = space.cols[c]
-            seen = {float(s["value"]) for s in by_col[c]}
-            for val in line_search_values(col, float(x0[c]), direction, n_line):
-                if float(val) in seen or _same(val, x0[c]):
-                    continue
-                by_col[c].append({"column": c, "value": float(val), "slope": lead["slope"],
+            seen = {float(s["value"]) for s in by_col[c]
+                    if not isinstance(s["value"], str)}
+            def _add(val, is_cat):
+                by_col[c].append({"column": c, "value": val, "slope": lead["slope"],
                                   "drop": lead["drop"], "delta_log_freq": np.nan,
                                   "edit_distance": edit_distance(col, x0[c], val,
-                                                                 categorical=False)})
+                                                                 categorical=is_cat)})
+            if c in space.cat:
+                # UNINHIBITED: every observed level, including those whose pass-1 probe
+                # moved the concept the wrong way. Those were excluded by a first-order
+                # estimate from the UNPATCHED row -- the same reasoning that stopped
+                # pass-1 gradients bounding the continuous scan. A level that looks
+                # unhelpful before any edit is committed may not be after one.
+                if not uninhibited:
+                    continue
+                for val in _present(col):
+                    v = float(val) if not isinstance(val, str) else val
+                    if _same(val, x0[c]) or (not isinstance(v, str) and v in seen):
+                        continue
+                    if not isinstance(v, str):
+                        seen.add(v)
+                    _add(v, True)
+            else:
+                # Uninhibited scans BOTH sides of the marginal; otherwise only the side
+                # pass 1 found suppressing.
+                dirs = (1.0, -1.0) if uninhibited else (
+                    (np.sign(float(lead["value"]) - float(x0[c])),))
+                for direction in dirs:
+                    if direction == 0:
+                        continue
+                    for val in line_search_values(col, float(x0[c]), direction, n_line):
+                        if float(val) in seen or _same(val, x0[c]):
+                            continue
+                        seen.add(float(val))
+                        _add(float(val), False)
         for c in by_col:
             by_col[c].sort(key=lambda s: -s["slope"])
     else:
@@ -1410,6 +1434,11 @@ def main():
                          "classification costs no concepts (0 of 335 have only regression "
                          "cells), 16.8%% of cells and 10.8%% of rows; it does leave 14 "
                          "concepts under 30 rows, up from 5.")
+    ap.add_argument("--uninhibited", action="store_true",
+                    help="scan BOTH sides of the marginal on continuous columns, and offer "
+                         "every observed level on categoricals rather than only those whose "
+                         "pass-1 probe suppressed. Costs 2-4 forwards per greedy step "
+                         "instead of 1, measured over the datasets in play.")
     ap.add_argument("--n-line", type=int, default=16,
                     help="points in the dense line search along each continuous column, "
                          "from the row's current value to the marginal's edge in the "
@@ -1701,6 +1730,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                              row, feat, others, space, args.selectivity_tol, args.recon_bar,
                              max_levels=args.max_vals, top_m=args.top_cols,
                              probe_cols=probe_cols, n_line=args.n_line,
+                             uninhibited=args.uninhibited,
                              recip_shared=recip_shared, recipient=recipient,
                              npz_path=npz_path,
                              value_search=not args.no_value_search)
