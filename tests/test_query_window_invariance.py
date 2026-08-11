@@ -56,7 +56,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.mark.parametrize("model", ["tabpfn", "tabicl", "mitra"])
+@pytest.mark.parametrize("model", ["tabpfn", "tabicl", "mitra", "tabdpt"])
 def test_activation_is_invariant_to_query_order(model):
     """Permuting the query set must not change any row's activation."""
     Xtr, ytr, Xq, task = _ctx(model)
@@ -70,7 +70,7 @@ def test_activation_is_invariant_to_query_order(model):
     assert shift < TOL, f"{model}: query order changed activations by {shift:.3e}"
 
 
-@pytest.mark.parametrize("model", ["tabpfn", "tabicl", "mitra"])
+@pytest.mark.parametrize("model", ["tabpfn", "tabicl", "mitra", "tabdpt"])
 def test_activation_is_invariant_to_companions_at_fixed_count(model):
     """A row's activation must not depend on which other rows share the window.
 
@@ -90,7 +90,7 @@ def test_activation_is_invariant_to_companions_at_fixed_count(model):
     assert shift < TOL, f"{model}: companions changed the test row by {shift:.3e}"
 
 
-@pytest.mark.parametrize("model", ["tabpfn", "tabicl", "mitra"])
+@pytest.mark.parametrize("model", ["tabpfn", "tabicl", "mitra", "tabdpt"])
 def test_activation_is_invariant_to_position_in_window(model):
     """Moving the row under test from the front to the back must change nothing."""
     Xtr, ytr, Xq, task = _ctx(model)
