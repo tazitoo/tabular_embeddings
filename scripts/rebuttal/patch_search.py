@@ -700,15 +700,29 @@ def blast_radius(a_base, a_new, accepted_others):
     return float(np.linalg.norm(d) / (np.linalg.norm(a_base[accepted_others]) + EPS))
 
 
-def reversal(L_orig, L_transfer, L_mod):
-    """Fraction of the transfer's gain that the patch undid.
+def reversal(L_transfer, L_target, L_mod, min_interval=1e-3):
+    """Where the patch landed between the transfer and the ABLATION of this concept.
 
-    0 = the patch changed nothing; 1 = the recipient is back to its untransferred
-    prediction. Uses the transfer's own endpoints, so it needs no separate ablation and
-    carries no scale. The denominator is ~0 on rows where the transfer achieved nothing;
-    those rows carry no signal in either direction and are flagged rather than scored.
+    0 = the patch changed nothing; 1 = it reached what ablating this concept alone
+    achieves; >1 = it moved further than removing the concept, which is doing more than
+    removing it and is the crossing the guard should reject.
+
+    The target used to be the UNTRANSFERRED prediction, which asks one concept to undo a
+    whole multi-concept transfer. That is unreachable wherever the concept carries a small
+    share, so a perfect patch was filed as an undershoot -- one measured row suppressed the
+    concept 90.7% with 3.6% collateral and scored reversal 0.190, which is what it should
+    score when the concept carries a fifth of the delta.
+
+    Returns nan when the interval is degenerate. Ablating the concept moves the prediction
+    by less than min_interval on a quarter of rows (ceiling_effect p25 = 0.001), and
+    normalising there divides by noise -- that is what drove capture_of_ceiling to p90 =
+    11.17. Such a row cannot demonstrate anything about the recipient in either direction,
+    so it is flagged and the patch is selected on the donor-side terms alone.
     """
-    return float((L_mod - L_transfer) / (L_orig - L_transfer + EPS))
+    interval = L_target - L_transfer
+    if not np.isfinite(interval) or abs(interval) < min_interval:
+        return float("nan")
+    return float((L_mod - L_transfer) / interval)
 
 
 def objective(drop_frac, rev, blast, recon_excess=0.0):
@@ -783,7 +797,7 @@ def build_recip_shared(donor, recipient, dataset, device):
     return {"V": V, "fmap": fmap, "std_w": std_w, "A": A, "tail": tail, "Xq": Xq}
 
 
-def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, device):
+def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, device):
     """Per-ROW recipient context: this row's accepted atoms, signs, and the transfer's
     own endpoints (L_orig, L_transfer) that `reversal` is scaled by."""
     if shared is None:
@@ -819,11 +833,28 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, device):
         return np.asarray(batched_intervention(tail, Xq[row:row+1], t, inject_context=False),
                           dtype=np.float64)
 
-    return {"fids": fids, "B": B, "signs": np.sign(c),
-            "a_corpus": np.array([A[row, f] for f in fids]),
+    # The ABLATION TARGET: the delta with THIS concept's term removed and every other
+    # concept left at its corpus value. That is what a perfect patch achieves -- remove c,
+    # disturb nothing else -- so it is the endpoint the recipient term should be scaled by.
+    # Scaling by the untransferred prediction instead asks one concept to undo the whole
+    # transfer, which is only reachable when c IS the whole transfer, and files a perfect
+    # patch on a low-share concept as an undershoot.
+    #
+    # Defensible now because it was measured rather than assumed: the per-concept ablations
+    # sum to the transfer's effect at 67% of rows (loo_additivity_sweep, median ratio
+    # 0.846), so the ablation target is a real share of a decomposable whole. On the 26%
+    # redundant rows it is not, which is a reason to flag them, not to rescale them.
+    signs = np.sign(c)
+    a_corpus = np.array([A[row, f] for f in fids])
+    keep = np.array([0.0 if f == feat else 1.0 for f in fids])
+    L_ablated = loss(predict(np.asarray([(signs * a_corpus * keep) @ B]))[0])
+
+    return {"fids": fids, "B": B, "signs": signs,
+            "a_corpus": a_corpus,
             "a_re": {f: float(a_re[f]) for f in fids},   # our own baseline, for ratios
             "predict": predict, "loss": loss,
-            "L_orig": loss(pw), "L_transfer": loss(pi), "row": int(row)}
+            "L_orig": loss(pw), "L_transfer": loss(pi), "L_ablated": L_ablated,
+            "row": int(row)}
 
 
 def recipient_reversal(recip, acts, feat):
@@ -841,7 +872,8 @@ def recipient_reversal(recip, acts, feat):
             for f in recip["fids"]])
         d.append((recip["signs"] * recip["a_corpus"] * r_vec) @ recip["B"])
     preds = recip["predict"](np.asarray(d))
-    return [reversal(recip["L_orig"], recip["L_transfer"], recip["loss"](p)) for p in preds]
+    return [reversal(recip["L_transfer"], recip["L_ablated"], recip["loss"](p))
+            for p in preds]
 
 
 def shift_metrics(a_base, a_new, others, feat):
@@ -972,7 +1004,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     # Built here, not by the caller: the ratios are taken against OUR re-extracted
     # baseline, which only exists once the donor forward above has run.
     recip = build_recip(recip_shared, donor, recipient, dataset, npz_path, row,
-                        a_base_row, device) if recip_shared is not None else None
+                        a_base_row, feat, device) if recip_shared is not None else None
 
     sens = column_sensitivity(ev, space, x0, a_base_row, feat, others,
                               max_levels, probe_cols=probe_cols)
@@ -1827,7 +1859,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                 bl, rx, df = b.get("blast", 0.0), b.get("recon_excess", 0.0), b.get("drop_frac", 0.0)
                 print(f"      objective {b.get('score', float('nan')):.4f}"
                       f" = drop {df:.3f}"
-                      f" x sqrt(rev {rv:.3f})"
+                      f" x (toward-ablation {rv:.3f})^{EXPONENTS['reversal']:g}"
                       f" / (1+blast {bl:.3f})"
                       f" / (1+recon_excess {rx:.3f})", flush=True)
             if recipient in READOUT_EXCLUDED:
