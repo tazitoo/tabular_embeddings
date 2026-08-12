@@ -76,6 +76,10 @@ REVERSAL_TOLERANCE = 0.99
 # The unmodified row rides in every batch and must reproduce to this. Same threshold the
 # old runtime independence check used, kept so the number means the same thing.
 CANARY_TOL = 1e-4
+# A concept below this is not active, so a relative shift in it says nothing about whether
+# we disturbed it -- and |da|/|a| on a near-zero baseline is what produced a reported
+# 198,990,863%. Such concepts are dropped from the collateral, not floored.
+ACTIVE_FLOOR = 1e-3
 
 # Exponent on each term of the objective. Defaults reproduce
 # drop x sqrt(reversal) / ((1+blast) x (1+recon_excess)).
@@ -685,6 +689,43 @@ def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, space, task, device, r
     return evaluate
 
 
+def weighted_blast(a_base, a_new, others, recip):
+    """Collateral weighted by how much the recipient's prediction depends on each concept.
+
+    Each of the k-1 co-accepted concepts moved by |da_j|/|a_j| -- per concept, relative to
+    its own scale, since activations differ by an order of magnitude across features. That
+    movement is then weighted by concept j's LOO effect: how far the prediction moves when
+    j is removed from the completed delta.
+
+    Unweighted, every concept counts the same. That cannot distinguish a 12% shift in a
+    concept the prediction does not depend on -- which changes no outcome -- from a 3%
+    shift in one carrying a third of it. Measured on v14's 481 early-stop rows, the
+    90th-percentile other concept moved 0.306 against a target that moved 0.349, and
+    nothing recorded says whether that collateral sat on concepts that mattered.
+
+    Weighted, it is in the same currency as the rest of the objective: drop and the
+    recipient term are both prediction effects, and this becomes "how much prediction
+    effect did we disturb" against "how much did we intend to".
+
+    Concepts whose activation is ~0 are excluded rather than floored. A concept that is not
+    active carries no signal about whether we disturbed it, and |da|/|a| on a near-zero
+    baseline is what produced a reported 198,990,863% -- the reason blast_radius was
+    written as a norm in the first place.
+    """
+    if len(others) == 0 or recip is None or "loo_by_fid" not in recip:
+        return None
+    b, n = np.asarray(a_base)[others], np.asarray(a_new)[others]
+    live = np.abs(b) > ACTIVE_FLOOR
+    if not live.any():
+        return None
+    rel = np.abs(n[live] - b[live]) / np.abs(b[live])
+    w = np.array([recip["loo_by_fid"].get(int(f), 0.0) for f in np.asarray(others)[live]])
+    tot = float(w.sum())
+    if tot <= EPS:                    # nothing here moves the prediction either way
+        return 0.0
+    return float((rel * w).sum() / tot)
+
+
 def blast_radius(a_base, a_new, accepted_others):
     """Movement in the OTHER accepted concepts, as one scale-free number.
 
@@ -850,14 +891,41 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
     # redundant rows it is not, which is a reason to flag them, not to rescale them.
     signs = np.sign(c)
     a_corpus = np.array([A[row, f] for f in fids])
-    keep = np.array([0.0 if f == feat else 1.0 for f in fids])
-    L_ablated = loss(predict(np.asarray([(signs * a_corpus * keep) @ B]))[0])
+
+    # LOO for EVERY accepted concept, not just the patched one, in the same batched call.
+    # Variant i is the delta with concept i's term removed -- the transfer's own delta
+    # minus that concept, which is what "ablate it" means. The reconstruction is faithful:
+    # validate_delta_reconstruction agreed with the stored deployed_delta to 3.14e-05.
+    #
+    # The patched concept's entry gives L_ablated, the target the recipient term is scaled
+    # by. The others give how much the recipient's prediction DEPENDS on each co-accepted
+    # concept, which is what the collateral should be weighted by: a 12% shift in a concept
+    # whose LOO is ~0 cannot move the prediction, while a 3% shift in one carrying a third
+    # of it can. blast and selectivity_ratio both treat them as equally worth not
+    # disturbing, and neither can tell those apart.
+    #
+    # Marginal contributions are already on disk (step_preds differenced across the
+    # transfer's greedy) but they are the effect AT ACCEPTANCE given what was accepted so
+    # far -- order-dependent, and it diverges from removal-from-the-completed-set exactly
+    # when concepts are correlated. LOO is the one that answers "if this gets disturbed,
+    # does the prediction care, given everything else present".
+    variants = []
+    for i in range(len(fids)):
+        keep = np.ones(len(fids)); keep[i] = 0.0
+        variants.append((signs * a_corpus * keep) @ B)
+    L_loo = [loss(p) for p in predict(np.asarray(variants))]
+    L_transfer = loss(pi)
+    i_feat = fids.index(feat) if feat in fids else None
+    L_ablated = L_loo[i_feat] if i_feat is not None else float("nan")
+    # |prediction effect of removing concept j|, the weight for j's disturbance.
+    loo_effect = np.array([abs(L - L_transfer) for L in L_loo])
 
     return {"fids": fids, "B": B, "signs": signs,
             "a_corpus": a_corpus,
             "a_re": {f: float(a_re[f]) for f in fids},   # our own baseline, for ratios
             "predict": predict, "loss": loss,
-            "L_orig": loss(pw), "L_transfer": loss(pi), "L_ablated": L_ablated,
+            "L_orig": loss(pw), "L_transfer": L_transfer, "L_ablated": L_ablated,
+            "loo_effect": loo_effect, "loo_by_fid": dict(zip(fids, loo_effect.tolist())),
             "row": int(row)}
 
 
@@ -1160,7 +1228,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 m = shift_metrics(a_base_row, a[i], others, feat)
                 drop = a_start - float(a[i][feat])
                 df = drop / a_start if a_start > 0 else float("nan")
-                bl = blast_radius(a_base_row, a[i], others)
+                bl_raw = blast_radius(a_base_row, a[i], others)
+                bl_w = weighted_blast(a_base_row, a[i], others, recip)
+                bl = bl_raw if bl_w is None else bl_w
                 rev = float(revs[i])
                 r0 = float(rel0[row])
                 rex = max(0.0, float(rel[i]) / r0 - 1.0) if r0 > EPS else 0.0
@@ -1182,7 +1252,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 scored.append({"columns": cols,
                                "values": [s["value"] for s in committed + [cand]],
                                "activation_after": float(a[i][feat]), "drop": drop,
-                               "drop_frac": df, "blast": bl, "reversal": rev,
+                               "drop_frac": df, "blast": bl, "blast_raw": bl_raw,
+                               "blast_weighted": bl_w, "reversal": rev,
                                "recon_excess": rex,
                                "score": objective(df, rev if np.isfinite(rev) else 1.0,
                                                   bl, rex),
