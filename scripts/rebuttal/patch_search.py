@@ -936,9 +936,29 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
     pw, pi = np.asarray(z["preds_weak"])[row], np.asarray(z["preds_intervened"])[row]
 
     def loss(p):
+        """The PREDICTION on the true class, not a loss.
+
+        Every endpoint and interval here is a difference between predictions, so the scale
+        is bounded by construction: a concept whose removal makes the prediction badly
+        wrong contributes at most 1.0.
+
+        This was -log(p[y]), inherited from `reversal`, which took it from the transfer's
+        dist_to_strong. That is unbounded as p -> 0, and summing k of them wrecked the
+        collateral term: additivity came out at median 4.68 and p90 79.15 against 0.846 for
+        the same quantity measured in gap-closed units, with the inflation tracking k
+        exactly (0.92 at k=8 rising to 85.67 at k=57). One badly-wrong prediction among 57
+        concepts was enough to swamp the sum.
+
+        Probabilities need no clamp and no normalisation to stay comparable, so the
+        min_interval guard on `reversal` is now protecting against genuinely degenerate
+        rows rather than papering over an unbounded scale.
+
+        Regression keeps the squared distance to the donor prediction, which is already a
+        prediction-space quantity.
+        """
         p = np.asarray(p)
         if p.ndim >= 1 and p.size > 1:
-            return float(-np.log(np.clip(p[y], EPS, 1 - EPS)))
+            return float(p[y])
         return float((float(p) - float(np.asarray(z["preds_strong"])[row])) ** 2)
 
     def predict(deltas):
