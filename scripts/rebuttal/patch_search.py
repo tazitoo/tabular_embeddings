@@ -703,9 +703,22 @@ def weighted_blast(a_base, a_new, others, recip):
     90th-percentile other concept moved 0.306 against a target that moved 0.349, and
     nothing recorded says whether that collateral sat on concepts that mattered.
 
-    Weighted, it is in the same currency as the rest of the objective: drop and the
-    recipient term are both prediction effects, and this becomes "how much prediction
-    effect did we disturb" against "how much did we intend to".
+    A SUM, not a mean. Concept j disturbed by a fraction rel_j of its activation costs an
+    estimated rel_j * loo_j of prediction effect, and the total is what we spent. A
+    weighted mean is bounded by the range of the per-concept movements, so a candidate
+    nudging twenty concepts reports the same as one nudging a single concept -- it
+    normalises away exactly the count that should accumulate. The norm it replaced did
+    accumulate, but in activation space, where it could not be compared against anything.
+
+    The sum is in prediction units, the same currency as L_ablated - L_transfer, so the
+    objective can weigh what a candidate bought against what it spent.
+
+    Two approximations, stated rather than buried: the cost is taken as LINEAR in rel_j,
+    so suppressing j halfway is charged half of removing it -- exact for the delta, which
+    is linear in activations, approximate for the prediction, which is not. And the
+    disturbances are treated as INDEPENDENT, which the additivity ratio contradicts at
+    about a quarter of rows. That ratio is recorded per row alongside this, so a reader can
+    see where the assumption is weak instead of having a correction baked in invisibly.
 
     Concepts whose activation is ~0 are excluded rather than floored. A concept that is not
     active carries no signal about whether we disturbed it, and |da|/|a| on a near-zero
@@ -720,10 +733,7 @@ def weighted_blast(a_base, a_new, others, recip):
         return None
     rel = np.abs(n[live] - b[live]) / np.abs(b[live])
     w = np.array([recip["loo_by_fid"].get(int(f), 0.0) for f in np.asarray(others)[live]])
-    tot = float(w.sum())
-    if tot <= EPS:                    # nothing here moves the prediction either way
-        return 0.0
-    return float((rel * w).sum() / tot)
+    return float((rel * w).sum())
 
 
 def blast_radius(a_base, a_new, accepted_others):
@@ -920,12 +930,27 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
     # |prediction effect of removing concept j|, the weight for j's disturbance.
     loo_effect = np.array([abs(L - L_transfer) for L in L_loo])
 
+    # How ADDITIVE this row is: do the per-concept effects sum to the transfer's own?
+    # ~1 means each ablation is genuinely that concept's share, so the weighted-sum
+    # collateral estimate rests on solid ground. <<1 means the concepts substitute for each
+    # other, no one of them is individually necessary, and both the collateral estimate's
+    # independence assumption and the ablation target itself are weaker there.
+    #
+    # Recorded rather than corrected for. Rescaling by gc/sum(LOO) would make the estimate
+    # consistent at the limit, but the correction is largest exactly where its premise
+    # fails -- 4.2x at a row with ratio 0.24 -- and it assumes the shortfall distributes
+    # proportionally, which is what redundancy denies. loo_additivity_sweep put the median
+    # at 0.846 with 67% of rows in 0.5-1.5.
+    L_full = abs(L_transfer - loss(pw))
+    additivity = float(loo_effect.sum() / L_full) if L_full > EPS else float("nan")
+
     return {"fids": fids, "B": B, "signs": signs,
             "a_corpus": a_corpus,
             "a_re": {f: float(a_re[f]) for f in fids},   # our own baseline, for ratios
             "predict": predict, "loss": loss,
             "L_orig": loss(pw), "L_transfer": L_transfer, "L_ablated": L_ablated,
             "loo_effect": loo_effect, "loo_by_fid": dict(zip(fids, loo_effect.tolist())),
+            "additivity": additivity,
             "row": int(row)}
 
 
@@ -1328,6 +1353,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "patched_columns": [str(space.names[c]) for c in best["columns"]] if best else [],
             "n_cols_changed": len(best["columns"]) if best else 0,
             "best": best, "trajectory": trajectory, "sensitivity_top": ranked[:5],
+            "row_additivity": (recip or {}).get("additivity"),
+            "loo_effects": {int(k): float(v)
+                            for k, v in ((recip or {}).get("loo_by_fid") or {}).items()},
             "n_probes": len(sens), "n_sensitive_columns": len(per_col),
             "final_shift": shift_metrics(a_base_row, a_now_vec, others, feat),
             "accepted_ratios": ratios,
