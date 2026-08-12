@@ -211,32 +211,37 @@ def _present(v: np.ndarray) -> np.ndarray:
     return np.array([x for x in a.tolist() if x is not None and x == x], dtype=object)
 
 
-def lattice_step(v: np.ndarray, tol: float = 1e-9):
-    """The spacing a column's values sit on, or None if it is genuinely continuous.
+def is_integral(v: np.ndarray) -> bool:
+    """Does this NUMERIC column hold only whole numbers?
 
-    Decides whether a proposed value may be INTERPOLATED. The "never invent a value" rule
-    was written for ordinal-coded categoricals, where an interpolated code names no
-    category, and was then applied to every column type because there was one path. A
-    genuine float does not have that failure mode: 0.235 between an observed 0.23 and 0.24
-    is a value the column can take and the model can ingest.
+    Decides whether the line search may place a value BETWEEN two observed ones. An
+    integral column cannot take 3.5, so its grid steps in whole numbers; a column with
+    fractional values can, so its grid interpolates freely.
 
-    The case that does need snapping is a float-typed column that is discrete underneath --
-    0.5 increments, currency in cents, counts stored as floats. Interpolating those
-    produces values the column never takes. That is detectable rather than assumed: if
-    every gap between consecutive distinct values is a whole multiple of the smallest gap,
-    the column is on a lattice.
+    Checked against the values rather than read off the dtype, because a column stored as
+    float can hold only integers and a mis-cast one says the wrong thing either way. The
+    test is exact -- no tolerance, no minimum sample, one value or a thousand gives the
+    same answer.
+
+    This does NO typing work and never sees a categorical column. Which columns are
+    categorical is preprocessing's answer (cat_indices) and is settled before any grid is
+    built; those go to candidate_levels and only ever get observed levels. Integrality
+    cannot make that distinction anyway -- a category coded 0-4 and a count taking 0-4 are
+    the same array -- which is exactly what the old "<=20 unique integers" heuristic got
+    wrong in both directions.
+
+    Replaces lattice_step, which tried to recover an ARBITRARY spacing so it could also
+    catch half-steps and currency-in-cents. That needed an atol I chose, needed three
+    distinct values to see two gaps, and degraded to a guess on sparse columns -- it
+    returned "interpolate" for a column that was 99.65% missing. Those cases are also not
+    worth catching: a currency column interpolated to a third decimal is an unusual value
+    the model can still ingest, not an impossible one like a fabricated category code,
+    which is the failure the rule was written for.
     """
-    u = np.unique(_present(v).astype(float))
-    if u.size < 3:
-        return None
-    d = np.diff(u)
-    d = d[d > tol]
-    if d.size == 0:
-        return None
-    g = float(d.min())
-    if g <= tol:
-        return None
-    return g if np.allclose(d / g, np.round(d / g), atol=1e-6) else None
+    w = _present(v).astype(float)
+    if w.size == 0:
+        return False
+    return bool(np.array_equal(w, np.rint(w)))
 
 
 def line_search_values(v: np.ndarray, x0: float, direction: float,
@@ -249,8 +254,8 @@ def line_search_values(v: np.ndarray, x0: float, direction: float,
     a region the conditioned evaluation never gets to see. Direction is theirs to set,
     extent is not.
 
-    Snapped to the lattice where one exists, interpolated where the column is genuinely
-    continuous. Snapping to values observed IN X_query would cap the scan at 200 distinct
+    Steps in whole numbers on an integral column and interpolates on a fractional one.
+    Snapping to values observed IN X_query instead would cap the scan at 200 distinct
     targets regardless of how fine we want it, since that is all the query set holds.
     """
     w = _present(v).astype(float)
@@ -260,9 +265,8 @@ def line_search_values(v: np.ndarray, x0: float, direction: float,
     if not np.isfinite(edge) or abs(edge - float(x0)) <= 0:
         return np.array([])
     grid = np.linspace(float(x0), edge, n_points + 1)[1:]     # exclude x0 itself
-    step = lattice_step(w)
-    if step is not None:
-        grid = np.round((grid - float(x0)) / step) * step + float(x0)
+    if is_integral(w):
+        grid = np.rint(grid)
     return np.unique(grid)
 
 
@@ -1529,7 +1533,7 @@ def main():
                          "its own forward -- it was 16 when eight columns shared one "
                          "window, a spacing of a sixteenth of the range that stepped over "
                          "any narrow band the concept responds in. Snapped to the column's "
-                         "lattice where it has one, interpolated where it is genuinely "
+                         "whole numbers on an integral column, interpolated where it is "
                          "continuous.")
     ap.add_argument("--no-value-search", action="store_true",
                     help="offer each ranked column only its single most-suppressive value, "
