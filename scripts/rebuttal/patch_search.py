@@ -689,6 +689,38 @@ def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, space, task, device, r
     return evaluate
 
 
+def collateral_detail(a_base, a_new, others, recip):
+    """Per-concept collateral for one patch: moved, worth, and the product.
+
+    One row per co-accepted concept rather than a summed number, because a total of 0.005
+    cannot say whether it came from one concept that mattered or twenty that did not --
+    and that distinction is the whole reason for weighting by LOO.
+
+      moved_pct     |da_j| / |a_j|, this concept's disturbance relative to its own scale
+      loo_effect    |L_ablated_j - L_transfer|, what REMOVING j does to the prediction
+      disturbed     moved_pct x loo_effect, the estimated prediction effect spent on j
+
+    `inactive` marks concepts below ACTIVE_FLOOR, which are excluded from the objective's
+    collateral term: a concept that is not active carries no signal about whether we
+    disturbed it, and |da|/|a| on a near-zero baseline is what produced a reported
+    198,990,863%.
+    """
+    if len(others) == 0 or recip is None or "loo_by_fid" not in recip:
+        return []
+    b, n = np.asarray(a_base), np.asarray(a_new)
+    out = []
+    for f in np.asarray(others):
+        f = int(f)
+        base = float(b[f])
+        live = abs(base) > ACTIVE_FLOOR
+        moved = abs(float(n[f]) - base) / abs(base) if live else float("nan")
+        loo = float(recip["loo_by_fid"].get(f, 0.0))
+        out.append({"feat": f, "moved_pct": moved, "loo_effect": loo,
+                    "disturbed": (moved * loo) if live else None,
+                    "inactive": not live})
+    return sorted(out, key=lambda d: -(d["disturbed"] or 0.0))
+
+
 def weighted_blast(a_base, a_new, others, recip):
     """Collateral weighted by how much the recipient's prediction depends on each concept.
 
@@ -733,7 +765,27 @@ def weighted_blast(a_base, a_new, others, recip):
         return None
     rel = np.abs(n[live] - b[live]) / np.abs(b[live])
     w = np.array([recip["loo_by_fid"].get(int(f), 0.0) for f in np.asarray(others)[live]])
-    return float((rel * w).sum())
+    spent = float((rel * w).sum())
+
+    # Scaled by the TRANSFER's own prediction movement, |L_transfer - L_orig|: the total
+    # prediction effect in play at this row, and the span every effect here lives inside.
+    # So the term reads as "what fraction of the whole transfer's movement did we spend on
+    # concepts we were not patching".
+    #
+    # That scale rather than the patched concept's own effect: this is a property of the
+    # ROW, so collateral does not change meaning depending on which concept we happen to be
+    # patching, and rows differing by orders of magnitude in available prediction effect
+    # become comparable. It is also the same denominator `additivity` uses.
+    #
+    # Unscaled the term is unusable in the objective. Raw prediction effects came out at
+    # 0.001-0.005: with `1 + blast` the term vanished (one probe row's objective rose
+    # 0.7282 -> 0.7525 purely because collateral had gone numerically invisible), and
+    # dividing by it directly made zero collateral score 7.5 million and preferred a patch
+    # with drop 0.30 over one with drop 0.90.
+    full = abs(float(recip["L_transfer"]) - float(recip["L_orig"]))
+    if not np.isfinite(full) or full <= EPS:
+        return None                    # the transfer moved nothing; collateral has no scale
+    return float(spent / full)
 
 
 def blast_radius(a_base, a_new, accepted_others):
@@ -805,8 +857,17 @@ def objective(drop_frac, rev, blast, recon_excess=0.0):
     r = float(rev)
     p = EXPONENTS["reversal"]
     root = math.copysign(abs(r) ** p, r) if np.isfinite(r) else float("nan")
+    # `1 + blast` is right again now that blast is scaled by the transfer's own prediction
+    # movement: it is a dimensionless fraction of the effect in play, so zero collateral
+    # must cost nothing and the guard is what keeps it from blowing up.
+    #
+    # Dropping the `1 +` was tried and is wrong for this quantity. Dividing directly made a
+    # candidate that disturbs nothing score 7.5 million -- EPS is 1e-7 while collateral
+    # lives at 0.001-0.05 -- and inverted the trade, preferring drop 0.30 with collateral
+    # 0.001 (262) over drop 0.90 with 0.02 (39). The problem was never the `1 +`; it was
+    # feeding it an unscaled prediction effect, where `1 + 0.003` is `1`.
     return float(drop_frac ** EXPONENTS["drop"] * root
-                 / ((1.0 + blast) ** EXPONENTS["blast"]
+                 / ((1.0 + max(0.0, blast)) ** EXPONENTS["blast"]
                     * (1.0 + max(0.0, recon_excess)) ** EXPONENTS["recon"]))
 
 
@@ -1354,8 +1415,13 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "n_cols_changed": len(best["columns"]) if best else 0,
             "best": best, "trajectory": trajectory, "sensitivity_top": ranked[:5],
             "row_additivity": (recip or {}).get("additivity"),
-            "loo_effects": {int(k): float(v)
-                            for k, v in ((recip or {}).get("loo_by_fid") or {}).items()},
+            # Per-concept collateral for the CHOSEN patch, not an aggregate. Each
+            # co-accepted concept reports how far it moved, what its removal is worth to
+            # the prediction, and the product -- the estimated prediction effect the patch
+            # disturbed on it. A single summed number cannot say whether 0.005 came from
+            # one concept that mattered or twenty that did not, and that distinction is
+            # the whole reason for weighting by LOO.
+            "collateral": collateral_detail(a_base_row, a_now_vec, others, recip),
             "n_probes": len(sens), "n_sensitive_columns": len(per_col),
             "final_shift": shift_metrics(a_base_row, a_now_vec, others, feat),
             "accepted_ratios": ratios,
