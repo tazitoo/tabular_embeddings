@@ -1049,6 +1049,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
 
     best, stop = None, "no_sensitive_column"
     committed = []          # list of the sensitivity records already applied
+    trajectory = []         # objective terms at each committed column
     if ranked:
         # GREEDY, commit-and-re-probe, structurally the same loop transfer_sweep_v2 runs
         # over concepts. Each step evaluates every not-yet-committed column ON TOP of what
@@ -1163,6 +1164,18 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 continue
             best = step_best
             committed.append(best.pop("_cand"))
+            # One entry per column committed, carrying every term of the objective at that
+            # step. The final `best` shows where the search ended; this shows how it got
+            # there -- which column bought suppression, which bought recipient movement,
+            # and where a term stopped improving.
+            trajectory.append({"column": int(cand_col),
+                               "column_name": str(space.names[cand_col]),
+                               "value": best["values"][-1],
+                               "n_cols": len(best["columns"]),
+                               "score": best["score"], "drop_frac": best["drop_frac"],
+                               "reversal": best["reversal"], "blast": best["blast"],
+                               "recon_excess": best["recon_excess"],
+                               "n_candidates_searched": len(rows_)})
             stop = ("fully_suppressed" if best["activation_after"] <= 0
                     else "best_combination")
             if best["activation_after"] <= 0:
@@ -1192,7 +1205,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "patched_row": [x.item() if hasattr(x, "item") else x for x in cur],
             "patched_columns": [str(space.names[c]) for c in best["columns"]] if best else [],
             "n_cols_changed": len(best["columns"]) if best else 0,
-            "best": best, "sensitivity_top": ranked[:5],
+            "best": best, "trajectory": trajectory, "sensitivity_top": ranked[:5],
             "n_probes": len(sens), "n_sensitive_columns": len(per_col),
             "final_shift": shift_metrics(a_base_row, a_now_vec, others, feat),
             "accepted_ratios": ratios,
@@ -1774,6 +1787,21 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                   f"(>10%: {m['n_others_moved_gt_10pct']}/{len(others)}) | "
                   f"sel-ratio {m['selectivity_ratio']:.2f} | "
                   f"recon {res['recon_rel_start']:.3f}->{rec:.3f}", flush=True)
+            # Every term of the objective, and the objective itself, for the CHOSEN patch.
+            # drop x sqrt(rev) / ((1+blast)(1+recon_excess)) -- printed factor by factor so
+            # a score can be read rather than inferred. Without it a low score is
+            # indistinguishable between weak suppression, a recipient that did not move,
+            # collateral on the other concepts, and a row pushed off-manifold, which are
+            # four different problems with four different fixes.
+            b = res.get("best") or {}
+            if b:
+                rv = b.get("reversal", float("nan"))
+                bl, rx, df = b.get("blast", 0.0), b.get("recon_excess", 0.0), b.get("drop_frac", 0.0)
+                print(f"      objective {b.get('score', float('nan')):.4f}"
+                      f" = drop {df:.3f}"
+                      f" x sqrt(rev {rv:.3f})"
+                      f" / (1+blast {bl:.3f})"
+                      f" / (1+recon_excess {rx:.3f})", flush=True)
             if recipient in READOUT_EXCLUDED:
                 res["readout"] = {"status": "recipient_readout_excluded",
                                   "recipient": recipient,
