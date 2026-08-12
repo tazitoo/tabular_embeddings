@@ -76,6 +76,18 @@ REVERSAL_TOLERANCE = 0.99
 # The unmodified row rides in every batch and must reproduce to this. Same threshold the
 # old runtime independence check used, kept so the number means the same thing.
 CANARY_TOL = 1e-4
+
+# Exponent on each term of the objective. Defaults reproduce
+# drop x sqrt(reversal) / ((1+blast) x (1+recon_excess)).
+#
+# The reversal exponent is the live one, and its effect INVERTED when the crossing guard
+# landed. Reversal is now bounded at 1, and on [0,1] a sqrt inflates small values and
+# compresses the differences between them -- sqrt(0.19)=0.436 against sqrt(0.40)=0.632 is
+# a ratio of 1.45 where linear would be 2.1. So the sqrt makes the search LESS willing to
+# trade suppression for recipient movement, which is the opposite of what it was chosen
+# for: dampening an unbounded term that was rewarding overshoot. Raising this exponent
+# makes the search chase reversal harder.
+EXPONENTS = {"drop": 1.0, "reversal": 0.5, "blast": 1.0, "recon": 1.0}
 EPS = 1e-7   # the constant already used by _gc and the transfer sweep
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
 # embeddings come from an unseeded retrieval draw, so re-extraction yields a
@@ -722,8 +734,11 @@ def objective(drop_frac, rev, blast, recon_excess=0.0):
     recipient opposite to the transfer scores negative, which is correct.
     """
     r = float(rev)
-    root = math.copysign(math.sqrt(abs(r)), r) if np.isfinite(r) else float("nan")
-    return float(drop_frac * root / ((1.0 + blast) * (1.0 + max(0.0, recon_excess))))
+    p = EXPONENTS["reversal"]
+    root = math.copysign(abs(r) ** p, r) if np.isfinite(r) else float("nan")
+    return float(drop_frac ** EXPONENTS["drop"] * root
+                 / ((1.0 + blast) ** EXPONENTS["blast"]
+                    * (1.0 + max(0.0, recon_excess)) ** EXPONENTS["recon"]))
 
 
 def build_recip_shared(donor, recipient, dataset, device):
@@ -1463,6 +1478,13 @@ def main():
                          "classification costs no concepts (0 of 335 have only regression "
                          "cells), 16.8%% of cells and 10.8%% of rows; it does leave 14 "
                          "concepts under 30 rows, up from 5.")
+    ap.add_argument("--exponents", default=None,
+                    help="override the objective's exponents as "
+                         "drop,reversal,blast,recon (default 1,0.5,1,1). The reversal one "
+                         "is the live knob: with the crossing guard bounding reversal at 1, "
+                         "a sqrt COMPRESSES differences between low values and makes the "
+                         "search less willing to trade suppression for recipient movement. "
+                         "Raising it chases reversal harder.")
     ap.add_argument("--uninhibited", action="store_true",
                     help="scan BOTH sides of the marginal on continuous columns, and offer "
                          "every observed level on categoricals rather than only those whose "
@@ -1518,6 +1540,12 @@ def main():
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "rebuttal" / "patch_search.json"))
     args = ap.parse_args()
+    if args.exponents:
+        vals = [float(x) for x in args.exponents.split(",")]
+        if len(vals) != 4:
+            raise SystemExit("--exponents needs four numbers: drop,reversal,blast,recon")
+        EXPONENTS.update(zip(("drop", "reversal", "blast", "recon"), vals))
+        print(f"objective exponents: {EXPONENTS}", flush=True)
 
     # explicit --concepts wins; --probe next; otherwise the locked set, so a bare
     # run does the full sweep
