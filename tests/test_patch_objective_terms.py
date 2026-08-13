@@ -83,26 +83,33 @@ def test_reversal_above_one_means_crossing():
     assert reversal(0.30, 0.80, 1.05) > 1.0
 
 
-def test_reversal_is_nan_on_a_degenerate_interval():
-    """Ablating the concept moves the prediction by less than min_interval: numerator and
-    denominator are both noise and the ratio is arbitrary."""
-    assert np.isnan(reversal(0.30, 0.3000001, 0.30))
-    assert np.isnan(reversal(0.30, 0.2999999, 0.30))          # either sign
+def test_reversal_small_interval_is_floored_not_gated():
+    """A small interval is a MEASUREMENT -- the concept contributes little at this row --
+    not a missing value. min_interval (0.01, borrowed from the sweeps' own min_gap)
+    floors the DENOMINATOR: credit is capped at movement/min_interval, so full credit
+    needs movement of at least the resolution floor, but the measured movement stays in
+    the score with its sign. Gating returned nan here, and nan was a double defect at the
+    call site: scored as 1.0 (FULL credit) and exempt from the crossing guard -- 59% of
+    v17's chosen rows."""
+    # interval 0.005, below the floor: denominator becomes 0.01
+    assert reversal(0.30, 0.305, 0.302) == pytest.approx(0.2)
+    assert reversal(0.30, 0.305, 0.30) == pytest.approx(0.0)
+    # movement far past a near-zero target reads >1 and the crossing guard REJECTS it,
+    # instead of the old gate waving it through as nan
+    assert reversal(0.30, 0.305, 0.32) == pytest.approx(2.0)
+    # negative interval: the sign of the floored denominator follows the interval
+    assert reversal(0.80, 0.795, 0.79) == pytest.approx(1.0)
+    # the floor is settable -- a regression sweep is in different units
+    assert reversal(0.30, 0.305, 0.302, min_interval=1e-6) == pytest.approx(0.4)
+
+
+def test_reversal_is_nan_only_for_the_genuinely_unmeasured():
+    """Non-finite endpoints (or no recipient context at all, upstream). Everything
+    measured stays a number."""
     assert np.isnan(reversal(0.30, np.nan, 0.30))
     assert np.isnan(reversal(0.30, np.inf, 0.30))
-
-
-def test_reversal_interval_floor_is_the_sweeps_own_min_gap():
-    """min_interval defaults to 0.01 -- BORROWED from min_gap, the threshold the transfer
-    and ablation sweeps use for 'the models effectively agree, skip the row', in the same
-    prediction units as these endpoints. Patching reads out through those interventions,
-    so it cannot claim to resolve an interval finer than they treat as agreement. Also
-    above every measured hardware floor (worst cross-host p95: tabdpt 7.3e-03,
-    recipient_noise_floor.py). Settable, because a regression sweep is in different units
-    and must recalibrate."""
-    assert np.isnan(reversal(0.30, 0.305, 0.30))                        # below min_gap
-    assert reversal(0.30, 0.32, 0.30) == pytest.approx(0.0)             # above it
-    assert reversal(0.30, 0.305, 0.30, min_interval=1e-6) == pytest.approx(0.0)
+    assert np.isnan(reversal(0.30, 0.80, np.nan))
+    assert np.isnan(reversal(np.nan, 0.80, 0.30))
 
 
 # ── objective ────────────────────────────────────────────────────────────────
@@ -202,9 +209,12 @@ def test_objective_zero_collateral_scores_enormously():
 
 
 def test_objective_is_nan_when_reversal_is_nan():
-    """The caller substitutes 1.0 for a nan reversal, which neutralises the factor rather
-    than scoring the row as a perfect reversal. Both halves are pinned here because the
-    substitution lives at the call site, where it is easy to lose."""
+    """The caller substitutes 1.0 for a nan reversal. Since the denominator floor, nan
+    only reaches the caller where NO readout exists at all (carte, READOUT_EXCLUDED), and
+    there 1.0 is genuinely neutral -- it removes the factor from the product, scoring the
+    row on the donor-side terms. It was NOT neutral when measured-but-small intervals also
+    came back nan: 1.0 is the top of reversal's guarded range, so 59% of v17's rows got
+    full recipient credit with the crossing guard bypassed."""
     assert np.isnan(objective(0.5, np.nan, 0.05, 0.0))
     assert objective(0.5, 1.0, 0.05, 0.0) == pytest.approx(objective(0.5, 1.0, 0.05, 0.0))
 

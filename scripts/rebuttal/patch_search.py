@@ -821,9 +821,9 @@ def endpoint(p, y, p_strong):
     (0.92 at k=8 rising to 85.67 at k=57). One badly-wrong prediction among 57 concepts
     was enough to swamp the sum.
 
-    Probabilities need no clamp and no normalisation to stay comparable, so the
-    min_interval guard on `reversal` is now protecting against genuinely degenerate rows
-    rather than papering over an unbounded scale.
+    Probabilities need no clamp and no normalisation to stay comparable, so
+    `reversal`'s min_interval is now a resolution floor in honest units rather than a
+    papering-over of an unbounded scale.
 
     Regression keeps the squared distance to the donor prediction, which is already a
     prediction-space quantity. It is NOT bounded by 1 -- it carries the target's own
@@ -851,29 +851,39 @@ def reversal(L_transfer, L_target, L_mod, min_interval=1e-2):
     concept 90.7% with 3.6% collateral and scored reversal 0.190, which is what it should
     score when the concept carries a fifth of the delta.
 
-    Returns nan when the interval is degenerate: such a row cannot demonstrate anything
-    about the recipient in either direction, so it is flagged and the patch is selected on
-    the donor-side terms alone.
+    min_interval is a RESOLUTION FLOOR on the denominator, not a gate on the row. A
+    small interval is a measurement -- the concept contributes little at this row -- not
+    a missing value, so the term must not go nan there. Flooring the denominator caps the
+    CREDIT a tiny-interval row can claim (movement/min_interval, so full credit needs
+    movement of at least min_interval) while keeping the measured movement in the score
+    with its sign.
 
-    min_interval is min_gap, BORROWED, not invented: 0.01 is the threshold the transfer
-    and ablation sweeps themselves use for "the models effectively agree on this
-    prediction, skip the row" (transfer_sweep_symmetric.py:167,
-    ablation_sweep_symmetric.py:116), in the same units as these endpoints now that they
-    are predictions on the true class. Patching reads out THROUGH those interventions, so
-    it cannot claim to resolve an interval finer than they treat as agreement. It also
-    clears the measured hardware floor everywhere: the worst per-recipient cross-host p95
-    of the recipient path's own spread is 7.3e-03 (tabdpt; recipient_noise_floor.py, from
-    the Aug 5 gc_drift ladders).
+    Gating was tried and was a defect twice over: the scorer substituted 1.0 for nan --
+    FULL recipient credit, the top of the bounded range -- and the crossing guard tests
+    `isfinite(rev) and rev > 1.0`, so nan also bypassed the guard. On v17 that was 59% of
+    chosen rows scored as perfect reversals with the guard disabled. Under the floor,
+    those same rows yield small finite reversals, and a patch that shoves the recipient
+    far past a near-zero target now shows rev >> 1 and is REJECTED by the guard instead
+    of sailing through it.
 
-    The old default was 1e-3, calibrated in nats against ceiling_effect -- gap-closed
-    units that never applied to this interval. A REGRESSION sweep must recalibrate:
-    its endpoint is a squared distance in the target's own units, where min_gap is
-    applied relatively and tabdpt's cross-host spread alone has median 7.65.
+    The value is min_gap, BORROWED, not invented: 0.01 is the threshold the transfer and
+    ablation sweeps themselves use for "the models effectively agree on this prediction,
+    skip the row" (transfer_sweep_symmetric.py:167, ablation_sweep_symmetric.py:116), in
+    the same units as these endpoints. Patching reads out THROUGH those interventions, so
+    it cannot claim to resolve finer than they treat as agreement. It also clears the
+    measured hardware floor everywhere (worst per-recipient cross-host p95: tabdpt
+    7.3e-03; recipient_noise_floor.py). A REGRESSION sweep must recalibrate: its endpoint
+    is a squared distance in the target's own units.
+
+    nan is reserved for what is genuinely unmeasured: a non-finite endpoint, or no
+    recipient context at all (carte, READOUT_EXCLUDED).
     """
     interval = L_target - L_transfer
-    if not np.isfinite(interval) or abs(interval) < min_interval:
+    if not (np.isfinite(interval) and np.isfinite(L_mod) and np.isfinite(L_transfer)):
         return float("nan")
-    return float((L_mod - L_transfer) / interval)
+    denom = math.copysign(max(abs(interval), min_interval),
+                          interval if interval != 0 else 1.0)
+    return float((L_mod - L_transfer) / denom)
 
 
 def objective(drop_frac, rev, blast, recon_excess=0.0):
@@ -1462,6 +1472,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "ratio": (a_now / a_start) if a_start > 0 else float("nan"),
             "drop_frac": (1.0 - a_now / a_start) if a_start > 0 else float("nan"),
             "recon_rel_start": float(rel0[row]), "stop_reason": stop,
+            # the reversal denominator BEFORE the resolution floor, so the sweep itself
+            # answers where the interval mass sits relative to min_gap -- v17 could not
+            "ablation_interval": (float(recip["L_ablated"] - recip["L_transfer"])
+                                  if recip else None),
             # in the SPACE's columns: preprocessed values, or raw table values under
             # --space raw, where the row is reportable as-is with no inversion.
             "patched_row": [x.item() if hasattr(x, "item") else x for x in cur],
