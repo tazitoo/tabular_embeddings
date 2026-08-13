@@ -857,17 +857,28 @@ def objective(drop_frac, rev, blast, recon_excess=0.0):
     r = float(rev)
     p = EXPONENTS["reversal"]
     root = math.copysign(abs(r) ** p, r) if np.isfinite(r) else float("nan")
-    # `1 + blast` is right again now that blast is scaled by the transfer's own prediction
-    # movement: it is a dimensionless fraction of the effect in play, so zero collateral
-    # must cost nothing and the guard is what keeps it from blowing up.
+    # blast + EPS, not 1 + blast. EPS guards the division; the 1 was a WEIGHT wearing a
+    # guard's clothes -- writing `1` asserts that collateral equal to the whole transfer's
+    # movement should halve the score, which is exactly the kind of invented constant the
+    # products-and-ratios form exists to avoid. A divisor needs a guard against zero, and
+    # that is EPS.
     #
-    # Dropping the `1 +` was tried and is wrong for this quantity. Dividing directly made a
-    # candidate that disturbs nothing score 7.5 million -- EPS is 1e-7 while collateral
-    # lives at 0.001-0.05 -- and inverted the trade, preferring drop 0.30 with collateral
-    # 0.001 (262) over drop 0.90 with 0.02 (39). The problem was never the `1 +`; it was
-    # feeding it an unscaled prediction effect, where `1 + 0.003` is `1`.
+    # It also made the term's influence depend on where blast happened to sit relative to
+    # 1, which is why the same term failed in both directions this session: at 0.001 the
+    # factor was 1.001 and vanished (an objective moved 0.7282 -> 0.7525 purely because
+    # collateral had become invisible), at 13.5 it was 14.5 and swamped everything else.
+    #
+    # `blast + EPS` was tried earlier and looked broken -- zero collateral scored 7.5
+    # million -- but that was the correct behaviour of a divisor being fed UNSCALED
+    # prediction effects at 0.001-0.005, four orders above EPS. Scaled by the transfer's
+    # own movement, blast lands at 0.02-0.08 and a tenth the collateral is worth ten times
+    # the score, with no reference point and no implied weight.
+    #
+    # recon_excess keeps its `1 +`: it is an INFLATION over the row's own reconstruction
+    # error, so zero excess means unchanged, and 1 is its natural identity rather than a
+    # chosen weight.
     return float(drop_frac ** EXPONENTS["drop"] * root
-                 / ((1.0 + max(0.0, blast)) ** EXPONENTS["blast"]
+                 / ((max(0.0, blast) + EPS) ** EXPONENTS["blast"]
                     * (1.0 + max(0.0, recon_excess)) ** EXPONENTS["recon"]))
 
 
