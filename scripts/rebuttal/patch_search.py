@@ -807,7 +807,38 @@ def blast_radius(a_base, a_new, accepted_others):
     return float(np.linalg.norm(d) / (np.linalg.norm(a_base[accepted_others]) + EPS))
 
 
-def reversal(L_transfer, L_target, L_mod, min_interval=1e-3):
+def endpoint(p, y, p_strong):
+    """The PREDICTION on the true class, not a loss.
+
+    Every endpoint and interval in the recipient accounting is a difference between
+    predictions, so the scale is bounded by construction: a concept whose removal makes
+    the prediction badly wrong contributes at most 1.0.
+
+    This was -log(p[y]), inherited from `reversal`, which took it from the transfer's
+    dist_to_strong. That is unbounded as p -> 0, and summing k of them wrecked the
+    collateral term: additivity came out at median 4.68 and p90 79.15 against 0.846 for
+    the same quantity measured in gap-closed units, with the inflation tracking k exactly
+    (0.92 at k=8 rising to 85.67 at k=57). One badly-wrong prediction among 57 concepts
+    was enough to swamp the sum.
+
+    Probabilities need no clamp and no normalisation to stay comparable, so the
+    min_interval guard on `reversal` is now protecting against genuinely degenerate rows
+    rather than papering over an unbounded scale.
+
+    Regression keeps the squared distance to the donor prediction, which is already a
+    prediction-space quantity. It is NOT bounded by 1 -- it carries the target's own
+    units -- so `min_interval` cannot be one constant across both heads.
+
+    Module-level rather than a closure over build_recip's locals so that the term the
+    whole recipient accounting rests on can be tested directly.
+    """
+    p = np.asarray(p)
+    if p.ndim >= 1 and p.size > 1:
+        return float(p[y])
+    return float((float(p) - float(p_strong)) ** 2)
+
+
+def reversal(L_transfer, L_target, L_mod, min_interval=1e-2):
     """Where the patch landed between the transfer and the ABLATION of this concept.
 
     0 = the patch changed nothing; 1 = it reached what ablating this concept alone
@@ -820,11 +851,24 @@ def reversal(L_transfer, L_target, L_mod, min_interval=1e-3):
     concept 90.7% with 3.6% collateral and scored reversal 0.190, which is what it should
     score when the concept carries a fifth of the delta.
 
-    Returns nan when the interval is degenerate. Ablating the concept moves the prediction
-    by less than min_interval on a quarter of rows (ceiling_effect p25 = 0.001), and
-    normalising there divides by noise -- that is what drove capture_of_ceiling to p90 =
-    11.17. Such a row cannot demonstrate anything about the recipient in either direction,
-    so it is flagged and the patch is selected on the donor-side terms alone.
+    Returns nan when the interval is degenerate: such a row cannot demonstrate anything
+    about the recipient in either direction, so it is flagged and the patch is selected on
+    the donor-side terms alone.
+
+    min_interval is min_gap, BORROWED, not invented: 0.01 is the threshold the transfer
+    and ablation sweeps themselves use for "the models effectively agree on this
+    prediction, skip the row" (transfer_sweep_symmetric.py:167,
+    ablation_sweep_symmetric.py:116), in the same units as these endpoints now that they
+    are predictions on the true class. Patching reads out THROUGH those interventions, so
+    it cannot claim to resolve an interval finer than they treat as agreement. It also
+    clears the measured hardware floor everywhere: the worst per-recipient cross-host p95
+    of the recipient path's own spread is 7.3e-03 (tabdpt; recipient_noise_floor.py, from
+    the Aug 5 gc_drift ladders).
+
+    The old default was 1e-3, calibrated in nats against ceiling_effect -- gap-closed
+    units that never applied to this interval. A REGRESSION sweep must recalibrate:
+    its endpoint is a squared distance in the target's own units, where min_gap is
+    applied relatively and tabdpt's cross-host spread alone has median 7.65.
     """
     interval = L_target - L_transfer
     if not np.isfinite(interval) or abs(interval) < min_interval:
@@ -946,31 +990,10 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
     y = int(np.asarray(z["y_query"])[row])
     pw, pi = np.asarray(z["preds_weak"])[row], np.asarray(z["preds_intervened"])[row]
 
+    ps = np.asarray(z["preds_strong"])[row]
+
     def loss(p):
-        """The PREDICTION on the true class, not a loss.
-
-        Every endpoint and interval here is a difference between predictions, so the scale
-        is bounded by construction: a concept whose removal makes the prediction badly
-        wrong contributes at most 1.0.
-
-        This was -log(p[y]), inherited from `reversal`, which took it from the transfer's
-        dist_to_strong. That is unbounded as p -> 0, and summing k of them wrecked the
-        collateral term: additivity came out at median 4.68 and p90 79.15 against 0.846 for
-        the same quantity measured in gap-closed units, with the inflation tracking k
-        exactly (0.92 at k=8 rising to 85.67 at k=57). One badly-wrong prediction among 57
-        concepts was enough to swamp the sum.
-
-        Probabilities need no clamp and no normalisation to stay comparable, so the
-        min_interval guard on `reversal` is now protecting against genuinely degenerate
-        rows rather than papering over an unbounded scale.
-
-        Regression keeps the squared distance to the donor prediction, which is already a
-        prediction-space quantity.
-        """
-        p = np.asarray(p)
-        if p.ndim >= 1 and p.size > 1:
-            return float(p[y])
-        return float((float(p) - float(np.asarray(z["preds_strong"])[row])) ** 2)
+        return endpoint(p, y, ps)
 
     def predict(deltas):
         t = torch.tensor(np.asarray(deltas), dtype=torch.float32, device=device)
