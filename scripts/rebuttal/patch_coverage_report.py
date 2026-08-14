@@ -116,14 +116,17 @@ def main():
 
     print(f"\n=== statistics over the {len(got)} patches obtained"
           f"        p10      p25      p50      p75      p90")
-    dist("suppression drop_frac", [r.get("drop_frac") for r in got])
+    dist("suppression_frac", [r.get("suppression_frac", r.get("drop_frac")) for r in got])
     dist("columns changed", [r.get("n_cols_changed") for r in got], "{:8.0f}")
     dist("edit distance", [(r["best"] or {}).get("edit_distance") for r in got])
     dist("blast (other concepts)", [(r["best"] or {}).get("blast") for r in got])
-    dist("recon_excess", [(r["best"] or {}).get("recon_excess") for r in got])
+    dist("recon term", [(r["best"] or {}).get("centrality_ratio",
+                                              (r["best"] or {}).get("recon_excess"))
+                        for r in got])
     dist("concepts at row", [r.get("n_concepts_at_row") for r in got], "{:8.0f}")
 
-    rev = fin([(r["best"] or {}).get("reversal") for r in got])
+    rev = fin([(r["best"] or {}).get("toward_ablation",
+                                     (r["best"] or {}).get("reversal")) for r in got])
     print(f"\n  recipient effect over {rev.size} rows with a measurable reversal:")
     for lo, hi, lbl in [(-np.inf, 0, "wrong way      (<0)"),
                         (0, 0.8, "undershoot   (0-0.8)"),
@@ -138,10 +141,10 @@ def main():
           f"{'cols p50':>9s} {'lands':>7s}")
     for d in sorted({r["_donor"] for r in got}):
         sub = [r for r in got if r["_donor"] == d]
-        rv = fin([(r["best"] or {}).get("reversal") for r in sub])
+        rv = fin([(r["best"] or {}).get("toward_ablation", (r["best"] or {}).get("reversal")) for r in sub])
         lands = float(np.mean((rv >= 0.8) & (rv < 1.2))) if rv.size else float("nan")
         print(f"    {d:<11s} {len(sub):6d} "
-              f"{np.median(fin([r.get('drop_frac') for r in sub])):9.3f} "
+              f"{np.median(fin([r.get('suppression_frac', r.get('drop_frac')) for r in sub])):9.3f} "
               f"{np.median(fin([(r['best'] or {}).get('blast') for r in sub])):10.3f} "
               f"{np.median(fin([r.get('n_cols_changed') for r in sub])):9.0f} {lands:7.1%}")
 
@@ -149,10 +152,10 @@ def main():
     print(f"    {'recipient':<11s} {'rows':>6s} {'drop p50':>9s} {'blast p50':>10s} {'lands':>7s}")
     for rec in sorted({r["_recipient"] for r in got}):
         sub = [r for r in got if r["_recipient"] == rec]
-        rv = fin([(r["best"] or {}).get("reversal") for r in sub])
+        rv = fin([(r["best"] or {}).get("toward_ablation", (r["best"] or {}).get("reversal")) for r in sub])
         lands = float(np.mean((rv >= 0.8) & (rv < 1.2))) if rv.size else float("nan")
         print(f"    {rec:<11s} {len(sub):6d} "
-              f"{np.median(fin([r.get('drop_frac') for r in sub])):9.3f} "
+              f"{np.median(fin([r.get('suppression_frac', r.get('drop_frac')) for r in sub])):9.3f} "
               f"{np.median(fin([(r['best'] or {}).get('blast') for r in sub])):10.3f} {lands:7.1%}")
 
     json.dump({"label": args.label, "n_concepts": n, "attempted": len(seen),

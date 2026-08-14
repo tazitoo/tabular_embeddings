@@ -1,16 +1,16 @@
 """Every term the patch search optimises, pinned by a test.
 
 Each of these terms was found wrong by a sweep, days after it had produced numbers:
-`reversal` scaled to an unreachable target, `blast` summed unbounded log-losses, the
+`toward_ablation` scaled to an unreachable target, `blast` summed unbounded log-losses, the
 objective's divisor read as a weight. All four are pure functions of a handful of floats
 and cost milliseconds to check, which is the argument for this file existing -- the
 property tests in test_query_window_invariance.py needed a GPU and a model, and these
 need neither.
 
-What is deliberately NOT asserted here: which term should be in the objective at all, and
-what `min_interval` should be. Those are open (docs/plans/2026-08-12-patching-handoff.md).
-These tests pin the arithmetic as it currently stands so that a change to the FORM is
-visible as a failing test rather than a silent shift in what the sweep was optimising.
+What is deliberately NOT asserted here: the exponents, which are an experimental
+question the exponent sweep answers against the baseline. These tests pin the arithmetic
+as it stands so that a change to the FORM is visible as a failing test rather than a
+silent shift in what the sweep was optimising.
 """
 
 import numpy as np
@@ -21,69 +21,72 @@ from scripts.rebuttal.patch_search import (
     EPS,
     EXPONENTS,
     blast_radius,
+    centrality,
     collateral_detail,
-    endpoint,
+    donor_dist_sq,
     objective,
-    reversal,
     shift_metrics,
+    toward_ablation,
+    true_class_prob,
     weighted_blast,
 )
 
 
-# ── endpoint: the prediction, not a loss ─────────────────────────────────────
+# ── the recipient's scalar: a probability, or a squared distance ─────────────
 
-def test_endpoint_classification_is_the_true_class_probability():
-    assert endpoint(np.array([0.2, 0.7, 0.1]), 1, None) == pytest.approx(0.7)
-    assert endpoint(np.array([0.2, 0.7, 0.1]), 0, None) == pytest.approx(0.2)
+def test_true_class_prob_reads_the_true_class():
+    assert true_class_prob(np.array([0.2, 0.7, 0.1]), 1) == pytest.approx(0.7)
+    assert true_class_prob(np.array([0.2, 0.7, 0.1]), 0) == pytest.approx(0.2)
 
 
-def test_endpoint_classification_is_bounded_by_one():
+def test_true_class_prob_is_bounded_by_one():
     """The whole point of moving off -log(p[y]): a badly-wrong prediction contributes at
     most 1.0, so summing k of them cannot manufacture the k-tracking inflation that made
     v15's additivity read 85.67 at k=57."""
     for p in (np.array([1e-12, 1 - 1e-12]), np.array([0.5, 0.5]), np.array([1.0, 0.0])):
         for y in (0, 1):
-            assert 0.0 <= endpoint(p, y, None) <= 1.0
+            assert 0.0 <= true_class_prob(p, y) <= 1.0
 
 
-def test_endpoint_regression_is_squared_distance_to_the_donor():
-    assert endpoint(np.float64(3.0), 0, 5.0) == pytest.approx(4.0)
-    assert endpoint(np.float64(5.0), 0, 5.0) == pytest.approx(0.0)
+def test_donor_dist_sq_is_squared_distance_to_the_donor():
+    assert donor_dist_sq(3.0, 5.0) == pytest.approx(4.0)
+    assert donor_dist_sq(5.0, 5.0) == pytest.approx(0.0)
 
 
-def test_endpoint_regression_is_not_bounded_by_one():
-    """Which is why min_interval cannot be one constant across both heads."""
-    assert endpoint(np.float64(100.0), 0, 0.0) == pytest.approx(1e4)
+def test_donor_dist_sq_is_not_bounded_by_one():
+    """Which is why toward_ablation's min_interval, calibrated in probability units,
+    does not transfer to a regression sweep."""
+    assert donor_dist_sq(100.0, 0.0) == pytest.approx(1e4)
 
 
-# ── reversal: where the patch landed between transfer and ablation ────────────
+# ── toward_ablation: where the patch landed between transfer and ablation ────────────
 
-def test_reversal_endpoints():
-    # L_transfer = 0.30, ablating the concept would reach 0.80.
-    assert reversal(0.30, 0.80, 0.30) == pytest.approx(0.0)    # changed nothing
-    assert reversal(0.30, 0.80, 0.80) == pytest.approx(1.0)    # reached the ablation
-    assert reversal(0.30, 0.80, 0.55) == pytest.approx(0.5)    # halfway
+def test_toward_ablation_endpoints():
+    # p_transfer = 0.30, ablating the concept would reach 0.80.
+    assert toward_ablation(0.30, 0.80, 0.30) == pytest.approx(0.0)    # changed nothing
+    assert toward_ablation(0.30, 0.80, 0.80) == pytest.approx(1.0)    # reached the ablation
+    assert toward_ablation(0.30, 0.80, 0.55) == pytest.approx(0.5)    # halfway
 
 
-def test_reversal_is_invariant_to_the_direction_of_the_ablation():
+def test_toward_ablation_is_invariant_to_the_direction_of_the_ablation():
     """Ablating a concept can move p[y] either way. Landing on the target is 1.0 in both
     directions -- if it were not, the term would reward one sign of concept."""
-    assert reversal(0.30, 0.80, 0.55) == pytest.approx(reversal(0.80, 0.30, 0.55))
+    assert toward_ablation(0.30, 0.80, 0.55) == pytest.approx(toward_ablation(0.80, 0.30, 0.55))
 
 
-def test_reversal_is_negative_when_the_patch_moves_the_wrong_way():
+def test_toward_ablation_is_negative_when_the_patch_moves_the_wrong_way():
     """Not clipped: a patch that pushes the recipient FURTHER from the ablation is worse
     than doing nothing, and the objective's sign-preserving root keeps that visible."""
-    assert reversal(0.30, 0.80, 0.20) < 0
+    assert toward_ablation(0.30, 0.80, 0.20) < 0
 
 
-def test_reversal_above_one_means_crossing():
+def test_toward_ablation_above_one_means_crossing():
     """The search rejects these (the crossing guard); the function still reports them, so
     the guard is one decision in one place rather than a clamp hidden in the arithmetic."""
-    assert reversal(0.30, 0.80, 1.05) > 1.0
+    assert toward_ablation(0.30, 0.80, 1.05) > 1.0
 
 
-def test_reversal_small_interval_is_floored_not_gated():
+def test_toward_ablation_small_interval_is_floored_not_gated():
     """A small interval is a MEASUREMENT -- the concept contributes little at this row --
     not a missing value. min_interval (0.01, borrowed from the sweeps' own min_gap)
     floors the DENOMINATOR: credit is capped at movement/min_interval, so full credit
@@ -92,24 +95,24 @@ def test_reversal_small_interval_is_floored_not_gated():
     call site: scored as 1.0 (FULL credit) and exempt from the crossing guard -- 59% of
     v17's chosen rows."""
     # interval 0.005, below the floor: denominator becomes 0.01
-    assert reversal(0.30, 0.305, 0.302) == pytest.approx(0.2)
-    assert reversal(0.30, 0.305, 0.30) == pytest.approx(0.0)
+    assert toward_ablation(0.30, 0.305, 0.302) == pytest.approx(0.2)
+    assert toward_ablation(0.30, 0.305, 0.30) == pytest.approx(0.0)
     # movement far past a near-zero target reads >1 and the crossing guard REJECTS it,
     # instead of the old gate waving it through as nan
-    assert reversal(0.30, 0.305, 0.32) == pytest.approx(2.0)
+    assert toward_ablation(0.30, 0.305, 0.32) == pytest.approx(2.0)
     # negative interval: the sign of the floored denominator follows the interval
-    assert reversal(0.80, 0.795, 0.79) == pytest.approx(1.0)
+    assert toward_ablation(0.80, 0.795, 0.79) == pytest.approx(1.0)
     # the floor is settable -- a regression sweep is in different units
-    assert reversal(0.30, 0.305, 0.302, min_interval=1e-6) == pytest.approx(0.4)
+    assert toward_ablation(0.30, 0.305, 0.302, min_interval=1e-6) == pytest.approx(0.4)
 
 
-def test_reversal_is_nan_only_for_the_genuinely_unmeasured():
+def test_toward_ablation_is_nan_only_for_the_genuinely_unmeasured():
     """Non-finite endpoints (or no recipient context at all, upstream). Everything
     measured stays a number."""
-    assert np.isnan(reversal(0.30, np.nan, 0.30))
-    assert np.isnan(reversal(0.30, np.inf, 0.30))
-    assert np.isnan(reversal(0.30, 0.80, np.nan))
-    assert np.isnan(reversal(np.nan, 0.80, 0.30))
+    assert np.isnan(toward_ablation(0.30, np.nan, 0.30))
+    assert np.isnan(toward_ablation(0.30, np.inf, 0.30))
+    assert np.isnan(toward_ablation(0.30, 0.80, np.nan))
+    assert np.isnan(toward_ablation(np.nan, 0.80, 0.30))
 
 
 # ── objective ────────────────────────────────────────────────────────────────
@@ -122,77 +125,84 @@ def _exp(**kw):
 
 
 def test_objective_is_monotone_in_every_term():
-    base = objective(0.5, 0.5, 0.05, 0.1)
-    assert objective(0.6, 0.5, 0.05, 0.1) > base       # more suppression is better
-    assert objective(0.5, 0.6, 0.05, 0.1) > base       # more recipient movement is better
-    assert objective(0.5, 0.5, 0.06, 0.1) < base       # more collateral is worse
-    assert objective(0.5, 0.5, 0.05, 0.2) < base       # worse reconstruction is worse
+    base = objective(0.5, 0.5, 0.05, 0.9)
+    assert objective(0.6, 0.5, 0.05, 0.9) > base       # more suppression is better
+    assert objective(0.5, 0.6, 0.05, 0.9) > base       # more recipient movement is better
+    assert objective(0.5, 0.5, 0.06, 0.9) < base       # more collateral is worse
+    assert objective(0.5, 0.5, 0.05, 0.8) < base       # toward a tail is worse
+    assert objective(0.5, 0.5, 0.05, 1.1) > base       # toward the density is better
 
 
 def test_objective_equal_exponents_give_equal_sensitivity_to_relative_change():
     """The property the product-of-ratios form exists to have: at equal exponents a 10%
     change in any term is worth the same. This is what `1 + x` breaks, and it is the
-    argument that retired `1 + blast`."""
-    old = _exp(drop=1.0, reversal=1.0, blast=1.0, recon=1.0)
+    argument that retired `1 + blast` and, later, `1 + recon_excess`."""
+    old = _exp(suppression=1.0, toward_ablation=1.0, blast=1.0, centrality=1.0)
     try:
-        base = objective(0.5, 0.5, 0.05, 0.0)
-        assert objective(0.55, 0.5, 0.05, 0.0) / base == pytest.approx(1.1)
-        assert objective(0.5, 0.55, 0.05, 0.0) / base == pytest.approx(1.1)
-        assert objective(0.5, 0.5, 0.05 / 1.1, 0.0) / base == pytest.approx(1.1)
+        base = objective(0.5, 0.5, 0.05, 0.9)
+        assert objective(0.55, 0.5, 0.05, 0.9) / base == pytest.approx(1.1)
+        assert objective(0.5, 0.55, 0.05, 0.9) / base == pytest.approx(1.1)
+        assert objective(0.5, 0.5, 0.05 / 1.1, 0.9) / base == pytest.approx(1.1)
+        assert objective(0.5, 0.5, 0.05, 0.9 * 1.1) / base == pytest.approx(1.1)
     finally:
         EXPONENTS.update(old)
 
 
-def test_objective_recon_excess_does_not_have_that_property():
-    """recon_excess enters as `1 + x`, so its influence depends on where x sits: the same
-    10% relative change is worth 9.5% at x=0.01 and 4.8% at x=1.0. Documented as a known
-    inconsistency in the form, not asserted as desirable -- open defect 2 in the handoff."""
-    old = _exp(drop=1.0, reversal=1.0, blast=1.0, recon=1.0)
-    try:
-        near = objective(0.5, 0.5, 0.05, 0.01) / objective(0.5, 0.5, 0.05, 0.01 * 1.1)
-        far = objective(0.5, 0.5, 0.05, 1.0) / objective(0.5, 0.5, 0.05, 1.0 * 1.1)
-        assert near != pytest.approx(far)
-    finally:
-        EXPONENTS.update(old)
+# ── centrality: position in the dataset's own reconstruction-loss distribution ─
+
+def test_centrality_is_one_at_the_median_and_falls_in_both_tails():
+    losses = np.sort(np.linspace(0.1, 0.5, 199))       # median 0.3
+    mid = centrality(0.3, losses)
+    assert mid == pytest.approx(1.0, abs=0.02)
+    assert centrality(0.45, losses) < centrality(0.35, losses) < mid
+    assert centrality(0.15, losses) < centrality(0.25, losses) < mid  # LOW tail too
 
 
-def test_objective_recon_term_is_blind_below_the_row_s_own_error():
-    """rex = max(0, rel/rel_start - 1), so every candidate reconstructing at or better than
-    the unpatched row scores identically on this term -- the trade stops existing there.
-    Measured on v15: 38.4% of chosen patches sit in that flat region
-    (patch_recon_position.py). Above it the term is monotone in rel, and rel_start is a row
-    constant, so the reference divides out of the within-row ranking entirely and only the
-    CLAMP makes the choice of reference bite."""
-    old = _exp(drop=1.0, reversal=1.0, blast=1.0, recon=1.0)
-    try:
-        # two candidates, both reconstructing better than the row's own start: same score
-        assert objective(0.5, 0.5, 0.05, 0.0) == objective(0.5, 0.5, 0.05, 0.0)
-        flat = [objective(0.5, 0.5, 0.05, max(0.0, r / 0.40 - 1.0)) for r in (0.10, 0.39)]
-        assert flat[0] == pytest.approx(flat[1])
-        # above it, monotone -- and a common factor on the reference cancels in a ratio
-        a = objective(0.5, 0.5, 0.05, 0.50 / 0.40 - 1.0)
-        b = objective(0.5, 0.5, 0.05, 0.60 / 0.40 - 1.0)
-        assert b < a
-    finally:
-        EXPONENTS.update(old)
+def test_centrality_never_reaches_zero_beyond_the_observed_range():
+    """Half-rank smoothing: a value beyond every real row keeps ~1/(n+1) of centrality,
+    so the score degrades rather than zeroing -- and two candidates both beyond the range
+    still compare by their other terms."""
+    losses = np.sort(np.linspace(0.1, 0.5, 199))
+    assert 0.0 < centrality(0.9, losses) < 0.02
+    assert 0.0 < centrality(0.01, losses) < 0.02
 
 
-def test_objective_preserves_the_sign_of_reversal():
+def test_centrality_penalises_reconstructing_better_than_any_real_row():
+    """The one-sided recon_excess charged nothing for a patch landing below every real
+    row's loss (1.9% of v15's chosen patches). Both directions of atypical now cost."""
+    losses = np.sort(np.linspace(0.1, 0.5, 199))
+    assert centrality(0.01, losses) < centrality(0.3, losses)
+
+
+def test_objective_rewards_moving_toward_the_density():
+    """The term is the before/after centrality ratio: >1 the patch moved the row toward
+    the crowd of real rows, <1 toward either tail. Within a row the start is a constant,
+    so candidate selection is driven by where each candidate ENDS -- the ratio makes the
+    recorded score readable, not the choice different."""
+    losses = np.sort(np.linspace(0.1, 0.5, 199))
+    start = centrality(0.45, losses)                    # row starts in the upper tail
+    toward = centrality(0.32, losses) / start
+    away = centrality(0.49, losses) / start
+    assert toward > 1.0 > away
+    assert objective(0.5, 0.5, 0.05, toward) > objective(0.5, 0.5, 0.05, away)
+
+
+def test_objective_preserves_the_sign_of_toward_ablation():
     """A patch that moves the recipient opposite to the transfer must score below one that
     does nothing, not above it by way of a squared root."""
-    assert objective(0.9, -0.5, 0.05, 0.0) < 0
-    assert objective(0.9, -0.5, 0.05, 0.0) < objective(0.9, 0.0, 0.05, 0.0)
+    assert objective(0.9, -0.5, 0.05, 1.0) < 0
+    assert objective(0.9, -0.5, 0.05, 1.0) < objective(0.9, 0.0, 0.05, 1.0)
 
 
 def test_objective_scales_as_a_power_when_all_exponents_scale():
     """Only exponent RATIOS matter: raising all of them by k raises the score to the k,
     which leaves the ranking untouched. This is why the exponent sweep fixes drop=1."""
-    a = (0.5, 0.4, 0.05, 0.1)
-    b = (0.7, 0.6, 0.02, 0.3)
-    old = _exp(drop=1.0, reversal=1.0, blast=1.0, recon=1.0)
+    a = (0.5, 0.4, 0.05, 0.9)
+    b = (0.7, 0.6, 0.02, 1.2)
+    old = _exp(suppression=1.0, toward_ablation=1.0, blast=1.0, centrality=1.0)
     try:
         one = objective(*a), objective(*b)
-        _exp(drop=2.0, reversal=2.0, blast=2.0, recon=2.0)
+        _exp(suppression=2.0, toward_ablation=2.0, blast=2.0, centrality=2.0)
         two = objective(*a), objective(*b)
         assert two[0] == pytest.approx(one[0] ** 2)
         assert (one[0] < one[1]) == (two[0] < two[1])
@@ -205,24 +215,24 @@ def test_objective_zero_collateral_scores_enormously():
     is the intended behaviour of a divisor with no reference point -- scores are compared
     only WITHIN a row, never across rows -- and it is the behaviour that looked like a bug
     when blast was being fed unscaled prediction effects at 1e-3."""
-    assert objective(0.5, 0.25, 0.0, 0.0) == pytest.approx(0.5 * 0.5 / EPS)
+    assert objective(0.5, 0.25, 0.0, 1.0) == pytest.approx(0.5 * 0.5 / EPS)
 
 
-def test_objective_is_nan_when_reversal_is_nan():
-    """The caller substitutes 1.0 for a nan reversal. Since the denominator floor, nan
+def test_objective_is_nan_when_toward_ablation_is_nan():
+    """The caller substitutes 1.0 for a nan toward_ablation. Since the denominator floor, nan
     only reaches the caller where NO readout exists at all (carte, READOUT_EXCLUDED), and
     there 1.0 is genuinely neutral -- it removes the factor from the product, scoring the
     row on the donor-side terms. It was NOT neutral when measured-but-small intervals also
-    came back nan: 1.0 is the top of reversal's guarded range, so 59% of v17's rows got
+    came back nan: 1.0 is the top of toward_ablation's guarded range, so 59% of v17's rows got
     full recipient credit with the crossing guard bypassed."""
-    assert np.isnan(objective(0.5, np.nan, 0.05, 0.0))
-    assert objective(0.5, 1.0, 0.05, 0.0) == pytest.approx(objective(0.5, 1.0, 0.05, 0.0))
+    assert np.isnan(objective(0.5, np.nan, 0.05, 1.0))
+    assert objective(0.5, 1.0, 0.05, 1.0) == pytest.approx(objective(0.5, 1.0, 0.05, 1.0))
 
 
 # ── collateral ───────────────────────────────────────────────────────────────
 
-def _recip(loo_by_fid, L_transfer=0.30, L_orig=0.80):
-    return {"loo_by_fid": loo_by_fid, "L_transfer": L_transfer, "L_orig": L_orig}
+def _recip(loo_by_fid, p_transfer=0.30, p_weak=0.80):
+    return {"loo_by_fid": loo_by_fid, "p_transfer": p_transfer, "p_weak": p_weak}
 
 
 def test_weighted_blast_is_zero_when_nothing_moved():
@@ -257,16 +267,16 @@ def test_weighted_blast_excludes_inactive_concepts_rather_than_flooring_them():
 
 
 def test_weighted_blast_is_a_fraction_of_the_transfer_s_own_movement():
-    """Scaled by |L_transfer - L_orig| so it reads as 'what fraction of the prediction
+    """Scaled by |p_transfer - p_weak| so it reads as 'what fraction of the prediction
     effect in play did we spend on concepts we were not patching'."""
     a, moved = np.array([1.0, 1.0]), np.array([1.0, 1.5])
-    r = _recip({1: 0.4}, L_transfer=0.30, L_orig=0.80)
+    r = _recip({1: 0.4}, p_transfer=0.30, p_weak=0.80)
     assert weighted_blast(a, moved, np.array([1]), r) == pytest.approx(0.5 * 0.4 / 0.5)
 
 
 def test_weighted_blast_is_none_when_the_transfer_moved_nothing():
     a, moved = np.array([1.0, 1.0]), np.array([1.0, 1.5])
-    r = _recip({1: 0.4}, L_transfer=0.30, L_orig=0.30)
+    r = _recip({1: 0.4}, p_transfer=0.30, p_weak=0.30)
     assert weighted_blast(a, moved, np.array([1]), r) is None
 
 
@@ -302,5 +312,5 @@ def test_shift_metrics_with_no_other_concepts_is_perfectly_selective():
     a = np.array([1.0, 2.0])
     m = shift_metrics(a, np.array([0.5, 2.0]), np.array([], dtype=int), 0)
     assert m["selectivity_ratio"] == float("inf")
-    assert m["target_rel"] == pytest.approx(0.5)
+    assert m["target_moved_frac"] == pytest.approx(0.5)
     assert m["n_others_moved_gt_10pct"] == 0

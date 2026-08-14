@@ -22,10 +22,17 @@ Design decisions this encodes (each settled by measurement earlier):
                to c. If others move, it is a mixture. So disturbance to the other k-1 is
                recorded for every candidate, and optionally enforced as a CONSTRAINT
                (not a penalty with a lambda to tune).
-  in-sample    SAE reconstruction error, against the real-row range from
-               sae_insample_null.py. A patch that suppresses c by leaving the region the
-               dictionary can represent is the search exploiting the objective, not
-               evidence about c -- it counts as "no qualifying patch found".
+  in-sample    The patched row's SAE reconstruction loss, positioned in the dataset's
+               own reconstruction-loss distribution (`centrality`: 1 at the median, 0 in
+               either tail; the distribution comes free from the same forward that
+               measures the real rows). The objective carries the before/after centrality
+               ratio, so a patch is rewarded for moving the row toward the density and
+               penalised for moving it toward a tail. Judging the patch against the
+               row's OWN loss was tried twice and is wrong twice: one-sided (an ending
+               below the row's start was free, wherever it landed), and not a statement
+               about the distribution at all. A patch that suppresses c by leaving the
+               region the dictionary can represent is the search exploiting the
+               objective, not evidence about c.
   readout      Counterfactual delta rebuilt from the CORPUS activation scaled by the
                measured suppression ratio, so published deltas stay intact and only a
                dimensionless ratio comes from re-extraction.
@@ -70,7 +77,7 @@ EXTRACT_SEED = 13
 # Close enough to the target to stop. Mirrors transfer_sweep_v2's gc_tolerance=0.99, which
 # breaks its greedy once gap-closed reaches 0.99 rather than spending steps on the last
 # sliver. Fixed, not a flag: it is a property of the convention, not something to tune per
-# run. Here the target is the recipient's ORIGINAL pre-transfer prediction, so reversal
+# run. Here the target is the recipient's ORIGINAL pre-transfer prediction, so toward_ablation
 # >= this means the patch has undone the transfer at that row.
 REVERSAL_TOLERANCE = 0.99
 # The unmodified row rides in every batch and must reproduce to this. Same threshold the
@@ -81,17 +88,17 @@ CANARY_TOL = 1e-4
 # 198,990,863%. Such concepts are dropped from the collateral, not floored.
 ACTIVE_FLOOR = 1e-3
 
-# Exponent on each term of the objective. Defaults reproduce
-# drop x sqrt(reversal) / ((1+blast) x (1+recon_excess)).
+# Exponent on each term of the objective:
+# suppression_frac x toward_ablation^0.5 x centrality_ratio / (blast + EPS).
 #
-# The reversal exponent is the live one, and its effect INVERTED when the crossing guard
-# landed. Reversal is now bounded at 1, and on [0,1] a sqrt inflates small values and
-# compresses the differences between them -- sqrt(0.19)=0.436 against sqrt(0.40)=0.632 is
-# a ratio of 1.45 where linear would be 2.1. So the sqrt makes the search LESS willing to
-# trade suppression for recipient movement, which is the opposite of what it was chosen
-# for: dampening an unbounded term that was rewarding overshoot. Raising this exponent
-# makes the search chase reversal harder.
-EXPONENTS = {"drop": 1.0, "reversal": 0.5, "blast": 1.0, "recon": 1.0}
+# The toward_ablation exponent is the live one, and its effect INVERTED when the crossing
+# guard landed. toward_ablation is now bounded at 1, and on [0,1] a sqrt inflates small
+# values and compresses the differences between them -- sqrt(0.19)=0.436 against
+# sqrt(0.40)=0.632 is a ratio of 1.45 where linear would be 2.1. So the sqrt makes the
+# search LESS willing to trade suppression for recipient movement, which is the opposite
+# of what it was chosen for: dampening an unbounded term that was rewarding overshoot.
+# Raising this exponent makes the search chase toward_ablation harder.
+EXPONENTS = {"suppression": 1.0, "toward_ablation": 0.5, "blast": 1.0, "centrality": 1.0}
 EPS = 1e-7   # the constant already used by _gc and the transfer sweep
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
 # embeddings come from an unseeded retrieval draw, so re-extraction yields a
@@ -163,9 +170,9 @@ def extract_acts(donor, dataset, X_ctx, y_ctx, X_query, task, device):
         x = (torch.tensor(raw, device=device) - mean) / std
         h = sae.encode(x)
         xh = sae.decode(h)
-        rel = (torch.linalg.norm(x - xh, dim=1) /
-               torch.linalg.norm(x, dim=1).clamp_min(1e-8)).cpu().numpy()
-        return h.cpu().numpy().astype(np.float64), rel
+        recon_loss = (torch.linalg.norm(x - xh, dim=1) /
+                      torch.linalg.norm(x, dim=1).clamp_min(1e-8)).cpu().numpy()
+        return h.cpu().numpy().astype(np.float64), recon_loss
 
 
 # ── search space ─────────────────────────────────────────────────────────────
@@ -624,7 +631,7 @@ def edit_distance(v: np.ndarray, old, new, categorical: bool = False) -> float:
 
 def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, space, task, device, row,
                    a_ref, tol=CANARY_TOL):
-    """Evaluate candidate rows -> (activations, recon_rel), one entry per candidate.
+    """Evaluate candidate rows -> (activations, recon_loss), one entry per candidate.
 
     ONE path. There is no batched-vs-per-candidate branch and no fallback: a run that
     quietly switches evaluation method produces numbers whose meaning depends on a
@@ -676,14 +683,14 @@ def make_evaluator(donor, dataset, X_ctx, y_ctx, X_query, space, task, device, r
             while len(rows) < window:          # fill with the dataset's OWN rows
                 rows.append(space.row(j)); j += 1
             Xq = np.asarray(space.materialize(rows), dtype=base.dtype)
-            a, rel = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
+            a, recon_loss = extract_acts(donor, dataset, X_ctx, y_ctx, Xq, task, device)
             drift = float(np.abs(a[0] - a_ref).max())
             if drift > tol:
                 raise RuntimeError(
                     f"{donor}/{dataset} row {row}: the unmodified row moved {drift:.3e} "
                     f"(tol {tol:.0e}) in a window of {window} holding {len(chunk)} "
                     "candidates. Every candidate measured beside it is unmeasurable.")
-            acts.append(a[1:1 + len(chunk)]); recons.append(rel[1:1 + len(chunk)])
+            acts.append(a[1:1 + len(chunk)]); recons.append(recon_loss[1:1 + len(chunk)])
         return np.concatenate(acts), np.concatenate(recons)
 
     return evaluate
@@ -696,9 +703,9 @@ def collateral_detail(a_base, a_new, others, recip):
     cannot say whether it came from one concept that mattered or twenty that did not --
     and that distinction is the whole reason for weighting by LOO.
 
-      moved_pct     |da_j| / |a_j|, this concept's disturbance relative to its own scale
-      loo_effect    |L_ablated_j - L_transfer|, what REMOVING j does to the prediction
-      disturbed     moved_pct x loo_effect, the estimated prediction effect spent on j
+      moved_frac     |da_j| / |a_j|, this concept's disturbance relative to its own scale
+      loo_effect    |p_ablated_j - p_transfer|, what REMOVING j does to the prediction
+      disturbed     moved_frac x loo_effect, the estimated prediction effect spent on j
 
     `inactive` marks concepts below ACTIVE_FLOOR, which are excluded from the objective's
     collateral term: a concept that is not active carries no signal about whether we
@@ -715,7 +722,7 @@ def collateral_detail(a_base, a_new, others, recip):
         live = abs(base) > ACTIVE_FLOOR
         moved = abs(float(n[f]) - base) / abs(base) if live else float("nan")
         loo = float(recip["loo_by_fid"].get(f, 0.0))
-        out.append({"feat": f, "moved_pct": moved, "loo_effect": loo,
+        out.append({"feat": f, "moved_frac": moved, "loo_effect": loo,
                     "disturbed": (moved * loo) if live else None,
                     "inactive": not live})
     return sorted(out, key=lambda d: -(d["disturbed"] or 0.0))
@@ -742,7 +749,7 @@ def weighted_blast(a_base, a_new, others, recip):
     normalises away exactly the count that should accumulate. The norm it replaced did
     accumulate, but in activation space, where it could not be compared against anything.
 
-    The sum is in prediction units, the same currency as L_ablated - L_transfer, so the
+    The sum is in prediction units, the same currency as p_ablated - p_transfer, so the
     objective can weigh what a candidate bought against what it spent.
 
     Two approximations, stated rather than buried: the cost is taken as LINEAR in rel_j,
@@ -763,11 +770,11 @@ def weighted_blast(a_base, a_new, others, recip):
     live = np.abs(b) > ACTIVE_FLOOR
     if not live.any():
         return None
-    rel = np.abs(n[live] - b[live]) / np.abs(b[live])
+    moved_frac = np.abs(n[live] - b[live]) / np.abs(b[live])
     w = np.array([recip["loo_by_fid"].get(int(f), 0.0) for f in np.asarray(others)[live]])
-    spent = float((rel * w).sum())
+    spent = float((moved_frac * w).sum())
 
-    # Scaled by the TRANSFER's own prediction movement, |L_transfer - L_orig|: the total
+    # Scaled by the TRANSFER's own prediction movement, |p_transfer - p_weak|: the total
     # prediction effect in play at this row, and the span every effect here lives inside.
     # So the term reads as "what fraction of the whole transfer's movement did we spend on
     # concepts we were not patching".
@@ -782,7 +789,7 @@ def weighted_blast(a_base, a_new, others, recip):
     # 0.7282 -> 0.7525 purely because collateral had gone numerically invisible), and
     # dividing by it directly made zero collateral score 7.5 million and preferred a patch
     # with drop 0.30 over one with drop 0.90.
-    full = abs(float(recip["L_transfer"]) - float(recip["L_orig"]))
+    full = abs(float(recip["p_transfer"]) - float(recip["p_weak"]))
     if not np.isfinite(full) or full <= EPS:
         return None                    # the transfer moved nothing; collateral has no scale
     return float(spent / full)
@@ -807,38 +814,34 @@ def blast_radius(a_base, a_new, accepted_others):
     return float(np.linalg.norm(d) / (np.linalg.norm(a_base[accepted_others]) + EPS))
 
 
-def endpoint(p, y, p_strong):
-    """The PREDICTION on the true class, not a loss.
+def true_class_prob(p, y):
+    """The probability the recipient assigns to the row's true class. CLASSIFICATION.
 
-    Every endpoint and interval in the recipient accounting is a difference between
-    predictions, so the scale is bounded by construction: a concept whose removal makes
+    Every value in the recipient accounting (p_weak, p_transfer, p_ablated, p_patched,
+    p_loo) is this number under a different delta, so every interval is a difference of
+    probabilities and the scale is bounded by construction: a concept whose removal makes
     the prediction badly wrong contributes at most 1.0.
 
-    This was -log(p[y]), inherited from `reversal`, which took it from the transfer's
-    dist_to_strong. That is unbounded as p -> 0, and summing k of them wrecked the
-    collateral term: additivity came out at median 4.68 and p90 79.15 against 0.846 for
-    the same quantity measured in gap-closed units, with the inflation tracking k exactly
-    (0.92 at k=8 rising to 85.67 at k=57). One badly-wrong prediction among 57 concepts
-    was enough to swamp the sum.
-
-    Probabilities need no clamp and no normalisation to stay comparable, so
-    `reversal`'s min_interval is now a resolution floor in honest units rather than a
-    papering-over of an unbounded scale.
-
-    Regression keeps the squared distance to the donor prediction, which is already a
-    prediction-space quantity. It is NOT bounded by 1 -- it carries the target's own
-    units -- so `min_interval` cannot be one constant across both heads.
-
-    Module-level rather than a closure over build_recip's locals so that the term the
-    whole recipient accounting rests on can be tested directly.
+    This was -log(p[y]), inherited from the transfer's dist_to_strong. That is unbounded
+    as p -> 0, and summing k of them wrecked the collateral term: additivity came out at
+    median 4.68 and p90 79.15 against 0.846 for the same quantity in gap-closed units,
+    the inflation tracking k exactly (0.92 at k=8 rising to 85.67 at k=57). One
+    badly-wrong prediction among 57 concepts was enough to swamp the sum.
     """
-    p = np.asarray(p)
-    if p.ndim >= 1 and p.size > 1:
-        return float(p[y])
-    return float((float(p) - float(p_strong)) ** 2)
+    return float(np.asarray(p)[y])
 
 
-def reversal(L_transfer, L_target, L_mod, min_interval=1e-2):
+def donor_dist_sq(p, p_donor):
+    """Squared distance to the donor's prediction. REGRESSION.
+
+    Not a probability and NOT bounded by 1 -- it carries the target's own units -- so
+    `toward_ablation`'s min_interval, calibrated in probability units, does not apply and
+    a regression sweep must recalibrate it before trusting the recipient terms.
+    """
+    return float((float(p) - float(p_donor)) ** 2)
+
+
+def toward_ablation(p_transfer, p_target, p_patched, min_interval=1e-2):
     """Where the patch landed between the transfer and the ABLATION of this concept.
 
     0 = the patch changed nothing; 1 = it reached what ablating this concept alone
@@ -848,7 +851,7 @@ def reversal(L_transfer, L_target, L_mod, min_interval=1e-2):
     The target used to be the UNTRANSFERRED prediction, which asks one concept to undo a
     whole multi-concept transfer. That is unreachable wherever the concept carries a small
     share, so a perfect patch was filed as an undershoot -- one measured row suppressed the
-    concept 90.7% with 3.6% collateral and scored reversal 0.190, which is what it should
+    concept 90.7% with 3.6% collateral and scored toward_ablation 0.190, which is what it should
     score when the concept carries a fifth of the delta.
 
     min_interval is a RESOLUTION FLOOR on the denominator, not a gate on the row. A
@@ -861,79 +864,84 @@ def reversal(L_transfer, L_target, L_mod, min_interval=1e-2):
     Gating was tried and was a defect twice over: the scorer substituted 1.0 for nan --
     FULL recipient credit, the top of the bounded range -- and the crossing guard tests
     `isfinite(rev) and rev > 1.0`, so nan also bypassed the guard. On v17 that was 59% of
-    chosen rows scored as perfect reversals with the guard disabled. Under the floor,
-    those same rows yield small finite reversals, and a patch that shoves the recipient
+    chosen rows scored as perfect toward_ablations with the guard disabled. Under the floor,
+    those same rows yield small finite toward_ablations, and a patch that shoves the recipient
     far past a near-zero target now shows rev >> 1 and is REJECTED by the guard instead
     of sailing through it.
 
     The value is min_gap, BORROWED, not invented: 0.01 is the threshold the transfer and
     ablation sweeps themselves use for "the models effectively agree on this prediction,
     skip the row" (transfer_sweep_symmetric.py:167, ablation_sweep_symmetric.py:116), in
-    the same units as these endpoints. Patching reads out THROUGH those interventions, so
+    the same units as these probabilities. Patching reads out THROUGH those interventions, so
     it cannot claim to resolve finer than they treat as agreement. It also clears the
     measured hardware floor everywhere (worst per-recipient cross-host p95: tabdpt
-    7.3e-03; recipient_noise_floor.py). A REGRESSION sweep must recalibrate: its endpoint
+    7.3e-03; recipient_noise_floor.py). A REGRESSION sweep must recalibrate: its readout
     is a squared distance in the target's own units.
 
-    nan is reserved for what is genuinely unmeasured: a non-finite endpoint, or no
+    nan is reserved for what is genuinely unmeasured: a non-finite probability, or no
     recipient context at all (carte, READOUT_EXCLUDED).
     """
-    interval = L_target - L_transfer
-    if not (np.isfinite(interval) and np.isfinite(L_mod) and np.isfinite(L_transfer)):
+    interval = p_target - p_transfer
+    if not (np.isfinite(interval) and np.isfinite(p_patched) and np.isfinite(p_transfer)):
         return float("nan")
     denom = math.copysign(max(abs(interval), min_interval),
                           interval if interval != 0 else 1.0)
-    return float((L_mod - L_transfer) / denom)
+    return float((p_patched - p_transfer) / denom)
 
 
-def objective(drop_frac, rev, blast, recon_excess=0.0):
-    """drop x sqrt(reversal) / ((1 + blast) x (1 + recon_excess)).
+def centrality(x, sorted_losses):
+    """Where x sits in the dataset's own reconstruction-loss distribution, folded:
+    1 at the median, falling toward 0 in EITHER tail.
 
-    Products and ratios of dimensionless terms, so there are no weights to invent.
-    sqrt compresses reversal's range: undoing the whole transfer scores 1.0 while
-    removing one concept's share scores ~0.026, and the square root narrows that 38x
-    spread to ~6x so the recipient term informs the choice without dictating it.
-    `1 + blast` degrades smoothly to `drop x sqrt(rev)` for a clean patch rather than
-    blowing up as blast -> 0.
+    Position is the mid-rank percentile among the dataset's real rows, smoothed by half a
+    rank so it never reaches exactly 0 or 1 -- a value beyond every real row keeps a
+    nonzero centrality of ~1/(n+1) rather than zeroing the score.
 
-    `recon_excess` is the IN-SAMPLE term: how far the patch inflates the SAE's
-    reconstruction error above this row's own baseline, max(0, recon'/recon0 - 1).
-    Relative rather than absolute because the baseline level is model-specific (0.12
-    for tabpfn, 0.57 for tabicl_v2), and one-sided because reconstructing BETTER than
-    the original row is not a problem. Without it the search can suppress the concept
-    by pushing the row somewhere the dictionary cannot represent, which is the
-    objective being exploited rather than evidence about the concept -- the same
-    failure as an off-manifold patch.
-
-    Reversal is not clipped and the sqrt is sign-preserving: a patch that moves the
-    recipient opposite to the transfer scores negative, which is correct.
+    Both tails count as leaving the distribution: reconstructing worse than real rows,
+    and reconstructing implausibly BETTER than any real row (the dictionary being
+    unusually happy is as atypical as it being unusually bad -- 1.9% of v15's chosen
+    patches sat below every real row and were charged nothing).
     """
-    r = float(rev)
-    p = EXPONENTS["reversal"]
-    root = math.copysign(abs(r) ** p, r) if np.isfinite(r) else float("nan")
-    # blast + EPS, not 1 + blast. EPS guards the division; the 1 was a WEIGHT wearing a
-    # guard's clothes -- writing `1` asserts that collateral equal to the whole transfer's
-    # movement should halve the score, which is exactly the kind of invented constant the
-    # products-and-ratios form exists to avoid. A divisor needs a guard against zero, and
-    # that is EPS.
-    #
-    # It also made the term's influence depend on where blast happened to sit relative to
-    # 1, which is why the same term failed in both directions this session: at 0.001 the
-    # factor was 1.001 and vanished (an objective moved 0.7282 -> 0.7525 purely because
-    # collateral had become invisible), at 13.5 it was 14.5 and swamped everything else.
-    #
-    # `blast + EPS` was tried earlier and looked broken -- zero collateral scored 7.5
-    # million -- but that was the correct behaviour of a divisor being fed UNSCALED
-    # prediction effects at 0.001-0.005, four orders above EPS. Scaled by the transfer's
-    # own movement, blast lands at 0.02-0.08 and a tenth the collateral is worth ten times
-    # the score, with no reference point and no implied weight.
-    #
-    # recon_excess keeps its `1 +`: it is an INFLATION over the row's own reconstruction
-    # error, so zero excess means unchanged, and 1 is its natural identity rather than a
-    # chosen weight.
-    return float(drop_frac ** EXPONENTS["drop"] * root
-                 / ((max(0.0, blast) + EPS) ** EXPONENTS["blast"]
-                    * (1.0 + max(0.0, recon_excess)) ** EXPONENTS["recon"]))
+    n = len(sorted_losses)
+    lo = np.searchsorted(sorted_losses, x, side="left")
+    hi = np.searchsorted(sorted_losses, x, side="right")
+    pos = (lo + 0.5 * (hi - lo) + 0.5) / (n + 1)
+    return float(2.0 * min(pos, 1.0 - pos))
+
+
+def objective(suppression_frac, toward, blast, centrality_ratio=1.0):
+    """suppression_frac x toward_ablation^0.5 x centrality_ratio / (blast + EPS).
+
+    A pure product of dimensionless ratios: no additive constants, no weights to invent,
+    and at equal exponents a 10% relative change in any term is worth the same as in any
+    other. Scores are only ever compared WITHIN a row.
+
+    suppression_frac   fraction of the concept's activation the patch extinguished.
+    toward_ablation    where the recipient landed between the transfer and the ablation
+                       of this concept; the sqrt is sign-preserving, so moving the wrong
+                       way scores negative, and the crossing guard has already rejected
+                       candidates past 1.
+    centrality_ratio   centrality(patched) / centrality(unpatched) in the dataset's own
+                       reconstruction-loss distribution: >1 the patch moved the row
+                       toward the density (rewarded), <1 toward either tail (penalised).
+                       Replaces recon_excess, which judged the patch against the row's
+                       OWN error -- one-sided, blind to moving toward the density, and
+                       not a statement about the distribution at all.
+    blast              fraction of the transfer's own prediction movement spent
+                       disturbing concepts the patch was not targeting.
+
+    blast + EPS, not 1 + blast: the 1 was a WEIGHT wearing a guard's clothes -- it made
+    the term's influence depend on where blast sat relative to 1 (invisible at 0.001,
+    dominant at 13.5). A divisor needs a guard against zero, and that is EPS; zero
+    collateral scoring ~1/EPS is intended divisor behaviour, since only within-row
+    ratios matter.
+    """
+    t = float(toward)
+    b = EXPONENTS["toward_ablation"]
+    root = math.copysign(abs(t) ** b, t) if np.isfinite(t) else float("nan")
+    return float(suppression_frac ** EXPONENTS["suppression"] * root
+                 * max(0.0, centrality_ratio) ** EXPONENTS["centrality"]
+                 / (max(0.0, blast) + EPS) ** EXPONENTS["blast"])
 
 
 def build_recip_shared(donor, recipient, dataset, device):
@@ -980,7 +988,7 @@ def build_recip_shared(donor, recipient, dataset, device):
 
 def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, device):
     """Per-ROW recipient context: this row's accepted atoms, signs, and the transfer's
-    own endpoints (L_orig, L_transfer) that `reversal` is scaled by."""
+    own endpoints (p_weak, p_transfer) that `toward_ablation` is scaled by."""
     if shared is None:
         return None
     from scripts.intervention.intervene_lib import (
@@ -1000,10 +1008,14 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
     y = int(np.asarray(z["y_query"])[row])
     pw, pi = np.asarray(z["preds_weak"])[row], np.asarray(z["preds_intervened"])[row]
 
-    ps = np.asarray(z["preds_strong"])[row]
+    p_donor = np.asarray(z["preds_strong"])[row]
+    classification = np.asarray(pw).ndim >= 1 and np.asarray(pw).size > 1
 
     def loss(p):
-        return endpoint(p, y, ps)
+        """One scalar per prediction: true-class probability (classification) or squared
+        distance to the donor (regression). Dispatch decided ONCE per row from the cached
+        prediction's shape, not per call."""
+        return true_class_prob(p, y) if classification else donor_dist_sq(p, p_donor)
 
     def predict(deltas):
         t = torch.tensor(np.asarray(deltas), dtype=torch.float32, device=device)
@@ -1015,7 +1027,7 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
 
     # The ABLATION TARGET: the delta with THIS concept's term removed and every other
     # concept left at its corpus value. That is what a perfect patch achieves -- remove c,
-    # disturb nothing else -- so it is the endpoint the recipient term should be scaled by.
+    # disturb nothing else -- so it is the target the recipient term should be scaled by.
     # Scaling by the untransferred prediction instead asks one concept to undo the whole
     # transfer, which is only reachable when c IS the whole transfer, and files a perfect
     # patch on a low-share concept as an undershoot.
@@ -1032,7 +1044,7 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
     # minus that concept, which is what "ablate it" means. The reconstruction is faithful:
     # validate_delta_reconstruction agreed with the stored deployed_delta to 3.14e-05.
     #
-    # The patched concept's entry gives L_ablated, the target the recipient term is scaled
+    # The patched concept's entry gives p_ablated, the target the recipient term is scaled
     # by. The others give how much the recipient's prediction DEPENDS on each co-accepted
     # concept, which is what the collateral should be weighted by: a 12% shift in a concept
     # whose LOO is ~0 cannot move the prediction, while a 3% shift in one carrying a third
@@ -1048,12 +1060,12 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
     for i in range(len(fids)):
         keep = np.ones(len(fids)); keep[i] = 0.0
         variants.append((signs * a_corpus * keep) @ B)
-    L_loo = [loss(p) for p in predict(np.asarray(variants))]
-    L_transfer = loss(pi)
+    p_loo = [loss(p) for p in predict(np.asarray(variants))]
+    p_transfer = loss(pi)
     i_feat = fids.index(feat) if feat in fids else None
-    L_ablated = L_loo[i_feat] if i_feat is not None else float("nan")
+    p_ablated = p_loo[i_feat] if i_feat is not None else float("nan")
     # |prediction effect of removing concept j|, the weight for j's disturbance.
-    loo_effect = np.array([abs(L - L_transfer) for L in L_loo])
+    loo_effect = np.array([abs(L - p_transfer) for L in p_loo])
 
     # How ADDITIVE this row is: do the per-concept effects sum to the transfer's own?
     # ~1 means each ablation is genuinely that concept's share, so the weighted-sum
@@ -1066,21 +1078,21 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
     # fails -- 4.2x at a row with ratio 0.24 -- and it assumes the shortfall distributes
     # proportionally, which is what redundancy denies. loo_additivity_sweep put the median
     # at 0.846 with 67% of rows in 0.5-1.5.
-    L_full = abs(L_transfer - loss(pw))
-    additivity = float(loo_effect.sum() / L_full) if L_full > EPS else float("nan")
+    transfer_moved = abs(p_transfer - loss(pw))
+    additivity = float(loo_effect.sum() / transfer_moved) if transfer_moved > EPS else float("nan")
 
     return {"fids": fids, "B": B, "signs": signs,
             "a_corpus": a_corpus,
             "a_re": {f: float(a_re[f]) for f in fids},   # our own baseline, for ratios
             "predict": predict, "loss": loss,
-            "L_orig": loss(pw), "L_transfer": L_transfer, "L_ablated": L_ablated,
+            "p_weak": loss(pw), "p_transfer": p_transfer, "p_ablated": p_ablated,
             "loo_effect": loo_effect, "loo_by_fid": dict(zip(fids, loo_effect.tolist())),
             "additivity": additivity,
             "row": int(row)}
 
 
-def recipient_reversal(recip, acts, feat):
-    """Measured reversal for a batch of candidate activation vectors.
+def recipient_toward_ablation(recip, acts, feat):
+    """Measured toward_ablation for a batch of candidate activation vectors.
 
     For each candidate: rescale every accepted concept's term by its MEASURED ratio
     (not just the patched concept's -- assuming the others held still is the assumption
@@ -1094,7 +1106,7 @@ def recipient_reversal(recip, acts, feat):
             for f in recip["fids"]])
         d.append((recip["signs"] * recip["a_corpus"] * r_vec) @ recip["B"])
     preds = recip["predict"](np.asarray(d))
-    return [reversal(recip["L_transfer"], recip["L_ablated"], recip["loss"](p))
+    return [toward_ablation(recip["p_transfer"], recip["p_ablated"], recip["loss"](p))
             for p in preds]
 
 
@@ -1108,19 +1120,19 @@ def shift_metrics(a_base, a_new, others, feat):
     """
     tgt = abs(a_new[feat] - a_base[feat]) / max(abs(a_base[feat]), 1e-6)
     if len(others) == 0:
-        return {"other_rel_median": 0.0, "other_rel_p90": 0.0, "other_rel_max": 0.0,
-                "other_abs_max": 0.0, "target_rel": float(tgt),
+        return {"other_moved_median": 0.0, "other_moved_p90": 0.0, "other_moved_max": 0.0,
+                "other_abs_max": 0.0, "target_moved_frac": float(tgt),
                 "selectivity_ratio": float("inf"), "n_others_moved_gt_10pct": 0}
     b, n = a_base[others], a_new[others]
-    rel = np.abs(n - b) / np.maximum(np.abs(b), 1e-6)
-    p90 = float(np.percentile(rel, 90))
-    return {"other_rel_median": float(np.median(rel)), "other_rel_p90": p90,
-            "other_rel_max": float(rel.max()),
+    moved = np.abs(n - b) / np.maximum(np.abs(b), 1e-6)
+    p90 = float(np.percentile(moved, 90))
+    return {"other_moved_median": float(np.median(moved)), "other_moved_p90": p90,
+            "other_moved_max": float(moved.max()),
             "other_abs_max": float(np.abs(n - b).max()),
-            "target_rel": float(tgt),
+            "target_moved_frac": float(tgt),
             # >1 means the target moved relatively more than the 90th-pct other concept
             "selectivity_ratio": float(tgt / (p90 + 1e-9)),
-            "n_others_moved_gt_10pct": int((rel > 0.10).sum())}
+            "n_others_moved_gt_10pct": int((moved > 0.10).sum())}
 
 
 def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
@@ -1168,7 +1180,7 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
             variants.append(r); meta.append((int(j), val, float(dL)))
     if not variants:
         return []
-    a, rel = ev(variants)
+    a, recon_loss = ev(variants)
     out = []
     for i, (j, val, dL) in enumerate(meta):
         m = shift_metrics(a_base_row, a[i], others, feat)
@@ -1180,11 +1192,11 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
                # comparable across columns AND across column types, which is the whole
                # point of measuring the step in log freq.
                "slope": (d / dL) if dL > 0 else float("nan"),
-               "activation_after": float(a[i][feat]), "recon_rel": float(rel[i]),
+               "activation_after": float(a[i][feat]), "recon_loss": float(recon_loss[i]),
                # edit_distance is per-column: `v` used to leak from the probe loop, so
                # every record was scored against the LAST probed column's distribution.
                "edit_distance": edit_distance(col, x0[j], val, categorical=j in space.cat),
-               "selectivity": d / (m["other_rel_p90"] + 1e-6)}
+               "selectivity": d / (m["other_moved_p90"] + 1e-6)}
         rec.update(m)
         out.append(rec)
     return out
@@ -1200,7 +1212,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     The search is over INPUT features and values. Concepts are measured, never searched:
     the transfer's concept selection is fixed history, the context we intervene in.
 
-    Candidates are scored by  drop_frac * reversal / (1 + blast)  -- three MEASURED
+    Candidates are scored by  suppression_frac * toward_ablation / (1 + blast)  -- three MEASURED
     terms, none computed. The recipient term cannot be derived from the donor side: the
     delta is linear in the activations only for a fixed accepted set with fixed atoms,
     the recipient's prediction is nonlinear in the delta, the mapping carries its own
@@ -1217,9 +1229,14 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     import itertools
 
     base = X_query.copy()
-    a0, rel0 = extract_acts(donor, dataset, X_ctx, y_ctx, base, task, device)
+    a0, recon_loss_ds = extract_acts(donor, dataset, X_ctx, y_ctx, base, task, device)
     a_base_row = a0[row].copy()
     a_start = float(a_base_row[feat])
+    # The dataset's own reconstruction-loss distribution, from the same forward that just
+    # measured every real row. This is the reference `centrality` positions against; the
+    # row's own loss is one draw from it, not a reference.
+    recon_loss_sorted = np.sort(np.asarray(recon_loss_ds, dtype=np.float64))
+    cen_start = centrality(float(recon_loss_ds[row]), recon_loss_sorted)
     x0 = space.row(row)   # the row in the SPACE's columns, not the model's
     ev = make_evaluator(donor, dataset, X_ctx, y_ctx, base, space, task, device, row,
                         a_base_row)
@@ -1371,8 +1388,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 rows_.append(r); meta_.append(cand)
             if not rows_:
                 continue
-            a, rel = ev(rows_)
-            revs = recipient_reversal(recip, a, feat) if recip else [float("nan")] * len(a)
+            a, recon_loss = ev(rows_)
+            revs = recipient_toward_ablation(recip, a, feat) if recip else [float("nan")] * len(a)
             scored = []
             for i, cand in enumerate(meta_):
                 m = shift_metrics(a_base_row, a[i], others, feat)
@@ -1382,17 +1399,23 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 bl_w = weighted_blast(a_base_row, a[i], others, recip)
                 bl = bl_raw if bl_w is None else bl_w
                 rev = float(revs[i])
-                r0 = float(rel0[row])
-                rex = max(0.0, float(rel[i]) / r0 - 1.0) if r0 > EPS else 0.0
-                if drop <= 0 or (recon_bar is not None and float(rel[i]) > recon_bar):
+                # In or out of distribution is a statement about POSITION in a
+                # distribution -- the dataset's own reconstruction losses -- never about
+                # the row's own error. cen_start is a row constant, so within-row
+                # selection is driven by where the candidate ENDS; the ratio is what
+                # makes the recorded score read as "moved toward the density (> 1) or
+                # toward a tail (< 1)".
+                cen_i = centrality(float(recon_loss[i]), recon_loss_sorted)
+                cen_ratio = cen_i / cen_start
+                if drop <= 0 or (recon_bar is not None and float(recon_loss[i]) > recon_bar):
                     continue
                 # CROSSING GUARD, the convention transfer_sweep_v2 already uses: it
                 # rejects any candidate whose intervened prediction goes PAST the strong
                 # prediction, and _gc clamps gap_closed to [0,1]. The patch's target is the
-                # recipient's ORIGINAL pre-transfer prediction, and reversal > 1 is exactly
+                # recipient's ORIGINAL pre-transfer prediction, and toward_ablation > 1 is exactly
                 # "crossed past it", so the same guard applies here.
                 #
-                # It also repairs the objective without changing it: sqrt(reversal) is a
+                # It also repairs the objective without changing it: sqrt(toward_ablation) is a
                 # sound reward BELOW the target and only misbehaves above, so removing the
                 # crossings removes the region where it selects the wrong candidate. That
                 # region was 26.1% of chosen patches.
@@ -1401,13 +1424,13 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 cols = [s["column"] for s in committed + [cand]]
                 scored.append({"columns": cols,
                                "values": [s["value"] for s in committed + [cand]],
-                               "activation_after": float(a[i][feat]), "drop": drop,
-                               "drop_frac": df, "blast": bl, "blast_raw": bl_raw,
-                               "blast_weighted": bl_w, "reversal": rev,
-                               "recon_excess": rex,
+                               "activation_after": float(a[i][feat]), "suppression": drop,
+                               "suppression_frac": df, "blast": bl, "blast_raw": bl_raw,
+                               "blast_weighted": bl_w, "toward_ablation": rev,
+                               "centrality": cen_i, "centrality_ratio": cen_ratio,
                                "score": objective(df, rev if np.isfinite(rev) else 1.0,
-                                                  bl, rex),
-                               "recon_rel": float(rel[i]),
+                                                  bl, cen_ratio),
+                               "recon_loss": float(recon_loss[i]),
                                "edit_distance": float(sum(s["edit_distance"]
                                                           for s in committed + [cand])),
                                "_cand": cand, "_vec": a[i], **m})
@@ -1444,18 +1467,18 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "column_name": str(space.names[cand_col]),
                                "value": best["values"][-1],
                                "n_cols": len(best["columns"]),
-                               "score": best["score"], "drop_frac": best["drop_frac"],
-                               "reversal": best["reversal"], "blast": best["blast"],
-                               "recon_excess": best["recon_excess"],
+                               "score": best["score"], "suppression_frac": best["suppression_frac"],
+                               "toward_ablation": best["toward_ablation"], "blast": best["blast"],
+                               "centrality_ratio": best["centrality_ratio"],
                                "n_candidates_searched": len(rows_)})
             stop = ("fully_suppressed" if best["activation_after"] <= 0
                     else "best_combination")
             if best["activation_after"] <= 0:
                 break
             # Target reached: stop rather than keep committing columns for a sliver of
-            # reversal, which is what gc_tolerance does for the transfer greedy.
-            if np.isfinite(best["reversal"]) and best["reversal"] >= REVERSAL_TOLERANCE:
-                stop = "reversal_target_reached"
+            # toward_ablation, which is what gc_tolerance does for the transfer greedy.
+            if np.isfinite(best["toward_ablation"]) and best["toward_ablation"] >= REVERSAL_TOLERANCE:
+                stop = "toward_ablation_target_reached"
                 break
 
     a_now_vec = best.pop("_vec") if best else a_base_row.copy()
@@ -1470,11 +1493,12 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
               for j in acc}
     return {"row": int(row), "a_start": a_start, "a_final": a_now,
             "ratio": (a_now / a_start) if a_start > 0 else float("nan"),
-            "drop_frac": (1.0 - a_now / a_start) if a_start > 0 else float("nan"),
-            "recon_rel_start": float(rel0[row]), "stop_reason": stop,
-            # the reversal denominator BEFORE the resolution floor, so the sweep itself
+            "suppression_frac": (1.0 - a_now / a_start) if a_start > 0 else float("nan"),
+            "recon_loss_start": float(recon_loss_ds[row]), "centrality_start": cen_start,
+            "stop_reason": stop,
+            # the toward_ablation denominator BEFORE the resolution floor, so the sweep itself
             # answers where the interval mass sits relative to min_gap -- v17 could not
-            "ablation_interval": (float(recip["L_ablated"] - recip["L_transfer"])
+            "ablation_interval": (float(recip["p_ablated"] - recip["p_transfer"])
                                   if recip else None),
             # in the SPACE's columns: preprocessed values, or raw table values under
             # --space raw, where the row is reportable as-is with no inversion.
@@ -1749,11 +1773,11 @@ def main():
                          "concepts under 30 rows, up from 5.")
     ap.add_argument("--exponents", default=None,
                     help="override the objective's exponents as "
-                         "drop,reversal,blast,recon (default 1,0.5,1,1). The reversal one "
-                         "is the live knob: with the crossing guard bounding reversal at 1, "
+                         "suppression,toward_ablation,blast,centrality (default 1,0.5,1,1). The toward_ablation one "
+                         "is the live knob: with the crossing guard bounding toward_ablation at 1, "
                          "a sqrt COMPRESSES differences between low values and makes the "
                          "search less willing to trade suppression for recipient movement. "
-                         "Raising it chases reversal harder.")
+                         "Raising it chases toward_ablation harder.")
     ap.add_argument("--uninhibited", action="store_true",
                     help="scan BOTH sides of the marginal on continuous columns, and offer "
                          "every observed level on categoricals rather than only those whose "
@@ -1812,8 +1836,9 @@ def main():
     if args.exponents:
         vals = [float(x) for x in args.exponents.split(",")]
         if len(vals) != 4:
-            raise SystemExit("--exponents needs four numbers: drop,reversal,blast,recon")
-        EXPONENTS.update(zip(("drop", "reversal", "blast", "recon"), vals))
+            raise SystemExit("--exponents needs four numbers: "
+                             "suppression,toward_ablation,blast,centrality")
+        EXPONENTS.update(zip(("suppression", "toward_ablation", "blast", "centrality"), vals))
         print(f"objective exponents: {EXPONENTS}", flush=True)
 
     # explicit --concepts wins; --probe next; otherwise the locked set, so a bare
@@ -2070,7 +2095,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                         "activation": act.get(row)})
             # a large drop means nothing without the selectivity and in-sample numbers
             m = res["final_shift"]
-            rec = max((s["recon_rel"] for s in res["steps"]), default=res["recon_rel_start"])
+            rec = max((s["recon_loss"] for s in res["steps"]), default=res["recon_loss_start"])
             # A row id alone is not a statement: the same row carries many concepts.
             # Identify (donor, recipient, dataset, concept, row) and say what else was
             # injected there.
@@ -2078,27 +2103,29 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                   f"1 of {len(others)+1} concepts injected here, "
                   f"accepted {ordinal(rank_of.get(row))}, act={act.get(row, float('nan')):.2f}",
                   flush=True)
-            print(f"      drop {res['drop_frac']:6.1%} ({res['n_cols_changed']} cols, "
-                  f"{res['stop_reason']}) | target {m['target_rel']:.1%} vs others "
-                  f"med {m['other_rel_median']:.1%} p90 {m['other_rel_p90']:.1%} "
+            print(f"      drop {res['suppression_frac']:6.1%} ({res['n_cols_changed']} cols, "
+                  f"{res['stop_reason']}) | target {m['target_moved_frac']:.1%} vs others "
+                  f"med {m['other_moved_median']:.1%} p90 {m['other_moved_p90']:.1%} "
                   f"(>10%: {m['n_others_moved_gt_10pct']}/{len(others)}) | "
                   f"sel-ratio {m['selectivity_ratio']:.2f} | "
-                  f"recon {res['recon_rel_start']:.3f}->{rec:.3f}", flush=True)
+                  f"recon {res['recon_loss_start']:.3f}->{rec:.3f}", flush=True)
             # Every term of the objective, and the objective itself, for the CHOSEN patch.
-            # drop x sqrt(rev) / ((1+blast)(1+recon_excess)) -- printed factor by factor so
+            # suppression x toward_ablation^b x centrality_ratio / (blast+EPS) -- printed
+            # factor by factor so
             # a score can be read rather than inferred. Without it a low score is
             # indistinguishable between weak suppression, a recipient that did not move,
             # collateral on the other concepts, and a row pushed off-manifold, which are
             # four different problems with four different fixes.
             b = res.get("best") or {}
             if b:
-                rv = b.get("reversal", float("nan"))
-                bl, rx, df = b.get("blast", 0.0), b.get("recon_excess", 0.0), b.get("drop_frac", 0.0)
+                rv = b.get("toward_ablation", float("nan"))
+                bl = b.get("blast", 0.0)
+                cr, df = b.get("centrality_ratio", 1.0), b.get("suppression_frac", 0.0)
                 print(f"      objective {b.get('score', float('nan')):.4f}"
-                      f" = drop {df:.3f}"
-                      f" x (toward-ablation {rv:.3f})^{EXPONENTS['reversal']:g}"
-                      f" / (1+blast {bl:.3f})"
-                      f" / (1+recon_excess {rx:.3f})", flush=True)
+                      f" = suppression {df:.3f}"
+                      f" x (toward-ablation {rv:.3f})^{EXPONENTS['toward_ablation']:g}"
+                      f" x centrality-ratio {cr:.3f}"
+                      f" / (blast {bl:.3f} + eps)", flush=True)
             if recipient in READOUT_EXCLUDED:
                 res["readout"] = {"status": "recipient_readout_excluded",
                                   "recipient": recipient,

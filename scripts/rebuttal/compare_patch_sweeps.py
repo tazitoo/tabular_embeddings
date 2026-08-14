@@ -66,11 +66,13 @@ def load(patterns):
                                int(r["row"]))
                         rows[key] = {
                             "n_cols": int(r.get("n_cols_changed") or len(b["columns"])),
-                            "drop_frac": b.get("drop_frac"),
+                            "drop_frac": b.get("suppression_frac", b.get("drop_frac")),
                             "blast": b.get("blast"),
                             "edit": b.get("edit_distance"),
+                            # v19+: centrality_ratio (rewards >1); pre-v19: recon_excess
                             "recon_excess": b.get("recon_excess"),
-                            "reversal": b.get("reversal"),
+                            "centrality_ratio": b.get("centrality_ratio"),
+                            "reversal": b.get("toward_ablation", b.get("reversal")),
                             "score": b.get("score"),
                         }
     return rows
@@ -139,7 +141,8 @@ def main():
     print(f"\n  {'metric':<16s} {args.label_a:>14s} {args.label_b:>14s} {'change':>10s}")
     for name, key in [("n_cols (med)", "n_cols"), ("drop_frac (med)", "drop_frac"),
                       ("blast (med)", "blast"), ("edit_dist (med)", "edit"),
-                      ("recon_excess", "recon_excess"), ("score (med)", "score")]:
+                      ("recon_excess", "recon_excess"),
+                      ("centrality_ratio", "centrality_ratio"), ("score (med)", "score")]:
         va, vb = med([r[key] for r in a]), med([r[key] for r in b])
         print(f"  {name:<16s} {va:14.3f} {vb:14.3f} {vb - va:+10.3f}")
     print(f"  {'overshoot >1.2':<16s} {oa:13.1%} {ob:13.1%} {ob - oa:+9.1%}"
