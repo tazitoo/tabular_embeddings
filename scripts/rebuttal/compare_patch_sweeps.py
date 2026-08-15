@@ -66,6 +66,11 @@ def load(patterns):
                                int(r["row"]))
                         rows[key] = {
                             "n_cols": int(r.get("n_cols_changed") or len(b["columns"])),
+                            # the patch's identity, for replication comparisons: two
+                            # sweeps chose THE SAME patch iff columns and values match
+                            "patch_id": (tuple(b.get("columns") or ()),
+                                         tuple(map(str, b.get("values") or ()))),
+                            "gap_opened": r.get("gap_opened"),
                             "drop_frac": b.get("suppression_frac", b.get("drop_frac")),
                             "blast": b.get("blast"),
                             "edit": b.get("edit_distance"),
@@ -161,6 +166,25 @@ def main():
     ca = np.array([r["n_cols"] for r in a]); cb = np.array([r["n_cols"] for r in b])
     print(f"  rows where the patch got SMALLER:  {int(np.sum(cb < ca))}/{len(shared)}  "
           f"LARGER: {int(np.sum(cb > ca))}  same: {int(np.sum(cb == ca))}")
+
+    # REPLICATION view: on rows where both sweeps chose the IDENTICAL patch (same
+    # columns and values), any metric difference is pure re-measurement noise; the
+    # non-identical fraction is the search's own path sensitivity. Between two runs
+    # with no code change this IS the end-to-end reproducibility floor.
+    ident = [k for k in shared if A[k]["patch_id"] == B[k]["patch_id"]]
+    print(f"\n  IDENTICAL chosen patch (columns AND values): "
+          f"{len(ident)}/{len(shared)} = {len(ident) / max(len(shared), 1):.1%}")
+    if ident:
+        dd = fin([abs((B[k]["drop_frac"] or np.nan) - (A[k]["drop_frac"] or np.nan))
+                  for k in ident])
+        print(f"    |d suppression| on identical rows: med {np.median(dd):.2e}  "
+              f"p95 {np.percentile(dd, 95):.2e}  max {dd.max():.2e}")
+        dg = fin([abs(B[k]["gap_opened"] - A[k]["gap_opened"]) for k in ident
+                  if A[k].get("gap_opened") is not None
+                  and B[k].get("gap_opened") is not None])
+        if len(dg):
+            print(f"    |d gap_opened| on identical rows:  med {np.median(dg):.2e}  "
+                  f"p95 {np.percentile(dg, 95):.2e}  max {dg.max():.2e}  (n={len(dg)})")
 
     by_ncols(a, args.label_a)
     by_ncols(b, args.label_b)

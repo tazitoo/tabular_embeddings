@@ -21,6 +21,7 @@ instrument-independent and comparable across sweeps.
 Usage:
     python -m scripts.rebuttal.movement_decomposition
 """
+import argparse
 import glob
 import json
 from collections import defaultdict
@@ -31,7 +32,6 @@ from scripts._project_root import PROJECT_ROOT
 
 OUT_DIR = PROJECT_ROOT / "output" / "rebuttal"
 FLOOR = 0.01
-SWEEPS = [("v19", "patchv19clf_*.json"), ("v20", "patchv20clf_*.json")]
 
 
 _npz_cache = {}
@@ -107,7 +107,12 @@ def med_q(vals, lo=25, hi=75):
 
 
 def main():
-    data = {name: load(pat) for name, pat in SWEEPS}
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sweeps", nargs="*", default=["v19", "v20"],
+                    help="sweep tags to compare, e.g. v20 v21; each expands to "
+                         "patch<TAG>clf_*.json")
+    args = ap.parse_args()
+    data = {name: load(f"patch{name}clf_*.json") for name in args.sweeps}
     for name, rows in data.items():
         print(f"{name}: {len(rows)} chosen patches with a recipient readout")
 
