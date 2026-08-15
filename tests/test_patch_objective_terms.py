@@ -20,11 +20,13 @@ from scripts.rebuttal.patch_search import (
     ACTIVE_FLOOR,
     EPS,
     EXPONENTS,
+    MIN_GAP,
     blast_radius,
     centrality,
     collateral_detail,
     donor_dist_sq,
     objective,
+    recipient_toward_ablation,
     shift_metrics,
     toward_ablation,
     true_class_prob,
@@ -229,10 +231,55 @@ def test_objective_is_nan_when_toward_ablation_is_nan():
     assert objective(0.5, 1.0, 0.05, 1.0) == pytest.approx(objective(0.5, 1.0, 0.05, 1.0))
 
 
+# ── attribution: the movement credited to c is observed minus bystanders ─────
+
+def _fake_ctx(p_patched, p_transfer=0.50, p_ablated=0.60, loo_signed=(0.10, -0.03)):
+    """Minimal recip context: two concepts, c = 7 and bystander 9, identity geometry so
+    the delta arithmetic is inert and only the attribution arithmetic is exercised."""
+    return {"fids": [7, 9], "B": np.eye(2), "signs": np.ones(2),
+            "a_corpus": np.ones(2), "a_re": {7: 1.0, 9: 1.0},
+            "predict": lambda d: np.array([[p_patched]] * len(d)),
+            "loss": lambda pr: float(pr[0]),
+            "p_transfer": p_transfer, "p_ablated": p_ablated,
+            "loo_signed": list(loo_signed)}
+
+
+def test_attribution_subtracts_the_bystanders_signed_share():
+    """c suppressed fully, bystander 9 at ratio 0.8. Bystander's first-order share is
+    (1 - 0.8) x (-0.03) = -0.006; observed movement 0.05 attributes to 0.056, and
+    toward_ablation = 0.056 / 0.10."""
+    out = recipient_toward_ablation(_fake_ctx(p_patched=0.55),
+                                    [{7: 0.0, 9: 0.8}], feat=7)
+    assert out[0]["movement_observed"] == pytest.approx(0.05)
+    assert out[0]["est_bystander"] == pytest.approx(-0.006)
+    assert out[0]["attribution_fallback"] is False
+    assert out[0]["toward"] == pytest.approx(0.056 / 0.10)
+
+
+def test_attribution_ignores_bystanders_that_did_not_move():
+    """Ratio 1.0 contributes (1 - 1.0) x anything = 0: with no bystander movement the
+    attributed and observed movements coincide."""
+    out = recipient_toward_ablation(_fake_ctx(p_patched=0.55),
+                                    [{7: 0.0, 9: 1.0}], feat=7)
+    assert out[0]["est_bystander"] == pytest.approx(0.0)
+    assert out[0]["toward"] == pytest.approx(0.05 / 0.10)
+
+
+def test_attribution_falls_back_when_the_correction_leaves_the_probability_range():
+    """A first-order estimate that implies movement outside [-1, 1] is out-of-model by
+    construction (one v19-tested row overshot by 1.68). The UNCORRECTED movement is
+    used and the fallback recorded -- no chosen constant involved."""
+    out = recipient_toward_ablation(
+        _fake_ctx(p_patched=0.55, loo_signed=(0.10, -20.0)),
+        [{7: 0.0, 9: 0.8}], feat=7)
+    assert out[0]["attribution_fallback"] is True
+    assert out[0]["toward"] == pytest.approx(0.05 / 0.10)   # observed, uncorrected
+
+
 # ── collateral ───────────────────────────────────────────────────────────────
 
-def _recip(loo_by_fid, p_transfer=0.30, p_weak=0.80):
-    return {"loo_by_fid": loo_by_fid, "p_transfer": p_transfer, "p_weak": p_weak}
+def _recip(loo_by_fid, interval=0.50):
+    return {"loo_by_fid": loo_by_fid, "interval": interval}
 
 
 def test_weighted_blast_is_zero_when_nothing_moved():
@@ -266,18 +313,29 @@ def test_weighted_blast_excludes_inactive_concepts_rather_than_flooring_them():
     assert weighted_blast(a, moved, np.array([1]), _recip({1: 0.5})) is None
 
 
-def test_weighted_blast_is_a_fraction_of_the_transfer_s_own_movement():
-    """Scaled by |p_transfer - p_weak| so it reads as 'what fraction of the prediction
-    effect in play did we spend on concepts we were not patching'."""
+def test_weighted_blast_is_scaled_to_what_ablating_c_moves():
+    """spend / max(|interval|, MIN_GAP): bystander spend in units of the concept under
+    test's own effect -- the 2026-08-14 strictness redesign. The transfer's movement is
+    no longer the scale; the same spend against a weak concept must read LARGER."""
     a, moved = np.array([1.0, 1.0]), np.array([1.0, 1.5])
-    r = _recip({1: 0.4}, p_transfer=0.30, p_weak=0.80)
-    assert weighted_blast(a, moved, np.array([1]), r) == pytest.approx(0.5 * 0.4 / 0.5)
+    strong = weighted_blast(a, moved, np.array([1]), _recip({1: 0.4}, interval=0.50))
+    weak = weighted_blast(a, moved, np.array([1]), _recip({1: 0.4}, interval=0.05))
+    assert strong == pytest.approx(0.5 * 0.4 / 0.50)
+    assert weak == pytest.approx(0.5 * 0.4 / 0.05)
+    assert weak > strong
 
 
-def test_weighted_blast_is_none_when_the_transfer_moved_nothing():
+def test_weighted_blast_floors_the_interval_at_min_gap():
+    """A sub-floor interval is capped at the resolution bound, not divided by noise --
+    strict (spend / 0.01) but bounded."""
     a, moved = np.array([1.0, 1.0]), np.array([1.0, 1.5])
-    r = _recip({1: 0.4}, p_transfer=0.30, p_weak=0.30)
-    assert weighted_blast(a, moved, np.array([1]), r) is None
+    r = weighted_blast(a, moved, np.array([1]), _recip({1: 0.4}, interval=0.002))
+    assert r == pytest.approx(0.5 * 0.4 / MIN_GAP)
+
+
+def test_weighted_blast_is_none_without_a_measured_interval():
+    a, moved = np.array([1.0, 1.0]), np.array([1.0, 1.5])
+    assert weighted_blast(a, moved, np.array([1]), _recip({1: 0.4}, interval=float("nan"))) is None
 
 
 def test_weighted_blast_is_none_without_a_recipient():

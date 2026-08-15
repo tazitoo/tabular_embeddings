@@ -100,6 +100,8 @@ ACTIVE_FLOOR = 1e-3
 # Raising this exponent makes the search chase toward_ablation harder.
 EXPONENTS = {"suppression": 1.0, "toward_ablation": 0.5, "blast": 1.0, "centrality": 1.0}
 EPS = 1e-7   # the constant already used by _gc and the transfer sweep
+MIN_GAP = 1e-2   # the sweeps' own "models effectively agree" threshold, borrowed; the
+                 # resolution floor for every recipient-side denominator here
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
 # embeddings come from an unseeded retrieval draw, so re-extraction yields a
 # different draw and the injected delta moves ~59% (vs 0.13% for a deterministic
@@ -774,25 +776,26 @@ def weighted_blast(a_base, a_new, others, recip):
     w = np.array([recip["loo_by_fid"].get(int(f), 0.0) for f in np.asarray(others)[live]])
     spent = float((moved_frac * w).sum())
 
-    # Scaled by the TRANSFER's own prediction movement, |p_transfer - p_weak|: the total
-    # prediction effect in play at this row, and the span every effect here lives inside.
-    # So the term reads as "what fraction of the whole transfer's movement did we spend on
-    # concepts we were not patching".
+    # Scaled by what ablating c ITSELF moves, |p_ablated - p_transfer| floored at
+    # MIN_GAP: the term reads "how many times over did the edit's spend on bystanders
+    # exceed what the concept under test can move at all". Strictest exactly where the
+    # bystanders outnumber a weak concept -- spend of 0.01 against the whole transfer's
+    # 0.5 read as a negligible 2%, while being several times everything the edit under
+    # test was supposed to move (2026-08-14 review; on v19, bystander spend could
+    # account for the entire measured movement on 79.5% of sub-floor rows).
     #
-    # That scale rather than the patched concept's own effect: this is a property of the
-    # ROW, so collateral does not change meaning depending on which concept we happen to be
-    # patching, and rows differing by orders of magnitude in available prediction effect
-    # become comparable. It is also the same denominator `additivity` uses.
+    # The earlier scale, the TRANSFER's own movement |p_transfer - p_weak|, made
+    # collateral comparable across rows but blind to c: the same spend read the same
+    # against a dominant concept and a marginal one.
     #
-    # Unscaled the term is unusable in the objective. Raw prediction effects came out at
-    # 0.001-0.005: with `1 + blast` the term vanished (one probe row's objective rose
-    # 0.7282 -> 0.7525 purely because collateral had gone numerically invisible), and
-    # dividing by it directly made zero collateral score 7.5 million and preferred a patch
-    # with drop 0.30 over one with drop 0.90.
-    full = abs(float(recip["p_transfer"]) - float(recip["p_weak"]))
-    if not np.isfinite(full) or full <= EPS:
-        return None                    # the transfer moved nothing; collateral has no scale
-    return float(spent / full)
+    # Deliberately NOT scaled by the candidate's suppression_frac: that would put
+    # suppression in blast's denominator and square its influence on the objective.
+    # The floor is MIN_GAP, the same resolution bound toward_ablation's denominator
+    # uses -- an interval measured below it is not distinguishable from one at it.
+    interval = recip.get("interval")
+    if interval is None or not np.isfinite(interval):
+        return None                    # no measured interval; fall back to blast_radius
+    return float(spent / max(abs(float(interval)), MIN_GAP))
 
 
 def blast_radius(a_base, a_new, accepted_others):
@@ -841,7 +844,7 @@ def donor_dist_sq(p, p_donor):
     return float((float(p) - float(p_donor)) ** 2)
 
 
-def toward_ablation(p_transfer, p_target, p_patched, min_interval=1e-2):
+def toward_ablation(p_transfer, p_target, p_patched, min_interval=MIN_GAP):
     """Where the patch landed between the transfer and the ABLATION of this concept.
 
     0 = the patch changed nothing; 1 = it reached what ablating this concept alone
@@ -918,17 +921,21 @@ def objective(suppression_frac, toward, blast, centrality_ratio=1.0):
 
     suppression_frac   fraction of the concept's activation the patch extinguished.
     toward_ablation    where the recipient landed between the transfer and the ablation
-                       of this concept; the sqrt is sign-preserving, so moving the wrong
-                       way scores negative, and the crossing guard has already rejected
-                       candidates past 1.
+                       of this concept, with the bystanders' signed first-order share
+                       subtracted out of the movement (recipient_toward_ablation), so
+                       the credit is c's; the sqrt is sign-preserving, so moving the
+                       wrong way scores negative, and the crossing guard has already
+                       rejected candidates past 1.
     centrality_ratio   centrality(patched) / centrality(unpatched) in the dataset's own
                        reconstruction-loss distribution: >1 the patch moved the row
                        toward the density (rewarded), <1 toward either tail (penalised).
                        Replaces recon_excess, which judged the patch against the row's
                        OWN error -- one-sided, blind to moving toward the density, and
                        not a statement about the distribution at all.
-    blast              fraction of the transfer's own prediction movement spent
-                       disturbing concepts the patch was not targeting.
+    blast              bystander spend relative to what ablating c itself moves,
+                       spend / max(|interval|, MIN_GAP) -- how many times over the edit
+                       disturbed concepts it was not targeting, in units of the concept
+                       under test's own effect.
 
     blast + EPS, not 1 + blast: the 1 was a WEIGHT wearing a guard's clothes -- it made
     the term's influence depend on where blast sat relative to 1 (invisible at 0.001,
@@ -1061,6 +1068,9 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
         keep = np.ones(len(fids)); keep[i] = 0.0
         variants.append((signs * a_corpus * keep) @ B)
     p_loo = [loss(p) for p in predict(np.asarray(variants))]
+    # SIGNED per-concept LOO: p_loo_j - p_transfer, the direction j pushes the
+    # prediction. The unsigned version below stays for the collateral COST (cancelling
+    # disturbances are still disturbances); the signed one feeds the re-estimated drop.
     p_transfer = loss(pi)
     i_feat = fids.index(feat) if feat in fids else None
     p_ablated = p_loo[i_feat] if i_feat is not None else float("nan")
@@ -1086,28 +1096,62 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
             "a_re": {f: float(a_re[f]) for f in fids},   # our own baseline, for ratios
             "predict": predict, "loss": loss,
             "p_weak": loss(pw), "p_transfer": p_transfer, "p_ablated": p_ablated,
+            "interval": (float(p_ablated - p_transfer)
+                         if np.isfinite(p_ablated) else float("nan")),
             "loo_effect": loo_effect, "loo_by_fid": dict(zip(fids, loo_effect.tolist())),
+            "loo_signed": [float(L - p_transfer) for L in p_loo],
             "additivity": additivity,
             "row": int(row)}
 
 
 def recipient_toward_ablation(recip, acts, feat):
-    """Measured toward_ablation for a batch of candidate activation vectors.
+    """Measured, ATTRIBUTED toward_ablation for a batch of candidate activation vectors.
 
     For each candidate: rescale every accepted concept's term by its MEASURED ratio
     (not just the patched concept's -- assuming the others held still is the assumption
     under test), rebuild the delta, and run the recipient. One batched call for the
     whole batch, so a pass costs one recipient forward regardless of candidate count.
+
+    The movement credited to c is the OBSERVED movement minus the bystanders' signed
+    first-order share, sum over j != c of (1 - r_j)(p_loo_j - p_transfer). The
+    bystanders outnumber c at almost every row (median 21 accepted concepts), so the
+    raw movement is a mixture; subtracting their predicted share is what makes the term
+    a statement about c. Validated before adoption (test_reestimated_drop, 2026-08-14):
+    on perfect-suppression rows the re-estimate recovers the LOO ceiling to median
+    3e-4, an order closer than the uncorrected movement, and improves 65.5% of all
+    rows tested.
+
+    The correction is first-order and fails where concepts substitute for each other --
+    the same tail the additivity ratio flags (one tested row overshot by 1.68). The
+    guard costs no chosen constant: a real movement of probability lies in [-1, 1] by
+    construction, so an attributed movement outside it is out-of-model and the
+    UNCORRECTED movement is used instead, with the fallback recorded.
     """
-    d = []
+    d, ratio_vecs = [], []
     for av in acts:
         r_vec = np.array([
             float(av[f] / recip["a_re"][f]) if abs(recip["a_re"][f]) > EPS else 1.0
             for f in recip["fids"]])
+        ratio_vecs.append(r_vec)
         d.append((recip["signs"] * recip["a_corpus"] * r_vec) @ recip["B"])
     preds = recip["predict"](np.asarray(d))
-    return [toward_ablation(recip["p_transfer"], recip["p_ablated"], recip["loss"](p))
-            for p in preds]
+    out = []
+    for r_vec, p in zip(ratio_vecs, preds):
+        observed = float(recip["loss"](p) - recip["p_transfer"])
+        est_bystander = float(sum(
+            (1.0 - r_vec[i]) * recip["loo_signed"][i]
+            for i, f in enumerate(recip["fids"]) if f != feat))
+        attributed = observed - est_bystander
+        fallback = not (np.isfinite(attributed) and -1.0 <= attributed <= 1.0)
+        movement = observed if fallback else attributed
+        out.append({
+            "toward": toward_ablation(recip["p_transfer"], recip["p_ablated"],
+                                      recip["p_transfer"] + movement),
+            "movement_observed": observed,
+            "est_bystander": est_bystander,
+            "attribution_fallback": bool(fallback),
+        })
+    return out
 
 
 def shift_metrics(a_base, a_new, others, feat):
@@ -1389,7 +1433,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             if not rows_:
                 continue
             a, recon_loss = ev(rows_)
-            revs = recipient_toward_ablation(recip, a, feat) if recip else [float("nan")] * len(a)
+            revs = recipient_toward_ablation(recip, a, feat) if recip else None
             scored = []
             for i, cand in enumerate(meta_):
                 m = shift_metrics(a_base_row, a[i], others, feat)
@@ -1398,7 +1442,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 bl_raw = blast_radius(a_base_row, a[i], others)
                 bl_w = weighted_blast(a_base_row, a[i], others, recip)
                 bl = bl_raw if bl_w is None else bl_w
-                rev = float(revs[i])
+                rv = revs[i] if revs else None
+                rev = float(rv["toward"]) if rv else float("nan")
                 # In or out of distribution is a statement about POSITION in a
                 # distribution -- the dataset's own reconstruction losses -- never about
                 # the row's own error. cen_start is a row constant, so within-row
@@ -1427,6 +1472,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "activation_after": float(a[i][feat]), "suppression": drop,
                                "suppression_frac": df, "blast": bl, "blast_raw": bl_raw,
                                "blast_weighted": bl_w, "toward_ablation": rev,
+                               "movement_observed": rv["movement_observed"] if rv else None,
+                               "est_bystander": rv["est_bystander"] if rv else None,
+                               "attribution_fallback": rv["attribution_fallback"] if rv else None,
                                "centrality": cen_i, "centrality_ratio": cen_ratio,
                                "score": objective(df, rev if np.isfinite(rev) else 1.0,
                                                   bl, cen_ratio),
