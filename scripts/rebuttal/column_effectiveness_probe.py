@@ -151,34 +151,47 @@ def main():
                     c["ratio"] = max(c["ratio"], gain / (spend + EPS))
                     c["name"] = pr["column_name"]
 
-                def topk(key):
+                def order_of(key):
                     return [c for c, _ in sorted(per_col.items(),
-                                                 key=lambda kv: -kv[1][key])][:args.top_k]
+                                                 key=lambda kv: -kv[1][key])]
 
-                def rank_of(cols, key):
-                    order = [c for c, _ in sorted(per_col.items(),
-                                                  key=lambda kv: -kv[1][key])]
+                def rank_of(cols, order):
                     return [order.index(c) + 1 if c in order else None for c in cols]
 
-                cur, net, ratio = topk("slope"), topk("net"), topk("ratio")
+                orders = {k: order_of(v) for k, v in
+                          (("current", "slope"), ("net", "net"), ("ratio", "ratio"))}
+                # It is the RANKING that matters, not set overlap: the greedy visits
+                # columns in rank order and every commit changes the base the rest are
+                # evaluated against, so two identical top-K SETS in different orders
+                # can end at different patches. Kendall's tau over the full ordering is
+                # the agreement statistic; the first visit is the path's anchor.
+                from scipy.stats import kendalltau
+                rank_cur = {c: i for i, c in enumerate(orders["current"])}
+                taus = {}
+                for k in ("net", "ratio"):
+                    rk = {c: i for i, c in enumerate(orders[k])}
+                    common = list(rank_cur)
+                    taus[k] = float(kendalltau([rank_cur[c] for c in common],
+                                               [rk[c] for c in common]).statistic)
                 chosen = rinfo["chosen_cols"]
                 rec = {"donor": donor, "feat": feat, "recipient": recipient,
                        "dataset": dataset, "row": row, "n_probed_cols": len(per_col),
                        "n_others": rinfo["n_others"],
-                       "top_current": cur, "top_net": net, "top_ratio": ratio,
-                       "overlap_net": len(set(cur) & set(net)),
-                       "overlap_ratio": len(set(cur) & set(ratio)),
+                       "order_current": orders["current"], "order_net": orders["net"],
+                       "order_ratio": orders["ratio"],
+                       "tau_net": taus["net"], "tau_ratio": taus["ratio"],
+                       "first_visit": {k: orders[k][0] for k in orders},
                        "chosen_cols": chosen,
-                       "chosen_rank_current": rank_of(chosen, "slope"),
-                       "chosen_rank_net": rank_of(chosen, "net"),
-                       "chosen_rank_ratio": rank_of(chosen, "ratio"),
-                       "names": {str(c): per_col[c]["name"] for c in
-                                 set(cur) | set(net) | set(chosen) if c in per_col}}
+                       "chosen_rank_current": rank_of(chosen, orders["current"]),
+                       "chosen_rank_net": rank_of(chosen, orders["net"]),
+                       "chosen_rank_ratio": rank_of(chosen, orders["ratio"]),
+                       "names": {str(c): per_col[c]["name"] for c in per_col}}
                 results.append(rec)
                 print(f"{donor} f{feat} -> {recipient}/{dataset} row {row} "
                       f"(k-1={rinfo['n_others']}, {len(per_col)} cols): "
-                      f"top-{args.top_k} overlap current~net {rec['overlap_net']}/{args.top_k}, "
-                      f"current~ratio {rec['overlap_ratio']}/{args.top_k}")
+                      f"tau current~net {taus['net']:+.2f}, current~ratio {taus['ratio']:+.2f}"
+                      f" | first visit {orders['current'][0]} -> net {orders['net'][0]}"
+                      f" -> ratio {orders['ratio'][0]}")
                 print(f"    chosen cols {chosen}: rank now {rec['chosen_rank_current']} "
                       f"-> net {rec['chosen_rank_net']} -> ratio {rec['chosen_rank_ratio']}",
                       flush=True)
@@ -187,10 +200,14 @@ def main():
         json.dump(results, open(args.out, "w"), indent=2)
 
     if results:
-        ov = np.array([r["overlap_net"] for r in results])
         print(f"\n{len(results)} rows probed")
-        print(f"  top-{args.top_k} overlap current vs net-effectiveness: "
-              f"med {np.median(ov):.0f}/{args.top_k}")
+        for k in ("net", "ratio"):
+            t = np.array([r[f"tau_{k}"] for r in results])
+            same_first = np.mean([r["first_visit"]["current"] == r["first_visit"][k]
+                                  for r in results])
+            print(f"  rank agreement current vs {k}: Kendall tau med {np.median(t):+.2f} "
+                  f"(min {t.min():+.2f}, max {t.max():+.2f}); "
+                  f"same FIRST visit on {same_first:.0%} of rows")
         # does either ranking place the search's own final choices higher?
         for key in ("current", "net", "ratio"):
             rk = [r_ for r in results for r_ in r[f"chosen_rank_{key}"] if r_ is not None]
