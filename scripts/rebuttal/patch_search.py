@@ -55,6 +55,7 @@ import glob
 import json
 import math
 import os
+import socket
 from pathlib import Path
 from collections import defaultdict
 
@@ -892,6 +893,32 @@ def toward_ablation(p_transfer, p_target, p_patched, min_interval=MIN_GAP):
     return float((p_patched - p_transfer) / denom)
 
 
+def gap_opened_metric(movement_observed, est_bystander, fallback,
+                      p_weak, p_transfer, p_strong):
+    """METRIC, never optimized: the fraction of the row's ORIGINAL weak-strong
+    disagreement the patch re-opened, attributed to c. The transfer's own convention
+    (gap_closed) pointed back at the patch, so rows with very different donor-recipient
+    gaps become comparable. Signed: + re-opens the gap, - closes it further. Unclamped
+    -- the _gc clamp is what made capture_of_ceiling unreadable -- and None when the
+    pieces are unmeasured (no readout, regression, zero gap).
+
+    This is the acceptance criterion for the whole exercise, which is exactly why it
+    must stay OUT of the objective: optimizing it would corrupt the number we judge
+    the search by.
+    """
+    vals = (movement_observed, p_weak, p_transfer, p_strong)
+    if any(v is None or not np.isfinite(v) for v in vals):
+        return None
+    gap = abs(float(p_strong) - float(p_weak))
+    if gap <= 0:
+        return None
+    attributed = (float(movement_observed) if fallback or est_bystander is None
+                  or not np.isfinite(est_bystander)
+                  else float(movement_observed) - float(est_bystander))
+    open_sign = np.sign(float(p_weak) - float(p_transfer)) or 1.0
+    return float(attributed * open_sign / gap)
+
+
 def centrality(x, sorted_losses):
     """Where x sits in the dataset's own reconstruction-loss distribution, folded:
     1 at the median, falling toward 0 in EITHER tail.
@@ -1096,6 +1123,9 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
             "a_re": {f: float(a_re[f]) for f in fids},   # our own baseline, for ratios
             "predict": predict, "loss": loss,
             "p_weak": loss(pw), "p_transfer": p_transfer, "p_ablated": p_ablated,
+            # the recipient's ORIGINAL disagreement with the donor needs p_strong; a
+            # regression "loss" of preds_strong is 0 by construction, so None there
+            "p_strong": loss(p_donor) if classification else None,
             "interval": (float(p_ablated - p_transfer)
                          if np.isfinite(p_ablated) else float("nan")),
             "loo_effect": loo_effect, "loo_by_fid": dict(zip(fids, loo_effect.tolist())),
@@ -1539,7 +1569,15 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     acc = np.concatenate([[feat], others]).astype(int) if len(others) else np.array([feat])
     ratios = {int(j): float(a_now_vec[j] / a_base_row[j]) if abs(a_base_row[j]) > 1e-9 else 1.0
               for j in acc}
-    return {"row": int(row), "a_start": a_start, "a_final": a_now,
+    return {"row": int(row), "host": socket.gethostname(),
+            # gap_opened is a METRIC (see gap_opened_metric); recorded and printed,
+            # never part of the score
+            "gap_opened": (gap_opened_metric(
+                best.get("movement_observed"), best.get("est_bystander"),
+                best.get("attribution_fallback"), recip["p_weak"],
+                recip["p_transfer"], recip.get("p_strong"))
+                if best and recip else None),
+            "a_start": a_start, "a_final": a_now,
             "ratio": (a_now / a_start) if a_start > 0 else float("nan"),
             "suppression_frac": (1.0 - a_now / a_start) if a_start > 0 else float("nan"),
             "recon_loss_start": float(recon_loss_ds[row]), "centrality_start": cen_start,

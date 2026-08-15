@@ -26,6 +26,7 @@ from scripts.rebuttal.patch_search import (
     collateral_detail,
     donor_dist_sq,
     objective,
+    gap_opened_metric,
     recipient_toward_ablation,
     shift_metrics,
     toward_ablation,
@@ -274,6 +275,36 @@ def test_attribution_falls_back_when_the_correction_leaves_the_probability_range
         [{7: 0.0, 9: 0.8}], feat=7)
     assert out[0]["attribution_fallback"] is True
     assert out[0]["toward"] == pytest.approx(0.05 / 0.10)   # observed, uncorrected
+
+
+# ── gap_opened: a METRIC, never an objective term ────────────────────────────
+
+def test_gap_opened_is_the_attributed_share_of_the_original_gap():
+    """Weak 0.20, strong 0.80: original disagreement 0.60. Transfer took the recipient
+    to 0.75; the patch moved it back by an attributed 0.06 toward weak -> re-opened 10%
+    of the original gap."""
+    g = gap_opened_metric(movement_observed=-0.05, est_bystander=0.01, fallback=False,
+                          p_weak=0.20, p_transfer=0.75, p_strong=0.80)
+    assert g == pytest.approx((-0.05 - 0.01) * -1.0 / 0.60)   # +0.10: re-opened
+
+
+def test_gap_opened_is_signed_and_negative_when_the_patch_closes_further():
+    g = gap_opened_metric(movement_observed=0.03, est_bystander=0.0, fallback=False,
+                          p_weak=0.20, p_transfer=0.75, p_strong=0.80)
+    assert g == pytest.approx(-0.05)                          # moved toward strong
+
+
+def test_gap_opened_uses_the_uncorrected_movement_on_fallback():
+    g = gap_opened_metric(movement_observed=-0.06, est_bystander=-5.0, fallback=True,
+                          p_weak=0.20, p_transfer=0.75, p_strong=0.80)
+    assert g == pytest.approx(0.10)
+
+
+def test_gap_opened_is_none_when_unmeasured():
+    """No readout, regression (p_strong None), or zero gap -- None, not zero."""
+    assert gap_opened_metric(None, None, None, 0.2, 0.75, 0.8) is None
+    assert gap_opened_metric(-0.05, 0.0, False, 0.2, 0.75, None) is None
+    assert gap_opened_metric(-0.05, 0.0, False, 0.5, 0.5, 0.5) is None
 
 
 # ── collateral ───────────────────────────────────────────────────────────────
