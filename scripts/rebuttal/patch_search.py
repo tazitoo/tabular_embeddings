@@ -1405,10 +1405,14 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     # pass 2 with nothing but maximum-suppression candidates, so a row whose strongest
     # edit overshoots had no milder edit to fall back on and returned no patch at all.
     #
-    # Costs nothing extra in forwards: top_cols(8) x max_vals(6) = 48 candidates against
-    # ~199 usable window slots, so a greedy step is still one forward on any dataset with
-    # a full window. `values` is one entry per column when value_search is off, which is
-    # exactly the previous behaviour.
+    # Cost accounting (superseding the 48-candidates note from before the dense line
+    # search, ca75c8e/b4f1836): every candidate column gets its OWN forward per greedy
+    # step, its window filled with that column's full value set -- up to n_line=192
+    # line-search points per direction for a continuous column, every present level for
+    # a categorical one. A step therefore costs about as many forwards as the menu has
+    # columns left, and a full line search along a continuous column is exactly that:
+    # full, not sampled. `values` is one entry per column when value_search is off,
+    # which is exactly the pre-v10 behaviour.
     by_col = defaultdict(list)
     for s in sens:
         if s["drop"] <= 0 or not np.isfinite(s["slope"]):
@@ -1508,7 +1512,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         # improving when the loop ran out of iterations, recorded as if they had stopped by
         # choice. It was also a leftover from enumeration, where it existed to keep
         # C(top_m, k) from exploding; greedy has no explosion to control, since a step
-        # costs one forward whether it commits the first column or the sixth.
+        # costs one forward PER CANDIDATE COLUMN whether it commits the first or sixth.
         #
         # Deliberately not replaced with a smaller cap "for interpretability". If
         # suppressing a concept takes six columns, that is what it costs, and deciding
@@ -1956,9 +1960,8 @@ def main():
     ap.add_argument("--no-value-search", action="store_true",
                     help="offer each ranked column only its single most-suppressive value, "
                          "as the search did before values were searched. Kept to reproduce "
-                         "the v9 baseline; the default searches every probed value, which "
-                         "costs no extra forwards (8 columns x 6 values = 48 candidates "
-                         "against ~199 window slots).")
+                         "the v9 baseline; the default line-searches each column's full "
+                         "value set, one forward per candidate column per step.")
     ap.add_argument("--space", choices=("raw", "preprocessed"), default="raw",
                     help="which columns the search edits. RAW is the canonical path: it "
                          "edits the original table and transforms through the fitted "
