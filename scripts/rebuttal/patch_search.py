@@ -1210,7 +1210,7 @@ def shift_metrics(a_base, a_new, others, feat):
 
 
 def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
-                       probe_cols=None, nbins=20):
+                       probe_cols=None, nbins=20, keep_vectors=False):
     """Pass 1: how much can each column move THIS concept, per unit of log frequency.
 
     Both column types are probed the same way. The column's histogram, read from where
@@ -1271,6 +1271,11 @@ def column_sensitivity(ev, space, x0, a_base_row, feat, others, max_levels,
                # every record was scored against the LAST probed column's distribution.
                "edit_distance": edit_distance(col, x0[j], val, categorical=j in space.cat),
                "selectivity": d / (m["other_moved_p90"] + 1e-6)}
+        if keep_vectors:
+            # the full activation vector of this probe, for offline ranking experiments
+            # (e.g. LOO-weighted column effectiveness); never kept in a sweep, where it
+            # would be n_probes x n_features of output per row
+            rec["_a_vec"] = a[i]
         rec.update(m)
         out.append(rec)
     return out
