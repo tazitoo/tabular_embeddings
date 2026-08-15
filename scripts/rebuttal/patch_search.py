@@ -893,6 +893,35 @@ def toward_ablation(p_transfer, p_target, p_patched, min_interval=MIN_GAP):
     return float((p_patched - p_transfer) / denom)
 
 
+def probe_effectiveness(a_vec, a_base, feat, others, loo_by_fid, interval, dL):
+    """Net main-effect effectiveness of one probe, per unit of log frequency:
+
+        gain  = |da_c| / a_c x |interval|          c's predicted prediction-effect
+        spend = sum_{j != c, live} |da_j| / a_j x loo_j
+        net   = (gain - spend) / dL
+
+    LOO-weighted and per-unit, so the two failure modes of the retired selectivity
+    ranking are absent: probe size divides out of the rate, and disturbing concepts the
+    prediction ignores costs nothing. On rows where c's own interval is tiny the net is
+    negative for every column and the ordering degenerates to least-spend-first --
+    which is what LOO-weighting means when the prediction barely depends on c.
+
+    Shared by the sweep's --rank-by effectiveness and column_effectiveness_probe, so
+    the experiment and the production ranking cannot drift apart.
+    """
+    if dL <= 0 or not np.isfinite(dL):
+        return float("-inf")
+    a_c = abs(float(a_base[feat]))
+    gain = abs(float(a_base[feat] - a_vec[feat])) / max(a_c, EPS) * abs(float(interval))
+    spend = 0.0
+    for j in others:
+        aj = abs(float(a_base[j]))
+        if aj <= ACTIVE_FLOOR:
+            continue
+        spend += abs(float(a_vec[j] - a_base[j])) / aj * float(loo_by_fid.get(int(j), 0.0))
+    return float((gain - spend) / dL)
+
+
 def gap_opened_metric(movement_observed, est_bystander, fallback,
                       p_weak, p_transfer, p_strong):
     """METRIC, never optimized: the fraction of the row's ORIGINAL weak-strong
@@ -1285,7 +1314,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, space, sel_tol, recon_bar, value_search=True,
                max_levels=6, top_m=8, probe_cols=None, n_line=192,
                uninhibited=False,
-               recip_shared=None, recipient=None, npz_path=None):
+               recip_shared=None, recipient=None, npz_path=None, rank_by="slope"):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -1324,8 +1353,19 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     recip = build_recip(recip_shared, donor, recipient, dataset, npz_path, row,
                         a_base_row, feat, device) if recip_shared is not None else None
 
+    # --rank-by effectiveness needs each probe's full activation vector and a recipient
+    # context (LOO weights). Without a recipient (carte) it falls back to slope,
+    # RECORDED as such rather than silently.
+    want_eff = (rank_by == "effectiveness" and recip is not None
+                and np.isfinite(recip.get("interval", float("nan"))))
     sens = column_sensitivity(ev, space, x0, a_base_row, feat, others,
-                              max_levels, probe_cols=probe_cols)
+                              max_levels, probe_cols=probe_cols,
+                              keep_vectors=want_eff)
+    if want_eff:
+        for s in sens:
+            s["effectiveness"] = probe_effectiveness(
+                s.pop("_a_vec"), a_base_row, feat, others,
+                recip["loo_by_fid"], recip["interval"], s["delta_log_freq"])
     # Rank on the CONCEPT alone -- response per unit of log frequency. The objective
     # balances drop against blast, reconstruction and the recipient effect in pass 2,
     # where it has the whole menu to balance across; doing it here discards a column
@@ -1335,14 +1375,16 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     # this column move the concept", and the steepest response answers it. The
     # smallest-step probe would be the more accurate derivative but answers a question
     # we are not asking.
+    rank_key = "effectiveness" if want_eff else "slope"
     per_col = {}
     for s in sens:
         if s["drop"] <= 0 or not np.isfinite(s["slope"]):
             continue
         cur = per_col.get(s["column"])
-        if cur is None or s["slope"] > cur["slope"]:
+        if cur is None or s.get(rank_key, s["slope"]) > cur.get(rank_key, cur["slope"]):
             per_col[s["column"]] = s
-    ranked = sorted(per_col.values(), key=lambda s: -s["slope"])[:top_m]
+    ranked = sorted(per_col.values(),
+                    key=lambda s: -s.get(rank_key, s["slope"]))[:top_m]
 
     # The columns are ranked by their BEST probe, but every probed value on those columns
     # is kept. Pass 1 already measured them; discarding all but the maximum is what left
@@ -1575,6 +1617,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     ratios = {int(j): float(a_now_vec[j] / a_base_row[j]) if abs(a_base_row[j]) > 1e-9 else 1.0
               for j in acc}
     return {"row": int(row), "host": socket.gethostname(),
+            # which pass-1 ordering served the menu: "effectiveness", or "slope"
+            # (either requested, or the recorded fallback when no recipient exists)
+            "rank_basis": rank_key,
             # gap_opened is a METRIC (see gap_opened_metric); recorded and printed,
             # never part of the score
             "gap_opened": (gap_opened_metric(
@@ -1869,6 +1914,16 @@ def main():
                          "a sqrt COMPRESSES differences between low values and makes the "
                          "search less willing to trade suppression for recipient movement. "
                          "Raising it chases toward_ablation harder.")
+    ap.add_argument("--rank-by", choices=("slope", "effectiveness"), default="slope",
+                    help="pass-1 column ordering. 'slope' ranks by the concept's "
+                         "response alone (canonical). 'effectiveness' ranks by the net "
+                         "main-effect prediction value per unit log frequency -- c's "
+                         "predicted effect minus the bystanders' LOO-weighted spend "
+                         "(probe_effectiveness) -- proposed 2026-08-15 after the "
+                         "column probe measured Kendall tau -0.28 between the two "
+                         "orderings: slope front-loads high-collateral columns. Falls "
+                         "back to slope (recorded as rank_basis) where no recipient "
+                         "context exists.")
     ap.add_argument("--uninhibited", action="store_true",
                     help="scan BOTH sides of the marginal on continuous columns, and offer "
                          "every observed level on categoricals rather than only those whose "
@@ -2177,7 +2232,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                              probe_cols=probe_cols, n_line=args.n_line,
                              uninhibited=args.uninhibited,
                              recip_shared=recip_shared, recipient=recipient,
-                             npz_path=npz_path,
+                             npz_path=npz_path, rank_by=args.rank_by,
                              value_search=not args.no_value_search)
             res.update({"donor": donor, "feat": feat, "recipient": recipient,
                         "dataset": dataset, "n_other_concepts": int(len(others)),

@@ -89,8 +89,8 @@ def main():
     torch.use_deterministic_algorithms(True)
     from scripts.rebuttal.patch_search import (
         ACTIVE_FLOOR, EPS, build_recip, build_recip_shared, column_sensitivity,
-        current_env, extract_acts, load_dataset_context, make_evaluator, raw_space,
-        required_env, FWD)
+        current_env, extract_acts, load_dataset_context, make_evaluator,
+        probe_effectiveness, raw_space, required_env, FWD)
 
     picked = sample_rows(args.sweep, args.n_cells, args.rows_per_cell, args.min_others)
     runnable = [(k, v) for k, v in picked
@@ -138,6 +138,11 @@ def main():
                     if not (np.isfinite(pr.get("slope", np.nan)) and dL > 0):
                         continue
                     av = pr["_a_vec"]
+                    # net comes from the SAME function the sweep's --rank-by
+                    # effectiveness uses, so this experiment and production cannot
+                    # drift; the ratio variant is experiment-only and stays inline
+                    net = probe_effectiveness(av, a_base, feat, others,
+                                              loo, recip["interval"], dL)
                     gain = abs(float(a_base[feat] - av[feat])) / max(a_c, EPS) * loo_c
                     spend = 0.0
                     for j in others:
@@ -147,7 +152,7 @@ def main():
                         spend += abs(float(av[j] - a_base[j])) / aj * float(loo.get(int(j), 0.0))
                     c = per_col[pr["column"]]
                     c["slope"] = max(c["slope"], pr["slope"])
-                    c["net"] = max(c["net"], (gain - spend) / dL)
+                    c["net"] = max(c["net"], net)
                     c["ratio"] = max(c["ratio"], gain / (spend + EPS))
                     c["name"] = pr["column_name"]
 

@@ -27,6 +27,7 @@ from scripts.rebuttal.patch_search import (
     donor_dist_sq,
     objective,
     gap_opened_metric,
+    probe_effectiveness,
     recipient_toward_ablation,
     shift_metrics,
     toward_ablation,
@@ -275,6 +276,51 @@ def test_attribution_falls_back_when_the_correction_leaves_the_probability_range
         [{7: 0.0, 9: 0.8}], feat=7)
     assert out[0]["attribution_fallback"] is True
     assert out[0]["toward"] == pytest.approx(0.05 / 0.10)   # observed, uncorrected
+
+
+# ── probe_effectiveness: the --rank-by effectiveness pass-1 ordering ─────────
+
+def test_probe_effectiveness_is_gain_over_dL_when_bystanders_hold_still():
+    a_base = np.array([2.0, 1.0])
+    a_vec = np.array([1.0, 1.0])                       # c halved, bystander untouched
+    # gain = (1.0/2.0) x 0.2 = 0.1; dL = 0.5 -> 0.2
+    assert probe_effectiveness(a_vec, a_base, 0, np.array([1]), {1: 0.5},
+                               interval=0.2, dL=0.5) == pytest.approx(0.2)
+
+
+def test_probe_effectiveness_charges_loo_weighted_spend():
+    a_base = np.array([2.0, 1.0])
+    a_vec = np.array([1.0, 1.2])                       # bystander moved 20% of itself
+    # spend = 0.2 x 0.5 = 0.1 -> net = (0.1 - 0.1)/0.5 = 0
+    assert probe_effectiveness(a_vec, a_base, 0, np.array([1]), {1: 0.5},
+                               interval=0.2, dL=0.5) == pytest.approx(0.0)
+    # a bystander the prediction ignores costs nothing
+    assert probe_effectiveness(a_vec, a_base, 0, np.array([1]), {1: 0.0},
+                               interval=0.2, dL=0.5) == pytest.approx(0.2)
+
+
+def test_probe_effectiveness_ignores_inactive_bystanders():
+    a_base = np.array([2.0, ACTIVE_FLOOR / 10])
+    a_vec = np.array([1.0, 1.0])                       # huge relative move on a dead concept
+    assert probe_effectiveness(a_vec, a_base, 0, np.array([1]), {1: 0.5},
+                               interval=0.2, dL=0.5) == pytest.approx(0.2)
+
+
+def test_probe_effectiveness_degenerates_to_least_spend_on_tiny_intervals():
+    """When c's interval is ~0, gain is ~0 for every column and net is minus spend/dL:
+    the ordering becomes collateral-avoidance -- what LOO-weighting means when the
+    prediction barely depends on c. Stated behaviour, not an accident."""
+    a_base = np.array([2.0, 1.0])
+    quiet = probe_effectiveness(np.array([1.0, 1.01]), a_base, 0, np.array([1]),
+                                {1: 0.5}, interval=1e-6, dL=0.5)
+    loud = probe_effectiveness(np.array([1.0, 1.5]), a_base, 0, np.array([1]),
+                               {1: 0.5}, interval=1e-6, dL=0.5)
+    assert loud < quiet < 0.001
+
+
+def test_probe_effectiveness_rejects_degenerate_dL():
+    a = np.array([2.0, 1.0])
+    assert probe_effectiveness(a, a, 0, np.array([1]), {1: 0.5}, 0.2, 0.0) == float("-inf")
 
 
 # ── gap_opened: a METRIC, never an objective term ────────────────────────────
