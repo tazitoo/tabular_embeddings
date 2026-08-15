@@ -2040,8 +2040,16 @@ def main():
     # cost 34 concepts and 233 rows before the gap showed up in the coverage accounting.
     # Counts are on the line so a truncated run cannot be mistaken for a whole one.
     done = sum(1 for r in results if not r.get("status"))
+    # Cell- and row-level failures were invisible here: v20's tabicl_a ended
+    # "errors=0" while carrying a whole cell lost to a canary trip. Every stratum of
+    # failure is on the line now, so a clean marker actually means clean.
+    cell_errs = sum(1 for r in results for ds in r.get("datasets") or []
+                    if ds.get("error"))
+    row_errs = sum(1 for r in results for ds in r.get("datasets") or []
+                   for rw in ds.get("rows") or [] if rw.get("error"))
     print(f"DONE {args.out} concepts={len(results)} ok={done} "
-          f"errors={len(results) - done}", flush=True)
+          f"errors={len(results) - done} cell_errors={cell_errs} "
+          f"row_errors={row_errs}", flush=True)
 
 
 def run_concept(donor, feat, args):
@@ -2226,14 +2234,28 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
             row = int(row)
             others = np.array([int(f) for f in np.unique(sel[row][sel[row] >= 0])
                                if int(f) != feat], dtype=int)
-            res = search_row(donor, dataset, X_ctx, y_ctx, X_query, task, args.device,
-                             row, feat, others, space, args.selectivity_tol, args.recon_bar,
-                             max_levels=args.max_vals, top_m=args.top_cols,
-                             probe_cols=probe_cols, n_line=args.n_line,
-                             uninhibited=args.uninhibited,
-                             recip_shared=recip_shared, recipient=recipient,
-                             npz_path=npz_path, rank_by=args.rank_by,
-                             value_search=not args.no_value_search)
+            # A row's failure must not discard its siblings. v20 lost 5 fully-searched
+            # hiva_agnostic rows when row 69 tripped the canary (firelord4's bad core,
+            # since offlined) and the exception escaped the loop -- the completed rows
+            # died with the cell. The canary's verdict is scoped to ITS batch, so the
+            # remaining rows get fresh windows and keep running; the failed row is
+            # recorded in place, visibly.
+            try:
+                res = search_row(donor, dataset, X_ctx, y_ctx, X_query, task,
+                                 args.device, row, feat, others, space,
+                                 args.selectivity_tol, args.recon_bar,
+                                 max_levels=args.max_vals, top_m=args.top_cols,
+                                 probe_cols=probe_cols, n_line=args.n_line,
+                                 uninhibited=args.uninhibited,
+                                 recip_shared=recip_shared, recipient=recipient,
+                                 npz_path=npz_path, rank_by=args.rank_by,
+                                 value_search=not args.no_value_search)
+            except Exception as exc:
+                print(f"    {donor} f{feat} -> {recipient} / {dataset} row {row}: "
+                      f"ROW FAILED {type(exc).__name__}: {exc}", flush=True)
+                entry["rows"].append({"row": row, "host": socket.gethostname(),
+                                      "error": f"{type(exc).__name__}: {exc}"})
+                continue
             res.update({"donor": donor, "feat": feat, "recipient": recipient,
                         "dataset": dataset, "n_other_concepts": int(len(others)),
                         "n_concepts_at_row": int(len(others)) + 1,
