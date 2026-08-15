@@ -893,21 +893,33 @@ def toward_ablation(p_transfer, p_target, p_patched, min_interval=MIN_GAP):
     return float((p_patched - p_transfer) / denom)
 
 
-def probe_effectiveness(a_vec, a_base, feat, others, loo_by_fid, interval, dL):
-    """Net main-effect effectiveness of one probe, per unit of log frequency:
+def probe_effectiveness(a_vec, a_base, feat, others, loo_by_fid, interval, dL,
+                        per_dL=True):
+    """Net main-effect effectiveness of one probe:
 
         gain  = |da_c| / a_c x |interval|          c's predicted prediction-effect
         spend = sum_{j != c, live} |da_j| / a_j x loo_j
-        net   = (gain - spend) / dL
+        net   = gain - spend                        (per_dL=False, --rank-by effectiveness_raw)
+        rate  = (gain - spend) / dL                 (per_dL=True,  --rank-by effectiveness)
 
-    LOO-weighted and per-unit, so the two failure modes of the retired selectivity
-    ranking are absent: probe size divides out of the rate, and disturbing concepts the
-    prediction ignores costs nothing. On rows where c's own interval is tiny the net is
-    negative for every column and the ordering degenerates to least-spend-first --
-    which is what LOO-weighting means when the prediction barely depends on c.
+    LOO-weighted, so disturbing concepts the prediction ignores costs nothing. On rows
+    where c's own interval is tiny the net is negative for every column and the
+    ordering degenerates to least-spend-first -- which is what LOO-weighting means when
+    the prediction barely depends on c.
 
-    Shared by the sweep's --rank-by effectiveness and column_effectiveness_probe, so
-    the experiment and the production ranking cannot drift apart.
+    The RAW form is the corrected spec (2026-08-15 review): gain and spend are in
+    prediction units, already comparable across columns and types, so no step-size
+    normaliser is needed -- and dL is a RARITY measure, which the objective already
+    prices exactly once, in centrality. Dividing the menu by dL priced rarity a second
+    time, upstream, where it silently biases which columns get seen. The per-dL form is
+    kept only so v22 stays reproducible; if step equity within continuous columns ever
+    needs restoring, the fix is matched-density probe destinations, not division.
+
+    Both forms score the SAME probe set (dL == 0 destinations are dropped at probe
+    construction), so sweeps differing only in this flag differ only in ordering.
+
+    Shared by the sweep's --rank-by and column_effectiveness_probe, so the experiment
+    and the production ranking cannot drift apart.
     """
     if dL <= 0 or not np.isfinite(dL):
         return float("-inf")
@@ -919,7 +931,8 @@ def probe_effectiveness(a_vec, a_base, feat, others, loo_by_fid, interval, dL):
         if aj <= ACTIVE_FLOOR:
             continue
         spend += abs(float(a_vec[j] - a_base[j])) / aj * float(loo_by_fid.get(int(j), 0.0))
-    return float((gain - spend) / dL)
+    net = gain - spend
+    return float(net / dL) if per_dL else float(net)
 
 
 def gap_opened_metric(movement_observed, est_bystander, fallback,
@@ -1353,19 +1366,20 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     recip = build_recip(recip_shared, donor, recipient, dataset, npz_path, row,
                         a_base_row, feat, device) if recip_shared is not None else None
 
-    # --rank-by effectiveness needs each probe's full activation vector and a recipient
-    # context (LOO weights). Without a recipient (carte) it falls back to slope,
-    # RECORDED as such rather than silently.
-    want_eff = (rank_by == "effectiveness" and recip is not None
+    # The effectiveness rankings need each probe's full activation vector and a
+    # recipient context (LOO weights). Without a recipient (carte) they fall back to
+    # slope, RECORDED as such rather than silently.
+    want_eff = (rank_by in ("effectiveness", "effectiveness_raw") and recip is not None
                 and np.isfinite(recip.get("interval", float("nan"))))
     sens = column_sensitivity(ev, space, x0, a_base_row, feat, others,
                               max_levels, probe_cols=probe_cols,
                               keep_vectors=want_eff)
     if want_eff:
         for s in sens:
-            s["effectiveness"] = probe_effectiveness(
+            s[rank_by] = probe_effectiveness(
                 s.pop("_a_vec"), a_base_row, feat, others,
-                recip["loo_by_fid"], recip["interval"], s["delta_log_freq"])
+                recip["loo_by_fid"], recip["interval"], s["delta_log_freq"],
+                per_dL=(rank_by == "effectiveness"))
     # Rank on the CONCEPT alone -- response per unit of log frequency. The objective
     # balances drop against blast, reconstruction and the recipient effect in pass 2,
     # where it has the whole menu to balance across; doing it here discards a column
@@ -1375,7 +1389,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     # this column move the concept", and the steepest response answers it. The
     # smallest-step probe would be the more accurate derivative but answers a question
     # we are not asking.
-    rank_key = "effectiveness" if want_eff else "slope"
+    rank_key = rank_by if want_eff else "slope"
     per_col = {}
     for s in sens:
         if s["drop"] <= 0 or not np.isfinite(s["slope"]):
@@ -1914,16 +1928,17 @@ def main():
                          "a sqrt COMPRESSES differences between low values and makes the "
                          "search less willing to trade suppression for recipient movement. "
                          "Raising it chases toward_ablation harder.")
-    ap.add_argument("--rank-by", choices=("slope", "effectiveness"), default="slope",
+    ap.add_argument("--rank-by", choices=("slope", "effectiveness", "effectiveness_raw"),
+                    default="slope",
                     help="pass-1 column ordering. 'slope' ranks by the concept's "
-                         "response alone (canonical). 'effectiveness' ranks by the net "
-                         "main-effect prediction value per unit log frequency -- c's "
-                         "predicted effect minus the bystanders' LOO-weighted spend "
-                         "(probe_effectiveness) -- proposed 2026-08-15 after the "
-                         "column probe measured Kendall tau -0.28 between the two "
-                         "orderings: slope front-loads high-collateral columns. Falls "
-                         "back to slope (recorded as rank_basis) where no recipient "
-                         "context exists.")
+                         "response alone (canonical). 'effectiveness_raw' ranks by the "
+                         "net main-effect prediction value, c's predicted effect minus "
+                         "the bystanders' LOO-weighted spend -- the corrected spec: "
+                         "prediction units need no step normaliser, and dL is a rarity "
+                         "measure the objective already prices once in centrality. "
+                         "'effectiveness' is the v22 per-dL variant, kept for "
+                         "reproducibility. Both fall back to slope (recorded as "
+                         "rank_basis) where no recipient context exists.")
     ap.add_argument("--uninhibited", action="store_true",
                     help="scan BOTH sides of the marginal on continuous columns, and offer "
                          "every observed level on categoricals rather than only those whose "

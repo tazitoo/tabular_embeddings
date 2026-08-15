@@ -323,6 +323,20 @@ def test_probe_effectiveness_rejects_degenerate_dL():
     assert probe_effectiveness(a, a, 0, np.array([1]), {1: 0.5}, 0.2, 0.0) == float("-inf")
 
 
+def test_probe_effectiveness_raw_form_does_not_divide_by_rarity():
+    """The corrected spec: gain and spend are prediction units, comparable without a
+    step normaliser, and dL is a rarity measure the objective already prices once in
+    centrality. raw = per_dL x dL on any valid probe, and raw is INVARIANT to dL."""
+    a_base = np.array([2.0, 1.0])
+    a_vec = np.array([1.0, 1.2])
+    args = (a_vec, a_base, 0, np.array([1]), {1: 0.1})
+    raw_1 = probe_effectiveness(*args, interval=0.2, dL=0.5, per_dL=False)
+    raw_2 = probe_effectiveness(*args, interval=0.2, dL=3.0, per_dL=False)
+    rate = probe_effectiveness(*args, interval=0.2, dL=0.5, per_dL=True)
+    assert raw_1 == pytest.approx(raw_2)                 # dL cannot move the raw form
+    assert raw_1 == pytest.approx(rate * 0.5)            # the two forms differ by dL only
+
+
 # ── gap_opened: a METRIC, never an objective term ────────────────────────────
 
 def test_gap_opened_is_the_attributed_share_of_the_original_gap():
