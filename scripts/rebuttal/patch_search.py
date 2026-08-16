@@ -1352,7 +1352,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                max_levels=6, top_m=8, probe_cols=None, n_line=192,
                uninhibited=False,
                recip_shared=None, recipient=None, npz_path=None, rank_by="slope",
-               beam=1, record_search=False):
+               beam=1, record_search=False, rerank_each_step=False):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -1676,6 +1676,42 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "_cand": cand, "_vec": a[i], **m})
             return scored, len(rows_), trace
 
+        def conditional_rerank(remaining_cols, committed_now, base_vec):
+            """HYPOTHESIS INSTRUMENT (feature branch, 2026-08-16): re-rank the
+            remaining columns on the CURRENT patched base. The trace probe measured
+            post-root window positions as uniform -- the marginal pass-1 ranking
+            predicts nothing at depth. This tests WHY: if fresh conditional rankings
+            restore predictiveness, the ordering was fine but stale (conditioning
+            fixes it, one probe forward per commit); if positions stay uniform even
+            re-ranked, coarse probes cannot order at depth at all and full-width
+            evaluation is the fallback. Probes run from the patched row's values with
+            the patched activation vector, same machinery as pass 1, restricted to
+            the remaining columns."""
+            cur = list(x0)
+            for c_ in committed_now:
+                cur[c_["column"]] = c_["value"]
+            sens2 = column_sensitivity(ev, space, cur, base_vec, feat, others,
+                                       max_levels, probe_cols=list(remaining_cols),
+                                       keep_vectors=want_eff)
+            if want_eff:
+                for s_ in sens2:
+                    s_[rank_by] = probe_effectiveness(
+                        s_.pop("_a_vec"), base_vec, feat, others,
+                        recip["loo_by_fid"], recip["interval"],
+                        s_["delta_log_freq"], per_dL=(rank_by == "effectiveness"))
+            best_by_col = {}
+            for s_ in sens2:
+                if s_["drop"] <= 0 or not np.isfinite(s_["slope"]):
+                    continue
+                key = s_.get(rank_key, s_["slope"])
+                if s_["column"] not in best_by_col or key > best_by_col[s_["column"]]:
+                    best_by_col[s_["column"]] = key
+            # fresh conditional order; columns whose re-probe found nothing keep their
+            # old relative order at the tail rather than vanishing
+            ranked2 = sorted(best_by_col, key=lambda c_: -best_by_col[c_])
+            tail = [c_ for c_ in remaining_cols if c_ not in best_by_col]
+            return ranked2 + tail
+
         def branch_pass(pool, branch, force_first=False):
             """One branch: the production greedy generalised to a width-`beam` window.
 
@@ -1732,6 +1768,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 if (np.isfinite(best_l["toward_ablation"])
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     return best_l, trajectory_l, "toward_ablation_target_reached", n_skips
+                if rerank_each_step and remaining:
+                    remaining = conditional_rerank(remaining, committed_l,
+                                                   best_l["_vec"])
             while remaining:
                 window = remaining[:beam]
                 window_scored = []
@@ -1805,6 +1844,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     stop_l = "toward_ablation_target_reached"
                     break
+                if rerank_each_step and remaining:
+                    remaining = conditional_rerank(remaining, committed_l,
+                                                   best_l["_vec"])
             return best_l, trajectory_l, stop_l, n_skips
 
         if beam <= 1:
@@ -1880,6 +1922,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "n_cols_changed": len(best["columns"]) if best else 0,
             "best": best, "trajectory": trajectory, "sensitivity_top": ranked[:5],
             "beam_width": int(beam),
+            "reranked_each_step": bool(rerank_each_step),
             "n_escalations": int(n_escalations[0]),
             "beam_root": (winning_root if beam > 1 else None),
             "beam_branches": (beam_branches if beam > 1 else None),
@@ -2167,6 +2210,11 @@ def main():
                          "best final patch wins, ties to the higher-ranked root. "
                          "beam_width and beam_root are recorded per row. Costs ~B x "
                          "the greedy's forwards.")
+    ap.add_argument("--rerank-each-step", action="store_true",
+                    help="FEATURE-BRANCH HYPOTHESIS TEST: re-run the sensitivity "
+                         "ranking on the patched base after every commit, so windows "
+                         "are composed from fresh CONDITIONAL rankings instead of the "
+                         "stale marginal one. One probe forward per commit.")
     ap.add_argument("--record-search", action="store_true",
                     help="record every candidate at every (step, column) -- winners "
                          "and rejected alike, with admission status -- into the row's "
@@ -2508,6 +2556,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                  recip_shared=recip_shared, recipient=recipient,
                                  npz_path=npz_path, rank_by=args.rank_by,
                                  beam=args.beam, record_search=args.record_search,
+                                 rerank_each_step=args.rerank_each_step,
                                  value_search=not args.no_value_search)
             except Exception as exc:
                 print(f"    {donor} f{feat} -> {recipient} / {dataset} row {row}: "
