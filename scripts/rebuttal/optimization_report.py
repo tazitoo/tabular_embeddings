@@ -149,6 +149,16 @@ def main():
           f"{sum(bool(x) for x in fb)}/{len(fb)} = {np.mean([bool(x) for x in fb]):.1%}")
     print(f"   chosen patch moves recipient the WRONG way (toward < 0): "
           f"{neg}/{len(chosen)} = {neg / max(len(chosen), 1):.1%}")
+    # PERFECT patches: spend exactly 0 -- the rows where objective()'s
+    # ZeroDivisionError catch fired (spend == 0 is the catch's exact trigger, so this
+    # count IS the number of times EPS was needed). ~1% of winners across v21-v23:
+    # exercised every sweep, not hypothetically.
+    perfect = sum(1 for b in chosen
+                  if (b.get("spend") == 0.0)
+                  or (b.get("spend") is None and b.get("movement_observed") is not None
+                      and b.get("blast") == 0.0))
+    print(f"   PERFECT patches (spend exactly 0; EPS load-bearing): "
+          f"{perfect}/{len(chosen)} = {perfect / max(len(chosen), 1):.1%}")
     print("   stop reasons: " + ", ".join(f"{k} {v}" for k, v in stops.most_common()))
 
 

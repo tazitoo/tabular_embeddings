@@ -1004,9 +1004,9 @@ def objective(suppression_frac, movement, spend, centrality_ratio=1.0):
     centrality_ratio   centrality(patched) / centrality(start) in the dataset's own
                        reconstruction-loss distribution (start is a row constant too).
     spend              bystander collateral in probability units: sum over live
-                       bystanders of moved_frac x LOO effect. Divisor with the EPS
-                       guard; zero collateral scoring ~1/EPS is intended divisor
-                       behaviour, since only within-row comparisons exist.
+                       bystanders of moved_frac x LOO effect. Exact divisor; a spend
+                       of exactly 0 (a PERFECT patch) is the one case handled by the
+                       ZeroDivisionError catch below.
 
     EXPONENTS keys keep their concept names (toward_ablation, blast) though the terms
     they weight are now the raw movement and spend.
@@ -1014,9 +1014,20 @@ def objective(suppression_frac, movement, spend, centrality_ratio=1.0):
     m = float(movement)
     b = EXPONENTS["toward_ablation"]
     root = math.copysign(abs(m) ** b, m) if np.isfinite(m) else float("nan")
-    return float(suppression_frac ** EXPONENTS["suppression"] * root
-                 * max(0.0, centrality_ratio) ** EXPONENTS["centrality"]
-                 / (max(0.0, spend) + EPS) ** EXPONENTS["blast"])
+    numerator = float(suppression_frac ** EXPONENTS["suppression"] * root
+                      * max(0.0, centrality_ratio) ** EXPONENTS["centrality"])
+    # EPS is the HANDLER, not a constant in the live path (2026-08-15 review): every
+    # positive spend divides exactly, and only a PERFECT patch -- spend exactly 0 --
+    # takes the except branch, so "how often do we need EPS" is definitional: it is the
+    # number of times this catch fires (~1% of chosen patches across v21-v23, counted
+    # per sweep by optimization_report from the recorded spend). The catch divides by
+    # EPS rather than returning inf so that perfect patches still rank among themselves
+    # by the numerator -- inf would tie them and fall back to menu encounter order,
+    # reintroducing visit-order dependence at exactly the cleanest patches.
+    try:
+        return numerator / float(max(0.0, spend) ** EXPONENTS["blast"])
+    except ZeroDivisionError:
+        return numerator / float(EPS ** EXPONENTS["blast"])
 
 
 def build_recip_shared(donor, recipient, dataset, device):

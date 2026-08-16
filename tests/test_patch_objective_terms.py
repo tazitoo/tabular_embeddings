@@ -237,6 +237,29 @@ def test_objective_scales_as_a_power_when_all_exponents_scale():
         EXPONENTS.update(old)
 
 
+def test_objective_positive_spend_divides_exactly_no_eps():
+    """EPS is the exception handler, not a constant in the live path: any positive
+    spend divides exactly. The additive +EPS form differed here by a term that only
+    mattered in the sub-EPS zone; now there is no zone."""
+    old = _exp(suppression=1.0, toward_ablation=1.0, blast=1.0, centrality=1.0)
+    try:
+        assert objective(0.5, 0.25, 0.05, 1.0) == pytest.approx(0.5 * 0.25 / 0.05,
+                                                                rel=1e-12)
+    finally:
+        EXPONENTS.update(old)
+
+
+def test_objective_boundary_quirk_tiny_spend_outranks_exact_zero():
+    """Documented, not hidden: a sub-EPS positive spend divides exactly and scores
+    ABOVE a perfect patch's catch value (numerator/EPS). Score is therefore not
+    monotone at the zero boundary. Accepted with the exact-division design -- the
+    alternative (flattening sub-EPS spends to the EPS value) is the +EPS behaviour
+    this replaced."""
+    tiny = objective(0.5, 0.25, 1e-9, 1.0)
+    perfect = objective(0.5, 0.25, 0.0, 1.0)
+    assert tiny > perfect
+
+
 def test_objective_zero_collateral_scores_enormously():
     """`blast + EPS` with EPS=1e-7, so a candidate that disturbs nothing scores ~1e7. That
     is the intended behaviour of a divisor with no reference point -- scores are compared
