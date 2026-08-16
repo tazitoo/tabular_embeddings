@@ -959,6 +959,28 @@ def gap_opened_metric(movement_observed, est_bystander, fallback,
     return float(attributed * open_sign / gap)
 
 
+def _finite_score(c):
+    """Ordering key for candidate records: nan scores sort below everything."""
+    return c["score"] if np.isfinite(c["score"]) else -np.inf
+
+
+def select_beam(items, beam):
+    """Top-`beam` children, deduplicated by committed-column SET.
+
+    `items` are (key, score, payload). Two beam states that reach the same column set
+    in different orders are the same search neighbourhood, so only the best-scoring
+    representative survives; then the top `beam` by score expand. Sorting is stable and
+    the caller iterates states and columns in fixed order, so selection is
+    deterministic including ties.
+    """
+    by_key = {}
+    for key, score, payload in items:
+        if key not in by_key or score > by_key[key][0]:
+            by_key[key] = (score, payload)
+    ranked_items = sorted(by_key.values(), key=lambda t: -t[0])[:beam]
+    return [payload for _, payload in ranked_items]
+
+
 def centrality(x, sorted_losses):
     """Where x sits in the dataset's own reconstruction-loss distribution, folded:
     1 at the median, falling toward 0 in EITHER tail.
@@ -1346,7 +1368,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                others, space, sel_tol, recon_bar, value_search=True,
                max_levels=6, top_m=8, probe_cols=None, n_line=192,
                uninhibited=False,
-               recip_shared=None, recipient=None, npz_path=None, rank_by="slope"):
+               recip_shared=None, recipient=None, npz_path=None, rank_by="slope",
+               beam=1, record_search=False):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -1494,6 +1517,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     best, stop = None, "no_sensitive_column"
     committed = []          # list of the sensitivity records already applied
     trajectory = []         # objective terms at each committed column
+    search_trace = []       # --record-search: every candidate at every (step, column),
+                            # winners and rejected alike, with admission status
     if ranked:
         # GREEDY, commit-and-re-probe, structurally the same loop transfer_sweep_v2 runs
         # over concepts. Each step evaluates every not-yet-committed column ON TOP of what
@@ -1536,21 +1561,29 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         # Deliberately not replaced with a smaller cap "for interpretability". If
         # suppressing a concept takes six columns, that is what it costs, and deciding
         # otherwise in advance hides the cost rather than reducing it.
-        for cand_col in col_order:
+        floor_I = (max(abs(float(recip["interval"])), MIN_GAP)
+                   if recip and np.isfinite(recip.get("interval", float("nan")))
+                   else None)
+
+        def score_column(cand_col, committed_now):
+            """Evaluate every kept value of one column ON TOP of the committed edits:
+            one donor forward, one recipient call, the full scoring block. Shared by
+            the greedy and the beam so the two searches cannot drift in what a
+            candidate's score means."""
             rows_, meta_ = [], []
             for cand in by_col.get(cand_col, []):
                 r = list(x0)
-                for s in committed:
+                for s in committed_now:
                     r[s["column"]] = s["value"]
                 r[cand_col] = cand["value"]
                 rows_.append(r); meta_.append(cand)
+            trace = ({"values": [], "drop": [], "movement": [], "spend": [],
+                      "centrality_ratio": [], "score": [], "status": []}
+                     if record_search else None)
             if not rows_:
-                continue
+                return [], 0, trace
             a, recon_loss = ev(rows_)
             revs = recipient_movement(recip, a, feat) if recip else None
-            floor_I = (max(abs(float(recip["interval"])), MIN_GAP)
-                       if recip and np.isfinite(recip.get("interval", float("nan")))
-                       else None)
             scored = []
             for i, cand in enumerate(meta_):
                 m = shift_metrics(a_base_row, a[i], others, feat)
@@ -1568,19 +1601,31 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 # toward a tail (< 1)".
                 cen_i = centrality(float(recon_loss[i]), recon_loss_sorted)
                 cen_ratio = cen_i / cen_start
-                if drop <= 0 or (recon_bar is not None and float(recon_loss[i]) > recon_bar):
+                score_val = objective(df, mv if np.isfinite(mv) else 1.0,
+                                      bl_raw if spend is None else spend, cen_ratio)
+                # admission: drop must be real, the reconstruction bar (when armed)
+                # must hold, and the CROSSING GUARD -- the convention transfer_sweep_v2
+                # already uses -- rejects movement toward the ablation beyond
+                # max(|interval|, MIN_GAP): doing MORE than removing c, the same rule
+                # the ratio form expressed as toward_ablation > 1.
+                status = ("no_drop" if drop <= 0 else
+                          "recon_bar" if (recon_bar is not None
+                                          and float(recon_loss[i]) > recon_bar) else
+                          "crossing" if (floor_I is not None and np.isfinite(mv)
+                                         and mv > floor_I) else "ok")
+                if trace is not None:
+                    trace["values"].append(cand["value"])
+                    trace["drop"].append(drop)
+                    trace["movement"].append(mv if np.isfinite(mv) else None)
+                    trace["spend"].append(spend)
+                    trace["centrality_ratio"].append(cen_ratio)
+                    trace["score"].append(score_val if np.isfinite(score_val) else None)
+                    trace["status"].append(status)
+                if status != "ok":
                     continue
-                # CROSSING GUARD, the convention transfer_sweep_v2 already uses: it
-                # rejects any candidate whose intervened prediction goes PAST what
-                # removing the concept achieves. In raw units: movement toward the
-                # ablation beyond max(|interval|, MIN_GAP) is doing MORE than removing
-                # c, and is rejected rather than rewarded -- the same rule the ratio
-                # form expressed as toward_ablation > 1.
-                if floor_I is not None and np.isfinite(mv) and mv > floor_I:
-                    continue
-                cols = [s["column"] for s in committed + [cand]]
+                cols = [s["column"] for s in committed_now + [cand]]
                 scored.append({"columns": cols,
-                               "values": [s["value"] for s in committed + [cand]],
+                               "values": [s["value"] for s in committed_now + [cand]],
                                "activation_after": float(a[i][feat]), "suppression": drop,
                                "suppression_frac": df,
                                # objective inputs, raw probability units
@@ -1596,13 +1641,19 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "est_bystander": rv["est_bystander"] if rv else None,
                                "attribution_fallback": rv["attribution_fallback"] if rv else None,
                                "centrality": cen_i, "centrality_ratio": cen_ratio,
-                               "score": objective(df, mv if np.isfinite(mv) else 1.0,
-                                                  bl_raw if spend is None else spend,
-                                                  cen_ratio),
+                               "score": score_val,
                                "recon_loss": float(recon_loss[i]),
                                "edit_distance": float(sum(s["edit_distance"]
-                                                          for s in committed + [cand])),
+                                                          for s in committed_now + [cand])),
                                "_cand": cand, "_vec": a[i], **m})
+            return scored, len(rows_), trace
+
+        for cand_col in (col_order if beam <= 1 else []):
+            scored, n_searched, trace = score_column(cand_col, committed)
+            if trace is not None:
+                search_trace.append({"step": len(committed), "column": int(cand_col),
+                                     "column_name": str(space.names[cand_col]),
+                                     "beam_state": None, "candidates": trace})
             if not scored:
                 # This column offered nothing admissible. Skip it and try the next: the
                 # ranking is a first-order estimate from the unpatched row, so one column
@@ -1638,8 +1689,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "n_cols": len(best["columns"]),
                                "score": best["score"], "suppression_frac": best["suppression_frac"],
                                "toward_ablation": best["toward_ablation"], "blast": best["blast"],
+                               "movement": best.get("movement"), "spend": best.get("spend"),
                                "centrality_ratio": best["centrality_ratio"],
-                               "n_candidates_searched": len(rows_)})
+                               "n_candidates_searched": n_searched})
             stop = ("fully_suppressed" if best["activation_after"] <= 0
                     else "best_combination")
             if best["activation_after"] <= 0:
@@ -1649,6 +1701,73 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             if np.isfinite(best["toward_ablation"]) and best["toward_ablation"] >= REVERSAL_TOLERANCE:
                 stop = "toward_ablation_target_reached"
                 break
+
+        if beam > 1:
+            # BEAM SEARCH (2026-08-15, user): keep the top-`beam` partial patches alive
+            # so the chosen patch stops depending on the menu's visit order -- the
+            # ranking experiments measured Kendall tau -0.28 between orderings with the
+            # first visit changing on every probed row, and at a median patch of 2
+            # columns the first commit anchors the greedy's whole path.
+            #
+            # Differs from the greedy in TWO ways, deliberately recorded as one arm:
+            # width (top-B states expand, not one), and column availability (a state
+            # may commit any not-yet-used menu column at any step, where the greedy
+            # visits each column once in rank order and discards it). Children must
+            # IMPROVE on their parent, mirroring commit-on-improvement; states whose
+            # every child fails to improve, or that fully suppress, or that reach the
+            # toward target, stop expanding. States are deduplicated by committed
+            # column SET (the same set reached in a different order is the same
+            # neighbourhood), keeping the best-scoring representative. Cost is ~beam x
+            # the greedy's pass-2 forwards; iteration order is fixed, so the search
+            # stays deterministic.
+            states = [{"committed": [], "entry": None, "score": -np.inf, "traj": []}]
+            best, trajectory, stop = None, [], "no_qualifying_combination"
+            while states:
+                children = []
+                for st in states:
+                    used = {c["column"] for c in st["committed"]}
+                    for col in col_order:
+                        if col in used:
+                            continue
+                        scored, n_searched, trace = score_column(col, st["committed"])
+                        if trace is not None:
+                            search_trace.append({
+                                "step": len(st["committed"]), "column": int(col),
+                                "column_name": str(space.names[col]),
+                                "beam_state": sorted(used), "candidates": trace})
+                        if not scored:
+                            continue
+                        sb = max(scored, key=_finite_score)
+                        if _finite_score(sb) <= st["score"]:
+                            continue
+                        children.append((st, col, sb, n_searched))
+                picked = select_beam(
+                    [(frozenset(sb["columns"]), _finite_score(sb), (st, col, sb, n))
+                     for st, col, sb, n in children], beam)
+                states = []
+                for st, col, sb, n_searched in picked:
+                    cand = sb.pop("_cand")
+                    traj = st["traj"] + [{
+                        "column": int(col), "column_name": str(space.names[col]),
+                        "value": sb["values"][-1], "n_cols": len(sb["columns"]),
+                        "score": sb["score"], "suppression_frac": sb["suppression_frac"],
+                        "toward_ablation": sb["toward_ablation"], "blast": sb["blast"],
+                        "movement": sb.get("movement"), "spend": sb.get("spend"),
+                        "centrality_ratio": sb["centrality_ratio"],
+                        "n_candidates_searched": n_searched}]
+                    if best is None or _finite_score(sb) > _finite_score(best):
+                        best, trajectory = sb, traj
+                        stop = ("fully_suppressed" if sb["activation_after"] <= 0 else
+                                "toward_ablation_target_reached"
+                                if (np.isfinite(sb["toward_ablation"])
+                                    and sb["toward_ablation"] >= REVERSAL_TOLERANCE)
+                                else "best_combination")
+                    terminal = (sb["activation_after"] <= 0
+                                or (np.isfinite(sb["toward_ablation"])
+                                    and sb["toward_ablation"] >= REVERSAL_TOLERANCE))
+                    if not terminal:
+                        states.append({"committed": st["committed"] + [cand],
+                                       "entry": sb, "score": _finite_score(sb), "traj": traj})
 
     a_now_vec = best.pop("_vec") if best else a_base_row.copy()
     a_now = float(best["activation_after"]) if best else a_start
@@ -1686,6 +1805,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "patched_columns": [str(space.names[c]) for c in best["columns"]] if best else [],
             "n_cols_changed": len(best["columns"]) if best else 0,
             "best": best, "trajectory": trajectory, "sensitivity_top": ranked[:5],
+            "beam_width": int(beam),
+            **({"search_trace": search_trace} if record_search else {}),
             "row_additivity": (recip or {}).get("additivity"),
             # Per-concept collateral for the CHOSEN patch, not an aggregate. Each
             # co-accepted concept reports how far it moved, what its removal is worth to
@@ -1958,6 +2079,21 @@ def main():
                          "a sqrt COMPRESSES differences between low values and makes the "
                          "search less willing to trade suppression for recipient movement. "
                          "Raising it chases toward_ablation harder.")
+    ap.add_argument("--beam", type=int, default=1,
+                    help="beam width for the column search. 1 (default) is the "
+                         "production greedy: columns visited once in menu order, "
+                         "commit on improvement. >1 keeps the top-B partial patches "
+                         "alive with any unused menu column available at every step, "
+                         "deduplicated by committed column set -- so the chosen patch "
+                         "stops depending on the menu's visit order. Costs ~B x the "
+                         "greedy's pass-2 forwards. NOTE: >1 differs from the greedy "
+                         "in width AND column availability; beam_width is recorded "
+                         "per row so the arms stay separable.")
+    ap.add_argument("--record-search", action="store_true",
+                    help="record every candidate at every (step, column) -- winners "
+                         "and rejected alike, with admission status -- into the row's "
+                         "search_trace for observability plots. Hundreds of KB per "
+                         "row; off in production sweeps, on for plotting probes.")
     ap.add_argument("--rank-by", choices=("slope", "effectiveness", "effectiveness_raw"),
                     default="slope",
                     help="pass-1 column ordering. 'slope' ranks by the concept's "
@@ -2293,6 +2429,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                  uninhibited=args.uninhibited,
                                  recip_shared=recip_shared, recipient=recipient,
                                  npz_path=npz_path, rank_by=args.rank_by,
+                                 beam=args.beam, record_search=args.record_search,
                                  value_search=not args.no_value_search)
             except Exception as exc:
                 print(f"    {donor} f{feat} -> {recipient} / {dataset} row {row}: "

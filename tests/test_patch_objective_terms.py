@@ -414,6 +414,33 @@ def test_gap_opened_is_none_when_unmeasured():
     assert gap_opened_metric(-0.05, 0.0, False, 0.5, 0.5, 0.5) is None
 
 
+# ── beam selection: dedup by column set, top-B, deterministic ────────────────
+
+def test_select_beam_dedups_by_column_set_keeping_the_best():
+    """Two states reaching the same column set in different orders are the same search
+    neighbourhood; only the best-scoring representative survives."""
+    from scripts.rebuttal.patch_search import select_beam
+    items = [(frozenset({1, 2}), 0.5, "path_a"),
+             (frozenset({2, 1}), 0.9, "path_b"),      # same set, better score
+             (frozenset({3}), 0.7, "solo")]
+    picked = select_beam(items, beam=3)
+    assert picked == ["path_b", "solo"]               # ranked by score, deduped
+
+
+def test_select_beam_takes_top_b():
+    from scripts.rebuttal.patch_search import select_beam
+    items = [(frozenset({i}), float(i), f"p{i}") for i in range(6)]
+    assert select_beam(items, beam=3) == ["p5", "p4", "p3"]
+
+
+def test_select_beam_is_deterministic_on_ties():
+    """Stable sort + fixed caller iteration order: equal scores keep insertion order,
+    so the search stays deterministic."""
+    from scripts.rebuttal.patch_search import select_beam
+    items = [(frozenset({1}), 0.5, "first"), (frozenset({2}), 0.5, "second")]
+    assert select_beam(items, beam=1) == ["first"]
+
+
 # ── collateral ───────────────────────────────────────────────────────────────
 
 def _recip(loo_by_fid, interval=0.50):
