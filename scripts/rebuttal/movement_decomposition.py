@@ -224,6 +224,12 @@ def main():
         print(f"  {name} re-opened > its own ceiling: "
               f"{sum(1 for g_, r in zip(go, ok) if abs(g_) > abs(r['interval']) / r['gap']):>4}"
               f"/{len(go)}   gap below admission floor 0.01: {below}/{len(ok)}")
+        # The ANCHOR: each patch against its OWN concept's perfect ablation, per row.
+        # Medians do not divide -- median(patch)/median(ceiling) is not the median
+        # share -- so the share is computed per row and summarized itself.
+        ok2 = [(g_, r) for g_, r in zip(go, ok) if abs(r["interval"]) > 0]
+        share = [g_ * r["gap"] / abs(r["interval"]) for g_, r in ok2]
+        print(f"  {name} share of own perfect ablation " + med_q(share))
 
     # PATCH SIZE: how many columns each chosen patch edits, and what that buys in
     # gap_opened -- the size distribution is where a better menu would first show.
