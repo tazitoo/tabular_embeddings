@@ -1499,6 +1499,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
 
     best, stop = None, "no_sensitive_column"
     n_escalations = [0]     # saturated-column rescans with pass-1 guidance suspended
+    winning_root, beam_branches = None, []   # defined even when ranked is empty --
+                            # unbound-variable crash on no-sensitive-column rows under
+                            # beam > 1, caught by the row-resilience net in probe2
     committed = []          # list of the sensitivity records already applied
     trajectory = []         # objective terms at each committed column
     search_trace = []       # --record-search: every candidate at every (step, column),
@@ -1819,7 +1822,6 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # path; the search adjudicates within it. Best final patch wins; ties
             # resolve to the higher-ranked root. Cost ~beam x the greedy's forwards.
             best, trajectory, stop = None, [], "no_sensitive_column"
-            winning_root, beam_branches = None, []
             for i, root in enumerate(col_order[:beam]):
                 pool = [root] + [c for c in col_order if
                                  col_order.index(c) > col_order.index(root)]
