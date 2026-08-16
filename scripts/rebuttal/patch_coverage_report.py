@@ -117,6 +117,12 @@ def main():
     print(f"\n=== statistics over the {len(got)} patches obtained"
           f"        p10      p25      p50      p75      p90")
     dist("suppression_frac", [r.get("suppression_frac", r.get("drop_frac")) for r in got])
+    # the two per-row anchors post-hoc filters lean on (2026-08-15): how strongly c
+    # fired at the row, and what perfectly removing it would do to the prediction
+    dist("c activation (a_start)", [r.get("a_start") for r in got])
+    dist("|perfect-patch effect|", [abs(r["ablation_interval"]) for r in got
+                                    if r.get("ablation_interval") is not None
+                                    and np.isfinite(r["ablation_interval"])])
     dist("columns changed", [r.get("n_cols_changed") for r in got], "{:8.0f}")
     dist("edit distance", [(r["best"] or {}).get("edit_distance") for r in got])
     dist("blast (other concepts)", [(r["best"] or {}).get("blast") for r in got])

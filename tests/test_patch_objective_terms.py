@@ -28,11 +28,11 @@ from scripts.rebuttal.patch_search import (
     objective,
     gap_opened_metric,
     probe_effectiveness,
-    recipient_toward_ablation,
+    recipient_movement,
     shift_metrics,
     toward_ablation,
     true_class_prob,
-    weighted_blast,
+    bystander_spend,
 )
 
 
@@ -152,6 +152,29 @@ def test_objective_equal_exponents_give_equal_sensitivity_to_relative_change():
         EXPONENTS.update(old)
 
 
+def test_objective_raw_terms_rank_identically_to_the_ratio_forms():
+    """The raw refactor's load-bearing claim (2026-08-15): the ratio forms' denominators
+    are ROW CONSTANTS, so dividing by them cannot change which candidate wins within a
+    row. Over random candidate sets, the raw objective and the ratio-form objective must
+    pick the same argmax (spend well above the EPS zone, where the guard's position is
+    the one immaterial difference)."""
+    rng = np.random.default_rng(7)
+    old = _exp(suppression=1.0, toward_ablation=0.5, blast=1.0, centrality=1.0)
+    try:
+        for _ in range(200):
+            D = float(rng.uniform(0.01, 0.8))          # the row's floored interval
+            n = 12
+            supp = rng.uniform(0.05, 1.0, n)
+            mv = rng.uniform(-0.5, 1.0, n) * D         # raw movement, within the guard
+            spend = rng.uniform(1e-4, 0.2, n)          # well above EPS
+            cen = rng.uniform(0.3, 3.0, n)
+            raw = [objective(supp[i], mv[i], spend[i], cen[i]) for i in range(n)]
+            ratio = [objective(supp[i], mv[i] / D, spend[i] / D, cen[i]) for i in range(n)]
+            assert int(np.argmax(raw)) == int(np.argmax(ratio))
+    finally:
+        EXPONENTS.update(old)
+
+
 # ── centrality: position in the dataset's own reconstruction-loss distribution ─
 
 def test_centrality_is_one_at_the_median_and_falls_in_both_tails():
@@ -243,6 +266,7 @@ def _fake_ctx(p_patched, p_transfer=0.50, p_ablated=0.60, loo_signed=(0.10, -0.0
             "predict": lambda d: np.array([[p_patched]] * len(d)),
             "loss": lambda pr: float(pr[0]),
             "p_transfer": p_transfer, "p_ablated": p_ablated,
+            "interval": p_ablated - p_transfer,
             "loo_signed": list(loo_signed)}
 
 
@@ -250,7 +274,7 @@ def test_attribution_subtracts_the_bystanders_signed_share():
     """c suppressed fully, bystander 9 at ratio 0.8. Bystander's first-order share is
     (1 - 0.8) x (-0.03) = -0.006; observed movement 0.05 attributes to 0.056, and
     toward_ablation = 0.056 / 0.10."""
-    out = recipient_toward_ablation(_fake_ctx(p_patched=0.55),
+    out = recipient_movement(_fake_ctx(p_patched=0.55),
                                     [{7: 0.0, 9: 0.8}], feat=7)
     assert out[0]["movement_observed"] == pytest.approx(0.05)
     assert out[0]["est_bystander"] == pytest.approx(-0.006)
@@ -261,7 +285,7 @@ def test_attribution_subtracts_the_bystanders_signed_share():
 def test_attribution_ignores_bystanders_that_did_not_move():
     """Ratio 1.0 contributes (1 - 1.0) x anything = 0: with no bystander movement the
     attributed and observed movements coincide."""
-    out = recipient_toward_ablation(_fake_ctx(p_patched=0.55),
+    out = recipient_movement(_fake_ctx(p_patched=0.55),
                                     [{7: 0.0, 9: 1.0}], feat=7)
     assert out[0]["est_bystander"] == pytest.approx(0.0)
     assert out[0]["toward"] == pytest.approx(0.05 / 0.10)
@@ -271,7 +295,7 @@ def test_attribution_falls_back_when_the_correction_leaves_the_probability_range
     """A first-order estimate that implies movement outside [-1, 1] is out-of-model by
     construction (one v19-tested row overshot by 1.68). The UNCORRECTED movement is
     used and the fallback recorded -- no chosen constant involved."""
-    out = recipient_toward_ablation(
+    out = recipient_movement(
         _fake_ctx(p_patched=0.55, loo_signed=(0.10, -20.0)),
         [{7: 0.0, 9: 0.8}], feat=7)
     assert out[0]["attribution_fallback"] is True
@@ -373,66 +397,68 @@ def _recip(loo_by_fid, interval=0.50):
     return {"loo_by_fid": loo_by_fid, "interval": interval}
 
 
-def test_weighted_blast_is_zero_when_nothing_moved():
+def test_bystander_spend_is_zero_when_nothing_moved():
     a = np.array([1.0, 2.0, 3.0])
-    assert weighted_blast(a, a.copy(), np.array([1, 2]), _recip({1: 0.4, 2: 0.2})) == 0.0
+    assert bystander_spend(a, a.copy(), np.array([1, 2]), _recip({1: 0.4, 2: 0.2})) == 0.0
 
 
-def test_weighted_blast_is_a_sum_not_a_mean():
+def test_bystander_spend_is_a_sum_not_a_mean():
     """Two concepts each disturbed 10% cost twice one disturbed 10%. A mean would report
     the same for both, normalising away exactly the count that should accumulate."""
     a = np.array([1.0, 1.0, 1.0])
     one = np.array([1.0, 1.1, 1.0])
     two = np.array([1.0, 1.1, 1.1])
     r = _recip({1: 0.5, 2: 0.5})
-    assert (weighted_blast(a, two, np.array([1, 2]), r)
-            == pytest.approx(2 * weighted_blast(a, one, np.array([1, 2]), r)))
+    assert (bystander_spend(a, two, np.array([1, 2]), r)
+            == pytest.approx(2 * bystander_spend(a, one, np.array([1, 2]), r)))
 
 
-def test_weighted_blast_ignores_concepts_the_prediction_does_not_depend_on():
+def test_bystander_spend_ignores_concepts_the_prediction_does_not_depend_on():
     """The reason for weighting at all: a 12% shift in a concept with LOO ~0 changes no
     outcome, and blast_radius cannot tell it from a 3% shift in one carrying a third."""
     a = np.array([1.0, 1.0])
     moved = np.array([1.0, 2.0])                      # concept 1 doubled
-    assert weighted_blast(a, moved, np.array([1]), _recip({1: 0.0})) == pytest.approx(0.0)
+    assert bystander_spend(a, moved, np.array([1]), _recip({1: 0.0})) == pytest.approx(0.0)
 
 
-def test_weighted_blast_excludes_inactive_concepts_rather_than_flooring_them():
+def test_bystander_spend_excludes_inactive_concepts_rather_than_flooring_them():
     """|da|/|a| on a near-zero baseline is what produced a reported 198,990,863%."""
     a = np.array([1.0, ACTIVE_FLOOR / 10])
     moved = np.array([1.0, 1.0])                      # a huge RELATIVE move on a dead concept
-    assert weighted_blast(a, moved, np.array([1]), _recip({1: 0.5})) is None
+    assert bystander_spend(a, moved, np.array([1]), _recip({1: 0.5})) is None
 
 
-def test_weighted_blast_is_scaled_to_what_ablating_c_moves():
-    """spend / max(|interval|, MIN_GAP): bystander spend in units of the concept under
-    test's own effect -- the 2026-08-14 strictness redesign. The transfer's movement is
-    no longer the scale; the same spend against a weak concept must read LARGER."""
+def test_bystander_spend_is_raw_probability_units():
+    """Raw spend (2026-08-15): the interval denominator was a row constant that never
+    influenced within-row selection, so it moved to the DERIVED blast ratio at recording
+    time. Spend itself is invariant to the interval; the interval only gates None (kept
+    for selection-equivalence with the ratio form's fallback path)."""
     a, moved = np.array([1.0, 1.0]), np.array([1.0, 1.5])
-    strong = weighted_blast(a, moved, np.array([1]), _recip({1: 0.4}, interval=0.50))
-    weak = weighted_blast(a, moved, np.array([1]), _recip({1: 0.4}, interval=0.05))
-    assert strong == pytest.approx(0.5 * 0.4 / 0.50)
-    assert weak == pytest.approx(0.5 * 0.4 / 0.05)
-    assert weak > strong
+    strong = bystander_spend(a, moved, np.array([1]), _recip({1: 0.4}, interval=0.50))
+    weak = bystander_spend(a, moved, np.array([1]), _recip({1: 0.4}, interval=0.05))
+    assert strong == pytest.approx(0.5 * 0.4)          # moved_frac x loo, nothing else
+    assert weak == pytest.approx(strong)               # interval cannot move raw spend
 
 
-def test_weighted_blast_floors_the_interval_at_min_gap():
-    """A sub-floor interval is capped at the resolution bound, not divided by noise --
-    strict (spend / 0.01) but bounded."""
+def test_blast_ratio_is_derived_from_raw_spend():
+    """The reported blast (strictness redesign's number) = spend / max(|I|, MIN_GAP),
+    computed at recording, not in the score. Same spend reads larger against a weak
+    concept, and a sub-floor interval divides by the floor, not by noise."""
+    spend = 0.5 * 0.4
+    assert spend / max(0.50, MIN_GAP) == pytest.approx(0.40)
+    assert spend / max(0.05, MIN_GAP) == pytest.approx(4.00)
+    assert spend / max(0.002, MIN_GAP) == pytest.approx(spend / MIN_GAP)
+
+
+def test_bystander_spend_is_none_without_a_measured_interval():
     a, moved = np.array([1.0, 1.0]), np.array([1.0, 1.5])
-    r = weighted_blast(a, moved, np.array([1]), _recip({1: 0.4}, interval=0.002))
-    assert r == pytest.approx(0.5 * 0.4 / MIN_GAP)
+    assert bystander_spend(a, moved, np.array([1]), _recip({1: 0.4}, interval=float("nan"))) is None
 
 
-def test_weighted_blast_is_none_without_a_measured_interval():
+def test_bystander_spend_is_none_without_a_recipient():
     a, moved = np.array([1.0, 1.0]), np.array([1.0, 1.5])
-    assert weighted_blast(a, moved, np.array([1]), _recip({1: 0.4}, interval=float("nan"))) is None
-
-
-def test_weighted_blast_is_none_without_a_recipient():
-    a, moved = np.array([1.0, 1.0]), np.array([1.0, 1.5])
-    assert weighted_blast(a, moved, np.array([1]), None) is None
-    assert weighted_blast(a, moved, np.array([]), _recip({1: 0.4})) is None
+    assert bystander_spend(a, moved, np.array([1]), None) is None
+    assert bystander_spend(a, moved, np.array([]), _recip({1: 0.4})) is None
 
 
 def test_collateral_detail_is_ordered_by_what_was_actually_spent():

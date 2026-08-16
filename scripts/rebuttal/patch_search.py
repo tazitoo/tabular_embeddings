@@ -90,7 +90,9 @@ CANARY_TOL = 1e-4
 ACTIVE_FLOOR = 1e-3
 
 # Exponent on each term of the objective:
-# suppression_frac x toward_ablation^0.5 x centrality_ratio / (blast + EPS).
+# suppression_frac x movement^0.5 x centrality_ratio / (spend + EPS), raw units;
+# key names keep the concepts they weight (toward_ablation = the movement term,
+# blast = the spend term).
 #
 # The toward_ablation exponent is the live one, and its effect INVERTED when the crossing
 # guard landed. toward_ablation is now bounded at 1, and on [0,1] a sqrt inflates small
@@ -731,7 +733,7 @@ def collateral_detail(a_base, a_new, others, recip):
     return sorted(out, key=lambda d: -(d["disturbed"] or 0.0))
 
 
-def weighted_blast(a_base, a_new, others, recip):
+def bystander_spend(a_base, a_new, others, recip):
     """Collateral weighted by how much the recipient's prediction depends on each concept.
 
     Each of the k-1 co-accepted concepts moved by |da_j|/|a_j| -- per concept, relative to
@@ -777,26 +779,22 @@ def weighted_blast(a_base, a_new, others, recip):
     w = np.array([recip["loo_by_fid"].get(int(f), 0.0) for f in np.asarray(others)[live]])
     spent = float((moved_frac * w).sum())
 
-    # Scaled by what ablating c ITSELF moves, |p_ablated - p_transfer| floored at
-    # MIN_GAP: the term reads "how many times over did the edit's spend on bystanders
-    # exceed what the concept under test can move at all". Strictest exactly where the
-    # bystanders outnumber a weak concept -- spend of 0.01 against the whole transfer's
-    # 0.5 read as a negligible 2%, while being several times everything the edit under
-    # test was supposed to move (2026-08-14 review; on v19, bystander spend could
-    # account for the entire measured movement on 79.5% of sub-floor rows).
+    # RAW spend, in probability units (2026-08-15 review). The ratio form divided by
+    # max(|interval|, MIN_GAP) -- a row constant that cancels out of every within-row
+    # comparison the objective ever makes -- so the division bought nothing in the
+    # search while importing the floor and its caveats. The blast RATIO (spend in units
+    # of c's own effect, the number the strictness redesign was about) is now a DERIVED
+    # reporting field computed at recording time; it still reads "how many times over
+    # the edit's spend exceeded what c can move", it just no longer lives in the score.
     #
-    # The earlier scale, the TRANSFER's own movement |p_transfer - p_weak|, made
-    # collateral comparable across rows but blind to c: the same spend read the same
-    # against a dominant concept and a marginal one.
-    #
-    # Deliberately NOT scaled by the candidate's suppression_frac: that would put
-    # suppression in blast's denominator and square its influence on the objective.
-    # The floor is MIN_GAP, the same resolution bound toward_ablation's denominator
-    # uses -- an interval measured below it is not distinguishable from one at it.
+    # The interval-finite condition is kept even though raw spend does not use the
+    # interval: it preserves selection equivalence with the ratio form (which returned
+    # None exactly here and fell back to blast_radius), so the raw refactor is
+    # verifiable by bit-identical replication.
     interval = recip.get("interval")
     if interval is None or not np.isfinite(interval):
         return None                    # no measured interval; fall back to blast_radius
-    return float(spent / max(abs(float(interval)), MIN_GAP))
+    return float(spent)
 
 
 def blast_radius(a_base, a_new, accepted_others):
@@ -981,43 +979,44 @@ def centrality(x, sorted_losses):
     return float(2.0 * min(pos, 1.0 - pos))
 
 
-def objective(suppression_frac, toward, blast, centrality_ratio=1.0):
-    """suppression_frac x toward_ablation^0.5 x centrality_ratio / (blast + EPS).
+def objective(suppression_frac, movement, spend, centrality_ratio=1.0):
+    """suppression_frac x movement^0.5 x centrality_ratio / (spend + EPS), RAW units.
 
-    A pure product of dimensionless ratios: no additive constants, no weights to invent,
-    and at equal exponents a 10% relative change in any term is worth the same as in any
-    other. Scores are only ever compared WITHIN a row.
+    The recipient-side terms are raw Delta-prediction quantities, not ratios (2026-08-15
+    review). The ratio forms divided by max(|interval|, MIN_GAP) -- a ROW CONSTANT --
+    and scores are only ever compared WITHIN a row, so those denominators never
+    influenced which patch wins; they existed only in the recorded values, while their
+    degenerate-denominator branches (the min_interval gate, the nan credit bug, the
+    sub-floor credit caveat) kept leaking into the search. Raw terms have no such
+    branches. The ratios live on as DERIVED reporting fields, computed at recording
+    time from the same raw quantities plus the interval -- the metrics layer keeps its
+    tables, the objective keeps no caveats.
 
-    suppression_frac   fraction of the concept's activation the patch extinguished.
-    toward_ablation    where the recipient landed between the transfer and the ablation
-                       of this concept, with the bystanders' signed first-order share
-                       subtracted out of the movement (recipient_toward_ablation), so
-                       the credit is c's; the sqrt is sign-preserving, so moving the
-                       wrong way scores negative, and the crossing guard has already
-                       rejected candidates past 1.
-    centrality_ratio   centrality(patched) / centrality(unpatched) in the dataset's own
-                       reconstruction-loss distribution: >1 the patch moved the row
-                       toward the density (rewarded), <1 toward either tail (penalised).
-                       Replaces recon_excess, which judged the patch against the row's
-                       OWN error -- one-sided, blind to moving toward the density, and
-                       not a statement about the distribution at all.
-    blast              bystander spend relative to what ablating c itself moves,
-                       spend / max(|interval|, MIN_GAP) -- how many times over the edit
-                       disturbed concepts it was not targeting, in units of the concept
-                       under test's own effect.
+    suppression_frac   fraction of the concept's activation the patch extinguished
+                       (its a_start denominator is also a row constant).
+    movement           the recipient's movement credited to c, in probability units,
+                       SIGNED toward the ablation (+ = the direction removing c moves
+                       the prediction): (observed - bystanders' first-order share) x
+                       sign(interval), with the [-1, 1] out-of-model fallback
+                       (recipient_movement). Sign-preserving sqrt, so wrong-way
+                       movement scores negative. The crossing guard has already
+                       rejected movement past max(|interval|, MIN_GAP).
+    centrality_ratio   centrality(patched) / centrality(start) in the dataset's own
+                       reconstruction-loss distribution (start is a row constant too).
+    spend              bystander collateral in probability units: sum over live
+                       bystanders of moved_frac x LOO effect. Divisor with the EPS
+                       guard; zero collateral scoring ~1/EPS is intended divisor
+                       behaviour, since only within-row comparisons exist.
 
-    blast + EPS, not 1 + blast: the 1 was a WEIGHT wearing a guard's clothes -- it made
-    the term's influence depend on where blast sat relative to 1 (invisible at 0.001,
-    dominant at 13.5). A divisor needs a guard against zero, and that is EPS; zero
-    collateral scoring ~1/EPS is intended divisor behaviour, since only within-row
-    ratios matter.
+    EXPONENTS keys keep their concept names (toward_ablation, blast) though the terms
+    they weight are now the raw movement and spend.
     """
-    t = float(toward)
+    m = float(movement)
     b = EXPONENTS["toward_ablation"]
-    root = math.copysign(abs(t) ** b, t) if np.isfinite(t) else float("nan")
+    root = math.copysign(abs(m) ** b, m) if np.isfinite(m) else float("nan")
     return float(suppression_frac ** EXPONENTS["suppression"] * root
                  * max(0.0, centrality_ratio) ** EXPONENTS["centrality"]
-                 / (max(0.0, blast) + EPS) ** EXPONENTS["blast"])
+                 / (max(0.0, spend) + EPS) ** EXPONENTS["blast"])
 
 
 def build_recip_shared(donor, recipient, dataset, device):
@@ -1176,8 +1175,9 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
             "row": int(row)}
 
 
-def recipient_toward_ablation(recip, acts, feat):
-    """Measured, ATTRIBUTED toward_ablation for a batch of candidate activation vectors.
+def recipient_movement(recip, acts, feat):
+    """Measured, ATTRIBUTED recipient movement for a batch of candidate activation
+    vectors, in probability units, signed toward the ablation.
 
     For each candidate: rescale every accepted concept's term by its MEASURED ratio
     (not just the patched concept's -- assuming the others held still is the assumption
@@ -1216,7 +1216,15 @@ def recipient_toward_ablation(recip, acts, feat):
         attributed = observed - est_bystander
         fallback = not (np.isfinite(attributed) and -1.0 <= attributed <= 1.0)
         movement = observed if fallback else attributed
+        interval = recip["interval"]
+        # signed TOWARD the ablation: + means the direction removing c moves the
+        # prediction, so the objective's sign-preserving root penalises wrong-way
+        # movement whatever c's own sign is
+        m_toward = float(movement * np.sign(interval)) if interval != 0 else float(movement)
         out.append({
+            "movement": m_toward,
+            # DERIVED reporting field, not an objective input: the same movement as a
+            # fraction of c's floored interval, the ratio the tables have carried
             "toward": toward_ablation(recip["p_transfer"], recip["p_ablated"],
                                       recip["p_transfer"] + movement),
             "movement_observed": observed,
@@ -1528,17 +1536,19 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             if not rows_:
                 continue
             a, recon_loss = ev(rows_)
-            revs = recipient_toward_ablation(recip, a, feat) if recip else None
+            revs = recipient_movement(recip, a, feat) if recip else None
+            floor_I = (max(abs(float(recip["interval"])), MIN_GAP)
+                       if recip and np.isfinite(recip.get("interval", float("nan")))
+                       else None)
             scored = []
             for i, cand in enumerate(meta_):
                 m = shift_metrics(a_base_row, a[i], others, feat)
                 drop = a_start - float(a[i][feat])
                 df = drop / a_start if a_start > 0 else float("nan")
                 bl_raw = blast_radius(a_base_row, a[i], others)
-                bl_w = weighted_blast(a_base_row, a[i], others, recip)
-                bl = bl_raw if bl_w is None else bl_w
+                spend = bystander_spend(a_base_row, a[i], others, recip)
                 rv = revs[i] if revs else None
-                rev = float(rv["toward"]) if rv else float("nan")
+                mv = float(rv["movement"]) if rv else float("nan")
                 # In or out of distribution is a statement about POSITION in a
                 # distribution -- the dataset's own reconstruction losses -- never about
                 # the row's own error. cen_start is a row constant, so within-row
@@ -1550,29 +1560,34 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 if drop <= 0 or (recon_bar is not None and float(recon_loss[i]) > recon_bar):
                     continue
                 # CROSSING GUARD, the convention transfer_sweep_v2 already uses: it
-                # rejects any candidate whose intervened prediction goes PAST the strong
-                # prediction, and _gc clamps gap_closed to [0,1]. The patch's target is the
-                # recipient's ORIGINAL pre-transfer prediction, and toward_ablation > 1 is exactly
-                # "crossed past it", so the same guard applies here.
-                #
-                # It also repairs the objective without changing it: sqrt(toward_ablation) is a
-                # sound reward BELOW the target and only misbehaves above, so removing the
-                # crossings removes the region where it selects the wrong candidate. That
-                # region was 26.1% of chosen patches.
-                if np.isfinite(rev) and rev > 1.0:
+                # rejects any candidate whose intervened prediction goes PAST what
+                # removing the concept achieves. In raw units: movement toward the
+                # ablation beyond max(|interval|, MIN_GAP) is doing MORE than removing
+                # c, and is rejected rather than rewarded -- the same rule the ratio
+                # form expressed as toward_ablation > 1.
+                if floor_I is not None and np.isfinite(mv) and mv > floor_I:
                     continue
                 cols = [s["column"] for s in committed + [cand]]
                 scored.append({"columns": cols,
                                "values": [s["value"] for s in committed + [cand]],
                                "activation_after": float(a[i][feat]), "suppression": drop,
-                               "suppression_frac": df, "blast": bl, "blast_raw": bl_raw,
-                               "blast_weighted": bl_w, "toward_ablation": rev,
+                               "suppression_frac": df,
+                               # objective inputs, raw probability units
+                               "movement": mv if rv else None,
+                               "spend": spend,
+                               # DERIVED reporting ratios, unchanged meaning vs earlier
+                               # sweeps' tables; None where their pieces are unmeasured
+                               "toward_ablation": float(rv["toward"]) if rv else float("nan"),
+                               "blast": (bl_raw if spend is None
+                                         else spend / floor_I),
+                               "blast_raw": bl_raw,
                                "movement_observed": rv["movement_observed"] if rv else None,
                                "est_bystander": rv["est_bystander"] if rv else None,
                                "attribution_fallback": rv["attribution_fallback"] if rv else None,
                                "centrality": cen_i, "centrality_ratio": cen_ratio,
-                               "score": objective(df, rev if np.isfinite(rev) else 1.0,
-                                                  bl, cen_ratio),
+                               "score": objective(df, mv if np.isfinite(mv) else 1.0,
+                                                  bl_raw if spend is None else spend,
+                                                  cen_ratio),
                                "recon_loss": float(recon_loss[i]),
                                "edit_distance": float(sum(s["edit_distance"]
                                                           for s in committed + [cand])),
