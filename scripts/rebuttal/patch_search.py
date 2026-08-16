@@ -964,23 +964,6 @@ def _finite_score(c):
     return c["score"] if np.isfinite(c["score"]) else -np.inf
 
 
-def select_beam(items, beam):
-    """Top-`beam` children, deduplicated by committed-column SET.
-
-    `items` are (key, score, payload). Two beam states that reach the same column set
-    in different orders are the same search neighbourhood, so only the best-scoring
-    representative survives; then the top `beam` by score expand. Sorting is stable and
-    the caller iterates states and columns in fixed order, so selection is
-    deterministic including ties.
-    """
-    by_key = {}
-    for key, score, payload in items:
-        if key not in by_key or score > by_key[key][0]:
-            by_key[key] = (score, payload)
-    ranked_items = sorted(by_key.values(), key=lambda t: -t[0])[:beam]
-    return [payload for _, payload in ranked_items]
-
-
 def centrality(x, sorted_losses):
     """Where x sits in the dataset's own reconstruction-loss distribution, folded:
     1 at the median, falling toward 0 in EITHER tail.
@@ -1648,126 +1631,120 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "_cand": cand, "_vec": a[i], **m})
             return scored, len(rows_), trace
 
-        for cand_col in (col_order if beam <= 1 else []):
-            scored, n_searched, trace = score_column(cand_col, committed)
-            if trace is not None:
-                search_trace.append({"step": len(committed), "column": int(cand_col),
-                                     "column_name": str(space.names[cand_col]),
-                                     "beam_state": None, "candidates": trace})
-            if not scored:
-                # This column offered nothing admissible. Skip it and try the next: the
-                # ranking is a first-order estimate from the unpatched row, so one column
-                # failing says nothing about the rest.
-                if not committed:
-                    stop = "no_qualifying_combination"
-                continue
-            # No tie-break. It existed to counteract enumeration's bias toward larger
-            # combinations -- there was always a 3-column combo scoring marginally higher,
-            # so 74% of patches used all three. Greedy adds a column only when it improves
-            # the objective, so size is governed by the stopping rule instead, and within a
-            # step every candidate has the same column count so that half of the key was
-            # inert anyway. --drop-tol went with it: it only existed to stop the tie-break
-            # paying for a smaller edit with suppression.
-            _s = lambda c: c["score"] if np.isfinite(c["score"]) else -np.inf
-            step_best = max(scored, key=_s)
-            # Commit only on improvement, as the transfer greedy does -- but SKIP rather
-            # than stop, for the same reason as above. Columns are visited once each, in
-            # rank order, and the search ends when the pool is exhausted or the concept is
-            # suppressed.
-            if best is not None and _s(step_best) <= _s(best):
-                stop = "no_improvement"
-                continue
-            best = step_best
-            committed.append(best.pop("_cand"))
-            # One entry per column committed, carrying every term of the objective at that
-            # step. The final `best` shows where the search ended; this shows how it got
-            # there -- which column bought suppression, which bought recipient movement,
-            # and where a term stopped improving.
-            trajectory.append({"column": int(cand_col),
-                               "column_name": str(space.names[cand_col]),
-                               "value": best["values"][-1],
-                               "n_cols": len(best["columns"]),
-                               "score": best["score"], "suppression_frac": best["suppression_frac"],
-                               "toward_ablation": best["toward_ablation"], "blast": best["blast"],
-                               "movement": best.get("movement"), "spend": best.get("spend"),
-                               "centrality_ratio": best["centrality_ratio"],
-                               "n_candidates_searched": n_searched})
-            stop = ("fully_suppressed" if best["activation_after"] <= 0
-                    else "best_combination")
-            if best["activation_after"] <= 0:
-                break
-            # Target reached: stop rather than keep committing columns for a sliver of
-            # toward_ablation, which is what gc_tolerance does for the transfer greedy.
-            if np.isfinite(best["toward_ablation"]) and best["toward_ablation"] >= REVERSAL_TOLERANCE:
-                stop = "toward_ablation_target_reached"
-                break
+        def branch_pass(pool, branch):
+            """One branch: the production greedy generalised to a width-`beam` window.
 
-        if beam > 1:
-            # BEAM SEARCH (2026-08-15, user): keep the top-`beam` partial patches alive
-            # so the chosen patch stops depending on the menu's visit order -- the
-            # ranking experiments measured Kendall tau -0.28 between orderings with the
-            # first visit changing on every probed row, and at a median patch of 2
-            # columns the first commit anchors the greedy's whole path.
-            #
-            # Differs from the greedy in TWO ways, deliberately recorded as one arm:
-            # width (top-B states expand, not one), and column availability (a state
-            # may commit any not-yet-used menu column at any step, where the greedy
-            # visits each column once in rank order and discards it). Children must
-            # IMPROVE on their parent, mirroring commit-on-improvement; states whose
-            # every child fails to improve, or that fully suppress, or that reach the
-            # toward target, stop expanding. States are deduplicated by committed
-            # column SET (the same set reached in a different order is the same
-            # neighbourhood), keeping the best-scoring representative. Cost is ~beam x
-            # the greedy's pass-2 forwards; iteration order is fixed, so the search
-            # stays deterministic.
-            states = [{"committed": [], "entry": None, "score": -np.inf, "traj": []}]
-            best, trajectory, stop = None, [], "no_qualifying_combination"
-            while states:
-                children = []
-                for st in states:
-                    used = {c["column"] for c in st["committed"]}
-                    for col in col_order:
-                        if col in used:
-                            continue
-                        scored, n_searched, trace = score_column(col, st["committed"])
-                        if trace is not None:
-                            search_trace.append({
-                                "step": len(st["committed"]), "column": int(col),
-                                "column_name": str(space.names[col]),
-                                "beam_state": sorted(used), "candidates": trace})
-                        if not scored:
-                            continue
-                        sb = max(scored, key=_finite_score)
-                        if _finite_score(sb) <= st["score"]:
-                            continue
-                        children.append((st, col, sb, n_searched))
-                picked = select_beam(
-                    [(frozenset(sb["columns"]), _finite_score(sb), (st, col, sb, n))
-                     for st, col, sb, n in children], beam)
-                states = []
-                for st, col, sb, n_searched in picked:
-                    cand = sb.pop("_cand")
-                    traj = st["traj"] + [{
-                        "column": int(col), "column_name": str(space.names[col]),
-                        "value": sb["values"][-1], "n_cols": len(sb["columns"]),
-                        "score": sb["score"], "suppression_frac": sb["suppression_frac"],
-                        "toward_ablation": sb["toward_ablation"], "blast": sb["blast"],
-                        "movement": sb.get("movement"), "spend": sb.get("spend"),
-                        "centrality_ratio": sb["centrality_ratio"],
-                        "n_candidates_searched": n_searched}]
-                    if best is None or _finite_score(sb) > _finite_score(best):
-                        best, trajectory = sb, traj
-                        stop = ("fully_suppressed" if sb["activation_after"] <= 0 else
-                                "toward_ablation_target_reached"
-                                if (np.isfinite(sb["toward_ablation"])
-                                    and sb["toward_ablation"] >= REVERSAL_TOLERANCE)
-                                else "best_combination")
-                    terminal = (sb["activation_after"] <= 0
-                                or (np.isfinite(sb["toward_ablation"])
-                                    and sb["toward_ablation"] >= REVERSAL_TOLERANCE))
-                    if not terminal:
-                        states.append({"committed": st["committed"] + [cand],
-                                       "entry": sb, "score": _finite_score(sb), "traj": traj})
+            Per step, the `beam` best-ranked unconsumed columns in `pool` are evaluated
+            on the branch's current base; the best IMPROVING one commits and only IT
+            leaves the pool -- losers stay candidates and are re-evaluated on the new
+            base later ("starting at A, B is still a candidate", 2026-08-16). If none
+            of the window improves, the whole window leaves the pool: the greedy's
+            skip, widened. With beam=1 this IS the production greedy -- window of one,
+            skip on no improvement, same code path, so b=1 == greedy by construction.
+            """
+            best_l, committed_l, trajectory_l = None, [], []
+            stop_l = "no_sensitive_column"
+            n_skips = 0
+            remaining = list(pool)
+            while remaining:
+                window = remaining[:beam]
+                window_scored = []
+                for cand_col in window:
+                    scored, n_searched, trace = score_column(cand_col, committed_l)
+                    if trace is not None:
+                        search_trace.append({"step": len(committed_l),
+                                             "column": int(cand_col),
+                                             "column_name": str(space.names[cand_col]),
+                                             "branch": branch, "candidates": trace})
+                    if scored:
+                        window_scored.append(
+                            (cand_col, max(scored, key=_finite_score), n_searched))
+                # No tie-break beyond the score (the size tie-break was retired with
+                # enumeration); ties inside the window resolve to the higher-ranked
+                # column via stable max over rank order, so the search stays
+                # deterministic.
+                improving = [(c, sb, n) for c, sb, n in window_scored
+                             if best_l is None
+                             or _finite_score(sb) > _finite_score(best_l)]
+                if not improving:
+                    if best_l is None and len(remaining) <= beam and not committed_l:
+                        stop_l = "no_qualifying_combination"
+                    elif best_l is not None:
+                        stop_l = "no_improvement"
+                    # the greedy's skip, widened: the window leaves the pool
+                    n_skips += 1
+                    remaining = remaining[len(window):]
+                    continue
+                cand_col, step_best, n_searched = max(improving,
+                                                      key=lambda t: _finite_score(t[1]))
+                best_l = step_best
+                committed_l.append(best_l.pop("_cand"))
+                remaining = [c for c in remaining if c != cand_col]
+                # the ranking-fidelity record (2026-08-16): which window the commit
+                # chose from, and where in it the winner ranked. A perfect ranking
+                # commits window position 1 every step with no skipped windows.
+                trajectory_l.append({"window": [int(c) for c in window],
+                                     "window_pos": window.index(cand_col) + 1,
+                                     "column": int(cand_col),
+                                     "column_name": str(space.names[cand_col]),
+                                     "value": best_l["values"][-1],
+                                     "n_cols": len(best_l["columns"]),
+                                     "score": best_l["score"],
+                                     "suppression_frac": best_l["suppression_frac"],
+                                     "toward_ablation": best_l["toward_ablation"],
+                                     "blast": best_l["blast"],
+                                     "movement": best_l.get("movement"),
+                                     "spend": best_l.get("spend"),
+                                     "centrality_ratio": best_l["centrality_ratio"],
+                                     "n_candidates_searched": n_searched})
+                stop_l = ("fully_suppressed" if best_l["activation_after"] <= 0
+                          else "best_combination")
+                if best_l["activation_after"] <= 0:
+                    break
+                # Target reached: stop rather than keep committing columns for a
+                # sliver of toward_ablation, which is what gc_tolerance does for the
+                # transfer greedy.
+                if (np.isfinite(best_l["toward_ablation"])
+                        and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
+                    stop_l = "toward_ablation_target_reached"
+                    break
+            return best_l, trajectory_l, stop_l, n_skips
+
+        if beam <= 1:
+            best, trajectory, stop, _ = branch_pass(col_order, branch=None)
+        else:
+            # RESTART BEAM (user, 2026-08-16): uncertainty is widest at the opener, so
+            # branching happens THERE -- each of the top-`beam` ranked columns roots
+            # one branch, whose pool is the columns ranked BELOW its root. A column
+            # SET therefore belongs to exactly one branch (the one rooted at its
+            # highest-ranked member), so the final paths are structurally distinct.
+            # Within a branch the candidates are ALWAYS the `beam` highest-ranked
+            # remaining columns -- the search's only freedom is which of that window
+            # commits; deeper-ranked columns are unreachable until the window slides
+            # past the higher ones by commit or skip. The ranking structures every
+            # path; the search adjudicates within it. Best final patch wins; ties
+            # resolve to the higher-ranked root. Cost ~beam x the greedy's forwards.
+            best, trajectory, stop = None, [], "no_sensitive_column"
+            winning_root, beam_branches = None, []
+            for i, root in enumerate(col_order[:beam]):
+                pool = [root] + [c for c in col_order if
+                                 col_order.index(c) > col_order.index(root)]
+                b_l, t_l, st_l, skips = branch_pass(pool, branch=int(root))
+                # every branch's evidence survives, not just the winner's: the
+                # ranking-fidelity analysis needs the losing paths too
+                beam_branches.append({
+                    "root": int(root), "root_rank": i + 1,
+                    "path": [t["column"] for t in t_l],
+                    "windows": [t["window"] for t in t_l],
+                    "window_pos": [t["window_pos"] for t in t_l],
+                    "n_window_skips": skips,
+                    "score": (_finite_score(b_l) if b_l is not None else None),
+                    "stop": st_l})
+                if i == 0:
+                    stop = st_l          # rank-1 branch's stop survives a total miss
+                if b_l is not None and (best is None
+                                        or _finite_score(b_l) > _finite_score(best)):
+                    best, trajectory, stop, winning_root = b_l, t_l, st_l, int(root)
 
     a_now_vec = best.pop("_vec") if best else a_base_row.copy()
     a_now = float(best["activation_after"]) if best else a_start
@@ -1806,6 +1783,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "n_cols_changed": len(best["columns"]) if best else 0,
             "best": best, "trajectory": trajectory, "sensitivity_top": ranked[:5],
             "beam_width": int(beam),
+            "beam_root": (winning_root if beam > 1 else None),
+            "beam_branches": (beam_branches if beam > 1 else None),
             **({"search_trace": search_trace} if record_search else {}),
             "row_additivity": (recip or {}).get("additivity"),
             # Per-concept collateral for the CHOSEN patch, not an aggregate. Each
@@ -2080,15 +2059,16 @@ def main():
                          "search less willing to trade suppression for recipient movement. "
                          "Raising it chases toward_ablation harder.")
     ap.add_argument("--beam", type=int, default=1,
-                    help="beam width for the column search. 1 (default) is the "
-                         "production greedy: columns visited once in menu order, "
-                         "commit on improvement. >1 keeps the top-B partial patches "
-                         "alive with any unused menu column available at every step, "
-                         "deduplicated by committed column set -- so the chosen patch "
-                         "stops depending on the menu's visit order. Costs ~B x the "
-                         "greedy's pass-2 forwards. NOTE: >1 differs from the greedy "
-                         "in width AND column availability; beam_width is recorded "
-                         "per row so the arms stay separable.")
+                    help="restart-beam width. 1 (default) IS the production greedy, "
+                         "same code path. B>1 roots one branch at each of the top-B "
+                         "ranked columns (testing whether the top column is really "
+                         "the top column); each branch runs the same windowed greedy "
+                         "over the columns ranked below its root -- per step the B "
+                         "best-ranked unconsumed columns are evaluated, the best "
+                         "improving one commits, losers stay candidates -- and the "
+                         "best final patch wins, ties to the higher-ranked root. "
+                         "beam_width and beam_root are recorded per row. Costs ~B x "
+                         "the greedy's forwards.")
     ap.add_argument("--record-search", action="store_true",
                     help="record every candidate at every (step, column) -- winners "
                          "and rejected alike, with admission status -- into the row's "
