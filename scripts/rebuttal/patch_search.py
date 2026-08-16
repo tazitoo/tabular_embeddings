@@ -1498,6 +1498,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         by_col = {c: [per_col[c]] for c in per_col}
 
     best, stop = None, "no_sensitive_column"
+    n_escalations = [0]     # saturated-column rescans with pass-1 guidance suspended
     committed = []          # list of the sensitivity records already applied
     trajectory = []         # objective terms at each committed column
     search_trace = []       # --record-search: every candidate at every (step, column),
@@ -1548,13 +1549,54 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                    if recip and np.isfinite(recip.get("interval", float("nan")))
                    else None)
 
-        def score_column(cand_col, committed_now):
+        def escalation_candidates(cand_col):
+            """Candidates for a SATURATED column, with the coarse pass-1 guidance
+            suspended (2026-08-16 review: coarse is potentially misleading -- about
+            step size AND direction AND, for categoricals, which levels suppress).
+            Both directions at full 192-point resolution, plus 192 points INSIDE the
+            first grid interval on each side (the never-probed near-origin band where
+            an admissible edit hides when every coarse step overshoots the crossing
+            guard), plus every present categorical level. Integral columns dedupe to
+            +/-1-unit resolution -- if the minimum possible edit still fails, the
+            refusal is justified by the DATA's resolution, not the grid's."""
+            col = space.cols[cand_col]
+            cands, seen_v = [], set()
+
+            def _add(v):
+                key = v if isinstance(v, str) else float(v)
+                if key in seen_v or _same(v, x0[cand_col]):
+                    return
+                seen_v.add(key)
+                cands.append({"column": cand_col, "value": v,
+                              "edit_distance": edit_distance(
+                                  col, x0[cand_col], v,
+                                  categorical=cand_col in space.cat)})
+            if cand_col in space.cat:
+                for val in _present(col):
+                    _add(val if isinstance(val, str) else float(val))
+                return cands
+            xc = float(x0[cand_col])
+            for direction in (1.0, -1.0):
+                grid = line_search_values(col, xc, direction, n_line)
+                for v in grid:
+                    _add(float(v))
+                if len(grid):
+                    nearest = min((float(v) for v in grid), key=lambda v: abs(v - xc))
+                    fine = np.linspace(xc, nearest, n_line + 1)[1:]
+                    if is_integral(_present(col).astype(float)):
+                        fine = np.rint(fine)
+                    for v in np.unique(fine):
+                        _add(float(v))
+            return cands
+
+        def score_column(cand_col, committed_now, candidates=None):
             """Evaluate every kept value of one column ON TOP of the committed edits:
             one donor forward, one recipient call, the full scoring block. Shared by
             the greedy and the beam so the two searches cannot drift in what a
-            candidate's score means."""
+            candidate's score means. `candidates` overrides the default pass-1-guided
+            menu (used by the saturation escalation)."""
             rows_, meta_ = [], []
-            for cand in by_col.get(cand_col, []):
+            for cand in (by_col.get(cand_col, []) if candidates is None else candidates):
                 r = list(x0)
                 for s in committed_now:
                     r[s["column"]] = s["value"]
@@ -1654,6 +1696,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 # degenerating into a restricted greedy that never tested its root.
                 root_col = remaining[0]
                 scored, n_searched, trace = score_column(root_col, [])
+                if not scored:
+                    scored, n_searched, trace = score_column(
+                        root_col, [], candidates=escalation_candidates(root_col))
+                    n_escalations[0] += 1
                 if trace is not None:
                     search_trace.append({"step": 0, "column": int(root_col),
                                          "column_name": str(space.names[root_col]),
@@ -1688,6 +1734,17 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 window_scored = []
                 for cand_col in window:
                     scored, n_searched, trace = score_column(cand_col, committed_l)
+                    if not scored:
+                        # SATURATION ESCALATION (2026-08-16): zero admissible
+                        # candidates means the coarse pass-1 guidance failed this
+                        # column here -- rescan with guidance suspended (both
+                        # directions, near-origin refinement, all levels) before
+                        # letting the column skip out. Only fires on saturated
+                        # columns, so unaffected rows are bit-identical.
+                        scored, n_searched, trace = score_column(
+                            cand_col, committed_l,
+                            candidates=escalation_candidates(cand_col))
+                        n_escalations[0] += 1
                     if trace is not None:
                         search_trace.append({"step": len(committed_l),
                                              "column": int(cand_col),
@@ -1821,6 +1878,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "n_cols_changed": len(best["columns"]) if best else 0,
             "best": best, "trajectory": trajectory, "sensitivity_top": ranked[:5],
             "beam_width": int(beam),
+            "n_escalations": int(n_escalations[0]),
             "beam_root": (winning_root if beam > 1 else None),
             "beam_branches": (beam_branches if beam > 1 else None),
             **({"search_trace": search_trace} if record_search else {}),
