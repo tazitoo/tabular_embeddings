@@ -1631,7 +1631,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "_cand": cand, "_vec": a[i], **m})
             return scored, len(rows_), trace
 
-        def branch_pass(pool, branch):
+        def branch_pass(pool, branch, force_first=False):
             """One branch: the production greedy generalised to a width-`beam` window.
 
             Per step, the `beam` best-ranked unconsumed columns in `pool` are evaluated
@@ -1646,6 +1646,43 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             stop_l = "no_sensitive_column"
             n_skips = 0
             remaining = list(pool)
+            if force_first and remaining:
+                # The root IS the starting point (user, 2026-08-16): its best
+                # admissible candidate commits unconditionally before the windowed
+                # pass -- the branch exists to test this column as the opener, so if
+                # the root cannot commit, the branch dies loudly rather than
+                # degenerating into a restricted greedy that never tested its root.
+                root_col = remaining[0]
+                scored, n_searched, trace = score_column(root_col, [])
+                if trace is not None:
+                    search_trace.append({"step": 0, "column": int(root_col),
+                                         "column_name": str(space.names[root_col]),
+                                         "branch": branch, "candidates": trace})
+                if not scored:
+                    return None, [], "root_inadmissible", 0
+                best_l = max(scored, key=_finite_score)
+                committed_l.append(best_l.pop("_cand"))
+                remaining = remaining[1:]
+                trajectory_l.append({"window": [int(root_col)], "window_pos": 1,
+                                     "column": int(root_col),
+                                     "column_name": str(space.names[root_col]),
+                                     "value": best_l["values"][-1],
+                                     "n_cols": len(best_l["columns"]),
+                                     "score": best_l["score"],
+                                     "suppression_frac": best_l["suppression_frac"],
+                                     "toward_ablation": best_l["toward_ablation"],
+                                     "blast": best_l["blast"],
+                                     "movement": best_l.get("movement"),
+                                     "spend": best_l.get("spend"),
+                                     "centrality_ratio": best_l["centrality_ratio"],
+                                     "n_candidates_searched": n_searched})
+                stop_l = ("fully_suppressed" if best_l["activation_after"] <= 0
+                          else "best_combination")
+                if best_l["activation_after"] <= 0:
+                    return best_l, trajectory_l, stop_l, n_skips
+                if (np.isfinite(best_l["toward_ablation"])
+                        and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
+                    return best_l, trajectory_l, "toward_ablation_target_reached", n_skips
             while remaining:
                 window = remaining[:beam]
                 window_scored = []
@@ -1729,7 +1766,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             for i, root in enumerate(col_order[:beam]):
                 pool = [root] + [c for c in col_order if
                                  col_order.index(c) > col_order.index(root)]
-                b_l, t_l, st_l, skips = branch_pass(pool, branch=int(root))
+                b_l, t_l, st_l, skips = branch_pass(pool, branch=int(root),
+                                                    force_first=True)
                 # every branch's evidence survives, not just the winner's: the
                 # ranking-fidelity analysis needs the losing paths too
                 beam_branches.append({
