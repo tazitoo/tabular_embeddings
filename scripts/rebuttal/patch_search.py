@@ -1438,11 +1438,18 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     # columns left, and a full line search along a continuous column is exactly that:
     # full, not sampled. `values` is one entry per column when value_search is off,
     # which is exactly the pre-v10 behaviour.
-    by_col = defaultdict(list)
-    for s in sens:
-        if s["drop"] <= 0 or not np.isfinite(s["slope"]):
-            continue
-        by_col[s["column"]].append(s)
+    def build_menus(sens_records):
+        """Column -> candidate-value menu from a set of probe records. Shared by the
+        initial pass-1 build and (on this branch) the conditional re-rank, so fresh
+        probes refresh DIRECTIONS and LEVELS, not just ordering."""
+        menus = defaultdict(list)
+        for s in sens_records:
+            if s["drop"] <= 0 or not np.isfinite(s["slope"]):
+                continue
+            menus[s["column"]].append(s)
+        return menus
+
+    by_col = build_menus(sens)
     if value_search:
         # Dense line search on the CONTINUOUS columns. Pass 1's probes are a coarse grid;
         # they set the direction -- the sign of the move that suppressed -- and the scan
@@ -1452,15 +1459,16 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         # them to veto a region means the conditioned evaluation never sees it.
         #
         # Categoricals have no line to walk, so their pool stays the admissible level set.
-        for c in list(by_col):
-            if not by_col[c]:
+        def expand_menus(menus):
+          for c in list(menus):
+            if not menus[c]:
                 continue
-            lead = max(by_col[c], key=lambda s: s["slope"])
+            lead = max(menus[c], key=lambda s: s["slope"])
             col = space.cols[c]
-            seen = {float(s["value"]) for s in by_col[c]
+            seen = {float(s["value"]) for s in menus[c]
                     if not isinstance(s["value"], str)}
             def _add(val, is_cat):
-                by_col[c].append({"column": c, "value": val, "slope": lead["slope"],
+                menus[c].append({"column": c, "value": val, "slope": lead["slope"],
                                   "drop": lead["drop"], "delta_log_freq": np.nan,
                                   "edit_distance": edit_distance(col, x0[c], val,
                                                                  categorical=is_cat)})
@@ -1492,8 +1500,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                             continue
                         seen.add(float(val))
                         _add(float(val), False)
-        for c in by_col:
-            by_col[c].sort(key=lambda s: -s["slope"])
+          for c in menus:
+            menus[c].sort(key=lambda s: -s["slope"])
+
+        expand_menus(by_col)
     else:
         by_col = {c: [per_col[c]] for c in per_col}
 
@@ -1592,6 +1602,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                         _add(float(v))
             return cands
 
+        menus_override = {}   # rebound to each branch's local_menus during its pass
+
         def score_column(cand_col, committed_now, candidates=None):
             """Evaluate every kept value of one column ON TOP of the committed edits:
             one donor forward, one recipient call, the full scoring block. Shared by
@@ -1599,6 +1611,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             candidate's score means. `candidates` overrides the default pass-1-guided
             menu (used by the saturation escalation)."""
             rows_, meta_ = [], []
+            if candidates is None:
+                candidates = menus_override.get(cand_col) if menus_override else None
             for cand in (by_col.get(cand_col, []) if candidates is None else candidates):
                 r = list(x0)
                 for s in committed_now:
@@ -1706,11 +1720,14 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 key = s_.get(rank_key, s_["slope"])
                 if s_["column"] not in best_by_col or key > best_by_col[s_["column"]]:
                     best_by_col[s_["column"]] = key
-            # fresh conditional order; columns whose re-probe found nothing keep their
-            # old relative order at the tail rather than vanishing
+            # fresh conditional order AND fresh value menus: direction and levels
+            # come from the same conditional probes, not the stale marginal ones
+            fresh = build_menus(sens2)
+            if value_search:
+                expand_menus(fresh)
             ranked2 = sorted(best_by_col, key=lambda c_: -best_by_col[c_])
             tail = [c_ for c_ in remaining_cols if c_ not in best_by_col]
-            return ranked2 + tail
+            return ranked2 + tail, fresh
 
         def branch_pass(pool, branch, force_first=False):
             """One branch: the production greedy generalised to a width-`beam` window.
@@ -1726,6 +1743,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             best_l, committed_l, trajectory_l = None, [], []
             stop_l = "no_sensitive_column"
             n_skips = 0
+            local_menus = {}     # branch-local conditional menus from re-ranking
+            nonlocal menus_override
+            menus_override = local_menus
             remaining = list(pool)
             if force_first and remaining:
                 # The root IS the starting point (user, 2026-08-16): its best
@@ -1769,8 +1789,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     return best_l, trajectory_l, "toward_ablation_target_reached", n_skips
                 if rerank_each_step and remaining:
-                    remaining = conditional_rerank(remaining, committed_l,
-                                                   best_l["_vec"])
+                    remaining, fresh_menus = conditional_rerank(
+                        remaining, committed_l, best_l["_vec"])
+                    local_menus.update(fresh_menus)
             while remaining:
                 window = remaining[:beam]
                 window_scored = []
@@ -1845,8 +1866,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     stop_l = "toward_ablation_target_reached"
                     break
                 if rerank_each_step and remaining:
-                    remaining = conditional_rerank(remaining, committed_l,
-                                                   best_l["_vec"])
+                    remaining, fresh_menus = conditional_rerank(
+                        remaining, committed_l, best_l["_vec"])
+                    local_menus.update(fresh_menus)
             return best_l, trajectory_l, stop_l, n_skips
 
         if beam <= 1:
