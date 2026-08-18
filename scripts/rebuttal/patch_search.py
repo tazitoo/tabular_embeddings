@@ -1352,7 +1352,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                max_levels=6, top_m=8, probe_cols=None, n_line=192,
                uninhibited=False,
                recip_shared=None, recipient=None, npz_path=None, rank_by="slope",
-               beam=1, record_search=False):
+               beam=1, window=None, patience=None, record_search=False):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -1498,6 +1498,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         by_col = {c: [per_col[c]] for c in per_col}
 
     best, stop = None, "no_sensitive_column"
+    win_w = window if window is not None else beam   # per-step width; defaults to beam
     n_escalations = [0]     # saturated-column rescans with pass-1 guidance suspended
     winning_root, beam_branches = None, []   # defined even when ranked is empty --
                             # unbound-variable crash on no-sensitive-column rows under
@@ -1677,19 +1678,34 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             return scored, len(rows_), trace
 
         def branch_pass(pool, branch, force_first=False):
-            """One branch: the production greedy generalised to a width-`beam` window.
+            """One branch: the production greedy generalised to a width-`win_w` window.
 
-            Per step, the `beam` best-ranked unconsumed columns in `pool` are evaluated
+            Per step, the `win_w` best-ranked unconsumed columns in `pool` are evaluated
             on the branch's current base; the best IMPROVING one commits and only IT
             leaves the pool -- losers stay candidates and are re-evaluated on the new
             base later ("starting at A, B is still a candidate", 2026-08-16). If none
             of the window improves, the whole window leaves the pool: the greedy's
-            skip, widened. With beam=1 this IS the production greedy -- window of one,
-            skip on no improvement, same code path, so b=1 == greedy by construction.
+            skip, widened. With window=1 this IS the production greedy -- window of one,
+            skip on no improvement, same code path.
+
+            Window width is DECOUPLED from beam width (2026-08-18): the v27 ablation
+            measured root diversity as the productive axis (winner leaves the rank-1
+            root on 51% of rows) and per-step width as saturated at 3 (62/532 rows
+            moved going 1->3), so the two are separate dials. `window` defaults to
+            `beam` so existing invocations reproduce bit-identically.
+
+            `patience` bounds menu DESCENT instead of a fixed top-cols menu cap: after
+            `patience` consecutive skipped windows the branch stops, so easy rows stay
+            cheap and hard rows dig as deep as their menu warrants. The v27 cap made
+            its own cost invisible -- 44.8% of rows drained the 8-column menu
+            (`no_improvement`) and columns 9+ never received a forward, so the cap's
+            effect could not be measured from its own sweep. None = unlimited (the
+            pre-patience behaviour: walk the whole menu).
             """
             best_l, committed_l, trajectory_l = None, [], []
             stop_l = "no_sensitive_column"
             n_skips = 0
+            consec_skips = 0
             remaining = list(pool)
             if force_first and remaining:
                 # The root IS the starting point (user, 2026-08-16): its best
@@ -1733,7 +1749,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     return best_l, trajectory_l, "toward_ablation_target_reached", n_skips
             while remaining:
-                window = remaining[:beam]
+                window = remaining[:win_w]
                 window_scored = []
                 for cand_col in window:
                     scored, n_searched, trace = score_column(cand_col, committed_l)
@@ -1764,16 +1780,27 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                              if best_l is None
                              or _finite_score(sb) > _finite_score(best_l)]
                 if not improving:
-                    if best_l is None and len(remaining) <= beam and not committed_l:
+                    if best_l is None and len(remaining) <= win_w and not committed_l:
                         stop_l = "no_qualifying_combination"
                     elif best_l is not None:
                         stop_l = "no_improvement"
                     # the greedy's skip, widened: the window leaves the pool
                     n_skips += 1
+                    consec_skips += 1
                     remaining = remaining[len(window):]
+                    if patience is not None and consec_skips >= patience and remaining:
+                        # patience exhausted: `patience` windows in a row showed
+                        # nothing on this base. Distinct stop reason, so the sweep
+                        # reports how often depth was abandoned by RULE rather than
+                        # by menu exhaustion -- the fixed cap could not tell the two
+                        # apart. `remaining` guard: an exactly-drained menu is menu
+                        # exhaustion, not a patience stop.
+                        stop_l = "patience_exhausted"
+                        break
                     continue
                 cand_col, step_best, n_searched = max(improving,
                                                       key=lambda t: _finite_score(t[1]))
+                consec_skips = 0
                 best_l = step_best
                 committed_l.append(best_l.pop("_cand"))
                 remaining = [c for c in remaining if c != cand_col]
@@ -1815,7 +1842,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # one branch, whose pool is the columns ranked BELOW its root. A column
             # SET therefore belongs to exactly one branch (the one rooted at its
             # highest-ranked member), so the final paths are structurally distinct.
-            # Within a branch the candidates are ALWAYS the `beam` highest-ranked
+            # Within a branch the candidates are ALWAYS the `win_w` highest-ranked
             # remaining columns -- the search's only freedom is which of that window
             # commits; deeper-ranked columns are unreachable until the window slides
             # past the higher ones by commit or skip. The ranking structures every
@@ -1880,6 +1907,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "n_cols_changed": len(best["columns"]) if best else 0,
             "best": best, "trajectory": trajectory, "sensitivity_top": ranked[:5],
             "beam_width": int(beam),
+            "window_width": int(win_w),
+            "patience": (int(patience) if patience is not None else None),
             "n_escalations": int(n_escalations[0]),
             "beam_root": (winning_root if beam > 1 else None),
             "beam_branches": (beam_branches if beam > 1 else None),
@@ -2167,6 +2196,22 @@ def main():
                          "best final patch wins, ties to the higher-ranked root. "
                          "beam_width and beam_root are recorded per row. Costs ~B x "
                          "the greedy's forwards.")
+    ap.add_argument("--window", type=int, default=None,
+                    help="columns evaluated per step within a branch. Defaults to "
+                         "--beam (the v27-and-earlier coupling, bit-identical). "
+                         "Decoupled because the v27 ablation showed root diversity "
+                         "pays (51%% of winners leave the rank-1 root) while per-step "
+                         "width saturates at 3 (62/532 rows moved going 1->3) -- so "
+                         "widening roots should not drag window cost with it.")
+    ap.add_argument("--patience", type=int, default=None,
+                    help="stop a branch after this many CONSECUTIVE skipped windows. "
+                         "Replaces --top-cols as the depth control: the fixed menu "
+                         "cap spent the same budget on every row and made its own "
+                         "cost invisible (44.8%% of v27 rows drained the 8-column "
+                         "menu; columns 9+ never got a forward). Patience lets easy "
+                         "rows stay cheap and hard rows dig until the signal dies. "
+                         "None = walk the whole menu. Stop reason "
+                         "'patience_exhausted' marks rows abandoned by rule.")
     ap.add_argument("--record-search", action="store_true",
                     help="record every candidate at every (step, column) -- winners "
                          "and rejected alike, with admission status -- into the row's "
@@ -2507,7 +2552,9 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                  uninhibited=args.uninhibited,
                                  recip_shared=recip_shared, recipient=recipient,
                                  npz_path=npz_path, rank_by=args.rank_by,
-                                 beam=args.beam, record_search=args.record_search,
+                                 beam=args.beam, window=args.window,
+                                 patience=args.patience,
+                                 record_search=args.record_search,
                                  value_search=not args.no_value_search)
             except Exception as exc:
                 print(f"    {donor} f{feat} -> {recipient} / {dataset} row {row}: "
