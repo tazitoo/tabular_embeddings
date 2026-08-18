@@ -1415,12 +1415,26 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     # smallest-step probe would be the more accurate derivative but answers a question
     # we are not asking.
     rank_key = rank_by if want_eff else "slope"
+    # Menu admission is FINITENESS, not main-effect suppression (2026-08-18). The old
+    # gate `drop <= 0 -> excluded` filtered on a DIFFERENT quantity than the ranking
+    # (concept suppression at x0 vs recipient effectiveness), so a column the ranking
+    # itself scored high could be silently killed before pass 2 ever evaluated it
+    # conditionally -- the same invisible-cost defect as the fixed top-cols cap, and
+    # with patience as the depth control there is no budget reason to keep it: a
+    # main-effect-dead column ranks where the rank key puts it, gets its conditional
+    # forward if a window reaches it, and patience bounds the spend. Suppressing
+    # columns are still counted separately (n_sensitive_columns keeps its old meaning
+    # across rounds; n_menu_columns is the new, wider menu).
     per_col = {}
+    suppressing_cols = set()
     for s in sens:
-        if s["drop"] <= 0 or not np.isfinite(s["slope"]):
+        v = s.get(rank_key, s["slope"])
+        if not np.isfinite(v):
             continue
+        if s["drop"] > 0:
+            suppressing_cols.add(s["column"])
         cur = per_col.get(s["column"])
-        if cur is None or s.get(rank_key, s["slope"]) > cur.get(rank_key, cur["slope"]):
+        if cur is None or v > cur.get(rank_key, cur["slope"]):
             per_col[s["column"]] = s
     ranked = sorted(per_col.values(),
                     key=lambda s: -s.get(rank_key, s["slope"]))[:top_m]
@@ -1921,7 +1935,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # one concept that mattered or twenty that did not, and that distinction is
             # the whole reason for weighting by LOO.
             "collateral": collateral_detail(a_base_row, a_now_vec, others, recip),
-            "n_probes": len(sens), "n_sensitive_columns": len(per_col),
+            "n_probes": len(sens), "n_sensitive_columns": len(suppressing_cols),
+            "n_menu_columns": len(per_col),
             "final_shift": shift_metrics(a_base_row, a_now_vec, others, feat),
             "accepted_ratios": ratios,
             "steps": [best] if best else []}
