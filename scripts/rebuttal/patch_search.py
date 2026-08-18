@@ -1595,6 +1595,18 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         # pass 1, about what the pooled version spent, at an order of magnitude more
         # resolution; a row that stops at one column pays for one.
         col_order = [s["column"] for s in ranked]
+        # ROOT order: suppressing columns first, each block keeping its rank order.
+        # The wide menu (943c4be) admits every finitely-ranked column because
+        # suppression should be discovered CONDITIONALLY at depth -- but at the root
+        # there is no conditioning yet: the base IS x0, so the x0 main effect is
+        # exactly the right root evidence. Without this split, effectiveness_raw can
+        # rank non-suppressing columns into the top-`beam` on wide data and every
+        # forced root dies admissibility-starved while the workable columns sit
+        # un-rooted at rank beam+1 (measured: 4 hiva rows v27 patched, v28 smoke
+        # lost). Rows with NO suppressing column keep the honest behaviour: roots
+        # are tried, fail loudly, root_inadmissible.
+        root_order = ([c for c in col_order if c in suppressing_cols]
+                      + [c for c in col_order if c not in suppressing_cols])
         # No cap on how many columns a patch may edit. The greedy is already bounded by
         # the pool -- top_m columns, each leaving once committed -- and it stops on its own
         # when nothing improves, the target is reached, or the concept is fully suppressed.
@@ -1968,7 +1980,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             return best_l, trajectory_l, stop_l, n_skips
 
         if beam <= 1:
-            best, trajectory, stop, _ = branch_pass(col_order, branch=None)
+            best, trajectory, stop, _ = branch_pass(root_order, branch=None)
         else:
             # RESTART BEAM (user, 2026-08-16): uncertainty is widest at the opener, so
             # branching happens THERE -- each of the top-`beam` ranked columns roots
@@ -1982,9 +1994,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # path; the search adjudicates within it. Best final patch wins; ties
             # resolve to the higher-ranked root. Cost ~beam x the greedy's forwards.
             best, trajectory, stop = None, [], "no_sensitive_column"
-            for i, root in enumerate(col_order[:beam]):
-                pool = [root] + [c for c in col_order if
-                                 col_order.index(c) > col_order.index(root)]
+            for i, root in enumerate(root_order[:beam]):
+                pool = [root] + [c for c in root_order if
+                                 root_order.index(c) > root_order.index(root)]
                 b_l, t_l, st_l, skips = branch_pass(pool, branch=int(root),
                                                     force_first=True)
                 # every branch's evidence survives, not just the winner's: the
