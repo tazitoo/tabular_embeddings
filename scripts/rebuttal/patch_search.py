@@ -1352,7 +1352,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                max_levels=6, top_m=8, probe_cols=None, n_line=192,
                uninhibited=False,
                recip_shared=None, recipient=None, npz_path=None, rank_by="slope",
-               beam=1, window=None, patience=None, record_search=False):
+               beam=1, window=None, patience=None, schedule="conditional",
+               record_search=False):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -1399,10 +1400,16 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     sens = column_sensitivity(ev, space, x0, a_base_row, feat, others,
                               max_levels, probe_cols=probe_cols,
                               keep_vectors=want_eff)
+    # Compact activation-movement record per probe, kept for the conditional
+    # schedule (2026-08-18): |da| over [c] + the accepted others is all
+    # effectiveness_raw needs, so the full SAE vector can still be dropped.
+    idx_sub = np.concatenate([[feat], others]).astype(int)
     if want_eff:
         for s in sens:
+            a_vec = s.pop("_a_vec")
+            s["_dsub"] = np.abs(a_base_row[idx_sub] - np.asarray(a_vec)[idx_sub])
             s[rank_by] = probe_effectiveness(
-                s.pop("_a_vec"), a_base_row, feat, others,
+                a_vec, a_base_row, feat, others,
                 recip["loo_by_fid"], recip["interval"], s["delta_log_freq"],
                 per_dL=(rank_by == "effectiveness"))
     # Rank on the CONCEPT alone -- response per unit of log frequency. The objective
@@ -1438,6 +1445,43 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             per_col[s["column"]] = s
     ranked = sorted(per_col.values(),
                     key=lambda s: -s.get(rank_key, s["slope"]))[:top_m]
+
+    # --- conditional schedule state (2026-08-18) -----------------------------------
+    # The x0 ranking is a schedule, and its base dies at the first commit (measured:
+    # post-root window positions uniform {39,41,47} -- marginal pass-1 order predicts
+    # nothing at depth). The FREE tier below re-ranks the pool after every commit from
+    # numbers already paid for: the current base activations (each commit's _vec) and
+    # each column's latest measured |da| (window evaluations when reached, x0 probes
+    # otherwise), renormalised through effectiveness_raw's own formula. No forwards.
+    # What stays invisible without reprobing is redundancy in the NUMERATOR for
+    # never-revisited columns; the pre-patience reprobe escalation (branch_pass)
+    # covers that, bounded to one reprobe per committed base.
+    track_cond = (schedule == "conditional" and want_eff
+                  and rank_by == "effectiveness_raw")
+    x0_dsub = {int(s["column"]): s["_dsub"] for s in per_col.values()
+               if s.get("_dsub") is not None}
+    loo_arr = (np.array([float(recip["loo_by_fid"].get(int(j), 0.0)) for j in others])
+               if want_eff else None)
+    interval_abs = abs(float(recip["interval"])) if want_eff else 0.0
+    n_sched_esc = [0]      # pre-patience schedule reprobes, recorded per row
+
+    def conditional_score(col, base_sub_now, latest_dsub):
+        """effectiveness_raw with CURRENT denominators and each column's latest
+        measured |da|. Captures headroom (gain capped at the activation that is
+        left) and bystander liveness (silenced concepts leave spend); cannot see
+        numerator redundancy for columns not measured since x0."""
+        d = latest_dsub.get(col, x0_dsub.get(col))
+        if d is None:
+            return float("-inf")
+        a_c = float(base_sub_now[0])
+        gain = (min(float(d[0]), a_c) / max(a_c, EPS)) * interval_abs
+        spend = 0.0
+        if len(d) > 1:
+            base_o = base_sub_now[1:]
+            live = base_o > ACTIVE_FLOOR
+            spend = float(np.sum(np.where(
+                live, d[1:] / np.maximum(base_o, EPS) * loo_arr, 0.0)))
+        return gain - spend
 
     # The columns are ranked by their BEST probe, but every probed value on those columns
     # is kept. Pass 1 already measured them; discarding all but the maximum is what left
@@ -1691,6 +1735,39 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "_cand": cand, "_vec": a[i], **m})
             return scored, len(rows_), trace
 
+        def schedule_reprobe(remaining_cols, committed_now, base_vec):
+            """Pre-patience escalation: fresh coarse probes of the remaining pool on
+            the CURRENT patched base, because the free conditional tier cannot see
+            numerator redundancy for columns never measured since x0. Fires only
+            when patience is about to kill the branch and only once per committed
+            base, so rows the schedule served well never pay for it -- the same
+            contract as the saturation escalation (8317b30): guidance must not gate
+            reachability, escalate exactly where it failed. Menu philosophy matches
+            943c4be: rank everything finite; columns whose re-probe returned nothing
+            finite keep their old relative order at the tail."""
+            cur = list(x0)
+            for c_ in committed_now:
+                cur[c_["column"]] = c_["value"]
+            sens2 = column_sensitivity(ev, space, cur, base_vec, feat, others,
+                                       max_levels, probe_cols=list(remaining_cols),
+                                       keep_vectors=want_eff)
+            if want_eff:
+                for s_ in sens2:
+                    s_[rank_by] = probe_effectiveness(
+                        s_.pop("_a_vec"), base_vec, feat, others,
+                        recip["loo_by_fid"], recip["interval"],
+                        s_["delta_log_freq"], per_dL=(rank_by == "effectiveness"))
+            best_by_col = {}
+            for s_ in sens2:
+                v_ = s_.get(rank_key, s_["slope"])
+                if not np.isfinite(v_):
+                    continue
+                if s_["column"] not in best_by_col or v_ > best_by_col[s_["column"]]:
+                    best_by_col[s_["column"]] = v_
+            ranked2 = sorted(best_by_col, key=lambda c_: -best_by_col[c_])
+            tail = [c_ for c_ in remaining_cols if c_ not in best_by_col]
+            return ranked2 + tail
+
         def branch_pass(pool, branch, force_first=False):
             """One branch: the production greedy generalised to a width-`win_w` window.
 
@@ -1721,6 +1798,11 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             n_skips = 0
             consec_skips = 0
             remaining = list(pool)
+            # conditional-schedule state, PER BRANCH: measurements taken on this
+            # branch's bases only -- a sibling branch's base is a different world
+            latest_dsub = {}
+            base_sub_now = a_base_row[idx_sub]
+            reprobed_this_base = False
             if force_first and remaining:
                 # The root IS the starting point (user, 2026-08-16): its best
                 # admissible candidate commits unconditionally before the windowed
@@ -1762,6 +1844,12 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 if (np.isfinite(best_l["toward_ablation"])
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     return best_l, trajectory_l, "toward_ablation_target_reached", n_skips
+                if track_cond and remaining:
+                    # free-tier re-rank on the post-root base (stable sort: ties and
+                    # unmeasured columns keep their prior relative order)
+                    base_sub_now = np.asarray(best_l["_vec"])[idx_sub]
+                    remaining.sort(key=lambda c_: -conditional_score(
+                        c_, base_sub_now, latest_dsub))
             while remaining:
                 window = remaining[:win_w]
                 window_scored = []
@@ -1786,6 +1874,13 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     if scored:
                         window_scored.append(
                             (cand_col, max(scored, key=_finite_score), n_searched))
+                if track_cond:
+                    # every window evaluation is a fresh CONDITIONAL measurement of
+                    # that column on the current base -- keep it, it was already paid
+                    # for, and it refreshes the schedule where decisions happen next
+                    for c_, sb_, _n in window_scored:
+                        latest_dsub[c_] = np.abs(
+                            base_sub_now - np.asarray(sb_["_vec"])[idx_sub])
                 # No tie-break beyond the score (the size tie-break was retired with
                 # enumeration); ties inside the window resolve to the higher-ranked
                 # column via stable max over rank order, so the search stays
@@ -1804,11 +1899,28 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     remaining = remaining[len(window):]
                     if patience is not None and consec_skips >= patience and remaining:
                         # patience exhausted: `patience` windows in a row showed
-                        # nothing on this base. Distinct stop reason, so the sweep
-                        # reports how often depth was abandoned by RULE rather than
-                        # by menu exhaustion -- the fixed cap could not tell the two
-                        # apart. `remaining` guard: an exactly-drained menu is menu
-                        # exhaustion, not a patience stop.
+                        # nothing on this base. Before killing the branch, ONE
+                        # schedule reprobe per committed base (conditional schedule
+                        # only): the free tier cannot see numerator redundancy for
+                        # never-revisited columns, so the branch gets one fresh
+                        # coarse ranking of what is left -- if the reordered pool
+                        # still shows nothing for another `patience` windows, the
+                        # refusal is conditionally justified, not stale-schedule
+                        # collateral. No commits yet => base IS x0 and a reprobe
+                        # would reproduce pass 1; skip straight to the stop.
+                        if (schedule == "conditional" and committed_l
+                                and not reprobed_this_base):
+                            remaining = schedule_reprobe(
+                                remaining, committed_l, np.asarray(best_l["_vec"]))
+                            n_sched_esc[0] += 1
+                            reprobed_this_base = True
+                            consec_skips = 0
+                            continue
+                        # Distinct stop reason, so the sweep reports how often depth
+                        # was abandoned by RULE rather than by menu exhaustion -- the
+                        # fixed cap could not tell the two apart. `remaining` guard:
+                        # an exactly-drained menu is menu exhaustion, not a patience
+                        # stop.
                         stop_l = "patience_exhausted"
                         break
                     continue
@@ -1846,6 +1958,13 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     stop_l = "toward_ablation_target_reached"
                     break
+                if track_cond and remaining:
+                    # free-tier re-rank on the new committed base; a fresh base also
+                    # re-arms the pre-patience reprobe
+                    base_sub_now = np.asarray(best_l["_vec"])[idx_sub]
+                    reprobed_this_base = False
+                    remaining.sort(key=lambda c_: -conditional_score(
+                        c_, base_sub_now, latest_dsub))
             return best_l, trajectory_l, stop_l, n_skips
 
         if beam <= 1:
@@ -1923,6 +2042,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "beam_width": int(beam),
             "window_width": int(win_w),
             "patience": (int(patience) if patience is not None else None),
+            # "conditional" only if the free tier could actually run on this row
+            "schedule": ("conditional" if track_cond else "static"),
+            "n_schedule_escalations": int(n_sched_esc[0]),
             "n_escalations": int(n_escalations[0]),
             "beam_root": (winning_root if beam > 1 else None),
             "beam_branches": (beam_branches if beam > 1 else None),
@@ -2218,6 +2340,19 @@ def main():
                          "pays (51%% of winners leave the rank-1 root) while per-step "
                          "width saturates at 3 (62/532 rows moved going 1->3) -- so "
                          "widening roots should not drag window cost with it.")
+    ap.add_argument("--schedule", choices=("conditional", "static"),
+                    default="conditional",
+                    help="how the pool is ordered as the base moves. 'conditional' "
+                         "(default): after every commit, re-rank the remaining "
+                         "columns via effectiveness_raw with CURRENT denominators "
+                         "and each column's latest measured |da| (window "
+                         "evaluations when reached, x0 probes otherwise) -- zero "
+                         "extra forwards -- plus one coarse reprobe per committed "
+                         "base when patience is about to kill the branch. 'static': "
+                         "the x0 order throughout (the <=v27 behaviour; measured: "
+                         "post-root window positions uniform, the stale order "
+                         "predicts nothing at depth). Rows ranked by slope (no "
+                         "recipient) run static either way, recorded as such.")
     ap.add_argument("--patience", type=int, default=None,
                     help="stop a branch after this many CONSECUTIVE skipped windows. "
                          "Replaces --top-cols as the depth control: the fixed menu "
@@ -2568,7 +2703,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                  recip_shared=recip_shared, recipient=recipient,
                                  npz_path=npz_path, rank_by=args.rank_by,
                                  beam=args.beam, window=args.window,
-                                 patience=args.patience,
+                                 patience=args.patience, schedule=args.schedule,
                                  record_search=args.record_search,
                                  value_search=not args.no_value_search)
             except Exception as exc:
