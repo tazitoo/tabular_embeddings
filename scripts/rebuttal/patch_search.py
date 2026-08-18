@@ -2038,7 +2038,11 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "patched_row": [x.item() if hasattr(x, "item") else x for x in cur],
             "patched_columns": [str(space.names[c]) for c in best["columns"]] if best else [],
             "n_cols_changed": len(best["columns"]) if best else 0,
-            "best": best, "trajectory": trajectory, "sensitivity_top": ranked[:5],
+            "best": best, "trajectory": trajectory,
+            # strip working keys (_dsub etc.) -- probe records carry numpy arrays
+            # for the conditional schedule that must not reach the JSON
+            "sensitivity_top": [{k_: v_ for k_, v_ in s_.items()
+                                 if not k_.startswith("_")} for s_ in ranked[:5]],
             "beam_width": int(beam),
             "window_width": int(win_w),
             "patience": (int(patience) if patience is not None else None),
