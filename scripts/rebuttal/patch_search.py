@@ -1997,6 +1997,22 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                         scored, n_searched, trace = score_column(
                             cand_col, committed_l,
                             candidates=escalation_candidates(cand_col))
+                        # REPAIR FEASIBILITY (user, 2026-08-19): the line search
+                        # measures c at every candidate VALUE, so reject the values
+                        # that re-inflate c instead of constraining at commit level
+                        # -- a column whose best-scoring value touches c can still
+                        # contribute its best value that does not. One-sided and
+                        # tolerance-free: any value raising c above the committed
+                        # level is out; values suppressing FURTHER stay admissible
+                        # (target-reached rows keep climbing suppression in repair).
+                        # This makes selling suppression structurally unreachable
+                        # in repair -- the r114 pathology (69% of suppression traded
+                        # to polish near-zero blast, preferred by the unbounded
+                        # supp/blast ratio) cannot be expressed, with no new
+                        # objective form and no tuned gate.
+                        a_c_now = float(best_l["activation_after"])
+                        scored = [c_ for c_ in scored
+                                  if c_["activation_after"] <= a_c_now]
                     else:
                         scored, n_searched, trace = score_column(cand_col, committed_l)
                         if not scored:
