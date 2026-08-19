@@ -797,6 +797,34 @@ def bystander_spend(a_base, a_new, others, recip):
     return float(spent)
 
 
+def bystander_delta_blast(a_base, a_new, others, recip):
+    """Bystander displacement in the INTERVENTION'S OWN UNITS (user, 2026-08-19):
+    sum_j |da_j| x ||B_j||, where B_j = atom_j x std_w is concept j's fixed
+    per-unit-activation contribution to the injected delta. The readout builds the
+    counterfactual as sum_j sign_j a_j B_j -- exactly linear in activations -- so
+    this is the exact L1 magnitude of delta displacement the bystander movement
+    causes, measured in the same units the recipient actually receives.
+
+    STRUCTURAL, not behavioral: ||B_j|| is a constant of the transfer, so there is
+    no low-LOO parking lot (the spend form's Goodhart channel -- measured on the
+    repair smoke: repaired rows carried ~4x more unweighted displacement per unit
+    of spend, with the star row's activations still 0.45 displaced at spend 0.002)
+    and no frozen-weight staleness. No division anywhere, so no ACTIVE_FLOOR gate;
+    a bystander the patch ACTIVATES from zero is priced too, which |da|/|a| could
+    not express. L1 over concepts, not the vector norm: the vector form credits
+    engineered cancellation between bystanders -- prediction-legitimate but
+    concept-level laundering -- so that is recorded at readout as a metric instead
+    of traded here.
+
+    None when the recipient context is missing (carte tail); the caller falls back
+    to blast_radius, exactly as spend does."""
+    if len(others) == 0 or recip is None or "w_by_fid" not in recip:
+        return None
+    b, n = np.asarray(a_base)[others], np.asarray(a_new)[others]
+    w = np.array([recip["w_by_fid"].get(int(f), 0.0) for f in np.asarray(others)])
+    return float((np.abs(n - b) * w).sum())
+
+
 def blast_radius(a_base, a_new, accepted_others):
     """Movement in the OTHER accepted concepts, as one scale-free number.
 
@@ -1176,6 +1204,10 @@ def build_recip(shared, donor, recipient, dataset, npz_path, row, a_re, feat, de
     additivity = float(loo_effect.sum() / transfer_moved) if transfer_moved > EPS else float("nan")
 
     return {"fids": fids, "B": B, "signs": signs,
+            # each concept's fixed price per unit of activation movement, in delta
+            # units: the weights of bystander_delta_blast
+            "w_by_fid": {int(f): float(nrm)
+                         for f, nrm in zip(fids, np.linalg.norm(B, axis=1))},
             "a_corpus": a_corpus,
             "a_re": {f: float(a_re[f]) for f in fids},   # our own baseline, for ratios
             "predict": predict, "loss": loss,
@@ -1353,7 +1385,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                uninhibited=False,
                recip_shared=None, recipient=None, npz_path=None, rank_by="slope",
                beam=1, window=None, patience=None, schedule="conditional",
-               repair=True, record_search=False):
+               repair=True, blast_form="delta", record_search=False):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -1463,8 +1495,17 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                   and rank_by == "effectiveness_raw")
     x0_dsub = {int(s["column"]): s["_dsub"] for s in per_col.values()
                if s.get("_dsub") is not None}
-    loo_arr = (np.array([float(recip["loo_by_fid"].get(int(j), 0.0)) for j in others])
-               if want_eff else None)
+    # schedule weights follow the blast form the objective trades: structural
+    # delta prices under 'delta' (|d_j| x ||B_j||, no division), behavioral
+    # LOO/base under 'spend' (the <=v28 control form)
+    if want_eff and blast_form == "delta" and "w_by_fid" in recip:
+        bw_arr = np.array([float(recip["w_by_fid"].get(int(j), 0.0)) for j in others])
+        bw_base_div = False
+    elif want_eff:
+        bw_arr = np.array([float(recip["loo_by_fid"].get(int(j), 0.0)) for j in others])
+        bw_base_div = True
+    else:
+        bw_arr, bw_base_div = None, False
     base0_sub = a_base_row[idx_sub]
     n_sched_esc = [0]      # pre-patience schedule reprobes, recorded per row
 
@@ -1491,10 +1532,12 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         proj_c = float(base_sub_now[0]) + float(d[0])
         supp = min(max(1.0 - proj_c / a_start_c, 0.0), 1.0)
         blast = 0.0
-        if len(d) > 1:
+        if len(d) > 1 and bw_arr is not None:
             disp = (base_sub_now[1:] - base0_sub[1:]) + d[1:]   # projected NET displacement
-            blast = float(np.sum(np.abs(disp)
-                                 / np.maximum(np.abs(base0_sub[1:]), EPS) * loo_arr))
+            mag = np.abs(disp)
+            if bw_base_div:
+                mag = mag / np.maximum(np.abs(base0_sub[1:]), EPS)
+            blast = float(np.sum(mag * bw_arr))
         return supp / (blast + EPS)
 
     # The columns are ranked by their BEST probe, but every probed value on those columns
@@ -1704,6 +1747,15 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 df = drop / a_start if a_start > 0 else float("nan")
                 bl_raw = blast_radius(a_base_row, a[i], others)
                 spend = bystander_spend(a_base_row, a[i], others, recip)
+                bl_delta = bystander_delta_blast(a_base_row, a[i], others, recip)
+                # the denominator the search TRADES. --blast-form delta (default):
+                # structural delta units; spend: the <=v28 behavioral form, kept as
+                # the same-host control arm. Either way the fallback when the
+                # recipient context is missing is blast_radius, as before.
+                if blast_form == "delta":
+                    blast_term = bl_delta if bl_delta is not None else bl_raw
+                else:
+                    blast_term = spend if spend is not None else bl_raw
                 rv = revs[i] if revs else None
                 mv = float(rv["movement"]) if rv else float("nan")
                 # In or out of distribution is a statement about POSITION in a
@@ -1715,7 +1767,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 cen_i = centrality(float(recon_loss[i]), recon_loss_sorted)
                 cen_ratio = cen_i / cen_start
                 score_val = objective(df, mv if np.isfinite(mv) else 1.0,
-                                      bl_raw if spend is None else spend, cen_ratio)
+                                      blast_term, cen_ratio)
                 # admission: drop must be real, the reconstruction bar (when armed)
                 # must hold, and the CROSSING GUARD -- the convention transfer_sweep_v2
                 # already uses -- rejects movement toward the ablation beyond
@@ -1747,9 +1799,16 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                # DERIVED reporting ratios, unchanged meaning vs earlier
                                # sweeps' tables; None where their pieces are unmeasured
                                "toward_ablation": float(rv["toward"]) if rv else float("nan"),
+                               # "blast" keeps its historical meaning (spend/floor_I,
+                               # the prediction-relevance METRIC); "blast_delta" is
+                               # the structural form; "blast_term" is whichever the
+                               # objective traded this run -- acceptance logic reads
+                               # blast_term, analyses can read all three
                                "blast": (bl_raw if spend is None
                                          else spend / floor_I),
                                "blast_raw": bl_raw,
+                               "blast_delta": bl_delta,
+                               "blast_term": blast_term,
                                "movement_observed": rv["movement_observed"] if rv else None,
                                "est_bystander": rv["est_bystander"] if rv else None,
                                "attribution_fallback": rv["attribution_fallback"] if rv else None,
@@ -1851,7 +1910,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 v = (sb["suppression_frac"] ** EXPONENTS["suppression"]
                      * frozen_toward ** EXPONENTS["toward_ablation"]
                      * max(0.0, sb["centrality_ratio"]) ** EXPONENTS["centrality"]
-                     / (sb["blast"] ** EXPONENTS["blast"] + EPS))
+                     / (sb["blast_term"] ** EXPONENTS["blast"] + EPS))
                 return v if np.isfinite(v) else -np.inf
             # conditional-schedule state, PER BRANCH: measurements taken on this
             # branch's bases only -- a sibling branch's base is a different world
@@ -1899,6 +1958,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                      # smaller patch buys back
                                      "recon_loss": float(best_l["recon_loss"]),
                                      "edit_distance": float(best_l["edit_distance"]),
+                                     "blast_raw": best_l.get("blast_raw"),
+                                     "blast_delta": best_l.get("blast_delta"),
                                      "n_candidates_searched": n_searched})
                 stop_l = ("fully_suppressed" if best_l["activation_after"] <= 0
                           else "best_combination")
@@ -2040,6 +2101,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                      # smaller patch buys back
                                      "recon_loss": float(best_l["recon_loss"]),
                                      "edit_distance": float(best_l["edit_distance"]),
+                                     "blast_raw": best_l.get("blast_raw"),
+                                     "blast_delta": best_l.get("blast_delta"),
                                      "n_candidates_searched": n_searched})
                 stop_l = ("fully_suppressed" if best_l["activation_after"] <= 0
                           else "best_combination")
@@ -2164,6 +2227,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "patience": (int(patience) if patience is not None else None),
             # "conditional" only if the free tier could actually run on this row
             "schedule": ("conditional" if track_cond else "static"),
+            "blast_form": blast_form,
             "n_schedule_escalations": int(n_sched_esc[0]),
             "n_repair_steps": sum(1 for t in trajectory if t.get("repair")),
             "n_escalations": int(n_escalations[0]),
@@ -2402,6 +2466,13 @@ def readout(npz_path, feat, row, ratios, device):
     i_c = fids.index(feat)
     d_from_c = signs[i_c] * a_corpus[i_c] * (r_vec[i_c] - 1.0) * B[i_c]
     purity = float(np.linalg.norm(d_from_c) / (np.linalg.norm(d_total) + 1e-12))
+    # the VECTOR form of bystander delta displacement -- credits cancellation
+    # between bystanders, so it is a metric here, never the traded term (the L1
+    # form, bystander_delta_blast, is what the search optimises under --blast-form
+    # delta). L1 >= vector always; a large gap flags engineered cancellation.
+    r_by = r_vec.copy(); r_by[i_c] = 1.0
+    d_bystanders = ((signs * a_corpus * (r_by - 1.0)) @ B)
+    delta_disp_bystanders = float(np.linalg.norm(d_bystanders))
 
     # CEILING CONTROL: ablate c outright -- remove its term and leave every other
     # concept untouched. That is the most any input patch could achieve, because a
@@ -2453,6 +2524,7 @@ def readout(npz_path, feat, row, ratios, device):
             "capture_of_ceiling": (float(patch_effect / ceiling_effect)
                                     if abs(ceiling_effect) > 1e-9 else float("nan")),
             "attribution_purity": purity, "sign_c": sign_c,
+            "delta_disp_bystanders": delta_disp_bystanders,
             "a_c_corpus": float(A[row, feat]), "ratio_c": float(r_vec[i_c]),
             "n_accepted": len(fids),
             "delta_rel_change": float(np.linalg.norm(d_total) /
@@ -2516,6 +2588,16 @@ def main():
                          "pays (51%% of winners leave the rank-1 root) while per-step "
                          "width saturates at 3 (62/532 rows moved going 1->3) -- so "
                          "widening roots should not drag window cost with it.")
+    ap.add_argument("--blast-form", choices=("delta", "spend"), default="delta",
+                    help="units of the objective's blast term. 'delta' (default): "
+                         "structural -- sum_j |da_j| x ||B_j||, each bystander's "
+                         "activation movement priced by its fixed per-unit "
+                         "contribution to the injected delta; ungameable (no low-LOO "
+                         "parking lot), no staleness, no ACTIVE_FLOOR division. "
+                         "'spend': the <=v28 behavioral LOO-weighted form, kept as "
+                         "the same-host control arm. The conditional schedule "
+                         "follows the same form. spend, blast_raw and blast_delta "
+                         "are all recorded regardless; only the traded term changes.")
     ap.add_argument("--repair", action=argparse.BooleanOptionalAction, default=True,
                     help="after saturation (fully_suppressed / target reached), keep "
                          "the windowed search running instead of stopping: further "
@@ -2903,7 +2985,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                  npz_path=npz_path, rank_by=args.rank_by,
                                  beam=args.beam, window=args.window,
                                  patience=args.patience, schedule=args.schedule,
-                                 repair=args.repair,
+                                 repair=args.repair, blast_form=args.blast_form,
                                  record_search=args.record_search,
                                  value_search=not args.no_value_search)
             except Exception as exc:
