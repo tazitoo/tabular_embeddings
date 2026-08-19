@@ -1867,6 +1867,13 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                      "movement": best_l.get("movement"),
                                      "spend": best_l.get("spend"),
                                      "centrality_ratio": best_l["centrality_ratio"],
+                                     # per-PREFIX cost state, so any post-hoc
+                                     # interpretability stopping rule can be judged
+                                     # by replay: every prefix of the committed path
+                                     # is itself a patch, and these two are what a
+                                     # smaller patch buys back
+                                     "recon_loss": float(best_l["recon_loss"]),
+                                     "edit_distance": float(best_l["edit_distance"]),
                                      "n_candidates_searched": n_searched})
                 stop_l = ("fully_suppressed" if best_l["activation_after"] <= 0
                           else "best_combination")
@@ -1997,6 +2004,13 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                      "movement": best_l.get("movement"),
                                      "spend": best_l.get("spend"),
                                      "centrality_ratio": best_l["centrality_ratio"],
+                                     # per-PREFIX cost state, so any post-hoc
+                                     # interpretability stopping rule can be judged
+                                     # by replay: every prefix of the committed path
+                                     # is itself a patch, and these two are what a
+                                     # smaller patch buys back
+                                     "recon_loss": float(best_l["recon_loss"]),
+                                     "edit_distance": float(best_l["edit_distance"]),
                                      "n_candidates_searched": n_searched})
                 stop_l = ("fully_suppressed" if best_l["activation_after"] <= 0
                           else "best_combination")
@@ -2057,6 +2071,14 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     "window_pos": [t["window_pos"] for t in t_l],
                     "n_window_skips": skips,
                     "score": (_finite_score(b_l) if b_l is not None else None),
+                    # per-step metrics for LOSING branches too: post-hoc prefix
+                    # analysis must answer "what would the beam have returned had
+                    # it stopped at k columns", and a losing branch can own the
+                    # best k-prefix even when it loses at full length. The winner
+                    # duplicates its top-level trajectory here, cheaply, so the
+                    # analysis reads one uniform structure.
+                    "steps": [{k_: v_ for k_, v_ in t.items() if k_ != "window"}
+                              for t in t_l],
                     "stop": st_l})
                 if i == 0:
                     stop = st_l          # rank-1 branch's stop survives a total miss
