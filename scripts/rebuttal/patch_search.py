@@ -2124,8 +2124,18 @@ def _task_of(dataset):
 _SPLITS_CACHE = None
 
 
+_CELLS_MEMO = {}
+
+
 def cells_for_concept(donor, feat, min_rows, task_filter=None):
-    """(recipient, dataset, accepted rows) where this concept was actually deployed."""
+    """(recipient, dataset, accepted rows) where this concept was actually deployed.
+
+    Memoized: a pure function of on-disk forward_deltas, which are static within a
+    run -- and the wide-last ordering pass calls it for every concept up front, so
+    without the memo the 687-npz scan would be paid twice per concept."""
+    memo_key = (donor, int(feat), int(min_rows), task_filter)
+    if memo_key in _CELLS_MEMO:
+        return _CELLS_MEMO[memo_key]
     out = []
     for f in sorted(glob.glob(str(FWD / "*" / "*.npz"))):
         try:
@@ -2191,7 +2201,52 @@ def cells_for_concept(donor, feat, min_rows, task_filter=None):
         out = [c for c in out if _task_of(c[1]) == task_filter]
     # then earliest acceptance of this concept, then size
     out.sort(key=lambda t: (min(v for _, v in t[2]), -len(t[2]), t[1]))
+    _CELLS_MEMO[memo_key] = out
     return out
+
+
+_WIDTH_MEMO = {}
+
+
+def dataset_width(donor, dataset):
+    """Table width from the preprocessing cache's npy header -- reads ~100 bytes of
+    the zip member, no array decompression (~0.05ms). 0 when the cache file is
+    absent (DataFrame models), which sorts those concepts early, harmlessly."""
+    key = (donor, dataset)
+    if key not in _WIDTH_MEMO:
+        import zipfile
+        from numpy.lib import format as npf
+        p = (PROJECT_ROOT / "output" / "sae_training_round9" / "preprocessed"
+             / donor / f"{dataset}.npz")
+        w = 0
+        if p.exists():
+            try:
+                with zipfile.ZipFile(p) as z, z.open("X_test.npy") as f:
+                    ver = npf.read_magic(f)
+                    shape, _, _ = npf._read_array_header(f, ver)
+                    w = int(shape[1]) if len(shape) > 1 else 0
+            except Exception:
+                w = 0
+        _WIDTH_MEMO[key] = w
+    return _WIDTH_MEMO[key]
+
+
+def concept_picks(donor, feat, args):
+    """cells -> dataset-deduped picks; shared by run_concept and the wide-last
+    ordering so the two cannot disagree about which cells a concept will touch.
+
+    Deterministic variety: one cell per DATASET, datasets in cells_for_concept's
+    rank order, top N taken -- dedupe keeps the FIRST (best-ranked) occurrence and
+    preserves that order. Re-sorting here by row count discarded both the recipient
+    filter and the acceptance-rank ordering, so selection kept landing on the
+    largest carte cell regardless of what was chosen upstream."""
+    cells = cells_for_concept(donor, feat, args.min_rows, args.task)
+    by_ds = {}
+    for rec, ds, rows_k, path in cells:
+        if ds not in by_ds:
+            by_ds[ds] = (rec, ds, rows_k, path)
+    picks = list(by_ds.values())[:args.n_datasets]
+    return cells, by_ds, picks
 
 
 def readout(npz_path, feat, row, ratios, device):
@@ -2356,6 +2411,12 @@ def main():
                          "pays (51%% of winners leave the rank-1 root) while per-step "
                          "width saturates at 3 (62/532 rows moved going 1->3) -- so "
                          "widening roots should not drag window cost with it.")
+    ap.add_argument("--wide-last", type=int, default=500,
+                    help="defer concepts whose widest picked dataset exceeds this "
+                         "many columns to the END of the run. The ultra-wide cells "
+                         "are where marginal hardware crashes; with per-concept "
+                         "resume, a late crash costs one concept instead of the "
+                         "night. Order only -- results unchanged. 0 disables.")
     ap.add_argument("--schedule", choices=("conditional", "static"),
                     default="conditional",
                     help="how the pool is ordered as the base moves. 'conditional' "
@@ -2488,6 +2549,24 @@ def main():
         except Exception:
             results = []
     concepts = [c for c in concepts if c not in done]
+    if args.wide_last and concepts:
+        # Ultra-wide cells are where the marginal boxes crash (hiva/Bioresponse
+        # family: firelord4 2026-08-17, octo4 2026-08-18, both mid-wide-cell).
+        # Deferring them to the END bounds a crash's blast radius: with per-concept
+        # resume, a late crash costs its own concept instead of orphaning a night
+        # of narrow ones behind a dead process. Order only -- population, results
+        # and resume semantics are unchanged. The picks pass warms the
+        # cells_for_concept memo, so the run itself pays nothing extra.
+        wide = {c: max((dataset_width(c[0], ds)
+                        for _, ds, _, _ in concept_picks(c[0], c[1], args)[2]),
+                       default=0)
+                for c in concepts}
+        deferred = [c for c in concepts if wide[c] > args.wide_last]
+        if deferred:
+            concepts = [c for c in concepts if wide[c] <= args.wide_last] + deferred
+            print(f"WIDE-LAST: {len(deferred)} concepts whose widest picked dataset "
+                  f"exceeds {args.wide_last} columns run at the END: "
+                  + ", ".join(f"{d} f{f}" for d, f in deferred), flush=True)
     print(f"{len(concepts)} concepts to run -> {args.out}")
     torch.use_deterministic_algorithms(True)
 
@@ -2526,24 +2605,12 @@ def run_concept(donor, feat, args):
         if donor in EXCLUDED_DONORS:
             print(f"\n{donor} f{feat}: SKIPPED (donor excluded)")
             return {"donor": donor, "feat": feat, "status": "excluded_donor"}
-        cells = cells_for_concept(donor, feat, args.min_rows, args.task)
+        cells, by_ds, picks = concept_picks(donor, feat, args)
         if not cells:
             print(f"\n{donor} f{feat}: no cell with >= {args.min_rows} accepted rows")
             return {"donor": donor, "feat": feat, "status": "no_cell"}
-        # Deterministic variety: one cell per DATASET (the largest, since donor-side
-        # activation does not depend on the recipient), datasets ranked largest-first,
-        # top N taken. Anchoring on the single densest dataset would explain each
-        # concept in one place; this spreads the evidence without letting the search
-        # choose where it is easiest.
-        # cells is already ranked; dedupe by dataset keeping the FIRST (best-ranked)
-        # occurrence and preserve that order. Re-sorting here by row count discarded
-        # both the recipient filter and the acceptance-rank ordering, so selection kept
-        # landing on the largest carte cell regardless of what was chosen upstream.
-        by_ds = {}
-        for rec, ds, rows_k, path in cells:
-            if ds not in by_ds:
-                by_ds[ds] = (rec, ds, rows_k, path)
-        picks = list(by_ds.values())[:args.n_datasets]
+        # Pick semantics (one cell per dataset, first = best-ranked, top N) live in
+        # concept_picks(), shared with the wide-last ordering pass.
         print(f"\n{donor} f{feat}: {len(cells)} cells over {len(by_ds)} datasets -> "
               f"top {len(picks)}: " +
               ", ".join(f"{ds}({len(rk)}r,best_rank={min(v for _, v in rk)},{rec})"
