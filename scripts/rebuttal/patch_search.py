@@ -1844,8 +1844,14 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 reported and what arbitrates across branches."""
                 if saturated is None or frozen_toward is None:
                     return _finite_score(sb)
-                v = (sb["suppression_frac"] * frozen_toward
-                     * sb["centrality_ratio"] / (sb["blast"] + EPS))
+                # EXPONENT-AWARE (2026-08-19): must mirror the configured objective,
+                # not the all-ones form -- under the two-term config (--exponents
+                # 1,0,1,0: toward is derivative of suppression+collateral within a
+                # row, centrality is a metric) this freeze is inert by construction.
+                v = (sb["suppression_frac"] ** EXPONENTS["suppression"]
+                     * frozen_toward ** EXPONENTS["toward_ablation"]
+                     * max(0.0, sb["centrality_ratio"]) ** EXPONENTS["centrality"]
+                     / (sb["blast"] ** EXPONENTS["blast"] + EPS))
                 return v if np.isfinite(v) else -np.inf
             # conditional-schedule state, PER BRANCH: measurements taken on this
             # branch's bases only -- a sibling branch's base is a different world
