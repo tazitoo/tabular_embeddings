@@ -1353,7 +1353,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                uninhibited=False,
                recip_shared=None, recipient=None, npz_path=None, rank_by="slope",
                beam=1, window=None, patience=None, schedule="conditional",
-               record_search=False):
+               repair=True, record_search=False):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -1407,7 +1407,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
     if want_eff:
         for s in sens:
             a_vec = s.pop("_a_vec")
-            s["_dsub"] = np.abs(a_base_row[idx_sub] - np.asarray(a_vec)[idx_sub])
+            # SIGNED movement (post - base): the per-concept sign is the whole
+            # repair signal -- a column moving a displaced bystander BACK is
+            # corrective, |.| cannot tell that from further damage
+            s["_dsub"] = np.asarray(a_vec)[idx_sub] - a_base_row[idx_sub]
             s[rank_by] = probe_effectiveness(
                 a_vec, a_base_row, feat, others,
                 recip["loo_by_fid"], recip["interval"], s["delta_log_freq"],
@@ -1462,26 +1465,37 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                if s.get("_dsub") is not None}
     loo_arr = (np.array([float(recip["loo_by_fid"].get(int(j), 0.0)) for j in others])
                if want_eff else None)
-    interval_abs = abs(float(recip["interval"])) if want_eff else 0.0
+    base0_sub = a_base_row[idx_sub]
     n_sched_esc = [0]      # pre-patience schedule reprobes, recorded per row
 
     def conditional_score(col, base_sub_now, latest_dsub):
-        """effectiveness_raw with CURRENT denominators and each column's latest
-        measured |da|. Captures headroom (gain capped at the activation that is
-        left) and bystander liveness (silenced concepts leave spend); cannot see
-        numerator redundancy for columns not measured since x0."""
+        """The INVERSE OF THE OBJECTIVE as the schedule (user, 2026-08-19):
+        projected suppression over projected blast, from the column's latest
+        SIGNED per-concept movement (window measurement where the search has
+        reached, x0 probe otherwise) applied linearly to the CURRENT state.
+
+        One formula serves both phases. Pre-saturation it favors suppressors
+        (raising projected suppression); post-saturation it can only improve by
+        CANCELLING bystander displacement -- a column moving displaced concepts
+        back toward base shrinks ||delta + d|| and rises to the top, which is
+        exactly the repair candidate, selected by lookup rather than descent.
+        No re-inflation veto: a small suppression give-back that buys a large
+        blast reduction wins here on the same arithmetic the real objective
+        uses at verification. interval and centrality are row constants for
+        ordering purposes and drop out; the window forward decides with the
+        full objective."""
         d = latest_dsub.get(col, x0_dsub.get(col))
         if d is None:
             return float("-inf")
-        a_c = float(base_sub_now[0])
-        gain = (min(float(d[0]), a_c) / max(a_c, EPS)) * interval_abs
-        spend = 0.0
+        a_start_c = max(float(base0_sub[0]), EPS)
+        proj_c = float(base_sub_now[0]) + float(d[0])
+        supp = min(max(1.0 - proj_c / a_start_c, 0.0), 1.0)
+        blast = 0.0
         if len(d) > 1:
-            base_o = base_sub_now[1:]
-            live = base_o > ACTIVE_FLOOR
-            spend = float(np.sum(np.where(
-                live, d[1:] / np.maximum(base_o, EPS) * loo_arr, 0.0)))
-        return gain - spend
+            disp = (base_sub_now[1:] - base0_sub[1:]) + d[1:]   # projected NET displacement
+            blast = float(np.sum(np.abs(disp)
+                                 / np.maximum(np.abs(base0_sub[1:]), EPS) * loo_arr))
+        return supp / (blast + EPS)
 
     # The columns are ranked by their BEST probe, but every probed value on those columns
     # is kept. Pass 1 already measured them; discarding all but the maximum is what left
@@ -1809,6 +1823,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             stop_l = "no_sensitive_column"
             n_skips = 0
             consec_skips = 0
+            saturated = None    # set at the saturation stop; with --repair the branch
+                                # keeps searching -- post-saturation the objective can
+                                # only improve via blast reduction, so the phase is
+                                # self-defining, self-terminating (patience bounds it)
             remaining = list(pool)
             # conditional-schedule state, PER BRANCH: measurements taken on this
             # branch's bases only -- a sibling branch's base is a different world
@@ -1837,6 +1855,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 committed_l.append(best_l.pop("_cand"))
                 remaining = remaining[1:]
                 trajectory_l.append({"window": [int(root_col)], "window_pos": 1,
+                                     "repair": False,
                                      "column": int(root_col),
                                      "column_name": str(space.names[root_col]),
                                      "value": best_l["values"][-1],
@@ -1852,10 +1871,14 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 stop_l = ("fully_suppressed" if best_l["activation_after"] <= 0
                           else "best_combination")
                 if best_l["activation_after"] <= 0:
-                    return best_l, trajectory_l, stop_l, n_skips
-                if (np.isfinite(best_l["toward_ablation"])
+                    saturated = "fully_suppressed"
+                    if not repair:
+                        return best_l, trajectory_l, stop_l, n_skips
+                elif (np.isfinite(best_l["toward_ablation"])
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
-                    return best_l, trajectory_l, "toward_ablation_target_reached", n_skips
+                    saturated = "toward_ablation_target_reached"
+                    if not repair:
+                        return best_l, trajectory_l, "toward_ablation_target_reached", n_skips
                 if track_cond and remaining:
                     # free-tier re-rank on the post-root base (stable sort: ties and
                     # unmeasured columns keep their prior relative order)
@@ -1866,18 +1889,30 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 window = remaining[:win_w]
                 window_scored = []
                 for cand_col in window:
-                    scored, n_searched, trace = score_column(cand_col, committed_l)
-                    if not scored:
-                        # SATURATION ESCALATION (2026-08-16): zero admissible
-                        # candidates means the coarse pass-1 guidance failed this
-                        # column here -- rescan with guidance suspended (both
-                        # directions, near-origin refinement, all levels) before
-                        # letting the column skip out. Only fires on saturated
-                        # columns, so unaffected rows are bit-identical.
+                    if repair and saturated is not None:
+                        # REPAIR PHASE: the value menus were built to suppress c
+                        # from x0, so a corrective placement may need the OTHER
+                        # direction and a conditional magnitude. Evaluate the full
+                        # guidance-suspended grid (both directions, near-origin,
+                        # all levels); score_column conditions on the committed
+                        # patch as always, so the line search IS the conditional
+                        # magnitude placement.
                         scored, n_searched, trace = score_column(
                             cand_col, committed_l,
                             candidates=escalation_candidates(cand_col))
-                        n_escalations[0] += 1
+                    else:
+                        scored, n_searched, trace = score_column(cand_col, committed_l)
+                        if not scored:
+                            # SATURATION ESCALATION (2026-08-16): zero admissible
+                            # candidates means the coarse pass-1 guidance failed this
+                            # column here -- rescan with guidance suspended (both
+                            # directions, near-origin refinement, all levels) before
+                            # letting the column skip out. Only fires on saturated
+                            # columns, so unaffected rows are bit-identical.
+                            scored, n_searched, trace = score_column(
+                                cand_col, committed_l,
+                                candidates=escalation_candidates(cand_col))
+                            n_escalations[0] += 1
                     if trace is not None:
                         search_trace.append({"step": len(committed_l),
                                              "column": int(cand_col),
@@ -1888,11 +1923,12 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                             (cand_col, max(scored, key=_finite_score), n_searched))
                 if track_cond:
                     # every window evaluation is a fresh CONDITIONAL measurement of
-                    # that column on the current base -- keep it, it was already paid
-                    # for, and it refreshes the schedule where decisions happen next
+                    # that column on the current base -- keep it (SIGNED), it was
+                    # already paid for, and it refreshes the schedule where
+                    # decisions happen next
                     for c_, sb_, _n in window_scored:
-                        latest_dsub[c_] = np.abs(
-                            base_sub_now - np.asarray(sb_["_vec"])[idx_sub])
+                        latest_dsub[c_] = (np.asarray(sb_["_vec"])[idx_sub]
+                                           - base_sub_now)
                 # No tie-break beyond the score (the size tie-break was retired with
                 # enumeration); ties inside the window resolve to the higher-ranked
                 # column via stable max over rank order, so the search stays
@@ -1947,6 +1983,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 # commits window position 1 every step with no skipped windows.
                 trajectory_l.append({"window": [int(c) for c in window],
                                      "window_pos": window.index(cand_col) + 1,
+                                     # committed while already saturated = a repair
+                                     # step: it can only have won on blast reduction
+                                     "repair": saturated is not None,
                                      "column": int(cand_col),
                                      "column_name": str(space.names[cand_col]),
                                      "value": best_l["values"][-1],
@@ -1962,14 +2001,19 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 stop_l = ("fully_suppressed" if best_l["activation_after"] <= 0
                           else "best_combination")
                 if best_l["activation_after"] <= 0:
-                    break
-                # Target reached: stop rather than keep committing columns for a
-                # sliver of toward_ablation, which is what gc_tolerance does for the
-                # transfer greedy.
-                if (np.isfinite(best_l["toward_ablation"])
+                    saturated = "fully_suppressed"
+                    if not repair:
+                        break
+                # Target reached: without --repair, stop rather than keep committing
+                # columns for a sliver of toward_ablation (what gc_tolerance does for
+                # the transfer greedy). With --repair, saturation opens the repair
+                # phase instead: further commits can only win on blast reduction.
+                elif (np.isfinite(best_l["toward_ablation"])
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
+                    saturated = "toward_ablation_target_reached"
                     stop_l = "toward_ablation_target_reached"
-                    break
+                    if not repair:
+                        break
                 if track_cond and remaining:
                     # free-tier re-rank on the new committed base; a fresh base also
                     # re-arms the pre-patience reprobe
@@ -1977,6 +2021,11 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     reprobed_this_base = False
                     remaining.sort(key=lambda c_: -conditional_score(
                         c_, base_sub_now, latest_dsub))
+            if saturated is not None:
+                # the saturation label survives the repair phase: a fully-suppressed
+                # patch whose repair windows then ran dry is still fully_suppressed,
+                # not no_improvement/patience_exhausted
+                stop_l = saturated
             return best_l, trajectory_l, stop_l, n_skips
 
         if beam <= 1:
@@ -2061,6 +2110,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # "conditional" only if the free tier could actually run on this row
             "schedule": ("conditional" if track_cond else "static"),
             "n_schedule_escalations": int(n_sched_esc[0]),
+            "n_repair_steps": sum(1 for t in trajectory if t.get("repair")),
             "n_escalations": int(n_escalations[0]),
             "beam_root": (winning_root if beam > 1 else None),
             "beam_branches": (beam_branches if beam > 1 else None),
@@ -2411,6 +2461,17 @@ def main():
                          "pays (51%% of winners leave the rank-1 root) while per-step "
                          "width saturates at 3 (62/532 rows moved going 1->3) -- so "
                          "widening roots should not drag window cost with it.")
+    ap.add_argument("--repair", action=argparse.BooleanOptionalAction, default=True,
+                    help="after saturation (fully_suppressed / target reached), keep "
+                         "the windowed search running instead of stopping: further "
+                         "commits can only improve the objective via BLAST reduction, "
+                         "so the phase self-defines and patience bounds it. The "
+                         "conditional schedule surfaces repair candidates by damage-"
+                         "vector matching (signed per-concept deltas); repair-phase "
+                         "windows evaluate the full both-direction grid because the "
+                         "x0 value menus point the suppressing way. Repair commits "
+                         "are marked in the trajectory; n_repair_steps per row. "
+                         "--no-repair restores the stop-at-saturation behaviour.")
     ap.add_argument("--wide-last", type=int, default=500,
                     help="defer concepts whose widest picked dataset exceeds this "
                          "many columns to the END of the run. The ultra-wide cells "
@@ -2787,6 +2848,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                  npz_path=npz_path, rank_by=args.rank_by,
                                  beam=args.beam, window=args.window,
                                  patience=args.patience, schedule=args.schedule,
+                                 repair=args.repair,
                                  record_search=args.record_search,
                                  value_search=not args.no_value_search)
             except Exception as exc:
