@@ -1824,10 +1824,29 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             n_skips = 0
             consec_skips = 0
             saturated = None    # set at the saturation stop; with --repair the branch
-                                # keeps searching -- post-saturation the objective can
-                                # only improve via blast reduction, so the phase is
-                                # self-defining, self-terminating (patience bounds it)
+                                # keeps searching under phase_score (below); patience
+                                # bounds the phase
+            frozen_toward = None
             remaining = list(pool)
+
+            def phase_score(sb):
+                """Step-acceptance key. Pre-saturation: the full objective. Post-
+                saturation: toward_ablation is FROZEN at its saturation value --
+                with c fully suppressed, further recipient movement toward ablation
+                can only come from bystander disturbance, so a live toward term
+                rewards collateral that pushes the recipient the 'right' way:
+                attribution poisoning (measured: f38/Amazon row 83, four 'repair'
+                commits raised toward 0.38->0.89 while blast rose 1.57->2.45 and
+                the true score still climbed). Candidate suppression and blast stay
+                live: suppression give-backs and gains remain expressible; only the
+                poisoned term is pinned. Recorded scores are untouched -- the freeze
+                governs step acceptance, the true objective is still what is
+                reported and what arbitrates across branches."""
+                if saturated is None or frozen_toward is None:
+                    return _finite_score(sb)
+                v = (sb["suppression_frac"] * frozen_toward
+                     * sb["centrality_ratio"] / (sb["blast"] + EPS))
+                return v if np.isfinite(v) else -np.inf
             # conditional-schedule state, PER BRANCH: measurements taken on this
             # branch's bases only -- a sibling branch's base is a different world
             latest_dsub = {}
@@ -1879,11 +1898,15 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                           else "best_combination")
                 if best_l["activation_after"] <= 0:
                     saturated = "fully_suppressed"
+                    if frozen_toward is None and np.isfinite(best_l["toward_ablation"]):
+                        frozen_toward = best_l["toward_ablation"]
                     if not repair:
                         return best_l, trajectory_l, stop_l, n_skips
                 elif (np.isfinite(best_l["toward_ablation"])
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     saturated = "toward_ablation_target_reached"
+                    if frozen_toward is None:
+                        frozen_toward = best_l["toward_ablation"]
                     if not repair:
                         return best_l, trajectory_l, "toward_ablation_target_reached", n_skips
                 if track_cond and remaining:
@@ -1942,7 +1965,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 # deterministic.
                 improving = [(c, sb, n) for c, sb, n in window_scored
                              if best_l is None
-                             or _finite_score(sb) > _finite_score(best_l)]
+                             or phase_score(sb) > phase_score(best_l)]
                 if not improving:
                     if best_l is None and len(remaining) <= win_w and not committed_l:
                         stop_l = "no_qualifying_combination"
@@ -1980,7 +2003,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                         break
                     continue
                 cand_col, step_best, n_searched = max(improving,
-                                                      key=lambda t: _finite_score(t[1]))
+                                                      key=lambda t: phase_score(t[1]))
                 consec_skips = 0
                 best_l = step_best
                 committed_l.append(best_l.pop("_cand"))
@@ -2016,6 +2039,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                           else "best_combination")
                 if best_l["activation_after"] <= 0:
                     saturated = "fully_suppressed"
+                    if frozen_toward is None and np.isfinite(best_l["toward_ablation"]):
+                        frozen_toward = best_l["toward_ablation"]
                     if not repair:
                         break
                 # Target reached: without --repair, stop rather than keep committing
@@ -2025,6 +2050,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 elif (np.isfinite(best_l["toward_ablation"])
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     saturated = "toward_ablation_target_reached"
+                    if frozen_toward is None:
+                        frozen_toward = best_l["toward_ablation"]
                     stop_l = "toward_ablation_target_reached"
                     if not repair:
                         break
