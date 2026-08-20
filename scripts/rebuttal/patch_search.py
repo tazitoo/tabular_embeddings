@@ -2408,9 +2408,20 @@ def dataset_width(donor, dataset):
             try:
                 with zipfile.ZipFile(p) as z, z.open("X_test.npy") as f:
                     ver = npf.read_magic(f)
-                    shape, _, _ = npf._read_array_header(f, ver)
+                    # PUBLIC API by version: numpy 2.3 has no _read_array_header
+                    # (the private helper existed on the dev Mac's numpy and its
+                    # absence on the workers was swallowed into width 0, silently
+                    # disabling wide-last on the fleet -- hence the loud warning)
+                    reader = {(1, 0): npf.read_array_header_1_0,
+                              (2, 0): npf.read_array_header_2_0}[ver]
+                    shape, _, _ = reader(f)
                     w = int(shape[1]) if len(shape) > 1 else 0
-            except Exception:
+            except Exception as exc:
+                if not _WIDTH_MEMO.get("_warned"):
+                    print(f"WIDE-LAST: width probe FAILED for {donor}/{dataset} "
+                          f"({type(exc).__name__}: {exc}) -- affected concepts are "
+                          f"NOT deferred", flush=True)
+                    _WIDTH_MEMO["_warned"] = True
                 w = 0
         _WIDTH_MEMO[key] = w
     return _WIDTH_MEMO[key]
