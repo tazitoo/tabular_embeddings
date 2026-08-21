@@ -2458,8 +2458,22 @@ def concept_picks(donor, feat, args):
     rank order, top N taken -- dedupe keeps the FIRST (best-ranked) occurrence and
     preserves that order. Re-sorting here by row count discarded both the recipient
     filter and the acceptance-rank ordering, so selection kept landing on the
-    largest carte cell regardless of what was chosen upstream."""
+    largest carte cell regardless of what was chosen upstream.
+
+    WIDE-CELL SWAP (user, 2026-08-21): wide datasets are ~16%% of rows consuming
+    ~2/3 of pass-1 compute; every concept with a wide pick has narrow alternative
+    deployments (measured: 89/89 fully swappable, zero wide-only concepts), and
+    these are directional subsample rounds, not publication numbers -- the grind
+    does not earn its cost. Same FILTER pattern as the carte and env rules (a
+    sort preference dies in the dataset dedup): drop wide cells when the concept
+    has any narrow cell, keep them when it has nothing else, so coverage is
+    preserved by construction and the fallback stays visible via wide-last."""
     cells = cells_for_concept(donor, feat, args.min_rows, args.task)
+    if getattr(args, "wide_cells", "swap") == "swap" and args.wide_last:
+        narrow = [c for c in cells
+                  if dataset_width(donor, c[1]) <= args.wide_last]
+        if narrow:
+            cells = narrow
     by_ds = {}
     for rec, ds, rows_k, path in cells:
         if ds not in by_ds:
@@ -2663,6 +2677,13 @@ def main():
                          "x0 value menus point the suppressing way. Repair commits "
                          "are marked in the trajectory; n_repair_steps per row. "
                          "--no-repair restores the stop-at-saturation behaviour.")
+    ap.add_argument("--wide-cells", choices=("swap", "keep"), default="swap",
+                    help="'swap' (default): prefer narrow datasets at pick time, "
+                         "keeping wide cells only for concepts with no narrow "
+                         "deployment (coverage preserved by construction; measured "
+                         "89/89 wide-picking concepts fully swappable). 'keep': "
+                         "the <=v29 population, wide cells and all. Width "
+                         "threshold shared with --wide-last.")
     ap.add_argument("--wide-last", type=int, default=500,
                     help="defer concepts whose widest picked dataset exceeds this "
                          "many columns to the END of the run. The ultra-wide cells "
