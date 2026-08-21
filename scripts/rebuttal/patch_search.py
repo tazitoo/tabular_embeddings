@@ -1384,8 +1384,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                max_levels=6, top_m=8, probe_cols=None, n_line=192,
                uninhibited=False,
                recip_shared=None, recipient=None, npz_path=None, rank_by="slope",
-               beam=1, window=None, patience=None, schedule="conditional",
-               repair=True, blast_form="delta", record_search=False):
+               beam=1, beam_cap=32, window=None, patience=None,
+               schedule="conditional", repair=True, blast_form="delta",
+               record_search=False):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -1613,7 +1614,27 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
         by_col = {c: [per_col[c]] for c in per_col}
 
     best, stop = None, "no_sensitive_column"
-    win_w = window if window is not None else beam   # per-step width; defaults to beam
+    # EXHAUSTIVE ROOTS (--beam all, 2026-08-21): root every suppressing column.
+    # The v28 width readout: winner root-rank does NOT collapse at 6 (27/20/15/
+    # 14/12/12%) and rank-4-6 winners beat the best shallow branch by med 1.42x
+    # -- the menu ranking is near-uninformative for root choice, so the endpoint
+    # of "more candidates" is all of them: the search becomes a frontier
+    # enumerator over (root, depth), selection happens post-hoc in the open, and
+    # root choice stops being a decision at all for most rows (median suppressing
+    # set = 8). Rows with NO suppressing column keep the honest fixed-width
+    # attempt at the finite tail (root_inadmissible reporting, as before).
+    # Cap-hit rows are FLAGGED, never silently truncated. NO dedup of convergent
+    # branches (user, 2026-08-21): branches sharing a suppressive set diverge in
+    # the repair phase, and set-dedup would remove exactly that diversity.
+    if beam == "all":
+        n_supp_roots = len(suppressing_cols)
+        root_cap_hit = n_supp_roots > beam_cap
+        b_eff = min(n_supp_roots, beam_cap) if n_supp_roots else min(6, beam_cap)
+    else:
+        b_eff, root_cap_hit = int(beam), False
+    # per-step width: defaults to the beam for fixed widths (legacy invocations
+    # bit-identical), but NEVER inherits "all" -- 3 is the measured saturation
+    win_w = window if window is not None else (3 if beam == "all" else b_eff)
     n_escalations = [0]     # saturated-column rescans with pass-1 guidance suspended
     winning_root, beam_branches = None, []   # defined even when ranked is empty --
                             # unbound-variable crash on no-sensitive-column rows under
@@ -2154,7 +2175,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 stop_l = saturated
             return best_l, trajectory_l, stop_l, n_skips
 
-        if beam <= 1:
+        if b_eff <= 1:
             best, trajectory, stop, _ = branch_pass(root_order, branch=None)
         else:
             # RESTART BEAM (user, 2026-08-16): uncertainty is widest at the opener, so
@@ -2169,7 +2190,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # path; the search adjudicates within it. Best final patch wins; ties
             # resolve to the higher-ranked root. Cost ~beam x the greedy's forwards.
             best, trajectory, stop = None, [], "no_sensitive_column"
-            for i, root in enumerate(root_order[:beam]):
+            for i, root in enumerate(root_order[:b_eff]):
                 pool = [root] + [c for c in root_order if
                                  root_order.index(c) > root_order.index(root)]
                 b_l, t_l, st_l, skips = branch_pass(pool, branch=int(root),
@@ -2238,7 +2259,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # for the conditional schedule that must not reach the JSON
             "sensitivity_top": [{k_: v_ for k_, v_ in s_.items()
                                  if not k_.startswith("_")} for s_ in ranked[:5]],
-            "beam_width": int(beam),
+            "beam_width": int(b_eff),
+            "beam_mode": ("all" if beam == "all" else "fixed"),
+            "root_cap_hit": bool(root_cap_hit),
             "window_width": int(win_w),
             "patience": (int(patience) if patience is not None else None),
             # "conditional" only if the free tier could actually run on this row
@@ -2597,7 +2620,11 @@ def main():
                          "a sqrt COMPRESSES differences between low values and makes the "
                          "search less willing to trade suppression for recipient movement. "
                          "Raising it chases toward_ablation harder.")
-    ap.add_argument("--beam", type=int, default=1,
+    ap.add_argument("--beam-cap", type=int, default=32,
+                    help="with --beam all: max roots per row. Cap-hit rows are "
+                         "FLAGGED (root_cap_hit), never silently truncated; at "
+                         "32 the p90 suppressing set (28) roots completely.")
+    ap.add_argument("--beam", type=str, default="1",
                     help="restart-beam width. 1 (default) IS the production greedy, "
                          "same code path. B>1 roots one branch at each of the top-B "
                          "ranked columns (testing whether the top column is really "
@@ -2734,6 +2761,9 @@ def main():
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "rebuttal" / "patch_search.json"))
     args = ap.parse_args()
+    # "all" = exhaustive roots (every suppressing column, per row, capped+flagged);
+    # otherwise the historical fixed width
+    args.beam = "all" if args.beam == "all" else int(args.beam)
     if args.exponents:
         vals = [float(x) for x in args.exponents.split(",")]
         if len(vals) != 4:
@@ -3010,7 +3040,8 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                  uninhibited=args.uninhibited,
                                  recip_shared=recip_shared, recipient=recipient,
                                  npz_path=npz_path, rank_by=args.rank_by,
-                                 beam=args.beam, window=args.window,
+                                 beam=args.beam, beam_cap=args.beam_cap,
+                                 window=args.window,
                                  patience=args.patience, schedule=args.schedule,
                                  repair=args.repair, blast_form=args.blast_form,
                                  record_search=args.record_search,
