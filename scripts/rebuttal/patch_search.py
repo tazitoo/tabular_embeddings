@@ -3070,8 +3070,15 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
             except Exception as exc:
                 print(f"    {donor} f{feat} -> {recipient} / {dataset} row {row}: "
                       f"ROW FAILED {type(exc).__name__}: {exc}", flush=True)
+                import traceback
+                tb = traceback.format_exc()
+                print(tb, flush=True)
                 entry["rows"].append({"row": row, "host": socket.gethostname(),
-                                      "error": f"{type(exc).__name__}: {exc}"})
+                                      "error": f"{type(exc).__name__}: {exc}",
+                                      # a message without a location is a mystery to
+                                      # debug later; the capval smoke burned a cycle
+                                      # on exactly that
+                                      "traceback": tb})
                 continue
             res.update({"donor": donor, "feat": feat, "recipient": recipient,
                         "dataset": dataset, "n_other_concepts": int(len(others)),
