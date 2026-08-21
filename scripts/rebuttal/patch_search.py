@@ -1386,7 +1386,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                recip_shared=None, recipient=None, npz_path=None, rank_by="slope",
                beam=1, beam_cap=32, window=None, patience=None,
                schedule="conditional", repair=True, blast_form="delta",
-               record_search=False):
+               commit_patience=2, commit_tol=0.05, record_search=False):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -1903,6 +1903,13 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             stop_l = "no_sensitive_column"
             n_skips = 0
             consec_skips = 0
+            consec_small = 0     # consecutive commits whose gain < commit_tol
+            stop_detail_l = None  # TERMINAL CAUSE of the loop, never overridden --
+                                  # stop_reason keeps its claim-level, saturation-
+                                  # priority semantics for round comparability, and
+                                  # stop_detail says why the search actually ENDED,
+                                  # so search-behavior statistics are exact (user,
+                                  # 2026-08-21)
             saturated = None    # set at the saturation stop; with --repair the branch
                                 # keeps searching under phase_score (below); patience
                                 # bounds the phase
@@ -1955,7 +1962,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                          "column_name": str(space.names[root_col]),
                                          "branch": branch, "candidates": trace})
                 if not scored:
-                    return None, [], "root_inadmissible", 0
+                    return None, [], "root_inadmissible", 0, "root_inadmissible"
                 best_l = max(scored, key=_finite_score)
                 committed_l.append(best_l.pop("_cand"))
                 remaining = remaining[1:]
@@ -1989,14 +1996,14 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     if frozen_toward is None and np.isfinite(best_l["toward_ablation"]):
                         frozen_toward = best_l["toward_ablation"]
                     if not repair:
-                        return best_l, trajectory_l, stop_l, n_skips
+                        return best_l, trajectory_l, stop_l, n_skips, "saturation_stop"
                 elif (np.isfinite(best_l["toward_ablation"])
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     saturated = "toward_ablation_target_reached"
                     if frozen_toward is None:
                         frozen_toward = best_l["toward_ablation"]
                     if not repair:
-                        return best_l, trajectory_l, "toward_ablation_target_reached", n_skips
+                        return best_l, trajectory_l, "toward_ablation_target_reached", n_skips, "saturation_stop"
                 if track_cond and remaining:
                     # free-tier re-rank on the post-root base (stable sort: ties and
                     # unmeasured columns keep their prior relative order)
@@ -2104,10 +2111,25 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                         # an exactly-drained menu is menu exhaustion, not a patience
                         # stop.
                         stop_l = "patience_exhausted"
+                        stop_detail_l = "patience_exhausted"
                         break
                     continue
                 cand_col, step_best, n_searched = max(improving,
                                                       key=lambda t: phase_score(t[1]))
+                # COMMIT-PATIENCE bookkeeping (user, 2026-08-21): marginal gain of
+                # this commit on the same phase_score basis acceptance just used,
+                # measured BEFORE saturation/freeze updates shift that basis. The
+                # exhibit row (f96/APSFailure r178) spent 22 of 40 commits earning
+                # 0-1% each at escalation-grid prices while edit distance exploded
+                # 15 -> 19392; K consecutive sub-tol commits end the branch. A stop
+                # rule, not an acceptance change; the prefix records keep every
+                # trimmed tail judgeable post-hoc.
+                if commit_patience and best_l is not None:
+                    _gain = ((phase_score(step_best) - phase_score(best_l))
+                             / max(abs(phase_score(best_l)), EPS))
+                    consec_small = consec_small + 1 if _gain < commit_tol else 0
+                else:
+                    consec_small = 0
                 consec_skips = 0
                 best_l = step_best
                 committed_l.append(best_l.pop("_cand"))
@@ -2148,6 +2170,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     if frozen_toward is None and np.isfinite(best_l["toward_ablation"]):
                         frozen_toward = best_l["toward_ablation"]
                     if not repair:
+                        stop_detail_l = "saturation_stop"
                         break
                 # Target reached: without --repair, stop rather than keep committing
                 # columns for a sliver of toward_ablation (what gc_tolerance does for
@@ -2160,6 +2183,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                         frozen_toward = best_l["toward_ablation"]
                     stop_l = "toward_ablation_target_reached"
                     if not repair:
+                        stop_detail_l = "saturation_stop"
                         break
                 if track_cond and remaining:
                     # free-tier re-rank on the new committed base; a fresh base also
@@ -2168,15 +2192,22 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     reprobed_this_base = False
                     remaining.sort(key=lambda c_: -conditional_score(
                         c_, base_sub_now, latest_dsub))
+                if commit_patience and consec_small >= commit_patience:
+                    stop_detail_l = "commit_patience"
+                    break
             if saturated is not None:
                 # the saturation label survives the repair phase: a fully-suppressed
                 # patch whose repair windows then ran dry is still fully_suppressed,
-                # not no_improvement/patience_exhausted
+                # not no_improvement/patience_exhausted -- but stop_detail below is
+                # NEVER overridden: it names the terminal cause
                 stop_l = saturated
-            return best_l, trajectory_l, stop_l, n_skips
+            if stop_detail_l is None:
+                stop_detail_l = "pool_drained" if pool else "empty_pool"
+            return best_l, trajectory_l, stop_l, n_skips, stop_detail_l
 
         if b_eff <= 1:
-            best, trajectory, stop, _ = branch_pass(root_order, branch=None)
+            best, trajectory, stop, _, stop_detail = branch_pass(root_order,
+                                                                 branch=None)
         else:
             # RESTART BEAM (user, 2026-08-16): uncertainty is widest at the opener, so
             # branching happens THERE -- each of the top-`beam` ranked columns roots
@@ -2190,11 +2221,12 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # path; the search adjudicates within it. Best final patch wins; ties
             # resolve to the higher-ranked root. Cost ~beam x the greedy's forwards.
             best, trajectory, stop = None, [], "no_sensitive_column"
+            stop_detail = None
             for i, root in enumerate(root_order[:b_eff]):
                 pool = [root] + [c for c in root_order if
                                  root_order.index(c) > root_order.index(root)]
-                b_l, t_l, st_l, skips = branch_pass(pool, branch=int(root),
-                                                    force_first=True)
+                b_l, t_l, st_l, skips, sd_l = branch_pass(pool, branch=int(root),
+                                                          force_first=True)
                 # every branch's evidence survives, not just the winner's: the
                 # ranking-fidelity analysis needs the losing paths too
                 beam_branches.append({
@@ -2212,12 +2244,14 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     # analysis reads one uniform structure.
                     "steps": [{k_: v_ for k_, v_ in t.items() if k_ != "window"}
                               for t in t_l],
-                    "stop": st_l})
+                    "stop": st_l, "stop_detail": sd_l})
                 if i == 0:
                     stop = st_l          # rank-1 branch's stop survives a total miss
+                    stop_detail = sd_l
                 if b_l is not None and (best is None
                                         or _finite_score(b_l) > _finite_score(best)):
                     best, trajectory, stop, winning_root = b_l, t_l, st_l, int(root)
+                    stop_detail = sd_l
 
     a_now_vec = best.pop("_vec") if best else a_base_row.copy()
     a_now = float(best["activation_after"]) if best else a_start
@@ -2245,6 +2279,11 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "suppression_frac": (1.0 - a_now / a_start) if a_start > 0 else float("nan"),
             "recon_loss_start": float(recon_loss_ds[row]), "centrality_start": cen_start,
             "stop_reason": stop,
+            # terminal cause of the winning branch's loop, never overridden by the
+            # saturation-priority stop_reason: exact search-behavior statistics
+            "stop_detail": stop_detail,
+            "commit_patience": ([int(commit_patience), float(commit_tol)]
+                                if commit_patience else None),
             # the toward_ablation denominator BEFORE the resolution floor, so the sweep itself
             # answers where the interval mass sits relative to min_gap -- v17 could not
             "ablation_interval": (float(recip["p_ablated"] - recip["p_transfer"])
@@ -2666,6 +2705,19 @@ def main():
                          "the same-host control arm. The conditional schedule "
                          "follows the same form. spend, blast_raw and blast_delta "
                          "are all recorded regardless; only the traded term changes.")
+    ap.add_argument("--commit-patience", type=int, default=2,
+                    help="stop a branch after this many CONSECUTIVE commits whose "
+                         "marginal score gain (acceptance basis) is below "
+                         "--commit-tol -- the skip-patience mirror for SUCCESSES. "
+                         "Bounds the ever-improving grind (measured: 22 of 40 "
+                         "commits on one row earned 0-1%% each at escalation-grid "
+                         "prices while edit distance exploded 15->19392). A stop "
+                         "rule, not an acceptance change; prefix records keep the "
+                         "trimmed tail judgeable. 0 disables. stop_detail records "
+                         "'commit_patience' when it fires.")
+    ap.add_argument("--commit-tol", type=float, default=0.05,
+                    help="relative per-commit gain below which a commit counts "
+                         "toward --commit-patience")
     ap.add_argument("--repair", action=argparse.BooleanOptionalAction, default=True,
                     help="after saturation (fully_suppressed / target reached), keep "
                          "the windowed search running instead of stopping: further "
@@ -2792,6 +2844,7 @@ def main():
                              "suppression,toward_ablation,blast,centrality")
         EXPONENTS.update(zip(("suppression", "toward_ablation", "blast", "centrality"), vals))
         print(f"objective exponents: {EXPONENTS}", flush=True)
+    print(f"commit patience: K={args.commit_patience} tol={args.commit_tol}", flush=True)
 
     # explicit --concepts wins; --probe next; otherwise the locked set, so a bare
     # run does the full sweep
@@ -3065,6 +3118,8 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                  window=args.window,
                                  patience=args.patience, schedule=args.schedule,
                                  repair=args.repair, blast_form=args.blast_form,
+                                 commit_patience=args.commit_patience,
+                                 commit_tol=args.commit_tol,
                                  record_search=args.record_search,
                                  value_search=not args.no_value_search)
             except Exception as exc:
