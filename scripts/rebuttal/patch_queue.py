@@ -113,8 +113,14 @@ def main():
     while True:
         # ---- observe everything -----------------------------------------------
         for host in {h for h, _ in SLOTS}:
-            subprocess.run(["rsync", "-a", f"{host}:{REPO}/output/rebuttal/{args.run}/",
-                            str(outdir) + "/"], capture_output=True, timeout=300)
+            try:
+                # --ignore-existing: per-concept files are immutable, so the sync
+                # only ever moves NEW completions -- cheap and restart-safe
+                subprocess.run(["rsync", "-a", "--ignore-existing",
+                                f"{host}:{REPO}/output/rebuttal/{args.run}/",
+                                str(outdir) + "/"], capture_output=True, timeout=300)
+            except (subprocess.SubprocessError, OSError):
+                pass          # missed sync = completions credited next cycle
         file_done = set()
         for f in outdir.glob("*_f*.json"):
             donor, feat = f.stem.rsplit("_f", 1)
