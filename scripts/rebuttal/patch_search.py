@@ -1386,7 +1386,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                recip_shared=None, recipient=None, npz_path=None, rank_by="slope",
                beam=1, beam_cap=32, window=None, patience=None,
                schedule="conditional", repair=True, blast_form="delta",
-               commit_patience=2, commit_tol=0.05, record_search=False):
+               commit_patience=2, commit_tol=0.05, refine_pass=True,
+               record_search=False):
     """Greedy search over input (column, value) edits, scored on the joint objective.
 
     The search is over INPUT features and values. Concepts are measured, never searched:
@@ -2253,6 +2254,49 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     best, trajectory, stop, winning_root = b_l, t_l, st_l, int(root)
                     stop_detail = sd_l
 
+    # VALUE-REFINEMENT PASS (user, 2026-08-22): coordinate descent over the
+    # committed columns on the FINAL base. Every committed value was optimized
+    # on its own step's base and never revisited; greedy sequences are jointly
+    # sub-optimal, and 43% of v30's patched rows sit at partial suppression
+    # (med 0.39) having stopped on pool/patience, not on reaching 1.0. Each
+    # committed column is re-swept (full guidance-suspended grid) against the
+    # other commits; a replacement is accepted iff the full objective improves
+    # AND it does not re-inflate c above the current level (the same one-sided
+    # value-level rule the repair phase uses -- the unbounded supp/blast ratio
+    # must not sell suppression for near-zero blast here either). Bounded at 3
+    # sweeps; each accepted swap is a fresh full-patch evaluation, so `best`
+    # stays a complete, measured record.
+    n_refine_steps = 0
+    if refine_pass and best is not None and len(best["columns"]) >= 2:
+        for _sweep in range(3):
+            improved_any = False
+            for col in list(dict.fromkeys(int(c) for c in best["columns"])):
+                others_now = []
+                seen_cols = set()
+                for c_, v_ in zip(best["columns"], best["values"]):
+                    c_ = int(c_)
+                    if c_ == col or c_ in seen_cols:
+                        continue
+                    seen_cols.add(c_)
+                    others_now.append({"column": c_, "value": v_,
+                                       "edit_distance": edit_distance(
+                                           space.cols[c_], x0[c_], v_,
+                                           categorical=c_ in space.cat)})
+                scored, _, _ = score_column(col, others_now,
+                                            candidates=escalation_candidates(col))
+                scored = [s for s in scored
+                          if s["activation_after"] <= best["activation_after"] + 1e-12]
+                if not scored:
+                    continue
+                cand_best = max(scored, key=_finite_score)
+                if _finite_score(cand_best) > _finite_score(best):
+                    cand_best.pop("_cand", None)
+                    best = cand_best
+                    n_refine_steps += 1
+                    improved_any = True
+            if not improved_any:
+                break
+
     a_now_vec = best.pop("_vec") if best else a_base_row.copy()
     a_now = float(best["activation_after"]) if best else a_start
     cur = list(x0)
@@ -2308,6 +2352,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             "blast_form": blast_form,
             "n_schedule_escalations": int(n_sched_esc[0]),
             "n_repair_steps": sum(1 for t in trajectory if t.get("repair")),
+            "n_refine_steps": int(n_refine_steps),
             "n_escalations": int(n_escalations[0]),
             "beam_root": (winning_root if b_eff > 1 else None),
             "beam_branches": (beam_branches if b_eff > 1 else None),
@@ -2705,6 +2750,16 @@ def main():
                          "the same-host control arm. The conditional schedule "
                          "follows the same form. spend, blast_raw and blast_delta "
                          "are all recorded regardless; only the traded term changes.")
+    ap.add_argument("--refine-pass", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="after the search (and repair), coordinate-descent the "
+                         "committed VALUES on the final base: each committed column "
+                         "re-swept against the others, replacements accepted iff the "
+                         "objective improves and c is not re-inflated (the repair "
+                         "phase's one-sided rule). Greedy values are chosen "
+                         "sequentially and never revisited; 43%% of v30 patches sit "
+                         "at partial suppression having stopped on pool/patience. "
+                         "Bounded at 3 sweeps; n_refine_steps recorded per row.")
     ap.add_argument("--commit-patience", type=int, default=2,
                     help="stop a branch after this many CONSECUTIVE commits whose "
                          "marginal score gain (acceptance basis) is below "
@@ -3120,6 +3175,7 @@ def run_one_dataset(donor, feat, recipient, dataset, acc_rows_n, npz_path, args)
                                  repair=args.repair, blast_form=args.blast_form,
                                  commit_patience=args.commit_patience,
                                  commit_tol=args.commit_tol,
+                                 refine_pass=args.refine_pass,
                                  record_search=args.record_search,
                                  value_search=not args.no_value_search)
             except Exception as exc:
