@@ -166,7 +166,8 @@ def main():
                                 host, cmd], check=True, timeout=45)
             except (subprocess.SubprocessError, OSError):
                 continue
-            attempts[cid_k := (donor, feat)] = attempts.get(cid_k, 0) + 1
+            cid_k = (donor, feat)
+            attempts[cid_k] = attempts.get(cid_k, 0) + 1
             state[host][0].add(gpu)
             print(f"LAUNCH {cid} -> {host}:{gpu} (attempt {attempts[cid_k]}, "
                   f"{len(todo)} queued)", flush=True)
