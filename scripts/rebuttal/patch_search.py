@@ -2284,8 +2284,17 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                            categorical=c_ in space.cat)})
                 scored, _, _ = score_column(col, others_now,
                                             candidates=escalation_candidates(col))
+                # PARETO acceptance (2026-08-22): raw-objective acceptance would
+                # bypass the post-saturation freezes -- with centrality live, a
+                # saturated row's refinement could finance a blast increase with a
+                # centrality gain (the r83-residual channel through the back
+                # door). A swap must improve the score AND not degrade suppression
+                # AND not increase the traded blast; centrality gains pass only as
+                # pure placement improvements.
                 scored = [s for s in scored
-                          if s["activation_after"] <= best["activation_after"] + 1e-12]
+                          if s["activation_after"] <= best["activation_after"] + 1e-12
+                          and s.get("blast_term", float("inf"))
+                          <= best.get("blast_term", float("inf")) + 1e-12]
                 if not scored:
                     continue
                 cand_best = max(scored, key=_finite_score)
