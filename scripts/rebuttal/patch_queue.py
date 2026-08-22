@@ -43,15 +43,23 @@ ENV = ("CUDA_DEVICE_ORDER=PCI_BUS_ID PYTORCH_CUDA_ALLOC_CONF=expandable_segments
        "NUMEXPR_NUM_THREADS=8")
 
 
-def sh(cmd, timeout=30):
-    return subprocess.run(["ssh", "-o", "ConnectTimeout=10", *cmd],
-                          capture_output=True, text=True, timeout=timeout)
+def sh(cmd, timeout=45):
+    """None on ANY transport failure -- a slow poll must cost one cycle, not the
+    queue (the first run died overnight on a single 30s morg timeout after 50
+    clean completions)."""
+    try:
+        return subprocess.run(["ssh", "-o", "ConnectTimeout=10", *cmd],
+                              capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
+        return None
 
 
 def busy_gpus(host):
     """CUDA indices with a live patch_search on `host` (parsed from the env
     args that our own launch convention puts on the command line)."""
     r = sh([host, "pgrep -af '[p]atch_search' 2>/dev/null"])
+    if r is None:
+        return None          # unknown -- caller must treat as fully busy
     busy = set()
     for line in r.stdout.splitlines():
         for tok in line.split():
@@ -92,6 +100,14 @@ def main():
                 if k not in seen:
                     seen.add(k)
                     pool.append(k)
+    # STARTUP SYNC: pull any per-concept outputs still sitting on hosts (a prior
+    # dispatcher may have died between a job finishing and its pull) so finished
+    # work is never relaunched
+    for host in {h for h, _ in SLOTS}:
+        subprocess.run(["rsync", "-a",
+                        f"{host}:{REPO}/output/rebuttal/{args.run}/",
+                        str(outdir) + "/"], capture_output=True, timeout=300)
+
     done = set()
     for pat in args.done_from:
         for p in sorted(glob.glob(pat)):
@@ -110,11 +126,21 @@ def main():
         # ---- reap ------------------------------------------------------------
         for slot, (donor, feat, rout, log) in list(inflight.items()):
             host, gpu = slot
-            alive = gpu in busy_gpus(host)
-            have = sh([host, f"test -s {rout} && echo yes"]).stdout.strip() == "yes"
+            bg = busy_gpus(host)
+            if bg is None:
+                continue      # host unreachable this cycle; check again next one
+            alive = gpu in bg
+            hr = sh([host, f"test -s {rout} && echo yes"])
+            if hr is None:
+                continue
+            have = hr.stdout.strip() == "yes"
             if have:
                 local = outdir / f"{concept_id(donor, feat)}.json"
-                subprocess.run(["rsync", "-a", f"{host}:{rout}", str(local)], check=True)
+                try:
+                    subprocess.run(["rsync", "-a", f"{host}:{rout}", str(local)],
+                                   check=True, timeout=120)
+                except (subprocess.SubprocessError, OSError):
+                    continue  # pull failed; retry next cycle, job stays accounted
                 print(f"DONE {concept_id(donor, feat)} on {host}:{gpu} "
                       f"({len(todo)} queued)", flush=True)
                 del inflight[slot]
@@ -137,8 +163,9 @@ def main():
             if slot in inflight:
                 continue
             host, gpu = slot
-            if gpu in busy_gpus(host):
-                continue          # occupied by something we didn't launch (control arm)
+            bg = busy_gpus(host)
+            if bg is None or gpu in bg:
+                continue          # unreachable or occupied (e.g. the control arm)
             idx = next((i for i, (d, _) in enumerate(todo)
                         if d != "tabicl_v2" or host in TFM2_HOSTS), None)
             if idx is None:
@@ -152,8 +179,12 @@ def main():
             cmd = (f"cd {REPO} && setsid nohup env CUDA_VISIBLE_DEVICES={gpu} {ENV} "
                    f"{py} -m scripts.rebuttal.patch_search --concepts {donor}:{feat} "
                    f"{args.flags} --out {rout} > {log} 2>&1 < /dev/null &")
-            subprocess.run(["ssh", "-f", "-n", "-o", "ConnectTimeout=10", host, cmd],
-                           check=True)
+            try:
+                subprocess.run(["ssh", "-f", "-n", "-o", "ConnectTimeout=10", host, cmd],
+                               check=True, timeout=45)
+            except (subprocess.SubprocessError, OSError):
+                todo.insert(0, (donor, feat))
+                continue      # launch failed; concept back on the queue
             attempts.setdefault((donor, feat), 1)
             inflight[slot] = (donor, feat, rout, log)
             print(f"LAUNCH {cid} -> {host}:{gpu} ({len(todo)} queued, "
