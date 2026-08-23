@@ -49,7 +49,8 @@ ENV = ("CUDA_DEVICE_ORDER=PCI_BUS_ID PYTORCH_CUDA_ALLOC_CONF=expandable_segments
        "OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 "
        "NUMEXPR_NUM_THREADS=8")
 CONCEPT_RE = re.compile(r"--concepts (\w+):(\d+)")
-CUDA_RE = re.compile(r"CUDA_VISIBLE_DEVICES=(\d+)")
+BUSY_MIB = 500           # a patch_search job holds GBs; an idle GPU reads ~0
+DOWN_AFTER = 5           # unobservable cycles before a host is presumed down
 
 
 def sh(host, remote, timeout=45):
@@ -61,21 +62,43 @@ def sh(host, remote, timeout=45):
 
 
 def observe(host):
-    """(busy_gpus, running_concepts) from the host's process list; None if
-    unreachable (callers treat unreachable as fully busy / unknown)."""
-    r = sh(host, "pgrep -af '[p]atch_search' 2>/dev/null")
-    if r is None:
+    """(busy_gpus, running_concepts), or None when the host cannot be observed.
+
+    Two v2 bugs produced real duplicates on 2026-08-23 (tabdpt:78 and
+    tabicl_v2:112 each running twice, both writing the SAME output file):
+
+      1. An ssh hiccup and a genuinely idle host both yield empty stdout, so an
+         unreachable morg read as "idle, nothing running" -- its in-flight
+         concepts fell back into todo and were relaunched on top of themselves.
+         The __OBS__ sentinel makes reachability explicit: no sentinel, no data.
+      2. GPU occupancy was parsed from the launcher's parent shell, the only
+         line carrying CUDA_VISIBLE_DEVICES -- but that wrapper exits once the
+         job is backgrounded, so a busy GPU became invisible and got a second
+         job stacked on it. nvidia-smi reports the GPU itself.
+    """
+    r = sh(host, "pgrep -af '[p]atch_search' 2>/dev/null; echo __OBS__; "
+                 "nvidia-smi --query-gpu=index,memory.used "
+                 "--format=csv,noheader,nounits 2>/dev/null")
+    if r is None or "__OBS__" not in r.stdout:
         return None
-    busy, running = set(), set()
-    for line in r.stdout.splitlines():
-        m = CONCEPT_RE.search(line)
-        g = CUDA_RE.search(line)
-        if g:
-            busy.add(int(g.group(1)))
-        if m:
-            running.add((m.group(1), int(m.group(2))))
-    if r.stdout.strip() and not busy:
-        busy.add(0)          # something unparseable runs; assume gpu0 on workers
+    proc_txt, _, gpu_txt = r.stdout.partition("__OBS__")
+    running = {(m.group(1), int(m.group(2)))
+               for m in CONCEPT_RE.finditer(proc_txt)}
+    busy, gpus = set(), set()
+    for line in gpu_txt.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            gpus.add(int(parts[0]))
+            if int(parts[1]) > BUSY_MIB:
+                busy.add(int(parts[0]))
+    if proc_txt.strip() and not busy:
+        return None          # jobs running but no GPU reading: don't trust it
+    if len(running) > len(busy):
+        # A job launched last cycle can still be loading its model, holding no
+        # GPU memory yet -- reading its slot as free is how two DIFFERENT
+        # concepts ended up stacked on morg gpu3. Treat the host as full until
+        # every running job is visible on a GPU; costs at most one poll.
+        busy = set(gpus)
     return busy, running
 
 
@@ -107,6 +130,7 @@ def main():
                 static_done.add((c["donor"], int(c["feat"])))
 
     attempts = {}
+    misses = {}
     reported_done = set()
     print(f"pool {len(pool)}, static done {len(static_done & set(pool))}", flush=True)
 
@@ -136,6 +160,25 @@ def main():
             state[host] = observe(host)
             if state[host] is not None:
                 running |= state[host][1]
+
+        for host, obs in state.items():
+            if obs is None:
+                misses[host] = misses.get(host, 0) + 1
+                if misses[host] == DOWN_AFTER:
+                    print(f"host presumed DOWN, dispatching without it: {host}",
+                          flush=True)
+            else:
+                if misses.pop(host, 0) >= DOWN_AFTER:
+                    print(f"host back: {host}", flush=True)
+        blind = sorted(h for h, n in misses.items() if n < DOWN_AFTER)
+        if blind:
+            # A host we cannot see may be mid-concept, and its running set is
+            # absent from `running` -- dispatching now would stack a duplicate
+            # onto live work. Wait it out, but only briefly: a genuinely dead
+            # host (firelord4 reboots) must not stall the whole queue.
+            print(f"cycle skipped: unobservable {blind}", flush=True)
+            time.sleep(args.poll)
+            continue
 
         exhausted = {k for k, a in attempts.items()
                      if a >= args.max_attempts and k not in done}
