@@ -56,6 +56,12 @@ def load(pattern):
                         "cen_start": r.get("centrality_start"),
                         "interval": r.get("ablation_interval"),
                         "n_cols": len(b.get("columns") or []),
+                        # bystanders' estimated prediction spend for the CHOSEN patch,
+                        # in prediction units: sum of moved_frac x loo over live concepts
+                        "bystander_spend": sum(
+                            c.get("disturbed") or 0.0
+                            for c in (r.get("collateral") or [])
+                            if not c.get("inactive")),
                     }
     return rows
 
@@ -112,7 +118,16 @@ def main():
     print(q([b[k]["supp"] for k in tails], "v19 suppression there"))
     print(q([b[k]["supp"] for k in shared], "v19 suppression overall"))
 
-    # 4. FLOOR CREDIT
+    # 4. FLOOR CREDIT -- and whether it is ATTRIBUTABLE to c at all.
+    #
+    # toward_ablation's numerator is the TOTAL recipient movement (every accepted concept
+    # rescaled by its measured shift), while the denominator is c's own interval. On a
+    # sub-floor row c's own ceiling is < min_gap by definition, so bystander shifts of
+    # comparable prediction-spend can account for the movement -- blast PRICES that
+    # disturbance but does not remove it from the numerator. So the credit is evidence
+    # about c only where the bystanders' spend is small next to the measured movement.
+    # Strata: spend < 25% of the movement (attributable), 25-100% (mixed), >= 100%
+    # (bystanders alone could account for all of it).
     marginal = [k for k in shared
                 if b[k]["interval"] is not None and np.isfinite(b[k]["interval"])
                 and abs(b[k]["interval"]) < 0.01]
@@ -122,6 +137,28 @@ def main():
     print(f"  at the gate's old unearned value (~1.0): "
           f"{(np.abs(tw - 1.0) < 0.05).mean() if len(tw) else 0:.1%}"
           f"   finite (measured, not deleted): {len(tw)}/{len(marginal)}")
+    strata = {"attributable (spend < 25% of movement)": [],
+              "mixed (25-100%)": [],
+              "bystanders could account for it (>= 100%)": []}
+    for k in marginal:
+        t = b[k]["toward"]
+        if t is None or not np.isfinite(t):
+            continue
+        movement = abs(t) * 0.01              # the floored denominator, by construction
+        spend = b[k]["bystander_spend"]
+        if movement <= 0:
+            continue
+        r = spend / movement
+        name = ("attributable (spend < 25% of movement)" if r < 0.25 else
+                "mixed (25-100%)" if r < 1.0 else
+                "bystanders could account for it (>= 100%)")
+        strata[name].append(t)
+    print("  attribution of that credit, by bystander prediction-spend vs movement:")
+    for name, vals in strata.items():
+        v = fin(vals)
+        share = len(v) / max(len(tw), 1)
+        med = f"{np.median(v):.3f}" if len(v) else "-"
+        print(f"    {name:<44} {len(v):>5} ({share:5.1%})   toward med {med}")
 
 
 if __name__ == "__main__":
