@@ -20,12 +20,8 @@ no output) fall back into todo automatically, capped at --max-attempts then
 reported failed, loudly.
 
 Launch mechanics mirror orch.sh (ssh -f, setsid, CUDA pinning, thread caps).
-tabicl_v2 concepts get the tfm2 INTERPRETER (tabicl v1 and v2 cannot share an
-env) but no host restriction: every host has had a tfm2 env since March, and
-pinning them to morg alone -- half the remaining pool on a quarter of the fleet
--- contradicted the whole reason this dispatcher exists. A mis-routed cell is
-not a silent loss either: patch_search compares required_env() against the
-running interpreter and records env_mismatch on the cell.
+tabicl_v2 concepts get the tfm2 interpreter on any host (tabicl v1 and v2
+cannot share an env).
 
 Usage:
     python -m scripts.rebuttal.patch_queue \
@@ -68,17 +64,11 @@ def sh(host, remote, timeout=45):
 def observe(host):
     """(busy_gpus, running_concepts), or None when the host cannot be observed.
 
-    Two v2 bugs produced real duplicates on 2026-08-23 (tabdpt:78 and
-    tabicl_v2:112 each running twice, both writing the SAME output file):
-
-      1. An ssh hiccup and a genuinely idle host both yield empty stdout, so an
-         unreachable morg read as "idle, nothing running" -- its in-flight
-         concepts fell back into todo and were relaunched on top of themselves.
-         The __OBS__ sentinel makes reachability explicit: no sentinel, no data.
-      2. GPU occupancy was parsed from the launcher's parent shell, the only
-         line carrying CUDA_VISIBLE_DEVICES -- but that wrapper exits once the
-         job is backgrounded, so a busy GPU became invisible and got a second
-         job stacked on it. nvidia-smi reports the GPU itself.
+    The __OBS__ sentinel separates an ssh failure from an idle host -- both
+    return empty stdout, and treating unreachable as idle relaunches in-flight
+    concepts on top of themselves. Occupancy comes from nvidia-smi, not from the
+    launcher's parent shell: that wrapper carries CUDA_VISIBLE_DEVICES but exits
+    once the job is backgrounded, leaving a busy GPU invisible.
     """
     r = sh(host, "pgrep -af '[p]atch_search' 2>/dev/null; echo __OBS__; "
                  "nvidia-smi --query-gpu=index,memory.used "
@@ -98,10 +88,8 @@ def observe(host):
     if proc_txt.strip() and not busy:
         return None          # jobs running but no GPU reading: don't trust it
     if len(running) > len(busy):
-        # A job launched last cycle can still be loading its model, holding no
-        # GPU memory yet -- reading its slot as free is how two DIFFERENT
-        # concepts ended up stacked on morg gpu3. Treat the host as full until
-        # every running job is visible on a GPU; costs at most one poll.
+        # a job still loading its model holds no GPU memory yet; treat the host
+        # as full until every running job is visible, costing at most one poll
         busy = set(gpus)
     return busy, running
 
@@ -176,10 +164,9 @@ def main():
                     print(f"host back: {host}", flush=True)
         blind = sorted(h for h, n in misses.items() if n < DOWN_AFTER)
         if blind:
-            # A host we cannot see may be mid-concept, and its running set is
-            # absent from `running` -- dispatching now would stack a duplicate
-            # onto live work. Wait it out, but only briefly: a genuinely dead
-            # host (firelord4 reboots) must not stall the whole queue.
+            # an unseen host may be mid-concept, so dispatching now could stack a
+            # duplicate onto live work; DOWN_AFTER bounds the wait so a dead host
+            # cannot stall the queue
             print(f"cycle skipped: unobservable {blind}", flush=True)
             time.sleep(args.poll)
             continue

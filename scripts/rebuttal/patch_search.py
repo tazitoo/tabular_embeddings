@@ -1939,15 +1939,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 # 1,0,1,0: toward is derivative of suppression+collateral within a
                 # row, centrality is a metric) this freeze is inert by construction.
                 #
-                # CENTRALITY IS CLAMPED ONE-SIDED, not frozen (2026-08-23, for the
-                # v31 config that restores it): post-saturation a live centrality
-                # term is a second financing channel -- r83 showed a commit whose
-                # blast ROSE while the score rose, paid for by centrality. But a
-                # symmetric freeze would also blind the phase to repair columns
-                # that WRECK centrality, which is the hemorrhage the term was
-                # restored to stop. Credit is capped at the saturation value while
-                # degradation stays fully live, the same one-sided, tolerance-free
-                # shape as the repair value-feasibility rule.
+                # Centrality is clamped one-sided rather than frozen: a live term
+                # post-saturation finances blast increases (r83), but freezing it
+                # would also hide repair columns that wreck centrality. Credit
+                # caps at the saturation value, degradation stays live.
                 cen = max(0.0, sb["centrality_ratio"])
                 if frozen_centrality is not None:
                     cen = min(cen, frozen_centrality)
@@ -2309,13 +2304,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                            categorical=c_ in space.cat)})
                 scored, _, _ = score_column(col, others_now,
                                             candidates=escalation_candidates(col))
-                # PARETO acceptance (2026-08-22): raw-objective acceptance would
-                # bypass the post-saturation freezes -- with centrality live, a
-                # saturated row's refinement could finance a blast increase with a
-                # centrality gain (the r83-residual channel through the back
-                # door). A swap must improve the score AND not degrade suppression
-                # AND not increase the traded blast; centrality gains pass only as
-                # pure placement improvements.
+                # Pareto acceptance: the raw objective would bypass the post-
+                # saturation freezes, letting a saturated row finance a blast
+                # increase with a centrality gain. Score must improve with
+                # suppression held and traded blast not increased.
                 scored = [s for s in scored
                           if s["activation_after"] <= best["activation_after"] + 1e-12
                           and s.get("blast_term", float("inf"))

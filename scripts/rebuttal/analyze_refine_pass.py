@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
-"""Did the value-refinement pass earn its compute, and did it stay honest?
+"""What the --refine-pass coordinate descent bought, and whether it stayed honest.
 
-The refine pass (--refine-pass) is a coordinate descent over the committed
-columns on the FINAL base: every committed column is re-swept against its
-co-commits with the full escalation grid, and a swap is accepted only if it
-improves the objective AND does not degrade suppression AND does not raise the
-traded blast (Pareto acceptance -- raw-objective acceptance would bypass the
-post-saturation freezes, letting a saturated row finance blast with centrality).
+Two readings:
 
-Two readings, because they answer different questions:
+  WITHIN-RUN: the last trajectory entry is the row as it stood before
+    refinement, so final-minus-tail is the delta without a second run. Also
+    self-checks: n_refine_steps == 0 must land bit-identical to that tail, and
+    no row may break the Pareto invariants (suppression held, blast not raised).
 
-  WITHIN-RUN: the last trajectory entry is the state at the final commit, i.e.
-    the row exactly as it stood BEFORE refinement, so final-minus-trajectory-tail
-    is the refine delta with no second run needed. This also self-checks the
-    plumbing: a row with n_refine_steps == 0 must land bit-identical to its own
-    trajectory tail, and no row may violate the Pareto invariants.
-
-  A/B vs a --no-refine-pass CONTROL: the honest measure of what refinement buys,
-    since refinement can also change WHICH branch wins. Same-host only -- ranking
-    runs through the recipient, and cross-host float drift flips near-tied ranks.
+  A/B vs a --no-refine-pass control: the honest measure, since refinement can
+    change which branch wins. Same-host only -- cross-host float drift flips
+    near-tied ranks.
 
 Usage:
     python -m scripts.rebuttal.analyze_refine_pass \
@@ -48,12 +40,12 @@ def load(patterns):
 
 
 def traded(entry, form):
-    """The blast the objective actually TRADES, for a candidate or a commit.
+    """The blast the objective actually trades, for a candidate or a commit.
 
-    The 'blast' field keeps its historical (spend-form) meaning, so comparing it
-    would grade the search on a quantity it was not optimizing. phase_score and
-    the refine pass both read blast_term; trajectory entries predate that name
-    and carry blast_delta, which is the same number under --blast-form delta.
+    The 'blast' field keeps its historical spend-form meaning, so grading on it
+    would judge the search by a quantity it was not optimizing. Trajectory
+    entries predate the blast_term name and carry blast_delta, the same number
+    under --blast-form delta.
     """
     if entry.get("blast_term") is not None:
         return entry["blast_term"]
