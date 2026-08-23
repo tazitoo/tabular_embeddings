@@ -150,9 +150,12 @@ def main():
         a = np.asarray([pick(rows[k], field) for k in shared], float)
         c = np.asarray([pick(ctrl[k], field) for k in shared], float)
         m = np.isfinite(a) & np.isfinite(c)
+        # blast is a cost: lower is better, so the comparison flips with the field
+        up = a[m] < c[m] if field.startswith("blast") else a[m] > c[m]
+        down = a[m] > c[m] if field.startswith("blast") else a[m] < c[m]
         print(f"  {label:16s} control med {np.median(c[m]):9.4f} -> "
               f"refine med {np.median(a[m]):9.4f}   "
-              f"better {np.mean(a[m] > c[m]):5.1%}  worse {np.mean(a[m] < c[m]):5.1%}")
+              f"better {np.mean(up):5.1%}  worse {np.mean(down):5.1%}")
     same = sum(1 for k in shared
                if rows[k]["best"]["columns"] == ctrl[k]["best"]["columns"]
                and rows[k]["best"]["values"] == ctrl[k]["best"]["values"])
