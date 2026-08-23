@@ -19,8 +19,13 @@ exactly; a transport hiccup costs one cycle. Crashed concepts (not running,
 no output) fall back into todo automatically, capped at --max-attempts then
 reported failed, loudly.
 
-Launch mechanics mirror orch.sh (ssh -f, setsid, CUDA pinning, thread caps);
-tabicl_v2 concepts are constrained to tfm2-capable hosts.
+Launch mechanics mirror orch.sh (ssh -f, setsid, CUDA pinning, thread caps).
+tabicl_v2 concepts get the tfm2 INTERPRETER (tabicl v1 and v2 cannot share an
+env) but no host restriction: every host has had a tfm2 env since March, and
+pinning them to morg alone -- half the remaining pool on a quarter of the fleet
+-- contradicted the whole reason this dispatcher exists. A mis-routed cell is
+not a silent loss either: patch_search compares required_env() against the
+running interpreter and records env_mismatch on the cell.
 
 Usage:
     python -m scripts.rebuttal.patch_queue \
@@ -44,7 +49,6 @@ PY_TFM = "/home/brian/anaconda3/envs/tfm/bin/python"
 PY_TFM2 = "/home/brian/anaconda3/envs/tfm2/bin/python"
 SLOTS = [("morg.local", 0), ("morg.local", 2), ("morg.local", 3), ("morg.local", 4),
          ("surfer4", 0), ("octo4", 0), ("terrax4", 0), ("firelord4", 0)]
-TFM2_HOSTS = {"morg.local"}
 ENV = ("CUDA_DEVICE_ORDER=PCI_BUS_ID PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True "
        "OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 "
        "NUMEXPR_NUM_THREADS=8")
@@ -197,11 +201,7 @@ def main():
                 break
             if state.get(host) is None or gpu in state[host][0]:
                 continue
-            idx = next((i for i, (d, _) in enumerate(todo)
-                        if d != "tabicl_v2" or host in TFM2_HOSTS), None)
-            if idx is None:
-                continue
-            donor, feat = todo.pop(idx)
+            donor, feat = todo.pop(0)
             py = PY_TFM2 if donor == "tabicl_v2" else PY_TFM
             cid = f"{donor}_f{feat}"
             rout = f"{REPO}/output/rebuttal/{args.run}/{cid}.json"
