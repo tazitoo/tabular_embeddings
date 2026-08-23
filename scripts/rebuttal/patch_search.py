@@ -1915,6 +1915,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                 # keeps searching under phase_score (below); patience
                                 # bounds the phase
             frozen_toward = None
+            frozen_centrality = None
             remaining = list(pool)
 
             def phase_score(sb):
@@ -1930,15 +1931,31 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 poisoned term is pinned. Recorded scores are untouched -- the freeze
                 governs step acceptance, the true objective is still what is
                 reported and what arbitrates across branches."""
-                if saturated is None or frozen_toward is None:
+                if saturated is None or (frozen_toward is None
+                                         and frozen_centrality is None):
                     return _finite_score(sb)
                 # EXPONENT-AWARE (2026-08-19): must mirror the configured objective,
                 # not the all-ones form -- under the two-term config (--exponents
                 # 1,0,1,0: toward is derivative of suppression+collateral within a
                 # row, centrality is a metric) this freeze is inert by construction.
+                #
+                # CENTRALITY IS CLAMPED ONE-SIDED, not frozen (2026-08-23, for the
+                # v31 config that restores it): post-saturation a live centrality
+                # term is a second financing channel -- r83 showed a commit whose
+                # blast ROSE while the score rose, paid for by centrality. But a
+                # symmetric freeze would also blind the phase to repair columns
+                # that WRECK centrality, which is the hemorrhage the term was
+                # restored to stop. Credit is capped at the saturation value while
+                # degradation stays fully live, the same one-sided, tolerance-free
+                # shape as the repair value-feasibility rule.
+                cen = max(0.0, sb["centrality_ratio"])
+                if frozen_centrality is not None:
+                    cen = min(cen, frozen_centrality)
+                tw = (sb["toward_ablation"] if frozen_toward is None
+                      else frozen_toward)
                 v = (sb["suppression_frac"] ** EXPONENTS["suppression"]
-                     * frozen_toward ** EXPONENTS["toward_ablation"]
-                     * max(0.0, sb["centrality_ratio"]) ** EXPONENTS["centrality"]
+                     * tw ** EXPONENTS["toward_ablation"]
+                     * cen ** EXPONENTS["centrality"]
                      / (sb["blast_term"] ** EXPONENTS["blast"] + EPS))
                 return v if np.isfinite(v) else -np.inf
             # conditional-schedule state, PER BRANCH: measurements taken on this
@@ -1996,6 +2013,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     saturated = "fully_suppressed"
                     if frozen_toward is None and np.isfinite(best_l["toward_ablation"]):
                         frozen_toward = best_l["toward_ablation"]
+                    if frozen_centrality is None and np.isfinite(best_l["centrality_ratio"]):
+                        frozen_centrality = max(0.0, best_l["centrality_ratio"])
                     if not repair:
                         return best_l, trajectory_l, stop_l, n_skips, "saturation_stop"
                 elif (np.isfinite(best_l["toward_ablation"])
@@ -2003,6 +2022,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     saturated = "toward_ablation_target_reached"
                     if frozen_toward is None:
                         frozen_toward = best_l["toward_ablation"]
+                    if frozen_centrality is None and np.isfinite(best_l["centrality_ratio"]):
+                        frozen_centrality = max(0.0, best_l["centrality_ratio"])
                     if not repair:
                         return best_l, trajectory_l, "toward_ablation_target_reached", n_skips, "saturation_stop"
                 if track_cond and remaining:
@@ -2170,6 +2191,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     saturated = "fully_suppressed"
                     if frozen_toward is None and np.isfinite(best_l["toward_ablation"]):
                         frozen_toward = best_l["toward_ablation"]
+                    if frozen_centrality is None and np.isfinite(best_l["centrality_ratio"]):
+                        frozen_centrality = max(0.0, best_l["centrality_ratio"])
                     if not repair:
                         stop_detail_l = "saturation_stop"
                         break
@@ -2182,6 +2205,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     saturated = "toward_ablation_target_reached"
                     if frozen_toward is None:
                         frozen_toward = best_l["toward_ablation"]
+                    if frozen_centrality is None and np.isfinite(best_l["centrality_ratio"]):
+                        frozen_centrality = max(0.0, best_l["centrality_ratio"])
                     stop_l = "toward_ablation_target_reached"
                     if not repair:
                         stop_detail_l = "saturation_stop"
