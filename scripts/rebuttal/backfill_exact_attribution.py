@@ -26,7 +26,7 @@ import traceback
 import numpy as np
 
 from scripts._project_root import PROJECT_ROOT
-from scripts.rebuttal.patch_search import FWD, readout
+from scripts.rebuttal.patch_search import FWD, current_env, readout, required_env
 
 NEW_FIELDS = ("toward_exact", "toward_unattributed", "capture_exact", "gc_restored_c",
               "movement_from_c", "movement_total_measured",
@@ -65,7 +65,7 @@ def main():
     idx = npz_index()
     print(f"forward_deltas index: {len(idx)} cells", flush=True)
 
-    n_rows = n_done = n_err = n_skip = 0
+    n_rows = n_done = n_err = n_skip = n_env = 0
     t0 = time.time()
     for p in paths:
         dest = outdir / os.path.basename(p)
@@ -78,10 +78,18 @@ def main():
                     if not (r.get("best") and r.get("accepted_ratios")
                             and r.get("readout") and not r["readout"].get("error")):
                         continue
+                    if "toward_exact" in r["readout"]:
+                        continue              # already rescored by an earlier pass
                     n_rows += 1
                     if args.limit_rows and n_rows > args.limit_rows:
                         break
                     key = (c["donor"], ds.get("recipient"), ds.get("dataset"))
+                    # the search checks this per cell; calling readout() directly
+                    # bypasses it, and tabicl v1/v2 cannot share an interpreter. Skip
+                    # rather than fail, so a second pass under the other env fills them
+                    if required_env(key[0], key[1]) != current_env():
+                        n_env += 1
+                        continue
                     npz = idx.get(key)
                     if npz is None:
                         r["readout"]["exact_error"] = f"no forward_deltas for {key}"
@@ -107,10 +115,12 @@ def main():
         dest.write_text(json.dumps(data))
         rate = n_done / max(time.time() - t0, 1e-9)
         print(f"  wrote {dest.name}  rows={n_rows} ok={n_done} err={n_err} "
-              f"skip={n_skip}  ({rate * 3600:.0f} rows/h)", flush=True)
+              f"skip={n_skip} env_deferred={n_env}  ({rate * 3600:.0f} rows/h)",
+              flush=True)
 
     print(f"DONE {outdir} rows={n_rows} rescored={n_done} errors={n_err} "
-          f"skipped={n_skip} elapsed={(time.time() - t0) / 60:.1f}min", flush=True)
+          f"skipped={n_skip} env_deferred={n_env} "
+          f"elapsed={(time.time() - t0) / 60:.1f}min", flush=True)
 
 
 if __name__ == "__main__":
