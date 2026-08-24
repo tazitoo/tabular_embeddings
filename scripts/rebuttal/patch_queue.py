@@ -102,7 +102,17 @@ def main():
     ap.add_argument("--flags", required=True)
     ap.add_argument("--poll", type=int, default=120)
     ap.add_argument("--max-attempts", type=int, default=3)
+    ap.add_argument("--exclude-hosts", nargs="*", default=[],
+                    help="hosts to leave alone this run (reserved for other work); "
+                         "they are still observed, just never dispatched to")
     args = ap.parse_args()
+
+    # exclusion governs DISPATCH only -- an excluded host may still be finishing
+    # earlier work, and a concept missing from `running` gets relaunched elsewhere
+    slots = [(h, g) for h, g in SLOTS if h not in set(args.exclude_hosts)]
+    if args.exclude_hosts:
+        print(f"excluding {sorted(set(args.exclude_hosts))}: "
+              f"{len(slots)} of {len(SLOTS)} slots active", flush=True)
 
     outdir = PROJECT_ROOT / "output" / "rebuttal" / args.run
     outdir.mkdir(parents=True, exist_ok=True)
@@ -183,7 +193,7 @@ def main():
             break
 
         # ---- dispatch ----------------------------------------------------------
-        for host, gpu in SLOTS:
+        for host, gpu in slots:
             if not todo:
                 break
             if state.get(host) is None or gpu in state[host][0]:
