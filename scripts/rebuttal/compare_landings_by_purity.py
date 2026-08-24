@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-"""Landing rates for two sweeps, stratified by attribution purity.
+"""Compare two patching rounds over EVERY patched row, not just the landings.
 
-A landing (toward_ablation in [0.8, 1.2)) says the recipient moved to where
-ablating the concept would have put it -- but the raw rate credits movement the
-patch's collateral produced. attribution_purity is the share of the measured
-effect attributable to c, so an unstratified landing rate mixes two populations
-that mean different things. Comparing rounds on the raw rate therefore compares
-their collateral as much as their search.
+A landing (toward_ablation in [0.8, 1.2)) is one band of one metric, and the
+crossing guard rejects any candidate moving further than max(|interval|,
+MIN_GAP), so committed patches cannot exceed 1.0 -- the band is [0.8, 1.0] in
+practice and landings are the best-case tail. Judging a round by its landing
+rate reports the rows we like and ignores the majority.
 
-Reports the raw rate, the pure-landing rate, and pure landings as a count, which
-is the number that survives the objective changing between rounds.
+The two attributions measure different things and both are reported:
+
+  toward_ablation  prediction space, ALREADY net of the estimated bystander
+                   contribution (movement = observed - est_bystander), except
+                   where attribution_fallback fired and the raw observed
+                   movement was used -- those rows are inflated, so their rate
+                   is reported.
+  attribution_purity  representation space: the share of the patch's embedding
+                   displacement coming from c rather than from every other
+                   concept it moved. Selectivity, not prediction accuracy.
 
 Usage:
     python -m scripts.rebuttal.compare_landings_by_purity \
         --a "output/rebuttal/patchv28clf_*.json" --label-a v28 \
-        --b "output/rebuttal/v30q/*.json" --label-b v30 --pure 0.8
+        --b "output/rebuttal/v30q/*.json" --label-b v30
 """
 import argparse
 import glob
@@ -23,6 +30,7 @@ import json
 import numpy as np
 
 LAND_LO, LAND_HI = 0.8, 1.2
+QS = [0.1, 0.25, 0.5, 0.75, 0.9]
 
 
 def load(patterns, exclude):
@@ -34,33 +42,41 @@ def load(patterns, exclude):
             for c in json.load(open(p)):
                 for ds in c.get("datasets") or []:
                     for r in ds.get("rows") or []:
-                        b, ro = r.get("best"), r.get("readout") or {}
+                        b = r.get("best")
                         if not b:
                             continue
-                        tw = b.get("toward_ablation")
-                        if tw is None or not np.isfinite(tw):
-                            continue
-                        rows.append((float(tw), ro.get("attribution_purity")))
+                        ro = r.get("readout") or {}
+                        rows.append({
+                            "toward": b.get("toward_ablation"),
+                            "purity": ro.get("attribution_purity"),
+                            "supp": b.get("suppression_frac"),
+                            "fallback": bool(b.get("attribution_fallback")),
+                            "n_cols": len(b.get("columns") or []),
+                        })
     return rows
 
 
+def arr(rows, key):
+    v = np.array([np.nan if r[key] is None else float(r[key]) for r in rows], float)
+    return v[np.isfinite(v)]
+
+
 def report(label, rows, pure_at):
-    tw = np.array([t for t, _ in rows], float)
-    pur = np.array([np.nan if p is None else float(p) for _, p in rows], float)
-    lands = (tw >= LAND_LO) & (tw < LAND_HI)
-    has_p = np.isfinite(pur)
-    pure = has_p & (pur >= pure_at)
-    print(f"\n  {label}: {len(rows)} rows with a measurable reversal")
-    print(f"    raw landings            {lands.sum():5d}  ({lands.mean():5.1%})")
-    print(f"    purity recorded         {has_p.sum():5d}  "
-          f"(med {np.nanmedian(pur):.2f})")
-    if lands.sum():
-        print(f"    purity ON landing rows  med "
-              f"{np.nanmedian(pur[lands & has_p]):.2f}   "
-              f"share >= {pure_at}: {(pur[lands & has_p] >= pure_at).mean():.1%}")
-    print(f"    PURE landings           {(lands & pure).sum():5d}  "
-          f"({(lands & pure).sum() / max(len(rows), 1):5.1%} of rows)")
-    return (lands & pure).sum(), lands.sum()
+    print(f"\n  === {label}: {len(rows)} patched rows")
+    tw, pu, sp = arr(rows, "toward"), arr(rows, "purity"), arr(rows, "supp")
+    fb = np.mean([r["fallback"] for r in rows]) if rows else float("nan")
+    for name, v in (("toward_ablation", tw), ("purity", pu), ("suppression", sp)):
+        if len(v):
+            qs = "  ".join(f"{q:5.3f}" for q in np.quantile(v, QS))
+            print(f"    {name:16s} n={len(v):5d}  p10/25/50/75/90: {qs}")
+    print(f"    attribution_fallback (raw movement used): {fb:.1%}")
+    print(f"    toward >= 0.2: {(tw >= 0.2).mean():5.1%}   "
+          f">= 0.5: {(tw >= 0.5).mean():5.1%}   "
+          f">= 0.8 (LANDS): {((tw >= LAND_LO) & (tw < LAND_HI)).mean():5.1%}")
+    if len(pu):
+        print(f"    purity >= {pure_at}: {(pu >= pure_at).mean():5.1%}   "
+              f"(selectivity of the patch, all rows)")
+    return tw, pu
 
 
 def main():
@@ -74,12 +90,22 @@ def main():
     args = ap.parse_args()
 
     a, b = load(args.a, args.exclude), load(args.b, args.exclude)
-    pa, ra = report(args.label_a, a, args.pure)
-    pb, rb = report(args.label_b, b, args.pure)
-    print(f"\n  raw landings  {args.label_a} {ra} -> {args.label_b} {rb}"
-          f"   ({rb - ra:+d})")
-    print(f"  PURE landings {args.label_a} {pa} -> {args.label_b} {pb}"
-          f"   ({pb - pa:+d})")
+    twa, pua = report(args.label_a, a, args.pure)
+    twb, pub = report(args.label_b, b, args.pure)
+
+    # the joint view: a row is only evidence about c if the prediction moved AND
+    # the displacement that moved it was c's
+    print(f"\n  === joint (both conditions), share of all patched rows")
+    for lo in (0.2, 0.5, 0.8):
+        for name, tw, pu, n in ((args.label_a, twa, pua, len(a)),
+                                (args.label_b, twb, pub, len(b))):
+            if len(tw) == len(pu):
+                j = ((tw >= lo) & (pu >= args.pure)).sum()
+            else:                       # purity missing on some rows: report on the
+                j = float("nan")        # intersection only, never a padded estimate
+            print(f"    toward >= {lo} AND purity >= {args.pure}: "
+                  f"{name} {j if j == j else 'n/a':>6}"
+                  f"{'' if j != j else f'  ({j / max(n, 1):5.1%})'}")
 
 
 if __name__ == "__main__":
