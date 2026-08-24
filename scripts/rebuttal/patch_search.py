@@ -2648,6 +2648,15 @@ def readout(npz_path, feat, row, ratios, device):
     d_bystanders = ((signs * a_corpus * (r_by - 1.0)) @ B)
     delta_disp_bystanders = float(np.linalg.norm(d_bystanders))
 
+    # RE-INFLATION COUNTERFACTUAL: c restored to its corpus value with every bystander
+    # held at its patched ratio. The difference from the patched prediction is c's own
+    # contribution MEASURED. The search cannot afford this per candidate, so it subtracts
+    # a linear estimate (sum of leave-one-out effects scaled by ratio change) which
+    # assumes per-concept effects add -- row_additivity says they do not: v30 median
+    # 2.37, only 28.5% of rows within 0.5-1.5, so the estimate over-subtracts and the
+    # reported movement comes out too low. A counterfactual needs no such premise.
+    d_restored = ((signs * a_corpus * r_by) @ B)
+
     # CEILING CONTROL: ablate c outright -- remove its term and leave every other
     # concept untouched. That is the most any input patch could achieve, because a
     # perfect patch drives a_c to zero and disturbs nothing else. It also separates
@@ -2673,7 +2682,8 @@ def readout(npz_path, feat, row, ratios, device):
     _reseed()
     tail = build_tail(recipient, Xtr, ytr, Xq, layer, task, device, cat_indices=cat_idx,
                       target_name=splits.get(dataset, {}).get("target", "target"))
-    deltas = torch.tensor(np.vstack([dd[row], d_cf, d_abl]), dtype=torch.float32, device=device)
+    deltas = torch.tensor(np.vstack([dd[row], d_cf, d_abl, d_restored]),
+                          dtype=torch.float32, device=device)
     if isinstance(tail, SEQUENTIAL_MODELS):
         preds = np.asarray(batched_ablation_sequential(tail, Xq[row:row+1], deltas, query_idx=row),
                            dtype=np.float64)
@@ -2685,6 +2695,19 @@ def readout(npz_path, feat, row, ratios, device):
     gc_dep = float(_gc(b, preds[0], t, y))
     gc_cf = float(_gc(b, preds[1], t, y))
     gc_ceil = float(_gc(b, preds[2], t, y))
+    gc_restored = float(_gc(b, preds[3], t, y))
+
+    # toward_ablation, MEASURED, in the search's own units so the two are comparable:
+    # true-class probability for classification, squared distance to the donor otherwise.
+    classification = np.asarray(b).ndim >= 1 and np.asarray(b).size > 1
+    def _loss(p):
+        return true_class_prob(p, y) if classification else donor_dist_sq(p, t)
+    p_dep, p_cf_l, p_abl_l, p_res_l = (float(_loss(preds[i])) for i in range(4))
+    interval_ro = p_abl_l - p_dep
+    move_c = p_cf_l - p_res_l             # c's contribution, holding bystanders patched
+    move_total = p_cf_l - p_dep           # everything the patch did
+    sgn = float(np.sign(interval_ro)) if interval_ro != 0 else 1.0
+    denom = max(abs(interval_ro), MIN_GAP)   # the same resolution floor the search uses
     # everything in gap-closure units: how much of the achievable effect did the patch
     # deliver? capture near 1 = the patch does what ablating the concept does.
     ceiling_effect = gc_dep - gc_ceil
@@ -2697,6 +2720,17 @@ def readout(npz_path, feat, row, ratios, device):
             "patch_effect": patch_effect,
             "capture_of_ceiling": (float(patch_effect / ceiling_effect)
                                     if abs(ceiling_effect) > 1e-9 else float("nan")),
+            "gc_restored_c": gc_restored,
+            # capture_of_ceiling counts everything the patch did; this counts only the
+            # part the re-inflation attributes to c
+            "capture_exact": (float((gc_restored - gc_cf) / ceiling_effect)
+                              if abs(ceiling_effect) > 1e-9 else float("nan")),
+            "toward_exact": float(move_c * sgn / denom),
+            "toward_unattributed": float(move_total * sgn / denom),
+            "movement_from_c": move_c,
+            "movement_total_measured": move_total,
+            "movement_bystanders_measured": float(p_res_l - p_dep),
+            "interval_readout": interval_ro,
             "attribution_purity": purity, "sign_c": sign_c,
             "delta_disp_bystanders": delta_disp_bystanders,
             "a_c_corpus": float(A[row, feat]), "ratio_c": float(r_vec[i_c]),
