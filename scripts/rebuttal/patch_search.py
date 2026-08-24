@@ -103,6 +103,10 @@ ACTIVE_FLOOR = 1e-3
 # Raising this exponent makes the search chase toward_ablation harder.
 EXPONENTS = {"suppression": 1.0, "toward_ablation": 0.5, "blast": 1.0, "centrality": 1.0}
 EPS = 1e-7   # the constant already used by _gc and the transfer sweep
+# Diagnostic toggle (list so nested scopes can read it without a global statement):
+# when on, every scored candidate is also predicted with c re-inflated, which measures
+# the movement c caused instead of extrapolating it. Doubles the forward passes.
+MEASURE_ATTRIBUTION = [False]
 MIN_GAP = 1e-2   # the sweeps' own "models effectively agree" threshold, borrowed; the
                  # resolution floor for every recipient-side denominator here
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
@@ -1248,15 +1252,32 @@ def recipient_movement(recip, acts, feat):
     UNCORRECTED movement is used instead, with the fallback recorded.
     """
     d, ratio_vecs = [], []
+    i_c_all = recip["fids"].index(feat)
     for av in acts:
         r_vec = np.array([
             float(av[f] / recip["a_re"][f]) if abs(recip["a_re"][f]) > EPS else 1.0
             for f in recip["fids"]])
         ratio_vecs.append(r_vec)
         d.append((recip["signs"] * recip["a_corpus"] * r_vec) @ recip["B"])
+    if MEASURE_ATTRIBUTION[0]:
+        # DIAGNOSTIC: also predict each candidate with c restored to its corpus value
+        # and its bystanders left where the candidate puts them, so the movement c
+        # actually caused is measured rather than extrapolated. Doubles the batch, so
+        # it is off by default and used to calibrate how far the cheap estimate's
+        # ranking can be trusted.
+        for r_vec in ratio_vecs:
+            r_res = r_vec.copy()
+            r_res[i_c_all] = 1.0
+            d.append((recip["signs"] * recip["a_corpus"] * r_res) @ recip["B"])
     preds = recip["predict"](np.asarray(d))
+    n_cand = len(ratio_vecs)
+    measured = None
+    if MEASURE_ATTRIBUTION[0]:
+        measured = [float(recip["loss"](preds[k]) - recip["loss"](preds[n_cand + k]))
+                    for k in range(n_cand)]
+        preds = preds[:n_cand]
     out = []
-    for r_vec, p in zip(ratio_vecs, preds):
+    for k, (r_vec, p) in enumerate(zip(ratio_vecs, preds)):
         observed = float(recip["loss"](p) - recip["p_transfer"])
         est_bystander = float(sum(
             (1.0 - r_vec[i]) * recip["loo_signed"][i]
@@ -1278,6 +1299,11 @@ def recipient_movement(recip, acts, feat):
             "movement_observed": observed,
             "est_bystander": est_bystander,
             "attribution_fallback": bool(fallback),
+            # measured attribution, same sign convention as "movement"
+            "movement_measured": (float(measured[k] * np.sign(interval))
+                                  if measured is not None and interval != 0
+                                  else (float(measured[k]) if measured is not None
+                                        else None)),
         })
     return out
 
@@ -1833,6 +1859,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "blast_term": blast_term,
                                "movement_observed": rv["movement_observed"] if rv else None,
                                "est_bystander": rv["est_bystander"] if rv else None,
+                               "movement_measured": (rv.get("movement_measured")
+                                                     if rv else None),
                                "attribution_fallback": rv["attribution_fallback"] if rv else None,
                                "centrality": cen_i, "centrality_ratio": cen_ratio,
                                "score": score_val,
@@ -2133,6 +2161,32 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     continue
                 cand_col, step_best, n_searched = max(improving,
                                                       key=lambda t: phase_score(t[1]))
+                rank_diag = None
+                if MEASURE_ATTRIBUTION[0]:
+                    # Where does the winner-by-MEASUREMENT sit in the ranking the cheap
+                    # estimate produced? That rank is what a top-K re-rank would have to
+                    # reach, so it prices the design instead of assuming K=5 suffices.
+                    pool_c = [t[1] for t in improving
+                              if t[1].get("movement_measured") is not None]
+                    if pool_c:
+                        cheap = sorted(pool_c, key=phase_score, reverse=True)
+
+                        def _measured_score(sb):
+                            mv = sb["movement_measured"]
+                            v = (sb["suppression_frac"] ** EXPONENTS["suppression"]
+                                 * (max(0.0, mv) ** EXPONENTS["toward_ablation"])
+                                 * max(0.0, sb["centrality_ratio"]) ** EXPONENTS["centrality"]
+                                 / (sb["blast_term"] ** EXPONENTS["blast"] + EPS))
+                            return v if np.isfinite(v) else -np.inf
+
+                        win = max(cheap, key=_measured_score)
+                        rank_diag = {
+                            "n_candidates": len(cheap),
+                            "measured_winner_cheap_rank": cheap.index(win) + 1,
+                            "cheap_winner_measured_movement":
+                                cheap[0].get("movement_measured"),
+                            "measured_winner_movement": win.get("movement_measured"),
+                        }
                 # COMMIT-PATIENCE bookkeeping (user, 2026-08-21): marginal gain of
                 # this commit on the same phase_score basis acceptance just used,
                 # measured BEFORE saturation/freeze updates shift that basis. The
@@ -2156,6 +2210,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 # commits window position 1 every step with no skipped windows.
                 trajectory_l.append({"window": [int(c) for c in window],
                                      "window_pos": window.index(cand_col) + 1,
+                                     **({"rank_diag": rank_diag} if rank_diag else {}),
                                      # committed while already saturated = a repair
                                      # step: it can only have won on blast reduction
                                      "repair": saturated is not None,
@@ -2879,6 +2934,10 @@ def main():
                          "rows stay cheap and hard rows dig until the signal dies. "
                          "None = walk the whole menu. Stop reason "
                          "'patience_exhausted' marks rows abandoned by rule.")
+    ap.add_argument("--measure-attribution", action="store_true",
+                    help="DIAGNOSTIC: also predict every candidate with c re-inflated, "
+                         "recording where the winner-by-measurement sits in the cheap "
+                         "ranking. Doubles the forward passes; not for sweeps.")
     ap.add_argument("--record-search", action="store_true",
                     help="record every candidate at every (step, column) -- winners "
                          "and rejected alike, with admission status -- into the row's "
@@ -2960,6 +3019,10 @@ def main():
         EXPONENTS.update(zip(("suppression", "toward_ablation", "blast", "centrality"), vals))
         print(f"objective exponents: {EXPONENTS}", flush=True)
     print(f"commit patience: K={args.commit_patience} tol={args.commit_tol}", flush=True)
+    if args.measure_attribution:
+        MEASURE_ATTRIBUTION[0] = True
+        print("MEASURE-ATTRIBUTION: every candidate re-inflated (2x forward passes)",
+              flush=True)
 
     # explicit --concepts wins; --probe next; otherwise the locked set, so a bare
     # run does the full sweep
