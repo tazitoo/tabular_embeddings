@@ -111,6 +111,9 @@ EPS = 1e-7   # the constant already used by _gc and the transfer sweep
 MEASURE_ATTRIBUTION = [False]
 MEASURE_ALL = [False]
 MEASURE_REPAIR = [False]
+# exponent on the MEASURED movement term inside the repair phase, independent of the
+# pre-saturation objective's toward exponent
+REPAIR_MOVEMENT_EXP = [1.0]
 MIN_GAP = 1e-2   # the sweeps' own "models effectively agree" threshold, borrowed; the
                  # resolution floor for every recipient-side denominator here
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
@@ -2027,8 +2030,13 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     # subtracts collateral by construction, so it cannot be bought
                     # and does not need freezing; repair can then be steered by
                     # movement that is genuinely c's.
+                    # The measured term carries its OWN exponent: the pre-saturation
+                    # objective keeps toward at 0 (its estimate is inflated and buys
+                    # movement with collateral -- exponent 1 there cost 3.6x blast on
+                    # the smoke), while repair is steered by movement that is genuinely
+                    # c's and cannot be bought.
                     m = float(sb["movement_measured"])
-                    tw = math.copysign(abs(m) ** EXPONENTS["toward_ablation"], m)
+                    tw = math.copysign(abs(m) ** REPAIR_MOVEMENT_EXP[0], m)
                     v = (sb["suppression_frac"] ** EXPONENTS["suppression"] * tw
                          * cen ** EXPONENTS["centrality"]
                          / (sb["blast_term"] ** EXPONENTS["blast"] + EPS))
@@ -2988,6 +2996,9 @@ def main():
                     help="DIAGNOSTIC: also predict every candidate with c re-inflated, "
                          "recording where the winner-by-measurement sits in the cheap "
                          "ranking. Doubles the forward passes; not for sweeps.")
+    ap.add_argument("--repair-movement-exp", type=float, default=1.0,
+                    help="exponent on the measured movement term in the repair phase "
+                         "(default 1.0); independent of the pre-saturation objective")
     ap.add_argument("--measured-repair", action="store_true",
                     help="Steer the repair phase by MEASURED movement (c re-inflated) "
                          "instead of a frozen estimate. ~26%% more forward passes, since "
@@ -3079,7 +3090,9 @@ def main():
               flush=True)
     if args.measured_repair:
         MEASURE_REPAIR[0] = True
-        print("MEASURED-REPAIR: repair phase steered by measured movement", flush=True)
+        REPAIR_MOVEMENT_EXP[0] = float(args.repair_movement_exp)
+        print(f"MEASURED-REPAIR: repair steered by measured movement, exponent "
+              f"{REPAIR_MOVEMENT_EXP[0]}", flush=True)
 
     # explicit --concepts wins; --probe next; otherwise the locked set, so a bare
     # run does the full sweep
