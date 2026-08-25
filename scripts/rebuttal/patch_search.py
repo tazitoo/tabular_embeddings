@@ -103,10 +103,14 @@ ACTIVE_FLOOR = 1e-3
 # Raising this exponent makes the search chase toward_ablation harder.
 EXPONENTS = {"suppression": 1.0, "toward_ablation": 0.5, "blast": 1.0, "centrality": 1.0}
 EPS = 1e-7   # the constant already used by _gc and the transfer sweep
-# Diagnostic toggle (list so nested scopes can read it without a global statement):
-# when on, every scored candidate is also predicted with c re-inflated, which measures
-# the movement c caused instead of extrapolating it. Doubles the forward passes.
+# Re-inflation measurement toggles (lists so nested scopes read them without `global`).
+# MEASURE_ATTRIBUTION is what the scorer reads and is set DYNAMICALLY per phase;
+# MEASURE_ALL (--measure-attribution) forces it on everywhere, doubling forward passes;
+# MEASURE_REPAIR (--measured-repair) turns it on only once a branch saturates, which is
+# where measurement changes decisions and costs ~26% rather than 100%.
 MEASURE_ATTRIBUTION = [False]
+MEASURE_ALL = [False]
+MEASURE_REPAIR = [False]
 MIN_GAP = 1e-2   # the sweeps' own "models effectively agree" threshold, borrowed; the
                  # resolution floor for every recipient-side denominator here
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
@@ -1982,6 +1986,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                 # bounds the phase
             frozen_toward = None
             frozen_centrality = None
+            # branches run sequentially, so a phase-scoped toggle is safe here: each
+            # branch starts on the global setting and switches on at its own saturation
+            MEASURE_ATTRIBUTION[0] = MEASURE_ALL[0]
             remaining = list(pool)
 
             def phase_score(sb):
@@ -2086,6 +2093,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                           else "best_combination")
                 if best_l["activation_after"] <= 0:
                     saturated = "fully_suppressed"
+                    if MEASURE_REPAIR[0]:
+                        MEASURE_ATTRIBUTION[0] = True
                     if frozen_toward is None and np.isfinite(best_l["toward_ablation"]):
                         frozen_toward = best_l["toward_ablation"]
                     if frozen_centrality is None and np.isfinite(best_l["centrality_ratio"]):
@@ -2095,6 +2104,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 elif (np.isfinite(best_l["toward_ablation"])
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     saturated = "toward_ablation_target_reached"
+                    if MEASURE_REPAIR[0]:
+                        MEASURE_ATTRIBUTION[0] = True
                     if frozen_toward is None:
                         frozen_toward = best_l["toward_ablation"]
                     if frozen_centrality is None and np.isfinite(best_l["centrality_ratio"]):
@@ -2273,6 +2284,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                           else "best_combination")
                 if best_l["activation_after"] <= 0:
                     saturated = "fully_suppressed"
+                    if MEASURE_REPAIR[0]:
+                        MEASURE_ATTRIBUTION[0] = True
                     if frozen_toward is None and np.isfinite(best_l["toward_ablation"]):
                         frozen_toward = best_l["toward_ablation"]
                     if frozen_centrality is None and np.isfinite(best_l["centrality_ratio"]):
@@ -2287,6 +2300,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 elif (np.isfinite(best_l["toward_ablation"])
                         and best_l["toward_ablation"] >= REVERSAL_TOLERANCE):
                     saturated = "toward_ablation_target_reached"
+                    if MEASURE_REPAIR[0]:
+                        MEASURE_ATTRIBUTION[0] = True
                     if frozen_toward is None:
                         frozen_toward = best_l["toward_ablation"]
                     if frozen_centrality is None and np.isfinite(best_l["centrality_ratio"]):
@@ -2465,6 +2480,7 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
             # "conditional" only if the free tier could actually run on this row
             "schedule": ("conditional" if track_cond else "static"),
             "blast_form": blast_form,
+            "measured_repair": bool(MEASURE_REPAIR[0]),
             "n_schedule_escalations": int(n_sched_esc[0]),
             "n_repair_steps": sum(1 for t in trajectory if t.get("repair")),
             "n_refine_steps": int(n_refine_steps),
@@ -2972,6 +2988,10 @@ def main():
                     help="DIAGNOSTIC: also predict every candidate with c re-inflated, "
                          "recording where the winner-by-measurement sits in the cheap "
                          "ranking. Doubles the forward passes; not for sweeps.")
+    ap.add_argument("--measured-repair", action="store_true",
+                    help="Steer the repair phase by MEASURED movement (c re-inflated) "
+                         "instead of a frozen estimate. ~26%% more forward passes, since "
+                         "only post-saturation candidates are measured.")
     ap.add_argument("--record-search", action="store_true",
                     help="record every candidate at every (step, column) -- winners "
                          "and rejected alike, with admission status -- into the row's "
@@ -3054,9 +3074,12 @@ def main():
         print(f"objective exponents: {EXPONENTS}", flush=True)
     print(f"commit patience: K={args.commit_patience} tol={args.commit_tol}", flush=True)
     if args.measure_attribution:
-        MEASURE_ATTRIBUTION[0] = True
+        MEASURE_ALL[0] = MEASURE_ATTRIBUTION[0] = True
         print("MEASURE-ATTRIBUTION: every candidate re-inflated (2x forward passes)",
               flush=True)
+    if args.measured_repair:
+        MEASURE_REPAIR[0] = True
+        print("MEASURED-REPAIR: repair phase steered by measured movement", flush=True)
 
     # explicit --concepts wins; --probe next; otherwise the locked set, so a bare
     # run does the full sweep
