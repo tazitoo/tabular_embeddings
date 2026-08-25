@@ -1321,15 +1321,24 @@ def value_rank_diag(scored, cheap_winner):
         return None
 
     def measured_score(sb):
-        v = (sb["suppression_frac"] ** EXPONENTS["suppression"]
-             * max(0.0, sb["movement_measured"]) ** EXPONENTS["toward_ablation"]
+        # mirror objective()'s sign-preserving root exactly: at exponent 0 the
+        # MAGNITUDE drops out but the SIGN still flips the score, so a wrong-way
+        # candidate scores negative even when the term is nominally off
+        m = float(sb["movement_measured"])
+        root = math.copysign(abs(m) ** EXPONENTS["toward_ablation"], m)
+        v = (sb["suppression_frac"] ** EXPONENTS["suppression"] * root
              * max(0.0, sb["centrality_ratio"]) ** EXPONENTS["centrality"]
              / (sb["blast_term"] ** EXPONENTS["blast"] + EPS))
         return v if np.isfinite(v) else -np.inf
 
     cheap = sorted(pool, key=_finite_score, reverse=True)
     win = max(pool, key=measured_score)
+    sign_flip = [s for s in pool
+                 if s.get("movement") is not None
+                 and np.sign(s["movement"]) != np.sign(s["movement_measured"])]
     return {"n_values": len(pool),
+            # the estimate's sign gates acceptance even at exponent 0
+            "sign_disagreement_frac": len(sign_flip) / len(pool),
             "measured_winner_cheap_rank": cheap.index(win) + 1,
             "cheap_winner_measured_movement": cheap[0].get("movement_measured"),
             "measured_winner_movement": win.get("movement_measured"),
