@@ -1311,6 +1311,14 @@ def recipient_movement(recip, acts, feat):
                                   if measured is not None and interval != 0
                                   else (float(measured[k]) if measured is not None
                                         else None)),
+            # ...and as the same RATIO the estimated term uses. phase_score compares
+            # candidates against an incumbent scored on frozen toward (~1); feeding it
+            # raw probability movement (~1e-3) makes every repair candidate score
+            # 1000x low and repair can never fire.
+            "toward_measured": (float(toward_ablation(
+                recip["p_transfer"], recip["p_ablated"],
+                recip["p_transfer"] + measured[k]))
+                if measured is not None else None),
         })
     return out
 
@@ -1906,6 +1914,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                "est_bystander": rv["est_bystander"] if rv else None,
                                "movement_measured": (rv.get("movement_measured")
                                                      if rv else None),
+                               "toward_measured": (rv.get("toward_measured")
+                                                   if rv else None),
                                "attribution_fallback": rv["attribution_fallback"] if rv else None,
                                "centrality": cen_i, "centrality_ratio": cen_ratio,
                                "score": score_val,
@@ -2035,7 +2045,9 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     # movement with collateral -- exponent 1 there cost 3.6x blast on
                     # the smoke), while repair is steered by movement that is genuinely
                     # c's and cannot be bought.
-                    m = float(sb["movement_measured"])
+                    m = float(sb.get("toward_measured")
+                              if sb.get("toward_measured") is not None
+                              else sb["movement_measured"])
                     tw = math.copysign(abs(m) ** REPAIR_MOVEMENT_EXP[0], m)
                     v = (sb["suppression_frac"] ** EXPONENTS["suppression"] * tw
                          * cen ** EXPONENTS["centrality"]
