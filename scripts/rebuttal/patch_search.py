@@ -1308,6 +1308,35 @@ def recipient_movement(recip, acts, feat):
     return out
 
 
+def value_rank_diag(scored, cheap_winner):
+    """Where the winner-by-MEASUREMENT sits in the cheap ranking of one column's values.
+
+    The line search scores every value with the linear bystander estimate and keeps the
+    best. With --measure-attribution each value also carries the movement c actually
+    caused, so the same set can be re-ranked and the two winners compared. The rank
+    prices a top-K re-rank; the movement gap says whether reaching further is worth it.
+    """
+    pool = [s for s in scored if s.get("movement_measured") is not None]
+    if not pool:
+        return None
+
+    def measured_score(sb):
+        v = (sb["suppression_frac"] ** EXPONENTS["suppression"]
+             * max(0.0, sb["movement_measured"]) ** EXPONENTS["toward_ablation"]
+             * max(0.0, sb["centrality_ratio"]) ** EXPONENTS["centrality"]
+             / (sb["blast_term"] ** EXPONENTS["blast"] + EPS))
+        return v if np.isfinite(v) else -np.inf
+
+    cheap = sorted(pool, key=_finite_score, reverse=True)
+    win = max(pool, key=measured_score)
+    return {"n_values": len(pool),
+            "measured_winner_cheap_rank": cheap.index(win) + 1,
+            "cheap_winner_measured_movement": cheap[0].get("movement_measured"),
+            "measured_winner_movement": win.get("movement_measured"),
+            "cheap_winner_suppression": cheap[0].get("suppression_frac"),
+            "measured_winner_suppression": win.get("suppression_frac")}
+
+
 def shift_metrics(a_base, a_new, others, feat):
     """How much did the OTHER accepted concepts move, per concept and relative to their own scale?
 
@@ -2105,8 +2134,10 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                                              "column_name": str(space.names[cand_col]),
                                              "branch": branch, "candidates": trace})
                     if scored:
-                        window_scored.append(
-                            (cand_col, max(scored, key=_finite_score), n_searched))
+                        col_best = max(scored, key=_finite_score)
+                        if MEASURE_ATTRIBUTION[0]:
+                            col_best["_rank_diag"] = value_rank_diag(scored, col_best)
+                        window_scored.append((cand_col, col_best, n_searched))
                 if track_cond:
                     # every window evaluation is a fresh CONDITIONAL measurement of
                     # that column on the current base -- keep it (SIGNED), it was
@@ -2161,32 +2192,12 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                     continue
                 cand_col, step_best, n_searched = max(improving,
                                                       key=lambda t: phase_score(t[1]))
-                rank_diag = None
-                if MEASURE_ATTRIBUTION[0]:
-                    # Where does the winner-by-MEASUREMENT sit in the ranking the cheap
-                    # estimate produced? That rank is what a top-K re-rank would have to
-                    # reach, so it prices the design instead of assuming K=5 suffices.
-                    pool_c = [t[1] for t in improving
-                              if t[1].get("movement_measured") is not None]
-                    if pool_c:
-                        cheap = sorted(pool_c, key=phase_score, reverse=True)
-
-                        def _measured_score(sb):
-                            mv = sb["movement_measured"]
-                            v = (sb["suppression_frac"] ** EXPONENTS["suppression"]
-                                 * (max(0.0, mv) ** EXPONENTS["toward_ablation"])
-                                 * max(0.0, sb["centrality_ratio"]) ** EXPONENTS["centrality"]
-                                 / (sb["blast_term"] ** EXPONENTS["blast"] + EPS))
-                            return v if np.isfinite(v) else -np.inf
-
-                        win = max(cheap, key=_measured_score)
-                        rank_diag = {
-                            "n_candidates": len(cheap),
-                            "measured_winner_cheap_rank": cheap.index(win) + 1,
-                            "cheap_winner_measured_movement":
-                                cheap[0].get("movement_measured"),
-                            "measured_winner_movement": win.get("movement_measured"),
-                        }
+                # value-level: among all values the line search probed for the column
+                # it committed, where did the winner-by-measurement rank? The column
+                # choice is a separate, much smaller decision (window width, <= 3).
+                rank_diag = step_best.pop("_rank_diag", None)
+                for _c, _sb, _n in window_scored:
+                    _sb.pop("_rank_diag", None)
                 # COMMIT-PATIENCE bookkeeping (user, 2026-08-21): marginal gain of
                 # this commit on the same phase_score basis acceptance just used,
                 # measured BEFORE saturation/freeze updates shift that basis. The
