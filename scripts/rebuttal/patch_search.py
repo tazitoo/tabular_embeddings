@@ -2012,6 +2012,20 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 cen = max(0.0, sb["centrality_ratio"])
                 if frozen_centrality is not None:
                     cen = min(cen, frozen_centrality)
+                if (MEASURE_ATTRIBUTION[0]
+                        and sb.get("movement_measured") is not None):
+                    # Live MEASURED movement in the repair phase. toward is frozen
+                    # post-saturation because the ESTIMATE can be bought with
+                    # collateral -- the r83 poisoning channel. A counterfactual
+                    # subtracts collateral by construction, so it cannot be bought
+                    # and does not need freezing; repair can then be steered by
+                    # movement that is genuinely c's.
+                    m = float(sb["movement_measured"])
+                    tw = math.copysign(abs(m) ** EXPONENTS["toward_ablation"], m)
+                    v = (sb["suppression_frac"] ** EXPONENTS["suppression"] * tw
+                         * cen ** EXPONENTS["centrality"]
+                         / (sb["blast_term"] ** EXPONENTS["blast"] + EPS))
+                    return v if np.isfinite(v) else -np.inf
                 tw = (sb["toward_ablation"] if frozen_toward is None
                       else frozen_toward)
                 v = (sb["suppression_frac"] ** EXPONENTS["suppression"]
