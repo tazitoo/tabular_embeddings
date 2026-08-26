@@ -114,6 +114,9 @@ MEASURE_REPAIR = [False]
 # exponent on the MEASURED movement term inside the repair phase, independent of the
 # pre-saturation objective's toward exponent
 REPAIR_MOVEMENT_EXP = [1.0]
+# cap the centrality credit at parity (see objective()): degradation still penalised,
+# improvement past the row own starting typicality earns nothing
+CENTRALITY_CAP = [False]
 MIN_GAP = 1e-2   # the sweeps' own "models effectively agree" threshold, borrowed; the
                  # resolution floor for every recipient-side denominator here
 # Nothing is excluded by default. tabdpt is PARKED, not dropped: its cached
@@ -1058,8 +1061,17 @@ def objective(suppression_frac, movement, spend, centrality_ratio=1.0):
     m = float(movement)
     b = EXPONENTS["toward_ablation"]
     root = math.copysign(abs(m) ** b, m) if np.isfinite(m) else float("nan")
+    cen = max(0.0, centrality_ratio)
+    if CENTRALITY_CAP[0]:
+        # Credit capped at parity: a patch is penalised for making the row less typical
+        # than it started, but earns nothing for making it MORE typical. Without the cap
+        # the ratio has no ceiling, so the search spends collateral gilding rows that
+        # were never off-manifold: measured on tabdpt, the 62% of rows already at
+        # centrality >= 0.8 were pushed 1.28 -> 1.84 and paid ~1.8x blast for it, while
+        # only 20% needed rescuing at all.
+        cen = min(cen, 1.0)
     numerator = float(suppression_frac ** EXPONENTS["suppression"] * root
-                      * max(0.0, centrality_ratio) ** EXPONENTS["centrality"])
+                      * cen ** EXPONENTS["centrality"])
     # EPS is the HANDLER, not a constant in the live path (2026-08-15 review): every
     # positive spend divides exactly, and only a PERFECT patch -- spend exactly 0 --
     # takes the except branch, so "how often do we need EPS" is definitional: it is the
@@ -2032,6 +2044,8 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 cen = max(0.0, sb["centrality_ratio"])
                 if frozen_centrality is not None:
                     cen = min(cen, frozen_centrality)
+                if CENTRALITY_CAP[0]:
+                    cen = min(cen, 1.0)
                 if (MEASURE_ATTRIBUTION[0]
                         and sb.get("movement_measured") is not None):
                     # Live MEASURED movement in the repair phase. toward is frozen
@@ -3011,6 +3025,10 @@ def main():
     ap.add_argument("--repair-movement-exp", type=float, default=1.0,
                     help="exponent on the measured movement term in the repair phase "
                          "(default 1.0); independent of the pre-saturation objective")
+    ap.add_argument("--centrality-cap", action="store_true",
+                    help="cap the centrality credit at parity: penalise a patch for "
+                         "making the row less typical, but give no credit for making "
+                         "it more typical than it started")
     ap.add_argument("--measured-repair", action="store_true",
                     help="Steer the repair phase by MEASURED movement (c re-inflated) "
                          "instead of a frozen estimate. ~26%% more forward passes, since "
@@ -3100,6 +3118,9 @@ def main():
         MEASURE_ALL[0] = MEASURE_ATTRIBUTION[0] = True
         print("MEASURE-ATTRIBUTION: every candidate re-inflated (2x forward passes)",
               flush=True)
+    if args.centrality_cap:
+        CENTRALITY_CAP[0] = True
+        print("CENTRALITY-CAP: credit capped at parity (no reward above 1.0)", flush=True)
     if args.measured_repair:
         MEASURE_REPAIR[0] = True
         REPAIR_MOVEMENT_EXP[0] = float(args.repair_movement_exp)
