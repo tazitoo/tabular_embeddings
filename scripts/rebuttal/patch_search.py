@@ -1335,6 +1335,16 @@ def recipient_movement(recip, acts, feat):
     return out
 
 
+def _measured_key(sb):
+    """The configured objective with MEASURED movement swapped in for the estimate."""
+    m = float(sb["toward_measured"])
+    root = math.copysign(abs(m) ** EXPONENTS["toward_ablation"], m)
+    v = (sb["suppression_frac"] ** EXPONENTS["suppression"] * root
+         * max(0.0, sb["centrality_ratio"]) ** EXPONENTS["centrality"]
+         / (sb["blast_term"] ** EXPONENTS["blast"] + EPS))
+    return v if np.isfinite(v) else -np.inf
+
+
 def value_rank_diag(scored, cheap_winner):
     """Where the winner-by-MEASUREMENT sits in the cheap ranking of one column's values.
 
@@ -2261,9 +2271,26 @@ def search_row(donor, dataset, X_ctx, y_ctx, X_query, task, device, row, feat,
                 cand_col, step_best, n_searched = max(improving,
                                                       key=lambda t: phase_score(t[1]))
                 # value-level: among all values the line search probed for the column
-                # it committed, where did the winner-by-measurement rank? The column
-                # choice is a separate, much smaller decision (window width, <= 3).
+                # it committed, where did the winner-by-measurement rank?
                 rank_diag = step_best.pop("_rank_diag", None)
+                # column-level: same question ACROSS the window's columns. Only
+                # meaningful with a wide window -- at window 3 the answer is trivially
+                # rank 1 of 3. This is the test of whether the LINEAR ranking picks the
+                # right column, which matters most where additivity fails.
+                if MEASURE_ATTRIBUTION[0] and len(window_scored) > 1:
+                    pool_c = [sb for _c, sb, _n in window_scored
+                              if sb.get("toward_measured") is not None]
+                    if len(pool_c) > 1:
+                        col_cheap = sorted(pool_c, key=_finite_score, reverse=True)
+                        col_win = max(pool_c, key=lambda sb: _measured_key(sb))
+                        rank_diag = dict(rank_diag or {})
+                        rank_diag["col_n"] = len(col_cheap)
+                        rank_diag["col_measured_winner_cheap_rank"] = (
+                            col_cheap.index(col_win) + 1)
+                        rank_diag["col_cheap_winner_measured"] = (
+                            col_cheap[0].get("toward_measured"))
+                        rank_diag["col_measured_winner_measured"] = (
+                            col_win.get("toward_measured"))
                 for _c, _sb, _n in window_scored:
                     _sb.pop("_rank_diag", None)
                 # COMMIT-PATIENCE bookkeeping (user, 2026-08-21): marginal gain of
