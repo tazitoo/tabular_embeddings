@@ -39,8 +39,49 @@ def load(pattern, feats):
                         "raw": b.get("blast_raw"),
                         "supp": b.get("suppression_frac"),
                         "cols": len(b.get("columns") or []),
+                        # ESTIMATED movement: on a consistent definition across these
+                        # rounds (target and denominator floor unchanged since Aug
+                        # 11/13) but inflated by collateral, so high-blast rounds are
+                        # flattered by it
+                        "tw": b.get("toward_ablation"),
+                        # MEASURED movement, only where the round has been backfilled
+                        "tex": (r.get("readout") or {}).get("toward_exact"),
                     }
     return out
+
+
+def paired(rounds, ref_label):
+    """Each round against a common reference on THEIR shared rows.
+
+    Intersecting every round at once collapses to the handful of rows every version
+    could patch -- necessarily the easy ones. Pairing each round separately against one
+    reference keeps thousands of rows per comparison, at the cost of a slightly
+    different population per row of the table (n and the reference medians are printed
+    so the shift is visible).
+    """
+    ref = dict(rounds)[ref_label]
+    print(f"\n  paired against {ref_label} ({len(ref)} rows) on shared rows")
+    print(f"  {'round':10s} {'n':>6s} {'centrality':>21s} {'blast_raw':>23s} "
+          f"{'supp':>13s}")
+    print(f"  {'':10s} {'':>6s} {'round':>9s} {'ref':>9s} "
+          f"{'round':>10s} {'ref':>10s} {'ratio':>6s}  {'supp':>6s} "
+          f"{'tw est':>8s} {'tw meas':>7s}")
+    for lab, d in rounds:
+        ks = sorted(set(d) & set(ref))
+        if not ks:
+            print(f"  {lab:10s} {'--':>6s}  no shared rows")
+            continue
+
+        def med(src, f):
+            v = np.array([src[k][f] for k in ks if src[k][f] is not None], float)
+            return np.nanmedian(v) if len(v) else float("nan")
+
+        rr, rf = med(d, "raw"), med(ref, "raw")
+        tex = med(d, "tex")
+        tex_s = f"{tex:7.3f}" if np.isfinite(tex) else "      -"
+        print(f"  {lab:10s} {len(ks):6d} {med(d, 'cen'):9.3f} {med(ref, 'cen'):9.3f} "
+              f"{rr:10.5f} {rf:10.5f} {rr / max(rf, 1e-12):6.2f}  "
+              f"{med(d, 'supp'):6.3f} {med(d, 'tw'):8.3f} {tex_s}")
 
 
 def main():
@@ -48,6 +89,8 @@ def main():
     ap.add_argument("--feats", nargs="*", type=int, default=[])
     ap.add_argument("--rounds", nargs="+", required=True,
                     help="label:glob, in the order to display")
+    ap.add_argument("--reference", default=None,
+                    help="round label to pair every other round against")
     args = ap.parse_args()
 
     feats = set(args.feats)
@@ -59,6 +102,10 @@ def main():
             rounds.append((lab, d))
         else:
             print(f"  {lab}: no rows (skipped)")
+
+    if args.reference:
+        paired(rounds, args.reference)
+        return
 
     shared = set.intersection(*(set(d) for _, d in rounds)) if rounds else set()
     print(f"\n{len(shared)} rows present in all {len(rounds)} rounds "
