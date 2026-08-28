@@ -2745,6 +2745,17 @@ def concept_picks(donor, feat, args):
     has any narrow cell, keep them when it has nothing else, so coverage is
     preserved by construction and the fallback stays visible via wide-last."""
     cells = cells_for_concept(donor, feat, args.min_rows, args.task)
+    # RECIPIENT SWAP (user, 2026-08-28): same FILTER pattern as the carte, env and
+    # wide rules -- drop cells on an excluded recipient when the concept has another
+    # deployment, keep them when it has none, so coverage cannot fall silently. Used
+    # to drop tabdpt-as-recipient: 37% of rows at measured movement 0.003, because
+    # its transfers spread over ~60 co-active concepts so no single one is necessary.
+    # 242 of its 259 concepts are covered by another recipient; the 17 that are not
+    # were sequestered as non-feasible (median rank 52, movement -0.0001).
+    if getattr(args, "exclude_recipients", None):
+        kept = [c for c in cells if c[0] not in args.exclude_recipients]
+        if kept:
+            cells = kept
     if getattr(args, "wide_cells", "swap") == "swap" and args.wide_last:
         narrow = [c for c in cells
                   if dataset_width(donor, c[1]) <= args.wide_last]
@@ -3052,6 +3063,10 @@ def main():
     ap.add_argument("--repair-movement-exp", type=float, default=1.0,
                     help="exponent on the measured movement term in the repair phase "
                          "(default 1.0); independent of the pre-saturation objective")
+    ap.add_argument("--exclude-recipients", nargs="*", default=[],
+                    help="drop cells on these recipients when the concept has another "
+                         "deployment (kept when it has none, so coverage cannot fall "
+                         "silently)")
     ap.add_argument("--centrality-cap", action="store_true",
                     help="cap the centrality credit at parity: penalise a patch for "
                          "making the row less typical, but give no credit for making "
