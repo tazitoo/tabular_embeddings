@@ -2920,16 +2920,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe", action="store_true", help="run the 5 stratified concepts")
     ap.add_argument("--concepts", nargs="*", default=None, help="donor:feat pairs")
-    ap.add_argument("--n-datasets", type=int, default=None,
-                    help="datasets per concept; default ALL. Ranking is execution "
+    ap.add_argument("--n-datasets", type=int, default=3,
+                    help="datasets per concept (default 3, the v31 budget). Pass None "
+                         "for ALL usable cells -- a ~4.5x expansion that is not yet "
+                         "shown to be needed. Ranking is execution "
                          "ORDER, not eligibility, so this is purely a budget dial -- "
                          "lowering it stops earlier down an importance-ordered list, "
                          "it does not make rows ineligible.")
     ap.add_argument("--n-activation-bands", type=int, default=3,
                     help="activation strata to spread the sampled rows over; 1 would "
                          "characterise the concept from its top-activation rows alone")
-    ap.add_argument("--n-rows", type=int, default=None,
-                    help="rows patched per dataset; default ALL. Budget dial, as above.")
+    ap.add_argument("--n-rows", type=int, default=10,
+                    help="rows patched per dataset (default 10, the v31 budget). Cells "
+                         "hold a median of 2 accepted rows, so this caps almost "
+                         "nothing; raising it to 25 adds ~7%. Budget dial, as above.")
     ap.add_argument("--top-cols", type=int, default=None,
                     help="columns carried from the pass-1 sensitivity map into the "
                          "pass-2 combination search; default ALL that suppress. This "
