@@ -2948,7 +2948,7 @@ def main():
                          "classification costs no concepts (0 of 335 have only regression "
                          "cells), 16.8%% of cells and 10.8%% of rows; it does leave 14 "
                          "concepts under 30 rows, up from 5.")
-    ap.add_argument("--exponents", default=None,
+    ap.add_argument("--exponents", default="1,0,1,1",
                     help="override the objective's exponents as "
                          "suppression,toward_ablation,blast,centrality (default 1,0.5,1,1). The toward_ablation one "
                          "is the live knob: with the crossing guard bounding toward_ablation at 1, "
@@ -2959,9 +2959,10 @@ def main():
                     help="with --beam all: max roots per row. Cap-hit rows are "
                          "FLAGGED (root_cap_hit), never silently truncated; at "
                          "32 the p90 suppressing set (28) roots completely.")
-    ap.add_argument("--beam", type=str, default="1",
-                    help="restart-beam width. 1 (default) IS the production greedy, "
-                         "same code path. B>1 roots one branch at each of the top-B "
+    ap.add_argument("--beam", type=str, default="all",
+                    help="restart-beam width. 'all' (default) roots a branch at every "
+                         "suppressing column; 1 IS the pre-v30 greedy, same code "
+                         "path. B>1 roots one branch at each of the top-B "
                          "ranked columns (testing whether the top column is really "
                          "the top column); each branch runs the same windowed greedy "
                          "over the columns ranked below its root -- per step the B "
@@ -2970,9 +2971,10 @@ def main():
                          "best final patch wins, ties to the higher-ranked root. "
                          "beam_width and beam_root are recorded per row. Costs ~B x "
                          "the greedy's forwards.")
-    ap.add_argument("--window", type=int, default=None,
-                    help="columns evaluated per step within a branch. Defaults to "
-                         "--beam (the v27-and-earlier coupling, bit-identical). "
+    ap.add_argument("--window", type=int, default=3,
+                    help="columns evaluated per step within a branch (default 3). "
+                         "Passing None restores the v27-and-earlier coupling to "
+                         "--beam, bit-identical. "
                          "Decoupled because the v27 ablation showed root diversity "
                          "pays (51%% of winners leave the rank-1 root) while per-step "
                          "width saturates at 3 (62/532 rows moved going 1->3) -- so "
@@ -3047,7 +3049,7 @@ def main():
                          "post-root window positions uniform, the stale order "
                          "predicts nothing at depth). Rows ranked by slope (no "
                          "recipient) run static either way, recorded as such.")
-    ap.add_argument("--patience", type=int, default=None,
+    ap.add_argument("--patience", type=int, default=3,
                     help="stop a branch after this many CONSECUTIVE skipped windows. "
                          "Replaces --top-cols as the depth control: the fixed menu "
                          "cap spent the same budget on every row and made its own "
@@ -3063,7 +3065,7 @@ def main():
     ap.add_argument("--repair-movement-exp", type=float, default=1.0,
                     help="exponent on the measured movement term in the repair phase "
                          "(default 1.0); independent of the pre-saturation objective")
-    ap.add_argument("--exclude-recipients", nargs="*", default=[],
+    ap.add_argument("--exclude-recipients", nargs="*", default=["tabdpt"],
                     help="drop cells on these recipients when the concept has another "
                          "deployment (kept when it has none, so coverage cannot fall "
                          "silently)")
@@ -3071,7 +3073,8 @@ def main():
                     help="cap the centrality credit at parity: penalise a patch for "
                          "making the row less typical, but give no credit for making "
                          "it more typical than it started")
-    ap.add_argument("--measured-repair", action="store_true",
+    ap.add_argument("--measured-repair", action=argparse.BooleanOptionalAction,
+                    default=True,
                     help="Steer the repair phase by MEASURED movement (c re-inflated) "
                          "instead of a frozen estimate. ~26%% more forward passes, since "
                          "only post-saturation candidates are measured.")
@@ -3081,7 +3084,7 @@ def main():
                          "search_trace for observability plots. Hundreds of KB per "
                          "row; off in production sweeps, on for plotting probes.")
     ap.add_argument("--rank-by", choices=("slope", "effectiveness", "effectiveness_raw"),
-                    default="slope",
+                    default="effectiveness_raw",
                     help="pass-1 column ordering. 'slope' ranks by the concept's "
                          "response alone (canonical). 'effectiveness_raw' ranks by the "
                          "net main-effect prediction value, c's predicted effect minus "
