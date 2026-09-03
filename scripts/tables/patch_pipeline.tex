@@ -1,0 +1,73 @@
+% ---------------------------------------------------------------------
+% BODY TEXT (not caption).
+%
+% Attrition table: the starting universe is the 335 concepts drawn from the
+% 6088 accepted across the transfer sweep by two criteria -- off-manifold
+% fraction in [0.6, 0.8], the share of the concept's mapped direction lying
+% outside the recipient's principal subspace (taken at 90 percent of
+% variance), and acceptance count in [200, 499]. Every concept is accounted
+% for, and neither loss is a negative result. One concept's donor and
+% recipient require mutually incompatible TabICL versions, so it could never
+% be searched. Eleven concepts transfer only into CARTE, the one recipient
+% refit per dataset rather than frozen; rebuilding its tail to read a patch
+% moves predictions by 0.032 against a median transfer effect of 0.012 on
+% those rows, so the measurement noise exceeds the quantity measured and the
+% readout is not attempted. That is missing measurement, not a measured
+% null. The donor-side patch is unaffected in both cases: whether an input
+% edit suppresses the concept never involves the recipient.
+%
+% Character table: quartiles are of the observed rank distribution, not
+% fixed thresholds. Suppression is bimodal -- a patch either drives the
+% concept's activation to exactly zero or stalls partway, with almost
+% nothing between -- so the extinguished rate is reported rather than a
+% median, which would be a step function of that rate: it reads 1.00
+% whenever the rate clears 50 percent and drops into the lower cluster
+% when it does not. Transfer rank is taken over every concept the greedy
+% accepted at a row, nearly all of which fall outside the locked set. The
+% concepts in a row's accept list that are themselves in the locked set
+% number 1 at the Q1 median and 16 at the Q4 median, so the high-rank
+% quartiles concentrate on shared rows and their patches are not independent
+% observations.
+% ---------------------------------------------------------------------
+
+\begin{table}[t]
+\centering
+\caption{Attrition for causal patching of off-manifold transferred concepts.}
+\label{tab:patch_attrition}
+\small
+\begin{tabular}{lr}
+\toprule
+Stage & N \\
+\midrule
+Starting concept universe & 335 \\
+never searchable: conflicting TabICL versions required & 1 \\
+no qualifying patch found & 3 \\
+CARTE as recipient, refit induces noise larger than effect & 11 \\
+Patch with measured recipient prediction & 320 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\ifdefined\suppbin\else\newlength{\suppbh}\setlength{\suppbh}{4.5mm}\fi
+\providecommand{\suppbin}[1]{\rule{1.5mm}{#1\suppbh}\hspace{0.25mm}}
+\providecommand{\supphist}[1]{%
+  \raisebox{0pt}[4.5mm][0pt]{\textcolor{black!55}{#1}}}
+
+\begin{table}[t]
+\centering
+\caption{Patch character over the 320 concepts with a measured recipient prediction, by quartile of the concept's transfer rank. `ext.' is the fraction whose activation the patch drove to exactly zero; histograms are the per-concept suppression over $[0,1]$ in ten bins, common vertical scale. `select.' is how many times more the target concept moved than any other concept at that row; `centr.' is the patched row's centrality over its original. Medians throughout.}
+\label{tab:patch_character}
+\small
+\begin{tabular}{llrlrrrr}
+\toprule
+Quartile & transfer rank & N & suppression & ext. & cols & select. & centr. \\
+\midrule
+Q1 & rank $\leq$ 3 & 86 & \supphist{\suppbin{0.000}\suppbin{0.038}\suppbin{0.000}\suppbin{0.075}\suppbin{0.075}\suppbin{0.132}\suppbin{0.094}\suppbin{0.113}\suppbin{0.094}\suppbin{1.000}} & 62\% & 4.0 & 27.1 & 1.51 \\
+Q2 & 3 $<$ rank $\leq$ 9 & 76 & \supphist{\suppbin{0.021}\suppbin{0.235}\suppbin{0.214}\suppbin{0.149}\suppbin{0.128}\suppbin{0.085}\suppbin{0.192}\suppbin{0.107}\suppbin{0.043}\suppbin{0.448}} & 26\% & 4.0 & 3.4 & 1.60 \\
+Q3 & 9 $<$ rank $\leq$ 34 & 81 & \supphist{\suppbin{0.020}\suppbin{0.240}\suppbin{0.120}\suppbin{0.100}\suppbin{0.000}\suppbin{0.100}\suppbin{0.200}\suppbin{0.080}\suppbin{0.000}\suppbin{0.761}} & 46\% & 4.0 & 1.8 & 1.52 \\
+Q4 & rank $>$ 34 & 77 & \supphist{\suppbin{0.000}\suppbin{0.105}\suppbin{0.169}\suppbin{0.105}\suppbin{0.021}\suppbin{0.063}\suppbin{0.105}\suppbin{0.105}\suppbin{0.063}\suppbin{0.885}} & 55\% & 3.0 & 1.9 & 1.63 \\
+\midrule
+All &  & 320 & \supphist{\suppbin{0.010}\suppbin{0.152}\suppbin{0.122}\suppbin{0.106}\suppbin{0.056}\suppbin{0.096}\suppbin{0.147}\suppbin{0.101}\suppbin{0.051}\suppbin{0.781}} & 48\% & 4.0 & 2.6 & 1.57 \\
+\bottomrule
+\end{tabular}
+\end{table}
