@@ -16,6 +16,19 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
 - [ ] **TabDPT retrieval** — state explicitly that TabDPT runs in its native
       retrieval-augmented mode (per-query nearest-neighbour context), and that
       retrieval is preserved through the causal intervention. (SD9t Q5)
+- [ ] **TabDPT transfers are distributed, so single-concept patching fails there**
+      — candidate framing for App F.3: transfer into TabDPT succeeds (gc_deployed
+      0.98) by spreading across ~60 co-active concepts per row, so no single
+      concept is necessary. Evidence: median acceptance rank 34 (vs 3-8 for the
+      other recipients), per-concept ablation ceiling 6-11x smaller (|interval|
+      0.0015 vs 0.010-0.017), and measured movement 0.003 vs 0.28-0.37. Rank is
+      the dominant driver — at matched rank <=3 TabDPT still lags (0.178 vs
+      0.33-0.46), so lower receptivity is a real but secondary effect. Present as
+      a positive result about distributed representation with concepts-per-row as
+      an a-priori predictor of where single-concept intervention can reproduce a
+      transfer, NOT as an exclusion. Coverage cost if TabDPT-recipient cells are
+      dropped: 17 of 335 concepts (335 -> 318), all reachable only at median rank
+      52 with movement -0.0001. Pairs with the TabDPT retrieval item above.
 - [ ] **Transfer linear map** — lift a brief description from App. F.8 into the
       main text (what is fit for the concept map). (SD9t clarity)
 
@@ -26,21 +39,32 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       hiva_agnostic, taiwanese_bankruptcy_prediction, Marketing_Campaign). Same
       fallback in both trained and random arms; datasets NOT dropped (matches paper).
       (your #1)
-- [ ] **Per-example strong/weak** — clarify wording in Sec 4.2 that strong/weak is
-      the per-row winner under fixed shared context, not an overall ranking. (SD9t Q1)
+- [x] **Per-example strong/weak** — DONE 2026-09-05. Landed in §3.3 (Intervention),
+      NOT §4.2 (that's where S/W is actually defined). Clarified S is the
+      dataset-level stronger model and interventions are applied per row. (SD9t Q1)
 
 ## C. Tables / results
 - [ ] **Add `acc` (acceptance) column to the ablation table (Table 1)** — parallel
       to the transfer table; its omission is an oversight. (your #3; SD9t Q3)
-- [ ] **Replace oracle-subset numbers with FULL-TEST-SET numbers** — transfer
-      gc≈0.883, ablation gc≈0.919 over ~100% of rows (below+above diagonal), vs the
-      ~60% below-diagonal subset in the submission. **[substantive — new headline
-      numbers/table]** (dVDs primary request)
-- [ ] **Add weak→strong transfer result** — gc≈0.981: strong models do NOT already
-      contain all of the weaker model's concepts. (SD9t Q1b)
-- [ ] **Add "no harm" result** — 0 / 77,536 intervened rows moved the recipient to
-      a worse loss (100% improve or unchanged); follows from the acceptance/overshoot
-      rule. (dVDs)
+- [x] **Full-test-set / selection-bias answer** — DONE 2026-09-05. Decision: do NOT
+      replace the published below-diagonal headline numbers (per-experiment mean:
+      ablation 0.93, transfer 0.90). The symmetric pipeline pools by ROW, so its
+      below-diag recompute is 0.815 (transfer) — a benign aggregation difference, not
+      stochastic. Rather than reconcile two aggregations, we ADDED one paragraph to
+      §4 (after the transfer discussion) reporting the previously-untreated
+      above-diagonal rows in the paper's own row-pooled idiom: transfer/weak→strong
+      0.98 over 46,446 rows, ablation 0.89 over 48,237 rows, two triangles cover
+      99–100% of the test set. Frames per-row-winner knowledge as an experimental
+      control, not a precondition (answers dVDs selection-bias without new tables).
+      Numbers verified vs output/rebuttal/symmetric_summary.json.
+- [x] **Add weak→strong transfer result** — gc≈0.98 now stated in the §4 paragraph
+      above (surfaces that strong models do NOT already contain all of the weaker
+      model's concepts). (SD9t Q1b)
+- [x] **Add "no harm" result** — DONE 2026-09-05, §4 Transfer (paragraph after the
+      full-test one). Verified fresh via scripts/rebuttal/count_transfer_harm.py:
+      0 / 77,536 intervened transfer rows moved the recipient to a worse loss on
+      y_true; 100% improved, 0 unchanged. Framed as the answer to dVDs' "does
+      transfer preserve performance or harm the recipient?" (dVDs)
 - [ ] **Revise the "purely new capacity" sentence** — replace the near-zero cosine
       with the measured aligned/novel energy split + the functional decomposition
       (on-manifold vs off-manifold gap-closure), and note the ridge-map alignment
@@ -207,11 +231,11 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
 ## F. Main-text relocation — dVDs list committed in the reply (+ SD9t)
 The specific "move into main text" commitments from the reply. Several overlap §A/§C
 above; this is the consolidated dVDs checklist so nothing is dropped in the edit.
-- [ ] **Full-test-set numbers + weak→strong gc=0.981 into MAIN TEXT** (were listed as
-      §C additions; dVDs wants them in the body, not appendix). (dVDs)
-- [ ] **Donor prediction as a REQUIRED INPUT in Sec. 4.2** — state that the
-      intervention / strong–weak definition takes the donor's per-row prediction as a
-      given input, not something inferred. (dVDs)
+- [x] **Full-test-set numbers + weak→strong gc=0.981 into MAIN TEXT** — DONE
+      2026-09-05, §4 paragraph (see §C item above); in the body, not appendix. (dVDs)
+- [x] **Donor prediction as a REQUIRED INPUT** — DONE 2026-09-05. Landed in §3.3
+      (Intervention), not §4.2. States S's per-row prediction is a required input,
+      not inferred. (dVDs)
 - [ ] **SAE stability metric promoted from App. D into main text** (ties to the §A
       "SAE selection rule" item — surface the stability≥0.75 criterion in the body). (dVDs)
 - [ ] **Geometry-matched (random-SAE) control into Sec. 3, AHEAD of the numbers**
@@ -222,3 +246,23 @@ above; this is the consolidated dVDs checklist so nothing is dropped in the edit
 - [ ] **SD9t's four formatting fixes** — enumerate from §B and apply. (SD9t)
 - [ ] **App. F.8 landmark / linear-map summary into main text** (the §A "Transfer
       linear map" item — include the landmark-count summary). (SD9t)
+
+## G. Candidate: reproducibility appendix (2026-08-16)
+- [ ] **Consider an appendix section on reproducibility**, drawing on the patching
+      pipeline's measured behaviour. Candidate content if included: (i) bit-exact
+      replication per host+commit through the full search (v20↔v21: 3,046/3,046
+      identical patches, zero measurement drift); (ii) cross-GPU behaviour — TF32
+      matmul defaults on Ampere/Ada make forwards architecture-dependent at ~1e-3
+      relative, so near-tie argmax decisions cascade into different chosen patches
+      across hosts (~12% patch identity 4090↔3090) while population metrics
+      (gap_opened, blast, share-of-ceiling) remain equivalent — i.e., reproducibility
+      claims should be stated as bit-exact per hardware, distribution-equivalent
+      across hardware; (iii) determinism prerequisites (CUBLAS_WORKSPACE_CONFIG,
+      deterministic algorithms, fixed query windows, extraction seeds) and the canary
+      as the runtime integrity guard; (iv) the KNIFE-EDGE population: adjacent
+      code-version comparisons on the same host re-measure ~0.1-0.7% of rows'
+      recipient-LOO intervals differently (occasionally sign-flipping), concentrated
+      in tabpfn/tabdpt-recipient rows -- model-internal tie amplification of ulp-level
+      build-order differences, the same discontinuity class as tabpfn's cross-host
+      behaviour; within-commit replication remains bit-exact, and population metrics
+      are indifferent.
