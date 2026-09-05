@@ -1,0 +1,140 @@
+\begin{table}[t]
+\centering
+\caption{What each recipient is missing. Each cell counts the distinct off-manifold concepts a donor carries that the recipient lacks, and the median effect of ablating one, in true-class probability ($\times 10^{-3}$). Row and column totals count distinct concepts, so they are smaller than the sums: a concept missing from two recipients is counted once in each column but once overall. TabICL and TabICL-v2 cannot share an environment, so that pair is unmeasured rather than empty.}
+\label{tab:patch_diagnosis}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+Donor & mitra & tabdpt & tabpfn & tabicl & Distinct \\
+\midrule
+mitra & -- & 8 / 9.0 & 3 / 9.6 & 5 / 13.6 & 8 \\
+tabdpt & 51 / 6.8 & -- & 16 / 5.4 & 18 / 17.4 & 58 \\
+tabicl & 59 / 34.6 & 73 / 2.9 & 60 / 35.7 & -- & 105 \\
+tabicl\_v2 & 45 / 7.2 & 53 / 2.4 & 44 / 3.1 & -- & 71 \\
+tabpfn & 65 / 53.4 & 45 / 2.4 & -- & 18 / 21.5 & 78 \\
+\midrule
+Distinct & 220 / 23.2 & 179 / 2.6 & 123 / 10.8 & 41 / 18.8 & 320 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\providecommand{\rep}[1]{\textcolor{black!45}{\textit{#1}}}
+\begin{table}[t]
+\centering
+\caption{Patch explanations, quartile Q1 of the ablation effect (largest; $|\Delta_{\mathrm{ablate}}|$ from 28.5 to 578.7 $\times 10^{-3}$). Up to 3 concepts per dataset, drawn at random within the quartile and not selected for quality; no concept repeats across quartiles. A dataset contributes fewer rows, or none, where the quartile holds fewer of its concepts. Repair edits, which walk back collateral rather than suppress, are \rep{greyed}. Prediction change is in true-class probability ($\times 10^{-3}$): what ablating the concept achieves, and what the input patch achieved.}
+\label{tab:patch_q1}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{rllXrrr}
+\toprule
+Rows & Donor & Recip. & Patch & Act. & Ablate & Patch \\
+\midrule
+\multicolumn{7}{l}{\textit{splice}} \\
+1 & tabicl $f_{458}$ & mitra & \makecell[tl]{position\_-29: T $\to$ A \\ position\_-11: T $\to$ G \\ position\_-24: T $\to$ A \\ \textit{+10 more}} & 2.84 $\to$ 1.03 & -200.0 & -174.2 \\
+1 & tabpfn $f_{116}$ & mitra & \makecell[tl]{position\_-19: C $\to$ A \\ position\_-16: C $\to$ A \\ position\_-8: C $\to$ A \\ \textit{+4 more}} & 6.44 $\to$ 5.92 & -111.7 & -11.2 \\
+1 & tabicl $f_{26}$ & tabdpt & \makecell[tl]{position\_-21: A $\to$ G \\ position\_18: A $\to$ C \\ position\_-11: C $\to$ T \\ \textit{+10 more}} & 5.46 $\to$ 0.00 & -80.8 & -28.6 \\
+\midrule
+\multicolumn{7}{l}{\textit{Amazon\_employee\_access}} \\
+2 & tabicl $f_{243}$ & tabpfn & \makecell[tl]{ROLE\_ROLLUP\_1: 117902 $\to$ 117882 \\ ROLE\_FAMILY: 117887 $\to$ 118131 \\ ROLE\_ROLLUP\_2: 117903 $\to$ 117883 \\ \textit{+1 more}} & 1.66 $\to$ 0.81 & -281.2 & -219.7 \\
+1 & tabicl $f_{130}$ & tabpfn & \makecell[tl]{ROLE\_DEPTNAME: 118783 $\to$ 118202} & 3.07 $\to$ 0.00 & -43.0 & -38.2 \\
+2 & tabicl $f_{228}$ & tabpfn & \makecell[tl]{ROLE\_ROLLUP\_1: 117929 $\to$ 118006 \\ ROLE\_FAMILY: 117887 $\to$ 118762} & 1.85 $\to$ 0.00 & -41.9 & -73.1 \\
+\midrule
+\multicolumn{7}{l}{\textit{E-CommereShippingData}} \\
+1 & tabpfn $f_{262}$ & mitra & \makecell[tl]{Mode\_of\_Shipment: Ship $\to$ Flight \\ Cost\_of\_the\_Product: 281 $\to$ 280} & 2.11 $\to$ 1.53 & -209.4 & -198.0 \\
+4 & tabpfn $f_{337}$ & mitra & \makecell[tl]{Weight\_in\_gms: 5209 $\to$ 5121 \\ Cost\_of\_the\_Product: 145 $\to$ 152 \\ Prior\_purchases: 2 $\to$ 6} & 6.11 $\to$ 5.18 & +71.2 & +9.5 \\
+5 & tabdpt $f_{152}$ & mitra & \makecell[tl]{Customer\_rating: 3 $\to$ 4 \\ Gender: M $\to$ F} & 2.73 $\to$ 0.00 & +28.7 & +25.9 \\
+\midrule
+\multicolumn{7}{l}{\textit{anneal}} \\
+1 & tabpfn $f_{140}$ & tabdpt & \makecell[tl]{oil: not\_applicable $\to$ Y \\ temper\_rolling: not\_applicable $\to$ T \\ blue\_bright\_varn\_clean: B $\to$ not\_applicable \\ \textit{+1 more}} & 2.54 $\to$ 1.05 & -578.7 & -409.7 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+\begin{table}[t]
+\centering
+\caption{Patch explanations, quartile Q2 of the ablation effect (upper-middle; $|\Delta_{\mathrm{ablate}}|$ from 3.5 to 28.4 $\times 10^{-3}$). Up to 3 concepts per dataset, drawn at random within the quartile and not selected for quality; no concept repeats across quartiles. A dataset contributes fewer rows, or none, where the quartile holds fewer of its concepts. Repair edits, which walk back collateral rather than suppress, are \rep{greyed}. Prediction change is in true-class probability ($\times 10^{-3}$): what ablating the concept achieves, and what the input patch achieved.}
+\label{tab:patch_q2}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{rllXrrr}
+\toprule
+Rows & Donor & Recip. & Patch & Act. & Ablate & Patch \\
+\midrule
+\multicolumn{7}{l}{\textit{splice}} \\
+4 & mitra $f_{107}$ & tabdpt & \makecell[tl]{position\_21: T $\to$ A \\ position\_-5: G $\to$ A \\ position\_-6: A $\to$ C \\ \textit{+12 more}} & 3.51 $\to$ 2.03 & -10.2 & -2.9 \\
+15 & tabicl $f_{213}$ & tabdpt & \makecell[tl]{position\_-25: A $\to$ C \\ position\_-3: A $\to$ T \\ position\_-1: G $\to$ C \\ \textit{+1 more}} & 5.25 $\to$ 4.09 & +9.4 & +3.3 \\
+2 & tabicl $f_{147}$ & tabdpt & \makecell[tl]{position\_25: T $\to$ G \\ position\_-3: T $\to$ G \\ position\_4: A $\to$ C \\ \textit{+1 more}} & 2.80 $\to$ 0.00 & +4.1 & -4.0 \\
+\midrule
+\multicolumn{7}{l}{\textit{Amazon\_employee\_access}} \\
+1 & tabicl $f_{40}$ & tabpfn & \makecell[tl]{ROLE\_DEPTNAME: 118783 $\to$ 120016 \\ RESOURCE: 34716 $\to$ 77300} & 5.52 $\to$ 2.22 & -28.3 & -18.3 \\
+4 & tabdpt $f_{78}$ & mitra & \makecell[tl]{ROLE\_FAMILY\_DESC: 239652 $\to$ 240983 \\ MGR\_ID: 7389 $\to$ 2710 \\ ROLE\_TITLE: 118747 $\to$ 118702 \\ \textit{+1 more}} & 7.94 $\to$ 0.00 & -19.5 & -19.4 \\
+16 & tabdpt $f_{165}$ & mitra & \makecell[tl]{ROLE\_FAMILY: 249618 $\to$ 118453 \\ \rep{ROLE\_TITLE: 273308 $\to$ 259173} \\ \rep{RESOURCE: 40237 $\to$ 39518}} & 3.71 $\to$ 0.00 & -7.7 & -7.7 \\
+\midrule
+\multicolumn{7}{l}{\textit{E-CommereShippingData}} \\
+2 & tabpfn $f_{179}$ & mitra & \makecell[tl]{Mode\_of\_Shipment: Ship $\to$ Road \\ Customer\_rating: 5 $\to$ 3 \\ Product\_importance: medium $\to$ low \\ \textit{+1 more}} & 2.31 $\to$ 1.67 & +25.2 & +17.9 \\
+14 & tabdpt $f_{33}$ & mitra & \makecell[tl]{Weight\_in\_gms: 1384 $\to$ 1336 \\ Customer\_care\_calls: 5 $\to$ 6} & 2.20 $\to$ 1.56 & -23.1 & -6.7 \\
+1 & tabpfn $f_{170}$ & tabicl & \makecell[tl]{Cost\_of\_the\_Product: 219 $\to$ 278 \\ Customer\_care\_calls: 5 $\to$ 7 \\ Discount\_offered: 3 $\to$ 6} & 4.27 $\to$ 3.42 & -9.7 & -2.7 \\
+\midrule
+\multicolumn{7}{l}{\textit{anneal}} \\
+4 & tabicl $f_{808}$ & tabdpt & \makecell[tl]{hardness: 80 $\to$ 76 \\ thick: 1.6 $\to$ 0.7604 \\ width: 1320 $\to$ 1293 \\ \textit{+2 more}} & 4.00 $\to$ 1.21 & -3.8 & -10.8 \\
+1 & tabpfn $f_{161}$ & tabdpt & \makecell[tl]{lustre: not\_applicable $\to$ Y \\ surface-quality: G $\to$ F \\ hardness: 80 $\to$ 81} & 3.01 $\to$ 2.47 & -3.6 & -3.2 \\
+18 & tabicl $f_{448}$ & tabdpt & \makecell[tl]{thick: 0.6 $\to$ 1.078 \\ surface-quality: F $\to$ E} & 2.39 $\to$ 0.00 & -3.5 & -3.5 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+\begin{table}[t]
+\centering
+\caption{Patch explanations, quartile Q3 of the ablation effect (lower-middle; $|\Delta_{\mathrm{ablate}}|$ from 1.2 to 3.4 $\times 10^{-3}$). Up to 3 concepts per dataset, drawn at random within the quartile and not selected for quality; no concept repeats across quartiles. A dataset contributes fewer rows, or none, where the quartile holds fewer of its concepts. Prediction change is in true-class probability ($\times 10^{-3}$): what ablating the concept achieves, and what the input patch achieved.}
+\label{tab:patch_q3}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{rllXrrr}
+\toprule
+Rows & Donor & Recip. & Patch & Act. & Ablate & Patch \\
+\midrule
+\multicolumn{7}{l}{\textit{splice}} \\
+4 & tabicl\_v2 $f_{381}$ & tabdpt & \makecell[tl]{position\_-20: G $\to$ T \\ position\_3: G $\to$ A \\ position\_-12: A $\to$ C} & 1.20 $\to$ 0.00 & -2.6 & -2.4 \\
+10 & tabicl $f_{51}$ & tabdpt & \makecell[tl]{position\_-30: G $\to$ T \\ position\_21: G $\to$ T \\ position\_-21: T $\to$ C \\ \textit{+7 more}} & 4.03 $\to$ 0.00 & -2.0 & -2.2 \\
+1 & tabicl $f_{360}$ & tabdpt & \makecell[tl]{position\_-30: C $\to$ G \\ position\_-9: A $\to$ T \\ position\_29: G $\to$ T \\ \textit{+7 more}} & 5.10 $\to$ 0.00 & -1.2 & -1.4 \\
+\midrule
+\multicolumn{7}{l}{\textit{Amazon\_employee\_access}} \\
+14 & tabdpt $f_{177}$ & tabpfn & \makecell[tl]{RESOURCE: 28510 $\to$ 42085} & 1.81 $\to$ 0.00 & -2.4 & -2.0 \\
+6 & tabicl $f_{105}$ & mitra & \makecell[tl]{ROLE\_TITLE: 118826 $\to$ 118054 \\ RESOURCE: 45325 $\to$ 42085 \\ ROLE\_FAMILY\_DESC: 257115 $\to$ 260942 \\ \textit{+2 more}} & 8.16 $\to$ 0.00 & -2.4 & -2.9 \\
+15 & tabdpt $f_{67}$ & mitra & \makecell[tl]{ROLE\_FAMILY\_DESC: 240983 $\to$ 124151 \\ ROLE\_ROLLUP\_2: 118300 $\to$ 118052} & 3.44 $\to$ 0.00 & -2.0 & -2.9 \\
+\midrule
+\multicolumn{7}{l}{\textit{anneal}} \\
+1 & tabicl $f_{357}$ & tabdpt & \makecell[tl]{len: 4880 $\to$ 635 \\ bw\_me: not\_applicable $\to$ B} & 1.90 $\to$ 0.00 & -3.4 & -3.5 \\
+5 & tabicl $f_{198}$ & tabdpt & \makecell[tl]{width: 609.9 $\to$ 50.72 \\ len: 301 $\to$ 468 \\ steel: not\_applicable $\to$ V} & 4.05 $\to$ 1.47 & -2.5 & -2.5 \\
+6 & tabicl $f_{177}$ & tabdpt & \makecell[tl]{bt: not\_applicable $\to$ Y \\ width: 385.1 $\to$ 634.5 \\ bw\_me: M $\to$ not\_applicable} & 4.29 $\to$ 0.00 & -1.5 & -2.1 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+\begin{table}[t]
+\centering
+\caption{Patch explanations, quartile Q4 of the ablation effect (smallest; $|\Delta_{\mathrm{ablate}}|$ from 0.0 to 1.2 $\times 10^{-3}$). Up to 3 concepts per dataset, drawn at random within the quartile and not selected for quality; no concept repeats across quartiles. A dataset contributes fewer rows, or none, where the quartile holds fewer of its concepts. Prediction change is in true-class probability ($\times 10^{-3}$): what ablating the concept achieves, and what the input patch achieved.}
+\label{tab:patch_q4}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{rllXrrr}
+\toprule
+Rows & Donor & Recip. & Patch & Act. & Ablate & Patch \\
+\midrule
+\multicolumn{7}{l}{\textit{splice}} \\
+4 & tabicl $f_{204}$ & tabdpt & \makecell[tl]{position\_-20: G $\to$ A \\ position\_-5: G $\to$ T \\ position\_25: T $\to$ C \\ \textit{+3 more}} & 3.12 $\to$ 0.00 & -0.5 & -0.5 \\
+1 & tabpfn $f_{350}$ & tabdpt & \makecell[tl]{position\_11: C $\to$ G \\ position\_2: T $\to$ G \\ position\_-10: G $\to$ T \\ \textit{+11 more}} & 1.38 $\to$ 0.00 & -0.5 & -0.5 \\
+5 & tabicl $f_{238}$ & tabdpt & \makecell[tl]{position\_-28: C $\to$ G \\ position\_-11: G $\to$ A \\ position\_-10: T $\to$ G \\ \textit{+6 more}} & 4.36 $\to$ 0.00 & -0.0 & -0.0 \\
+\midrule
+\multicolumn{7}{l}{\textit{Amazon\_employee\_access}} \\
+6 & tabdpt $f_{192}$ & mitra & \makecell[tl]{ROLE\_TITLE: 117905 $\to$ 118523} & 2.64 $\to$ 0.00 & +0.6 & +1.8 \\
+1 & tabicl\_v2 $f_{390}$ & mitra & \makecell[tl]{RESOURCE: 81298 $\to$ 6977 \\ ROLE\_DEPTNAME: 118910 $\to$ 118896} & 2.74 $\to$ 0.72 & +0.4 & +1.5 \\
+5 & tabicl\_v2 $f_{173}$ & tabpfn & \makecell[tl]{RESOURCE: 25993 $\to$ 16018 \\ ROLE\_ROLLUP\_2: 119070 $\to$ 118991} & 1.11 $\to$ 0.00 & -0.3 & -0.7 \\
+\midrule
+\multicolumn{7}{l}{\textit{E-CommereShippingData}} \\
+2 & tabpfn $f_{102}$ & mitra & \makecell[tl]{Prior\_purchases: 4 $\to$ 2 \\ Customer\_care\_calls: 6 $\to$ 4 \\ Mode\_of\_Shipment: Ship $\to$ Road \\ \textit{+2 more}} & 2.53 $\to$ 1.02 & -0.0 & -160.0 \\
+\midrule
+\multicolumn{7}{l}{\textit{anneal}} \\
+4 & tabicl $f_{395}$ & tabdpt & \makecell[tl]{bf: not\_applicable $\to$ Y \\ condition: S $\to$ A \\ bw\_me: not\_applicable $\to$ M} & 3.78 $\to$ 0.00 & -0.8 & -0.2 \\
+11 & tabicl\_v2 $f_{415}$ & tabdpt & \makecell[tl]{shape: COIL $\to$ SHEET \\ formability: 3 $\to$ 5 \\ width: 609.9 $\to$ 1234} & 1.53 $\to$ 0.00 & +0.5 & +0.1 \\
+16 & tabicl\_v2 $f_{219}$ & tabdpt & \makecell[tl]{bw\_me: not\_applicable $\to$ M \\ packing: 2 $\to$ not\_applicable \\ width: 610 $\to$ 23.07 \\ \textit{+1 more}} & 2.32 $\to$ 0.00 & +0.2 & -0.3 \\
+\bottomrule
+\end{tabularx}
+\end{table}
