@@ -65,12 +65,23 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       0 / 77,536 intervened transfer rows moved the recipient to a worse loss on
       y_true; 100% improved, 0 unchanged. Framed as the answer to dVDs' "does
       transfer preserve performance or harm the recipient?" (dVDs)
-- [ ] **Revise the "purely new capacity" sentence** — replace the near-zero cosine
-      with the measured aligned/novel energy split + the functional decomposition
-      (on-manifold vs off-manifold gap-closure), and note the ridge-map alignment
-      floor (~0.33) so the geometry is not over-read. (ofnL Q2) — numbers pending compute.
-      NOTE (updated 2026-08-02): the 5-recipient caveat is STALE — carte-recipient now
-      runs via `predict_row_batched`, so the decomposition covers all 6 recipients.
+- [x] **Revise the "purely new capacity" sentence** — DONE 2026-09-06. Replaced the
+      near-zero single-vector cosine (median 0.03, an artifact of high-dim concentration)
+      with the PER-RECIPIENT subspace aligned/novel energy split from
+      `subspace_by_recipient.py` (reads subspace_summary.json + forward_deltas).
+      Off-manifold energy by recipient: tabpfn 0.49, tabicl 0.50, tabicl_v2 0.64,
+      mitra 0.60, tabdpt 0.53, carte 0.45 (range 0.45–0.64); principal angle 27–66°;
+      median K 3–6. Landed in: abstract (qualitative "roughly half … 0.45–0.64"),
+      §4 (rewrite of the orthogonality paragraph + new Table tab:offmanifold, all 6
+      recipients), conclusion (one quantitative sentence).
+      DELIBERATELY NOT USED: the functional-decomposition pooled rel_off (~0.46) — it
+      has no coherent reading (basis is each recipient's own eigenbasis; see the pooled
+      caveat below). Per-recipient split is the coherent unit. Ridge-map alignment
+      floor (~0.33) NOT cited this round (would need subspace on forward_deltas_random);
+      revisit if a reviewer/AC presses on whether the alignment is above chance.
+      NOTE: carte FLIPS between measures — most on-manifold here (0.45 off, 27°) vs
+      highest rel_off (0.81), because carte is near-degenerate (active dim ≈3/300) so
+      the delta concentrates in its few dominant directions.
 - [ ] **IF the on/off split is used at all, use the 99% variance threshold** (settled
       2026-08-02 — a choice about how we would report it, NOT a commitment to report it;
       see the disaggregation result below, which weakens the whole thread).
