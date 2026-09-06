@@ -187,9 +187,13 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       computes it; re-add if ever revisited.
 
 ## D. Framing
-- [ ] **Reframe interventions as a causal DIAGNOSTIC, not a deployment/model-
-      improvement method** — remove wording implying free full-benchmark accuracy
-      gains; per-row-winner knowledge is the experimental control. (dVDs, nn7D)
+- [x] **Reframe interventions as a causal DIAGNOSTIC, not a deployment/model-
+      improvement method** — DONE 2026-09-06. Intro: "improve the weaker one" ->
+      "close its per-row gap"; dropped "accelerate convergence" from the release
+      contribution. Conclusion: "improves predictions" -> "closes their per-row gap",
+      and replaced "principled basis for targeted model improvement" with an explicit
+      "causal diagnostic … not a route to costless accuracy gains; per-row winner is
+      the experimental control." (dVDs, nn7D)
 - [ ] **State HyperFast / Tabula-8B exclusion scope** — causal conclusions are for
       the transformer-ICL family; those two lack the per-row embedding interface the
       intervention needs. (dVDs)
