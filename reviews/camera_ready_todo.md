@@ -45,14 +45,23 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
 
 ## C. Tables / results
 - [x] **Add `acc` (acceptance) column to the ablation table (Table 1)** — DONE
-      2026-09-07. acc = concepts ablated / candidate concepts considered (unmatched,
-      firing, positive-importance), pooled over strong-win rows, computed in
-      scripts/tables/ablation_summary/ablation_summary.py from the perrow_importance
-      files (row_feature_drops>0 implies firing, so no activations needed; max_steps
-      is uncapped so tried = full firing-unmatched pool, parallel to the transfer
-      table). Values: TabICL-v2 0.018, TabPFN 0.021, TabDPT 0.062, TabICL 0.015,
-      Mitra 0.132, CARTE 0.038, Overall 0.026 — same selectivity signature as
-      transfer (high gc → low acc). (your #3; SD9t Q3)
+      2026-09-07, AND re-aligned transfer's acc to match. acc = concepts accepted /
+      concepts tried, where "tried" is the RANK DEPTH reached: the number of the
+      donor's importance-ranked unmatched concepts down to and including the deepest
+      accepted one (the greedy tries in importance order and stops at the gc tol, so
+      concepts below the last accept are never tried). Shared helper
+      scripts/tables/_rank_depth_acc.py; ablation ranks by drop, transfer by |drop|.
+      NOT the full firing-unmatched pool — that inflated "tried" (~120/row) and made
+      transfer look artificially hard (old transfer acc 2–12%). New pooled acc:
+      ABLATION 0.174 (TabPFN 0.166, TabICL 0.125, TabICL-v2 0.142, Mitra 0.324,
+      TabDPT 0.232, CARTE 0.228); TRANSFER 0.412 (higher = less parsimonious, needs
+      more concepts). §4 transfer paragraph rewritten around parsimony (drops the old
+      full-pool r=-0.93 / 2-5% / r=0.14 dissociation claims); ablation paragraph gets
+      a selectivity line (acc↔gc r=-0.90; transfer r=-0.49). Median accepted-concept
+      |drop|: ablation 0.033 vs transfer 0.005 (ablation picks fewer, higher-effect).
+      NOTE: row_feature_drops has inf/overflow values (mean |drop| ~4e10) — medians
+      robust, but worth a cleanup pass on the importance files pre-release.
+      (your #3; SD9t Q3)
 - [x] **Full-test-set / selection-bias answer** — DONE 2026-09-05. Decision: do NOT
       replace the published below-diagonal headline numbers (per-experiment mean:
       ablation 0.93, transfer 0.90). The symmetric pipeline pools by ROW, so its

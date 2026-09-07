@@ -1,20 +1,20 @@
 \begin{table}[h]
 \centering
 \small
-\caption{Ablation results by strong model, sorted by $N$. $gc/gc_R$ = mean gap closed using trained/random SAEs. $K/K_R$ = mean concepts ablated using trained/random SAEs. \emph{acc} = fraction of candidate concepts accepted during ablation (concepts ablated / firing unmatched concepts considered).}
+\caption{Ablation results by strong model, sorted by $N$. $gc/gc_R$ = mean gap closed using trained/random SAEs. $K/K_R$ = mean concepts ablated using trained/random SAEs. \emph{acc} = concepts ablated / concepts tried, where \emph{tried} is the rank depth reached in the importance-ordered candidate list (the position of the deepest accepted concept), since the greedy tries concepts in importance order and stops at the gap-closure tolerance.}
 \label{tab:ablation_summary}
 \begin{tabular}{lrlllll}
 \toprule
 Model (when strong) & $N$ & gc & $gc_R$ & $K$ & $K_R$ & acc \\
 \midrule
-TabICL-v2 & 185 & 0.99 $\pm$ 0.07 & 0.73 $\pm$ 0.22 & 2.2 $\pm$ 2.8 & 11.6 $\pm$ 6.4 & 0.018 \\
-TabPFN & 149 & 0.98 $\pm$ 0.09 & 0.47 $\pm$ 0.23 & 2.9 $\pm$ 5.0 & 11.6 $\pm$ 6.1 & 0.021 \\
-TabDPT & 137 & 0.94 $\pm$ 0.15 & 0.53 $\pm$ 0.21 & 3.4 $\pm$ 2.7 & 6.1 $\pm$ 3.5 & 0.062 \\
-TabICL & 124 & 0.96 $\pm$ 0.11 & 0.64 $\pm$ 0.20 & 1.9 $\pm$ 3.3 & 14.5 $\pm$ 7.4 & 0.015 \\
-Mitra & 88 & 0.74 $\pm$ 0.17 & 0.46 $\pm$ 0.22 & 2.3 $\pm$ 1.4 & 3.1 $\pm$ 3.5 & 0.132 \\
-CARTE & 16 & 0.72 $\pm$ 0.30 & 0.40 $\pm$ 0.21 & 4.9 $\pm$ 3.9 & 9.3 $\pm$ 5.2 & 0.038 \\
+TabICL-v2 & 185 & 0.99 $\pm$ 0.07 & 0.73 $\pm$ 0.22 & 2.2 $\pm$ 2.8 & 11.6 $\pm$ 6.4 & 0.142 \\
+TabPFN & 149 & 0.98 $\pm$ 0.09 & 0.47 $\pm$ 0.23 & 2.9 $\pm$ 5.0 & 11.6 $\pm$ 6.1 & 0.166 \\
+TabDPT & 137 & 0.94 $\pm$ 0.15 & 0.53 $\pm$ 0.21 & 3.4 $\pm$ 2.7 & 6.1 $\pm$ 3.5 & 0.232 \\
+TabICL & 124 & 0.96 $\pm$ 0.11 & 0.64 $\pm$ 0.20 & 1.9 $\pm$ 3.3 & 14.5 $\pm$ 7.4 & 0.125 \\
+Mitra & 88 & 0.74 $\pm$ 0.17 & 0.46 $\pm$ 0.22 & 2.3 $\pm$ 1.4 & 3.1 $\pm$ 3.5 & 0.324 \\
+CARTE & 16 & 0.72 $\pm$ 0.30 & 0.40 $\pm$ 0.21 & 4.9 $\pm$ 3.9 & 9.3 $\pm$ 5.2 & 0.228 \\
 \midrule
-Overall & 699 & 0.93 $\pm$ 0.15 & 0.58 $\pm$ 0.24 & 2.6 $\pm$ 3.4 & 9.9 $\pm$ 6.9 & 0.026 \\
+Overall & 699 & 0.93 $\pm$ 0.15 & 0.58 $\pm$ 0.24 & 2.6 $\pm$ 3.4 & 9.9 $\pm$ 6.9 & 0.174 \\
 \bottomrule
 \end{tabular}
 \end{table}
