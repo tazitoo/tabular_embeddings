@@ -54,8 +54,8 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       NOT the full firing-unmatched pool — that inflated "tried" (~120/row) and made
       transfer look artificially hard (old transfer acc 2–12%). New pooled acc:
       ABLATION 0.174 (TabPFN 0.166, TabICL 0.125, TabICL-v2 0.142, Mitra 0.324,
-      TabDPT 0.232, CARTE 0.228); TRANSFER 0.412 (higher = less parsimonious, needs
-      more concepts). §4 transfer paragraph rewritten around parsimony (drops the old
+      TabDPT 0.232, CARTE 0.228); TRANSFER 0.412 (higher = less concept-efficient,
+      needs more concepts). §4 transfer paragraph rewritten around concept efficiency (drops the old
       full-pool r=-0.93 / 2-5% / r=0.14 dissociation claims); ablation paragraph gets
       a selectivity line (acc↔gc r=-0.90; transfer r=-0.49). Median accepted-concept
       |drop|: ablation 0.033 vs transfer 0.005 (ablation picks fewer, higher-effect).
@@ -135,7 +135,7 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       explains the ordering generally — tabicl (48–122/512, 0.37) vs tabicl_v2
       (37–116/512, 0.11) breaks it. carte is a demonstrable outlier; a general
       "low-rank ⇒ high rel_off" law is an untested hypothesis.
-- [ ] **Foreground the per-concept efficiency (parsimony)** as the random-baseline
+- [ ] **Foreground the per-concept efficiency** as the random-baseline
       answer: trained closes 0.90 with K≈8.9 vs random 0.52 with K_R≈17.3 (~3.4×
       gap-closure per concept). (dVDs, nn7D)
 - [ ] **(Appendix, camera-ready) Truly-random isotropic-SAE control for the
@@ -210,11 +210,15 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       and replaced "principled basis for targeted model improvement" with an explicit
       "causal diagnostic … not a route to costless accuracy gains; per-row winner is
       the experimental control." (dVDs, nn7D)
-- [ ] **State HyperFast / Tabula-8B exclusion scope** — causal conclusions are for
-      the transformer-ICL family; those two lack the per-row embedding interface the
-      intervention needs. (dVDs)
-- [ ] **Note interpretability limitation** — systematic human/ground-truth concept-
-      semantics validation is future work (beyond the patch examples). (dVDs, nn7D)
+- [x] **State HyperFast / Tabula-8B exclusion scope** — DONE 2026-09-07, §6.
+      Framed by the per-row embedding INTERFACE, not "transformer-ICL family" (which
+      would wrongly exclude CARTE — CARTE is in the causal analysis). Causal
+      conclusions cover the 6 models exposing a per-row embedding (TabPFN, Mitra,
+      TabICL, TabICL-v2, TabDPT, CARTE); HyperFast (emits per-dataset MLP) and
+      Tabula-8B (LLM over serialized rows) lack it → geometry only. (dVDs)
+- [x] **Note interpretability limitation** — DONE 2026-09-07, §6. Concept semantics
+      via input-level patch examples (App~\ref{sec:patch_explanations}), not
+      systematic human/ground-truth validation; at-scale validation = future work. (dVDs, nn7D)
 - [ ] **App F.5 — dense SAE latents & labeling difficulty.** Cite "Dense SAE latents
       are features, not bugs" (arXiv:2506.15679). Our archetypal-matryoshka SAEs
       contain dense latents; per that work these are *genuine features*, not artifacts
@@ -273,7 +277,7 @@ above; this is the consolidated dVDs checklist so nothing is dropped in the edit
       (drafted in §A `rebuttal_draft_random_ofnl.md` S3 — confirm placement before
       results). (dVDs)
 - [ ] **Per-concept gap-closure DIRECTLY in Tables 1 and 2** — as a table column, not
-      only narrated (concretizes the §C parsimony item). (dVDs)
+      only narrated (concretizes the §C per-concept-efficiency item). (dVDs)
 - [ ] **SD9t's four formatting fixes** — enumerate from §B and apply. (SD9t)
 - [ ] **App. F.8 landmark / linear-map summary into main text** (the §A "Transfer
       linear map" item — include the landmark-count summary). (SD9t)
