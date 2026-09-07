@@ -101,7 +101,11 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       NOTE: carte FLIPS between measures — most on-manifold here (0.45 off, 27°) vs
       highest rel_off (0.81), because carte is near-degenerate (active dim ≈3/300) so
       the delta concentrates in its few dominant directions.
-- [ ] **IF the on/off split is used at all, use the 99% variance threshold** (settled
+- [x] **DROPPED 2026-09-07** — the functional on/off-manifold split (pooled rel_off) is
+      NOT used in the paper. The off-manifold claim uses the subspace aligned/novel ENERGY
+      split instead (per-recipient, Table~\ref{tab:offmanifold}); the pooled functional
+      number never appears, so this threshold choice and the two caveats below are moot.
+- [ ] ~~**IF the on/off split is used at all, use the 99% variance threshold**~~ (settled
       2026-08-02 — a choice about how we would report it, NOT a commitment to report it;
       see the disaggregation result below, which weakens the whole thread).
       Rationale: 99% is the CONSERVATIVE choice for an off-manifold claim, because it
