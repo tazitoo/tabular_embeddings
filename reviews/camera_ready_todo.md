@@ -4,18 +4,18 @@ Changes promised in the rebuttal or surfaced during rebuttal work. Tagged with t
 reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
 
 ## A. Section 3 (Experimental Setup) additions
-- [ ] **Random-SAE definition** — state it is NOT purely random: archetypal
-      matryoshka top-k SAE; the baseline **retains the data-derived archetype
-      dictionary** and randomizes only the concept assignments (logits +
-      deviations). Move this *before* the results. (your #2; SD9t clarity, dVDs, nn7D)
-      → draft paragraph in `rebuttal_draft_random_ofnl.md` (S3).
-- [ ] **SAE selection rule** — lift from App. D.6 into main text: feasible set =
-      {R² ≥ 0.80, alive ≥ 0.80, stability ≥ 0.75}, then pick the least-complex SAE
-      (min √(hidden_dim · L0), the two capacity terms of the sweep objective
-      test_recon·√(hidden_dim)·√(L0)/alive_frac). (SD9t Q2, nn7D)
-- [ ] **TabDPT retrieval** — state explicitly that TabDPT runs in its native
-      retrieval-augmented mode (per-query nearest-neighbour context), and that
-      retrieval is preserved through the causal intervention. (SD9t Q5)
+- [x] **Random-SAE definition** — DONE 2026-09-07, §3.2 (SAE subsection, before
+      results). One tight sentence (condensed from the S3 draft to save space):
+      geometry-matched control, keeps the data-derived archetype dictionary,
+      randomizes only the concept assignments (archetype logits + deviations).
+      (your #2; SD9t clarity, dVDs, nn7D)
+- [x] **SAE selection rule** — DONE 2026-09-07, §3.2. Replaced the vague
+      "Pareto plot" sentence with the deterministic rule: among configs satisfying
+      {R²≥0.80, alive≥0.80, stability≥0.75}, pick the least complex (min
+      √(d_hidden·L0), the two capacity terms of J). (SD9t Q2, nn7D)
+- [x] **TabDPT retrieval** — DONE 2026-09-07, §3 TFM paragraph. States TabDPT runs
+      in its native per-query nearest-neighbour retrieval mode throughout, including
+      inside the interventions. (SD9t Q5)
 - [ ] **TabDPT transfers are distributed, so single-concept patching fails there**
       — candidate framing for App F.3: transfer into TabDPT succeeds (gc_deployed
       0.98) by spreading across ~60 co-active concepts per row, so no single
@@ -29,8 +29,11 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       transfer, NOT as an exclusion. Coverage cost if TabDPT-recipient cells are
       dropped: 17 of 335 concepts (335 -> 318), all reachable only at median rank
       52 with movement -0.0001. Pairs with the TabDPT retrieval item above.
-- [ ] **Transfer linear map** — lift a brief description from App. F.8 into the
-      main text (what is fit for the concept map). (SD9t clarity)
+- [x] **Transfer linear map** — DONE (already present) — §3 Intervention (line ~135)
+      already describes it: a global linear map M ∈ R^{d_weak×d_strong} fit from the
+      matched concept pairs via ridge regression, filtering landmarks above the
+      random-SAE noise floor. Skipped adding the landmark-COUNT summary (space; count
+      not readily aggregated). (SD9t clarity)
 
 ## B. Metric / methodology clarifications
 - [x] **Strong/weak on low-event-rate datasets** — DONE 2026-09-07, §3.3 footnote.
