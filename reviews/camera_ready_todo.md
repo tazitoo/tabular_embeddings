@@ -16,7 +16,14 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
 - [x] **TabDPT retrieval** — DONE 2026-09-07, §3 TFM paragraph. States TabDPT runs
       in its native per-query nearest-neighbour retrieval mode throughout, including
       inside the interventions. (SD9t Q5)
-- [ ] **TabDPT transfers are distributed, so single-concept patching fails there**
+- [x] **DONE 2026-09-07** — App D new subsection "Off-manifold patch explanations"
+      (D_appendix_causal.tex), wiring in the 5 patch tables (attrition, character,
+      diagnosis, Q1–Q4) + prose. Framed from the CANONICAL table numbers, not the
+      stale numbers below: TabDPT-recipient median single-concept effect 2.6e-3 vs
+      10.8–23.2e-3 for other recipients = distributed encoding, positive result not
+      exclusion. 335→320 measured concepts. No main-text pointer yet (space; see note
+      at session end). Original stale framing kept below for reference:
+- [ ] ~~**TabDPT transfers are distributed, so single-concept patching fails there**~~
       — candidate framing for App F.3: transfer into TabDPT succeeds (gc_deployed
       0.98) by spreading across ~60 co-active concepts per row, so no single
       concept is necessary. Evidence: median acceptance rank 34 (vs 3-8 for the
@@ -226,8 +233,13 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
 - [x] **Note interpretability limitation** — DONE 2026-09-07, §6. Concept semantics
       via input-level patch examples (App~\ref{sec:patch_explanations}), not
       systematic human/ground-truth validation; at-scale validation = future work. (dVDs, nn7D)
-- [ ] **App F.5 — dense SAE latents & labeling difficulty.** Cite "Dense SAE latents
-      are features, not bugs" (arXiv:2506.15679). Our archetypal-matryoshka SAEs
+- [x] **App F.5 — dense SAE latents & labeling difficulty.** DONE 2026-09-07 — added a
+      "Dense latents" paragraph to App C (concepts/labeling) citing sun2025dense
+      (arXiv:2506.15679, "Dense SAE Latents Are Features, Not Bugs"). Both uses:
+      (a) legitimate features not defects, (b) density → less discriminative firing
+      evidence → labeling harder. Kept UNLINKED to the patch concepts per the caveat
+      below (firing density ≠ transfer acceptance; not measured). Original note:
+      Cite "Dense SAE latents are features, not bugs" (arXiv:2506.15679). Our archetypal-matryoshka SAEs
       contain dense latents; per that work these are *genuine features*, not artifacts
       — so their presence is not a defect in our dictionaries. But density = the latent
       fires on a large fraction of inputs, so there is *less discriminative firing
