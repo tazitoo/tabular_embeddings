@@ -44,8 +44,15 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       dataset-level stronger model and interventions are applied per row. (SD9t Q1)
 
 ## C. Tables / results
-- [ ] **Add `acc` (acceptance) column to the ablation table (Table 1)** — parallel
-      to the transfer table; its omission is an oversight. (your #3; SD9t Q3)
+- [x] **Add `acc` (acceptance) column to the ablation table (Table 1)** — DONE
+      2026-09-07. acc = concepts ablated / candidate concepts considered (unmatched,
+      firing, positive-importance), pooled over strong-win rows, computed in
+      scripts/tables/ablation_summary/ablation_summary.py from the perrow_importance
+      files (row_feature_drops>0 implies firing, so no activations needed; max_steps
+      is uncapped so tried = full firing-unmatched pool, parallel to the transfer
+      table). Values: TabICL-v2 0.018, TabPFN 0.021, TabDPT 0.062, TabICL 0.015,
+      Mitra 0.132, CARTE 0.038, Overall 0.026 — same selectivity signature as
+      transfer (high gc → low acc). (your #3; SD9t Q3)
 - [x] **Full-test-set / selection-bias answer** — DONE 2026-09-05. Decision: do NOT
       replace the published below-diagonal headline numbers (per-experiment mean:
       ablation 0.93, transfer 0.90). The symmetric pipeline pools by ROW, so its
