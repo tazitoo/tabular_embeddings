@@ -274,16 +274,23 @@ above; this is the consolidated dVDs checklist so nothing is dropped in the edit
 - [x] **Donor prediction as a REQUIRED INPUT** — DONE 2026-09-05. Landed in §3.3
       (Intervention), not §4.2. States S's per-row prediction is a required input,
       not inferred. (dVDs)
-- [ ] **SAE stability metric promoted from App. D into main text** (ties to the §A
-      "SAE selection rule" item — surface the stability≥0.75 criterion in the body). (dVDs)
-- [ ] **Geometry-matched (random-SAE) control into Sec. 3, AHEAD of the numbers**
-      (drafted in §A `rebuttal_draft_random_ofnl.md` S3 — confirm placement before
-      results). (dVDs)
+- [x] **SAE stability metric promoted from App. D into main text** — DONE (§3.2 states
+      cross-seed stability ≥ 0.75 in the selection rule). (dVDs)
+- [x] **Geometry-matched (random-SAE) control into Sec. 3, AHEAD of the numbers** —
+      DONE 2026-09-07 (§3.2 one-sentence definition before results). (dVDs)
 - [ ] **Per-concept gap-closure DIRECTLY in Tables 1 and 2** — as a table column, not
       only narrated (concretizes the §C per-concept-efficiency item). (dVDs)
-- [ ] **SD9t's four formatting fixes** — enumerate from §B and apply. (SD9t)
-- [ ] **App. F.8 landmark / linear-map summary into main text** (the §A "Transfer
-      linear map" item — include the landmark-count summary). (SD9t)
+      NOTE 2026-09-07: efficiency is now NARRATED in §4 (K 8.9 vs 2.6, median accepted
+      importance 0.005 vs 0.033). A literal gc/K COLUMN risks overflowing the already
+      7-wide tables — decide narrate-only vs column (check table width) before adding.
+- [x] **SD9t's four formatting fixes** — DONE 2026-09-07. SD9t has no separate
+      "formatting" list; its asks are the clarity items + Q1–Q5, all now addressed:
+      random-SAE moved to §3 (clarity), F.8 map hint in §3 line 135 (clarity),
+      Q1 per-example §3.3, Q2 selection rule §3.2, Q3 acc column Table 1, Q4 K/stopping
+      §3.3, Q5 TabDPT retrieval §3. (SD9t)
+- [x] **App. F.8 landmark / linear-map summary into main text** — DONE (§3 line 135
+      describes the ridge map from matched concept pairs). Landmark-COUNT summary
+      skipped (space; not readily aggregated). (SD9t)
 
 ## G. Candidate: reproducibility appendix (2026-08-16)
 - [ ] **Consider an appendix section on reproducibility**, drawing on the patching
