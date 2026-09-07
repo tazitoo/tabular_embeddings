@@ -21,8 +21,12 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       diagnosis, Q1–Q4) + prose. Framed from the CANONICAL table numbers, not the
       stale numbers below: TabDPT-recipient median single-concept effect 2.6e-3 vs
       10.8–23.2e-3 for other recipients = distributed encoding, positive result not
-      exclusion. 335→320 measured concepts. No main-text pointer yet (space; see note
-      at session end). Original stale framing kept below for reference:
+      exclusion. 335→320 measured concepts. Main-text pointer ADDED to §4 (off-manifold
+      paragraph): "We causally patch these off-manifold concepts at the input level in
+      App~D, tying them to interpretable column edits" — deliberately does NOT assert
+      TabDPT-distributed in the main text (Table 3 = off-manifold energy, where TabDPT
+      is mid-pack; the small per-concept effect is an App-D-only observation).
+      Original stale framing kept below for reference:
 - [ ] ~~**TabDPT transfers are distributed, so single-concept patching fails there**~~
       — candidate framing for App F.3: transfer into TabDPT succeeds (gc_deployed
       0.98) by spreading across ~60 co-active concepts per row, so no single
@@ -252,9 +256,10 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       the patch set — a transfer property). Do NOT assume the patch concepts are the
       dense ones; if we want to connect App F.5 to the patch-coverage story, measure
       firing density on the SAE activations directly and check the overlap.
-- [ ] (optional) **Negative-R² reframe** — state that global map R² is the wrong
-      yardstick; specificity is per-row directional edit + gap-closure-per-concept.
-      (dVDs)
+- [x] (optional) **Negative-R² reframe** — DONE BY EXISTING TEXT. §3 line ~135 says the
+      low aggregate R² is not a binding constraint on transfer; App D "Landmark map
+      quality" makes the full case (R² bounds a general-purpose translator, not the few
+      directions greedy actually exercises). No new text needed. (dVDs)
 - [ ] **(CONDITIONAL — only if a reviewer/AC requests a retitle) Retitle to
       "INCEPT: Infusing Novel Concepts to Explain Pretrained Tabular Model Disparity."**
       Do NOT change unilaterally or propose it ourselves — apply only if reviewer/AC
@@ -296,9 +301,11 @@ above; this is the consolidated dVDs checklist so nothing is dropped in the edit
       DONE 2026-09-07 (§3.2 one-sentence definition before results). (dVDs)
 - [ ] **Per-concept gap-closure DIRECTLY in Tables 1 and 2** — as a table column, not
       only narrated (concretizes the §C per-concept-efficiency item). (dVDs)
-      NOTE 2026-09-07: efficiency is now NARRATED in §4 (K 8.9 vs 2.6, median accepted
-      importance 0.005 vs 0.033). A literal gc/K COLUMN risks overflowing the already
-      7-wide tables — decide narrate-only vs column (check table width) before adding.
+      NOTE 2026-09-07: THE ONLY REMAINING TEXT ITEM. Efficiency is now NARRATED in §4
+      (K 8.9 vs 2.6, median accepted importance 0.005 vs 0.033). A literal gc/K COLUMN
+      risks overflowing the already-7-wide tables. RECOMMENDATION: narrate-only (leave
+      as is); only add the column if a reviewer specifically wants it, and check table
+      width first. Not blocking.
 - [x] **SD9t's four formatting fixes** — DONE 2026-09-07. SD9t has no separate
       "formatting" list; its asks are the clarity items + Q1–Q5, all now addressed:
       random-SAE moved to §3 (clarity), F.8 map hint in §3 line 135 (clarity),
