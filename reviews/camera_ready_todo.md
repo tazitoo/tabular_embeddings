@@ -33,11 +33,11 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       main text (what is fit for the concept map). (SD9t clarity)
 
 ## B. Metric / methodology clarifications
-- [ ] **Strong/weak on low-event-rate datasets** — clarify that AUC is used for
-      strong/weak, with a neg-logloss fallback when the 200-sample holdout is
-      single-class (no class-1 present); affects ~4 datasets (seismic-bumps,
-      hiva_agnostic, taiwanese_bankruptcy_prediction, Marketing_Campaign). Same
-      fallback in both trained and random arms; datasets NOT dropped (matches paper).
+- [x] **Strong/weak on low-event-rate datasets** — DONE 2026-09-07, §3.3 footnote.
+      Verified exactly 4 datasets hit the neg_logloss fallback (metric_name in the
+      ablation npz): seismic-bumps, hiva_agnostic, taiwanese_bankruptcy_prediction,
+      Marketing_Campaign. Same fallback both arms; no dataset dropped. Logic in
+      intervene_lib.compute_importance_metric (AUC → neg_logloss when AUC undefined).
       (your #1)
 - [x] **Per-example strong/weak** — DONE 2026-09-05. Landed in §3.3 (Intervention),
       NOT §4.2 (that's where S/W is actually defined). Clarified S is the
