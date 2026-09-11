@@ -33,6 +33,10 @@ from scripts.sae.compare_sae_cross_model import (
     sae_sweep_dir,
 )
 
+from scripts.round_paths import (  # noqa: E402
+    CROSS_CORR_DIR, CROSS_MODEL_BASELINE_FILE, DEFAULT_MATCHING_FILE, RESULTS_DIR,
+)
+
 RANDOM_BASELINE_FILENAME = "sae_matryoshka_archetypal_random_baseline.pt"
 
 # Re-export shared utilities for backward compatibility
@@ -476,7 +480,7 @@ def main():
     parser.add_argument(
         "--baseline-path",
         type=str,
-        default="output/sae_cross_model_random_baseline.json",
+        default=str(CROSS_MODEL_BASELINE_FILE),
         help="Cross-model random baseline JSON for noise floor thresholds",
     )
     parser.add_argument(
@@ -501,7 +505,7 @@ def main():
     parser.add_argument(
         "--save-correlations",
         action="store_true",
-        help="Save full cross-correlation matrices to output/sae_cross_correlations/",
+        help=f"Save full cross-correlation matrices to {CROSS_CORR_DIR}/",
     )
     parser.add_argument(
         "--random-baseline",
@@ -521,13 +525,9 @@ def main():
     )
     args = parser.parse_args()
 
+    default_output = str(RESULTS_DIR / f"sae_feature_matching_{args.method}_floor_{args.percentile}.json")
     if args.output is None:
-        args.output = (
-            f"output/sae_feature_matching"
-            f"_{args.method}"
-            f"_floor_{args.percentile}"
-            f".json"
-        )
+        args.output = default_output
 
     baseline_file = PROJECT_ROOT / args.baseline_path
     noise_thresholds = None
@@ -589,7 +589,7 @@ def main():
     # Optionally prepare correlation output dir
     corr_dir = None
     if args.save_correlations:
-        corr_dir = PROJECT_ROOT / "output" / "sae_cross_correlations"
+        corr_dir = CROSS_CORR_DIR
         corr_dir.mkdir(parents=True, exist_ok=True)
 
     # Random baseline: trained vs random for each model
@@ -648,12 +648,7 @@ def main():
             "pairs": pairs,
             "summary": {"per_pair": summary},
         }
-        if args.output == (
-            f"output/sae_feature_matching"
-            f"_{args.method}"
-            f"_floor_{args.percentile}"
-            f".json"
-        ):
+        if args.output == default_output:
             args.output = args.output.replace(".json", "_random_baseline.json")
 
         out_path = PROJECT_ROOT / args.output
@@ -755,13 +750,8 @@ def main():
             "split": "test",
             "pairs": pairs,
         }
-        if args.output == (
-            f"output/sae_feature_matching"
-            f"_{args.method}"
-            f"_floor_{args.percentile}"
-            f".json"
-        ):
-            args.output = "output/sae_cross_model_random_baseline.json"
+        if args.output == default_output:
+            args.output = str(CROSS_MODEL_BASELINE_FILE)
 
         out_path = PROJECT_ROOT / args.output
         out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import DEFAULT_SAE_ROUND, sae_sweep_dir  # noqa: F401  (re-exported)
 
 from scripts.sae.compare_sae_architectures import (
     META_NAMES,
@@ -51,17 +52,9 @@ from data.extended_loader import load_tabarena_dataset
 # Round 7: Gao et al. recipe (AuxK, step counter dead detection, weight EMA, geometric median b_dec)
 # Round 8: Detach AuxK residual, normalize by residual variance, grad clipping, dead_steps=200
 # Round 10: Task-aware layers, efficiency objective (recon*sqrt(hidden)*sqrt(L0)/alive)
-# Round 11 = round 10 with TabDPT's corpus and SAE regenerated on the pinned
-# extraction path (see scripts/sae_corpus/promote_round.py); other models are
-# links to their round-10 artifacts.
-DEFAULT_SAE_ROUND = 11
+# Round 11: TabDPT corpus + SAE regenerated on the pinned extraction path; DEFAULT_SAE_ROUND
+#           and sae_sweep_dir now live in scripts/round_paths.py (imported above).
 SAE_FILENAME = "sae_matryoshka_archetypal_validated.pt"
-
-
-def sae_sweep_dir(round: int = None) -> Path:
-    """Return the SAE sweep base directory for a given round."""
-    r = round if round is not None else DEFAULT_SAE_ROUND
-    return PROJECT_ROOT / "output" / f"sae_tabarena_sweep_round{r}"
 
 
 # Default model configurations: (display_name, sae_sweep_dir, emb_dir)

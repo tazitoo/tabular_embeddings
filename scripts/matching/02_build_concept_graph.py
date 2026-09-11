@@ -31,6 +31,9 @@ import numpy as np
 
 from scripts._project_root import PROJECT_ROOT
 
+from scripts.round_paths import (
+    CROSS_CORR_DIR, CROSS_MODEL_BASELINE_FILE, DEFAULT_MATCHING_FILE, RESULTS_DIR,
+)
 from scripts.sae.analyze_sae_concepts_deep import NumpyEncoder, convert_keys_to_native
 
 
@@ -231,16 +234,13 @@ def main():
         description="Build per-feature cross-model match graph"
     )
     parser.add_argument(
-        "--mnn-path", type=str,
-        default="output/sae_feature_matching_mnn_floor_p90.json",
+        "--mnn-path", type=str, default=str(DEFAULT_MATCHING_FILE),
     )
     parser.add_argument(
-        "--baseline-path", type=str,
-        default="output/sae_cross_model_random_baseline.json",
+        "--baseline-path", type=str, default=str(CROSS_MODEL_BASELINE_FILE),
     )
     parser.add_argument(
-        "--corr-dir", type=str,
-        default="output/sae_cross_correlations",
+        "--corr-dir", type=str, default=str(CROSS_CORR_DIR),
     )
     parser.add_argument(
         "--percentile", type=str, default="p90",
@@ -258,7 +258,7 @@ def main():
 
     if args.output is None:
         floor_str = f"_floor{args.floor:.2f}" if args.floor > 0 else ""
-        args.output = f"output/sae_feature_match_graph_{args.percentile}{floor_str}.json"
+        args.output = str(RESULTS_DIR / f"sae_feature_match_graph_{args.percentile}{floor_str}.json")
 
     result = build_feature_graph(
         mnn_path=PROJECT_ROOT / args.mnn_path,

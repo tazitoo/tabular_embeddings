@@ -23,7 +23,7 @@ get full-test-set coverage. Answers reviewer dVDs ("report over the full test
 set, not just the oracle-selected donor-wins subset").
 
 Output:
-    output/rebuttal/symmetric_ablation/{model_a}_vs_{model_b}/{dataset}.npz
+    output/round{N}/symmetric_ablation/{model_a}_vs_{model_b}/{dataset}.npz
 
 Usage:
     # reverse (rebuttal) is the default:
@@ -41,6 +41,7 @@ import numpy as np
 import torch
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import DEFAULT_MATCHING_FILE, IMPORTANCE_DIR, SYMMETRIC_ABLATION_DIR
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
     load_sae, get_extraction_layer_taskaware, build_tail,
@@ -55,9 +56,7 @@ from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = PROJECT_ROOT / "output" / "rebuttal" / "symmetric_ablation"
-IMPORTANCE_DIR = PROJECT_ROOT / "output" / "perrow_importance"
-DEFAULT_MATCHING_FILE = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_floor_p90.json"
+OUTPUT_DIR = SYMMETRIC_ABLATION_DIR  # output/round{N}/symmetric_ablation
 
 SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
 
@@ -560,9 +559,9 @@ def main():
     parser.add_argument("--sae-dir", type=Path, default=None,
                         help="SAE checkpoint directory (default: the DEFAULT_SAE_ROUND sweep)")
     parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Output directory (default: output/ablation_sweep)")
+                        help=f"Output directory (default: {OUTPUT_DIR})")
     parser.add_argument("--importance-dir", type=Path, default=None,
-                        help="Per-row importance directory (default: output/perrow_importance)")
+                        help=f"Per-row importance directory (default: {IMPORTANCE_DIR})")
     parser.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE,
                         help="MNN matching JSON for unmatched features "
                              "(default: mnn_floor_p90)")

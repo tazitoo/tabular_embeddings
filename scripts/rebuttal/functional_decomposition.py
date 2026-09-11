@@ -31,7 +31,7 @@ genuine functional novelty the energy view hid. ("on/off-manifold" here always
 means the high/low-variance split above, distinct from the nearest-neighbour
 data-proximity notion in transfer_direction.py.)
 
-Reads deployed_delta from output/rebuttal/forward_deltas/<pair>/<dataset>.npz.
+Reads deployed_delta from output/round{N}/forward_deltas/<pair>/<dataset>.npz.
 Needs the recipient base model (GPU).
 
 Usage:
@@ -52,6 +52,7 @@ import numpy as np
 import torch
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import FORWARD_DELTAS_DIR, FUNCTIONAL_DECOMPOSITION_DIR
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH, get_extraction_layer_taskaware, build_tail,
     load_dataset_context, load_test_embeddings, batched_intervention,
@@ -63,8 +64,8 @@ from scripts.rebuttal.subspace_analysis import _eig_cov, _k_for_variance
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-FWD_DIR = PROJECT_ROOT / "output" / "rebuttal" / "forward_deltas"
-OUT_DIR = PROJECT_ROOT / "output" / "rebuttal" / "functional_decomposition"
+FWD_DIR = FORWARD_DELTAS_DIR                # output/round{N}/forward_deltas
+OUT_DIR = FUNCTIONAL_DECOMPOSITION_DIR      # output/round{N}/functional_decomposition
 EPS = 1e-7
 
 

@@ -55,6 +55,7 @@ from scripts.sae.analyze_sae_concepts_deep import (
     NumpyEncoder,
     convert_keys_to_native,
 )
+from scripts.round_paths import CROSS_CORR_DIR, DEFAULT_MATCHING_FILE
 from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
 
 
@@ -673,7 +674,7 @@ def run_phase2(
     print("\n── Phase 2: Extending groups via cross-correlation ──")
 
     if corr_dir is None:
-        corr_dir = Path(__file__).parent.parent / "output" / "sae_cross_correlations"
+        corr_dir = CROSS_CORR_DIR
 
     if not corr_dir.exists():
         print(f"  ERROR: No cross-correlation directory at {corr_dir}")
@@ -1397,8 +1398,7 @@ def main():
     parser.add_argument("--max-group-size", type=int, default=100)
     parser.add_argument("--relabel-threshold", type=float, default=0.3)
     parser.add_argument(
-        "--matching", type=str,
-        default="output/sae_feature_matching_mnn_floor_p90.json",
+        "--matching", type=str, default=str(DEFAULT_MATCHING_FILE),
     )
     parser.add_argument(
         "--concepts", type=str,
@@ -1409,8 +1409,7 @@ def main():
         default=f"output/cross_model_concept_labels_round{DEFAULT_SAE_ROUND}.json",
     )
     parser.add_argument(
-        "--corr-dir", type=str,
-        default="output/sae_cross_correlations",
+        "--corr-dir", type=str, default=str(CROSS_CORR_DIR),
     )
     parser.add_argument(
         "--split-megagroup", type=str, default=None, metavar="GROUP_ID",

@@ -28,6 +28,10 @@ import torch
 
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.context_sampling import select_context_indices
+from scripts.round_paths import (  # noqa: F401  (re-exported for the chain scripts)
+    CROSS_CORR_DIR, CROSS_MODEL_BASELINE_FILE, DEFAULT_MATCHING_FILE, FORWARD_DELTAS_DIR,
+    IMPORTANCE_DIR, RESULTS_DIR,
+)
 from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND, SAE_FILENAME, sae_sweep_dir
 
 logger = logging.getLogger(__name__)

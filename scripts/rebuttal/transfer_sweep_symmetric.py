@@ -23,7 +23,7 @@ get full-test-set coverage (answers dVDs) and the reverse direction (answers
 SD9t).
 
 Output:
-    output/rebuttal/symmetric_transfer/{model_a}_vs_{model_b}/{dataset}.npz
+    output/round{N}/symmetric_transfer/{model_a}_vs_{model_b}/{dataset}.npz
 
 Usage:
     python -m scripts.rebuttal.transfer_sweep_symmetric --models mitra carte --device cuda
@@ -38,6 +38,7 @@ import numpy as np
 import torch
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import DEFAULT_MATCHING_FILE, IMPORTANCE_DIR, SYMMETRIC_TRANSFER_DIR
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
     load_sae, get_extraction_layer_taskaware, build_tail,
@@ -58,9 +59,7 @@ from scripts.intervention.transfer_virtual_nodes import (
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = PROJECT_ROOT / "output" / "rebuttal" / "symmetric_transfer"
-IMPORTANCE_DIR = PROJECT_ROOT / "output" / "perrow_importance"
-DEFAULT_MATCHING_FILE = PROJECT_ROOT / "output" / "sae_feature_matching_mnn_floor_p90.json"
+OUTPUT_DIR = SYMMETRIC_TRANSFER_DIR  # output/round{N}/symmetric_transfer
 
 SUPPORTED_MODELS = [
     "tabpfn", "tabicl", "tabicl_v2", "mitra",
@@ -872,7 +871,7 @@ def main():
     parser.add_argument("--min-cosine", type=float, default=0.0,
                         help="Min LOO cosine to keep landmark pairs (default: 0.0)")
     parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Output directory (default: output/transfer_sweep_v2)")
+                        help=f"Output directory (default: {OUTPUT_DIR})")
     parser.add_argument("--local-map", action="store_true",
                         help="Use per-feature local K-NN maps instead of global ridge")
     parser.add_argument("--local-map-adaptive", action="store_true",
@@ -880,7 +879,7 @@ def main():
     parser.add_argument("--sae-dir", type=Path, default=None,
                         help="SAE checkpoint directory (default: the DEFAULT_SAE_ROUND sweep)")
     parser.add_argument("--importance-dir", type=Path, default=None,
-                        help="Per-row importance directory (default: output/perrow_importance)")
+                        help=f"Per-row importance directory (default: {IMPORTANCE_DIR})")
     parser.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE,
                         help="Raw MNN matching JSON used for BOTH matched landmark pairs "
                              "and unmatched features. Default is the noise-floor-filtered "

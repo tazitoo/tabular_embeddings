@@ -32,8 +32,8 @@ from sklearn.linear_model import Ridge
 
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import load_sae
+from scripts.round_paths import DEFAULT_MATCHING_FILE, TRANSFER_CACHES_DIR, sae_sweep_dir
 from scripts.intervention.transfer_sweep_v2 import (
-    DEFAULT_MATCHING_FILE,
     get_matched_pairs,
     get_unmatched_features,
 )
@@ -53,11 +53,11 @@ MODELS = ["carte", "mitra", "tabdpt", "tabicl", "tabicl_v2", "tabpfn"]
 PAIRS = [tuple(sorted(p)) for p in combinations(MODELS, 2)]
 
 SAE_DIRS = {
-    "trained": PROJECT_ROOT / "output" / "sae_tabarena_sweep_round10",
+    "trained": sae_sweep_dir(),
     "random": PROJECT_ROOT / "output" / "sae_random_baseline",
 }
 
-OUT_ROOT = PROJECT_ROOT / "output" / "transfer_caches"
+OUT_ROOT = TRANSFER_CACHES_DIR  # output/round{N}/transfer_caches
 
 TOPK_GRID = [3, 5, 10, 15, 20, 30, 50]  # K grid for per-pair CV tuning
 PQCV_GRID = [10, 15, 20, 30, 50, 100]   # K grid for per-query CV

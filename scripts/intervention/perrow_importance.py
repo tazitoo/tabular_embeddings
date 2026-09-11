@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import IMPORTANCE_DIR
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
     load_sae, get_extraction_layer_taskaware, build_tail,
@@ -38,7 +39,7 @@ from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = PROJECT_ROOT / "output" / "perrow_importance"
+OUTPUT_DIR = IMPORTANCE_DIR  # output/round{N}/perrow_importance
 
 SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
 
@@ -181,7 +182,7 @@ def main():
     parser.add_argument("--sae-dir", type=Path, default=None,
                         help="SAE checkpoint directory (default: the DEFAULT_SAE_ROUND sweep)")
     parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Output directory (default: output/perrow_importance)")
+                        help=f"Output directory (default: {IMPORTANCE_DIR})")
     args = parser.parse_args()
 
     splits = json.loads(SPLITS_PATH.read_text())

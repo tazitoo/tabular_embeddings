@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import BASELINE_PREDICTIONS_DIR
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
     build_tail,
@@ -44,7 +45,7 @@ from scripts.intervention.intervene_lib import (
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = PROJECT_ROOT / "output" / "baseline_predictions"
+OUTPUT_DIR = BASELINE_PREDICTIONS_DIR  # output/round{N}/baseline_predictions
 
 # hyperfast excluded: representation mismatch (see hyperfast_architecture_findings.md)
 # tabula8b excluded: out of main sweep (see ablation_model_scope.md)

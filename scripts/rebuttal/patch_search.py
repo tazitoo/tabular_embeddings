@@ -66,14 +66,20 @@ import pandas as pd
 import torch
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import (
+    FORWARD_DELTAS_DIR, IMPORTANCE_DIR, PATCH_SEARCH_FILE, PATCHING_BURNDOWN_FILE,
+    TRANSFER_CACHES_DIR,
+)
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH, build_tail, get_extraction_layer_taskaware, load_dataset_context,
     load_norm_stats, load_sae, load_test_embeddings, batched_intervention,
 )
 
-FWD = PROJECT_ROOT / "output" / "rebuttal" / "forward_deltas"
-IMPORTANCE = PROJECT_ROOT / "output" / "perrow_importance"
-ATOMS = PROJECT_ROOT / "output" / "transfer_caches" / "global_trained"
+FWD = FORWARD_DELTAS_DIR                          # output/round{N}/forward_deltas
+IMPORTANCE = IMPORTANCE_DIR                       # output/round{N}/perrow_importance
+ATOMS = TRANSFER_CACHES_DIR / "global_trained"    # output/round{N}/transfer_caches
+DEFAULT_BURNDOWN = PATCHING_BURNDOWN_FILE
+DEFAULT_OUT = PATCH_SEARCH_FILE
 EXTRACT_SEED = 13
 # Close enough to the target to stop. Mirrors transfer_sweep_v2's gc_tolerance=0.99, which
 # breaks its greedy once gap-closed reaches 0.99 rather than spending steps on the last
@@ -3136,9 +3142,8 @@ def main():
                     help="prefilter pass-1 probes to the top-N columns by rank "
                          "correlation; essential for models that fail independence, "
                          "where each probe costs its own forward")
-    ap.add_argument("--from-burndown", nargs="?", const=str(
-        PROJECT_ROOT / "output" / "rebuttal" / "patching_burndown.csv"),
-        default=str(PROJECT_ROOT / "output" / "rebuttal" / "patching_burndown.csv"),
+    ap.add_argument("--from-burndown", nargs="?", const=str(DEFAULT_BURNDOWN),
+        default=str(DEFAULT_BURNDOWN),
                     help="concept list; defaults to the locked set, so a bare run does "
                          "the full sweep")
     ap.add_argument("--donors", nargs="*", default=None,
@@ -3150,7 +3155,7 @@ def main():
     ap.add_argument("--no-resume", action="store_true",
                     help="recompute concepts already present in --out (default resumes)")
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "rebuttal" / "patch_search.json"))
+    ap.add_argument("--out", default=str(DEFAULT_OUT))
     args = ap.parse_args()
     # "all" = exhaustive roots (every suppressing column, per row, capped+flagged);
     # otherwise the historical fixed width
