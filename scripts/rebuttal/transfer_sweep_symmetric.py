@@ -38,6 +38,7 @@ import numpy as np
 import torch
 
 from scripts._project_root import PROJECT_ROOT
+from models.layer_extraction import configure_determinism, provenance
 from scripts.round_paths import DEFAULT_MATCHING_FILE, IMPORTANCE_DIR, SYMMETRIC_TRANSFER_DIR
 from scripts.intervention.intervene_lib import (
     SPLITS_PATH,
@@ -905,6 +906,7 @@ def main():
                              "Used to validate this vendored copy reproduces "
                              "canonical output/transfer_sweep_v2.")
     args = parser.parse_args()
+    configure_determinism()
     reverse = not args.forward
 
     model_a, model_b = sorted(args.models)
@@ -980,6 +982,9 @@ def main():
                 min_gap=args.min_gap,
                 reverse=reverse,
             )
+            result.update({k: np.array(v) for k, v in provenance().items()})
+            result["sae_dir"] = np.array(str(sae_dir or DEFAULT_SAE_DIR))
+            result["importance_dir"] = np.array(str(imp_dir))
             np.savez_compressed(str(out_path), **result)
 
             if result["n_strong_wins"] > 0:
