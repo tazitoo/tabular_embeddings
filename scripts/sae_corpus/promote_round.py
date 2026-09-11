@@ -16,13 +16,15 @@ moves the whole pipeline onto the new round.
 
 Run on every host that holds the outputs (links are relative, so the tree is portable):
 
-    python scripts/sae_corpus/promote_round.py --from 10 --to 11 --regenerate tabdpt
+    python -m scripts.sae_corpus.promote_round --from 10 --to 11 --regenerate tabdpt
 """
 import argparse
 import os
+import sys
 from pathlib import Path
 
-from scripts._project_root import PROJECT_ROOT
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts._project_root import PROJECT_ROOT  # noqa: E402
 
 MODEL_FILE_SUFFIXES = ("_sae_training.npz", "_sae_test.npz", "_norm_stats.npz")
 
