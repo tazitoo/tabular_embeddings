@@ -275,6 +275,37 @@ def load_embeddings_at_layer(
     return data[layer_key].astype(np.float32)
 
 
+def load_reference_rows(train_npz: Path, test_npz: Path) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Per-dataset (train_rows, test_rows) global row ids from a reference corpus pair.
+
+    Used to pin a regenerated model's corpus to the rows every other model's corpus
+    already uses: the stratified sampler below depends on a live TabPFN difficulty
+    pass, which is environment-sensitive, so resampling in a new environment picks
+    different rows and breaks cross-model row alignment.
+    """
+    out: dict[str, list] = {}
+    for split, path in (("train", train_npz), ("test", test_npz)):
+        z = np.load(path, allow_pickle=True)
+        rows, offset = z["row_indices"], 0
+        for name, n in z["samples_per_dataset"]:
+            out.setdefault(str(name), [None, None])[0 if split == "train" else 1] = \
+                np.asarray(rows[offset:offset + int(n)], dtype=np.int32)
+            offset += int(n)
+    return {d: (tr, te) for d, (tr, te) in out.items()}
+
+
+def select_sample_from_reference(
+    holdout_indices: np.ndarray, ref_train: np.ndarray, ref_test: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Positions (into the holdout) of the reference rows, in reference order."""
+    pos = {int(r): i for i, r in enumerate(np.asarray(holdout_indices))}
+    missing = [int(r) for r in np.concatenate([ref_train, ref_test]) if int(r) not in pos]
+    if missing:
+        raise ValueError(f"{len(missing)} reference rows are not in this holdout, e.g. {missing[:5]}")
+    return (np.array([pos[int(r)] for r in ref_train], dtype=np.int64),
+            np.array([pos[int(r)] for r in ref_test], dtype=np.int64))
+
+
 def select_sample(
     n_holdout: int, y_test: np.ndarray, losses: np.ndarray | None, task_type: str,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -329,6 +360,7 @@ def select_sample(
 
 def build_training_data(
     model: str, device: str = "cuda", layer_mode: str = "fixed_task_aware",
+    reference_rows: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> dict:
     """Build pooled SAE train+test data for a model.
 
@@ -410,8 +442,14 @@ def build_training_data(
         # 2. Normalize all rows with full-fold stats
         emb_norm = (emb - ds_mean) / ds_std
 
+        holdout_indices = np.array(split_info["test_indices"], dtype=np.int32)
+        if reference_rows is not None:
+            # Pinned rows: no difficulty pass, no resampling.
+            ref_train, ref_test = reference_rows[ds_name]
+            train_idx, test_idx = select_sample_from_reference(holdout_indices, ref_train, ref_test)
+            losses = None
         # 3. Compute difficulty scores (lazy, cached)
-        if ds_name not in difficulty_cache:
+        elif ds_name not in difficulty_cache:
             y_test = np.array(split_info.get("test_labels", []))
             # Load y_test from preprocessed cache if not in splits
             if len(y_test) == 0:
@@ -436,10 +474,10 @@ def build_training_data(
             losses = compute_difficulty(ds_name, task_type, y_test, device)
             difficulty_cache[ds_name] = (y_test, losses)
 
-        y_test, losses = difficulty_cache[ds_name]
-
-        # 4. Stratified subsample
-        train_idx, test_idx = select_sample(n_holdout, y_test, losses, task_type)
+        if reference_rows is None:
+            y_test, losses = difficulty_cache[ds_name]
+            # 4. Stratified subsample
+            train_idx, test_idx = select_sample(n_holdout, y_test, losses, task_type)
 
         train_emb = emb_norm[train_idx]
         test_emb = emb_norm[test_idx]
@@ -450,11 +488,11 @@ def build_training_data(
         test_samples[ds_name] = len(test_emb)
 
         # Map subsample indices back to original dataset row indices
-        holdout_indices = np.array(split_info["test_indices"], dtype=np.int32)
         train_row_indices[ds_name] = holdout_indices[train_idx]
         test_row_indices[ds_name] = holdout_indices[test_idx]
 
-        sampling = "all" if n_holdout <= SAMPLE_CAP else "stratified"
+        sampling = ("reference" if reference_rows is not None else
+                    "all" if n_holdout <= SAMPLE_CAP else "stratified")
         diff_str = "T×D" if losses is not None and task_type == "classification" else (
             "diff" if losses is not None else "rnd")
         layer_str = f"L{ds_layer}" if per_ds_layers else ""
@@ -568,6 +606,10 @@ def main():
                              "(04_extract_all_layers --output-root)")
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR,
                         help="Corpus directory; defaults to the DEFAULT_SAE_ROUND one")
+    parser.add_argument("--rows-from-round", type=int, default=None,
+                        help="Pin train/test rows to this round's corpus of the same model "
+                             "(sae_training_round{R}/{model}_taskaware_sae_{training,test}.npz) "
+                             "instead of resampling by TabPFN difficulty")
     args = parser.parse_args()
 
     EMBEDDINGS_DIR = args.embeddings_dir
@@ -604,7 +646,15 @@ def main():
         print("=" * 60)
 
         try:
-            result = build_training_data(model, device=args.device, layer_mode=args.layer_mode)
+            reference_rows = None
+            if args.rows_from_round is not None:
+                ref_dir = PROJECT_ROOT / "output" / f"sae_training_round{args.rows_from_round}"
+                reference_rows = load_reference_rows(
+                    ref_dir / f"{model}_taskaware_sae_training.npz",
+                    ref_dir / f"{model}_taskaware_sae_test.npz")
+                print(f"  Rows pinned to round {args.rows_from_round} ({len(reference_rows)} datasets)")
+            result = build_training_data(model, device=args.device, layer_mode=args.layer_mode,
+                                         reference_rows=reference_rows)
             results.append(result)
         except Exception as e:
             print(f"  ERROR: {e}")
