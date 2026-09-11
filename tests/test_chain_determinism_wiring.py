@@ -52,3 +52,16 @@ def test_every_chain_script_enables_determinism_in_main():
 def test_every_chain_script_records_provenance_in_its_npz():
     for rel in CHAIN_SCRIPTS:
         _every_savez_spreads_provenance((PROJECT_ROOT / rel).read_text())
+
+
+def test_every_chain_script_binds_the_names_its_provenance_line_uses():
+    """The provenance/save block references DEFAULT_SAE_DIR and IMPORTANCE_DIR at
+    runtime only, so an import check alone cannot catch a missing import."""
+    import importlib
+
+    for rel in CHAIN_SCRIPTS:
+        mod = importlib.import_module(rel[:-3].replace("/", "."))
+        src = (PROJECT_ROOT / rel).read_text()
+        for name in ("DEFAULT_SAE_DIR", "IMPORTANCE_DIR", "provenance"):
+            if name in src:
+                assert hasattr(mod, name), f"{rel} uses {name} but never binds it"

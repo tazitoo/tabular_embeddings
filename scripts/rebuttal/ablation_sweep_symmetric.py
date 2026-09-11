@@ -44,6 +44,7 @@ from scripts._project_root import PROJECT_ROOT
 from models.layer_extraction import configure_determinism, provenance
 from scripts.round_paths import DEFAULT_MATCHING_FILE, IMPORTANCE_DIR, SYMMETRIC_ABLATION_DIR
 from scripts.intervention.intervene_lib import (
+    DEFAULT_SAE_DIR,
     SPLITS_PATH,
     load_sae, get_extraction_layer_taskaware, build_tail,
     load_dataset_context, load_test_embeddings,
