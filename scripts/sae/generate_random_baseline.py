@@ -17,6 +17,7 @@ from pathlib import Path
 import torch
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import random_sae_dir
 from scripts.sae.compare_sae_cross_model import sae_sweep_dir, SAE_FILENAME
 from analysis.sparse_autoencoder import SparseAutoencoder, SAEConfig
 
@@ -25,7 +26,7 @@ DEFAULT_MODELS = [
     "tabdpt", "carte", "hyperfast",
 ]
 
-OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_random_baseline"
+OUTPUT_DIR = random_sae_dir()  # output/sae_random_baseline_round{N}
 
 
 def generate_random_sae(model: str, sweep_dir: Path, out_dir: Path):

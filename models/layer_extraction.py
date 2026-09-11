@@ -34,6 +34,8 @@ Usage (intervention — custom hooks):
 """
 
 import os
+import socket
+import subprocess
 from collections import OrderedDict, defaultdict
 from typing import Any, Optional
 
@@ -59,6 +61,25 @@ def configure_determinism() -> None:
     """
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     torch.use_deterministic_algorithms(True)
+
+
+def provenance() -> dict[str, str | int]:
+    """Where and how this extraction ran. Stored in every npz.
+
+    Forward passes are bit-exact only per host and commit (docs/reproducibility.md),
+    so a result file without these cannot be checked against a rerun. Every stage
+    that writes an npz spreads this dict into it as 0-d arrays.
+    """
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            capture_output=True,
+            text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        commit = "unknown"
+    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    return {"host": socket.gethostname(), "commit": commit, "fit_seed": FIT_SEED,
+            "torch": torch.__version__, "gpu": gpu}
 
 
 def pin_rng(seed: int) -> None:

@@ -31,6 +31,14 @@ def sae_training_dir(round: int | None = None) -> Path:
     return PROJECT_ROOT / "output" / f"sae_training_round{r}"
 
 
+def random_sae_dir(round: int | None = None) -> Path:
+    """Geometry-matched random-SAE controls ({model}/sae_*_validated.pt), one per
+    trained SAE of the same round. Round 10's live at the untagged
+    output/sae_random_baseline; output/sae_random_baseline_round10 links to it."""
+    r = round if round is not None else DEFAULT_SAE_ROUND
+    return PROJECT_ROOT / "output" / f"sae_random_baseline_round{r}"
+
+
 RESULTS_DIR = PROJECT_ROOT / "output" / f"round{DEFAULT_SAE_ROUND}"
 
 # matching (scripts/matching)
@@ -46,5 +54,12 @@ SYMMETRIC_TRANSFER_DIR = RESULTS_DIR / "symmetric_transfer"
 FORWARD_DELTAS_DIR = RESULTS_DIR / "forward_deltas"
 TRANSFER_CACHES_DIR = RESULTS_DIR / "transfer_caches"
 FUNCTIONAL_DECOMPOSITION_DIR = RESULTS_DIR / "functional_decomposition"
+
+# random-SAE control arms of the same stages
+IMPORTANCE_RANDOM_DIR = RESULTS_DIR / "perrow_importance_random"
+SYMMETRIC_ABLATION_RANDOM_DIR = RESULTS_DIR / "symmetric_ablation_random"
+SYMMETRIC_TRANSFER_RANDOM_DIR = RESULTS_DIR / "symmetric_transfer_random"
+FORWARD_DELTAS_RANDOM_DIR = RESULTS_DIR / "forward_deltas_random"
+FUNCTIONAL_DECOMPOSITION_RANDOM_DIR = RESULTS_DIR / "functional_decomposition_random"
 PATCHING_BURNDOWN_FILE = RESULTS_DIR / "patching_burndown.csv"
 PATCH_SEARCH_FILE = RESULTS_DIR / "patch_search.json"

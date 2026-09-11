@@ -25,8 +25,6 @@ Usage:
 import argparse
 import json
 import shutil
-import socket
-import subprocess
 import sys
 import tempfile
 import time
@@ -38,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from data.extended_loader import _load_tabarena_cached_v2
 from data.preprocessing import CACHE_DIR, load_preprocessed
 from models.layer_extraction import (
-    FIT_SEED, configure_determinism, extract_all_layers, load_and_fit, sort_layer_names,
+    configure_determinism, extract_all_layers, load_and_fit, provenance, sort_layer_names,
 )
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.context_sampling import select_context_indices
@@ -50,25 +48,6 @@ SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "tabdpt", "mitra", "hyperfa
 
 # Models that need raw DataFrames (not preprocessed numpy cache)
 DATAFRAME_MODELS = {"tabula8b", "carte"}
-
-def provenance() -> dict[str, str | int]:
-    """Where and how this extraction ran. Stored in every npz.
-
-    Forward passes are bit-exact only per host and commit (docs/reproducibility.md),
-    so a file without these cannot be checked against a re-extraction.
-    """
-    import torch
-
-    try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, capture_output=True,
-            text=True, check=True).stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        commit = "unknown"
-    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
-    return {"host": socket.gethostname(), "commit": commit, "fit_seed": FIT_SEED,
-            "torch": torch.__version__, "gpu": gpu}
-
 
 # Threshold: datasets with more rows than this use chunked/memmap extraction
 # to avoid accumulating all layers × all rows in RAM.

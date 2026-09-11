@@ -8,7 +8,7 @@ For each model and dataset:
      feature, measure prediction loss change
 
 Output:
-    output/perrow_importance/{model}/{dataset}.npz
+    output/round{N}/perrow_importance/{model}/{dataset}.npz  (+ provenance: host, commit, seed, torch, gpu, sae_dir)
 
 Usage:
     python -m scripts.intervention.perrow_importance --model tabpfn --device cuda
@@ -24,10 +24,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from models.layer_extraction import configure_determinism, provenance
 from scripts._project_root import PROJECT_ROOT
 from scripts.round_paths import IMPORTANCE_DIR
 from scripts.intervention.intervene_lib import (
-    SPLITS_PATH,
+    DEFAULT_SAE_DIR, SPLITS_PATH,
     load_sae, get_extraction_layer_taskaware, build_tail,
     load_dataset_context, load_test_embeddings,
     compute_per_row_loss, compute_feature_deltas, compute_feature_reconstructions,
@@ -184,6 +185,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=None,
                         help=f"Output directory (default: {IMPORTANCE_DIR})")
     args = parser.parse_args()
+    configure_determinism()
 
     splits = json.loads(SPLITS_PATH.read_text())
 
@@ -226,6 +228,8 @@ def main():
                 args.model, ds, sae, extraction_layer,
                 splits, norm_stats, args.device, args.max_K,
             )
+            result.update({k: np.array(v) for k, v in provenance().items()})
+            result["sae_dir"] = np.array(str(sae_dir or DEFAULT_SAE_DIR))
             np.savez_compressed(str(out_path), **result)
 
             rd = result["row_feature_drops"]
