@@ -37,7 +37,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from data.extended_loader import _load_tabarena_cached_v2
 from data.preprocessing import CACHE_DIR, load_preprocessed
-from models.layer_extraction import FIT_SEED, extract_all_layers, load_and_fit, sort_layer_names
+from models.layer_extraction import (
+    FIT_SEED, configure_determinism, extract_all_layers, load_and_fit, sort_layer_names,
+)
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.context_sampling import select_context_indices
 
@@ -231,6 +233,7 @@ def main():
     parser.add_argument("--force", action="store_true",
                         help="Overwrite existing embeddings")
     args = parser.parse_args()
+    configure_determinism()
 
     splits = json.loads(SPLITS_PATH.read_text())
     dataset_names = args.datasets or sorted(splits.keys())

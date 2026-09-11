@@ -150,3 +150,16 @@ def test_build_tail_pins_torch_rng_before_every_build(monkeypatch):
     torch.rand(7)
     intervene_sae.build_tail("tabdpt", X, y, X[:2], extraction_layer=1, device="cpu")
     assert torch.equal(draws[0], draws[1])
+
+
+def test_configure_determinism_enables_deterministic_algorithms_and_cublas_workspace():
+    """docs/reproducibility.md: seeding alone is not sufficient; the operative knob is
+    torch.use_deterministic_algorithms, which needs CUBLAS_WORKSPACE_CONFIG set before
+    CUDA initialises. One helper does both so no launcher can forget half of it."""
+    import os
+
+    from models.layer_extraction import configure_determinism
+
+    configure_determinism()
+    assert torch.are_deterministic_algorithms_enabled()
+    assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"

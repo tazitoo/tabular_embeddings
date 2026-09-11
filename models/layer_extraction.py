@@ -33,6 +33,7 @@ Usage (intervention — custom hooks):
     handle.remove()
 """
 
+import os
 from collections import OrderedDict, defaultdict
 from typing import Any, Optional
 
@@ -46,6 +47,18 @@ import torch
 # ---------------------------------------------------------------------------
 
 FIT_SEED = 13
+
+
+def configure_determinism() -> None:
+    """Make CUDA kernels deterministic for the rest of the process.
+
+    Seeding alone is not sufficient (docs/reproducibility.md): the operative knob is
+    torch.use_deterministic_algorithms, and cuBLAS needs CUBLAS_WORKSPACE_CONFIG in
+    the environment before its first call. The setting does not perturb models that
+    were already deterministic; it makes CARTE's trained tail reproducible.
+    """
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.use_deterministic_algorithms(True)
 
 
 def pin_rng(seed: int) -> None:
