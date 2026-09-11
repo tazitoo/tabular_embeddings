@@ -17,8 +17,18 @@ Reports, per seed, against the stored corpus activations:
   cosine, firing agreement, max|d|, and the per-row cosine distribution.
 Plus the seed-to-seed spread, which is the floor any seed search is competing against.
 
+The two task types take different paths in TabDPT. Regression goes through
+`predict`, an 8-member ensemble whose member seeds come from OS entropy and whose
+members each permute the features -- the corpus keeps the LAST member's activations.
+Classification goes through `predict_proba`, a single member with no permutation
+(feature reduction is PCA), and the corpus context (1024 rows) is under the 2048
+retrieval threshold, so that path has no random draw to seed. Pass `none` as a seed to
+re-extract exactly that way; two `none` runs against the corpus tell whether the
+classification corpus is reproducible after all.
+
 Usage:
     python -m scripts.rebuttal.tabdpt_seed_search --seeds 0 1 2 7 13 42 123 2024
+    python -m scripts.rebuttal.tabdpt_seed_search --dataset APSFailure --seeds none none 13
 """
 import argparse
 import json
@@ -67,11 +77,17 @@ def compare(a, ref):
     }
 
 
+def _seed(s):
+    return None if s.lower() == "none" else int(s)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="tabdpt")
     ap.add_argument("--dataset", default="miami_housing")
-    ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2, 7, 13, 42, 123, 2024])
+    ap.add_argument("--seeds", nargs="+", type=_seed, default=[0, 1, 2, 7, 13, 42, 123, 2024],
+                    help="integers, or `none` for an unseeded draw (the corpus path); "
+                         "repeat `none` to measure that path's own reproducibility")
     ap.add_argument("--n-rows", type=int, default=32)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default=str(
@@ -85,13 +101,13 @@ def main():
     print(f"  {'seed':>6s} {'cosine':>8s} {'fire-agr':>9s} {'max|d|':>8s} "
           f"{'row-cos med':>11s} {'rows>0.99':>9s}")
     runs, results = {}, []
-    for s in args.seeds:
+    for i, s in enumerate(args.seeds):
         a = acts_at_seed(args.model, args.dataset, args.device, args.n_rows, s)
-        runs[s] = a
+        runs[i] = a  # keyed by position: repeated `none` draws must stay distinct
         m = compare(a, ref)
         m["seed"] = s
         results.append(m)
-        print(f"  {s:>6d} {m['cosine']:8.4f} {m['firing_agreement']:9.1%} "
+        print(f"  {str(s):>6s} {m['cosine']:8.4f} {m['firing_agreement']:9.1%} "
               f"{m['max_abs_diff']:8.3f} {m['per_row_cos_median']:11.4f} "
               f"{m['rows_above_0.99']:>6d}/{m['n_rows']}")
 
