@@ -8,7 +8,7 @@ labeling pipeline so agents can see whether a feature fires on
 confident-correct, confident-wrong, or uncertain predictions.
 
 Output:
-    output/baseline_predictions/{model}/{dataset}.npz
+    output/round{N}/baseline_predictions/{model}/{dataset}.npz  (+ provenance fields)
       pred_probs       (n, n_classes) float32 | (n,) float32 for regression
       pred_class       (n,) int64             | (n,) float32 for regression
       y_true           (n,) float32
@@ -32,6 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
+from models.layer_extraction import configure_determinism, provenance
 from scripts._project_root import PROJECT_ROOT
 from scripts.round_paths import BASELINE_PREDICTIONS_DIR
 from scripts.intervention.intervene_lib import (
@@ -154,6 +155,7 @@ def main():
     parser.add_argument("--query-source", choices=["holdout", "train_noncontext", "train_all", "all_cached"], default="holdout")
     parser.add_argument("--max-context", type=int, default=1024)
     args = parser.parse_args()
+    configure_determinism()
 
     splits = json.loads(SPLITS_PATH.read_text())
     if args.query_source == "holdout":
@@ -193,6 +195,7 @@ def main():
             result = run_dataset(
                 args.model, ds, splits, args.device, args.query_source, args.max_context
             )
+            result.update({k: np.array(v) for k, v in provenance().items()})
             np.savez_compressed(str(out_path), **result)
             logger.info(f"  -> {out_path.name}: {len(result['row_indices'])} rows saved")
             n_ok += 1

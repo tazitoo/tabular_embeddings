@@ -12,6 +12,7 @@ from scripts._project_root import PROJECT_ROOT
 
 CHAIN_SCRIPTS = [
     "scripts/intervention/perrow_importance.py",
+    "scripts/intervention/cache_baseline_predictions.py",
     "scripts/rebuttal/ablation_sweep_symmetric.py",
     "scripts/rebuttal/transfer_sweep_symmetric.py",
 ]
