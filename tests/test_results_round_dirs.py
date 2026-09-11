@@ -70,7 +70,10 @@ def test_transfer_cache_builder_uses_default_round_sae_and_results_dir():
     from scripts.analysis import build_transfer_caches as btc
     from scripts.sae.compare_sae_cross_model import sae_sweep_dir
 
+    from scripts.round_paths import random_sae_dir
+
     assert btc.SAE_DIRS["trained"] == sae_sweep_dir()
+    assert btc.SAE_DIRS["random"] == random_sae_dir()
     assert _under_results(btc.OUT_ROOT)
 
 

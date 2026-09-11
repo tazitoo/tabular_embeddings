@@ -32,7 +32,7 @@ from sklearn.linear_model import Ridge
 
 from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import load_sae
-from scripts.round_paths import DEFAULT_MATCHING_FILE, TRANSFER_CACHES_DIR, sae_sweep_dir
+from scripts.round_paths import DEFAULT_MATCHING_FILE, TRANSFER_CACHES_DIR, random_sae_dir, sae_sweep_dir
 from scripts.intervention.transfer_sweep_v2 import (
     get_matched_pairs,
     get_unmatched_features,
@@ -54,7 +54,7 @@ PAIRS = [tuple(sorted(p)) for p in combinations(MODELS, 2)]
 
 SAE_DIRS = {
     "trained": sae_sweep_dir(),
-    "random": PROJECT_ROOT / "output" / "sae_random_baseline",
+    "random": random_sae_dir(),
 }
 
 OUT_ROOT = TRANSFER_CACHES_DIR  # output/round{N}/transfer_caches
