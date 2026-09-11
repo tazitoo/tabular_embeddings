@@ -78,8 +78,11 @@ def provenance() -> dict[str, str | int]:
     except (subprocess.CalledProcessError, FileNotFoundError):
         commit = "unknown"
     gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    # The caching allocator's mode changes Mitra's numerics on wide datasets (and its
+    # peak memory), so it is part of what reproduces a result.
+    alloc = os.environ.get("PYTORCH_CUDA_ALLOC_CONF") or "default"
     return {"host": socket.gethostname(), "commit": commit, "fit_seed": FIT_SEED,
-            "torch": torch.__version__, "gpu": gpu}
+            "torch": torch.__version__, "gpu": gpu, "alloc_conf": alloc}
 
 
 def pin_rng(seed: int) -> None:

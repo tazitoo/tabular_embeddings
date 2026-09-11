@@ -42,3 +42,14 @@ def test_provenance_values_are_npz_safe_scalars():
     for k, v in prov.items():
         np.array(v)  # must be storable as a 0-d array in savez
         assert isinstance(v, (str, int)), k
+
+
+def test_provenance_records_the_cuda_allocator_setting(monkeypatch):
+    """The allocator changes Mitra's numerics on wide datasets (2026-09-11), so a file
+    must say which one produced it."""
+    from models.layer_extraction import provenance
+
+    monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    assert provenance()["alloc_conf"] == "expandable_segments:True"
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF")
+    assert provenance()["alloc_conf"] == "default"
