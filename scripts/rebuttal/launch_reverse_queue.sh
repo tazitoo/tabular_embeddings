@@ -14,7 +14,7 @@
 # Output (round tree, from scripts/round_paths.py):
 #   output/round{N}/symmetric_ablation[_random]/<pair>/<dataset>.npz
 #   output/round{N}/symmetric_transfer[_random]/<pair>/<dataset>.npz
-# Log: /tmp/reverse_<kind>_<host>.log
+# Log: /tmp/reverse_<kind>_<host>_gpu<N>.log
 
 set -uo pipefail
 
@@ -57,8 +57,11 @@ else
     tag=
 fi
 
-LOG=/tmp/reverse_${KIND}${tag}_${HOST}.log
-LOCK=/tmp/reverse_${KIND}${tag}_${HOST}.lock
+# One queue per (kind, host, GPU): CUDA_VISIBLE_DEVICES is set by the launcher, so a
+# multi-GPU host (morg) can run several queues of the same kind side by side.
+GPU_TAG=gpu${CUDA_VISIBLE_DEVICES:-x}
+LOG=/tmp/reverse_${KIND}${tag}_${HOST}_${GPU_TAG}.log
+LOCK=/tmp/reverse_${KIND}${tag}_${HOST}_${GPU_TAG}.lock
 
 # Lock: SSH nohup can fire even when a prompt is rejected; keep a second launch
 # of the same kind on the same host from duplicating work.
