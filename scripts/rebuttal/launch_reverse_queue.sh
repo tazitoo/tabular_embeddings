@@ -11,9 +11,9 @@
 #   nohup bash scripts/rebuttal/launch_reverse_queue.sh <ablation|transfer> \
 #         tabpfn:mitra tabicl:carte ... > /tmp/launch.out 2>&1 </dev/null &
 #
-# Output:
-#   output/rebuttal/symmetric_ablation/<pair>/<dataset>.npz
-#   output/rebuttal/symmetric_transfer/<pair>/<dataset>.npz
+# Output (round tree, from scripts/round_paths.py):
+#   output/round{N}/symmetric_ablation[_random]/<pair>/<dataset>.npz
+#   output/round{N}/symmetric_transfer[_random]/<pair>/<dataset>.npz
 # Log: /tmp/reverse_<kind>_<host>.log
 
 set -uo pipefail
@@ -44,10 +44,13 @@ case "$KIND" in
 esac
 
 if [[ $RANDOM_MODE -eq 1 ]]; then
-    EXTRA=(--sae-dir output/sae_random_baseline
-           --importance-dir output/perrow_importance_random
-           --matching-file output/sae_feature_matching_mnn_t0.001_random.json
-           --output-dir "output/rebuttal/symmetric_${KIND}_random")
+    # The random arm's dirs live in the same round tree as the trained arm's.
+    RESULTS_DIR=$(cd "$REPO" && "$TFM" -c "from scripts.round_paths import RESULTS_DIR; print(RESULTS_DIR)")
+    RANDOM_SAE_DIR=$(cd "$REPO" && "$TFM" -c "from scripts.round_paths import random_sae_dir; print(random_sae_dir())")
+    EXTRA=(--sae-dir "$RANDOM_SAE_DIR"
+           --importance-dir "$RESULTS_DIR/perrow_importance_random"
+           --matching-file "$RESULTS_DIR/sae_feature_matching_mnn_t0.001_random.json"
+           --output-dir "$RESULTS_DIR/symmetric_${KIND}_random")
     tag=_random
 else
     EXTRA=()

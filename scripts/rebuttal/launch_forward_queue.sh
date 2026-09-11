@@ -32,6 +32,9 @@ CACHE_ARG=""; [ "$CACHE" != "-" ] && CACHE_ARG="--virtual-atoms-cache-dir $CACHE
 TFM=/home/brian/anaconda3/envs/tfm/bin/python
 TFM2=/home/brian/anaconda3/envs/tfm2/bin/python
 IFS=',' read -ra GPUS <<< "$GPUS_CSV"
+# torch/MKL size thread pools to the host's cores, not the work; uncapped jobs
+# sharing a host starve each other (see the gpu-cluster notes).
+THREADS=${THREADS_PER_JOB:-8}
 
 # Shared work queue + lock (flock for atomic single-line pop across GPU workers).
 STAMP=$(date +%s)_$$
@@ -66,6 +69,8 @@ for g in "${GPUS[@]}"; do
             echo "=== $(date -Iseconds) GPU$g $a vs $b (env=$env_name) start ===" >> "$log"
             CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$g \
                 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+                OMP_NUM_THREADS=$THREADS MKL_NUM_THREADS=$THREADS \
+                OPENBLAS_NUM_THREADS=$THREADS NUMEXPR_NUM_THREADS=$THREADS \
                 "$PY" -m scripts.rebuttal.transfer_sweep_symmetric \
                 --models "$a" "$b" --forward --device cuda --resume \
                 --sae-dir "$SAE_DIR" --importance-dir "$IMP_DIR" \
