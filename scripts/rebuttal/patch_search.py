@@ -179,7 +179,7 @@ def extract_acts(donor, dataset, X_ctx, y_ctx, X_query, task, device):
         if ci:
             fit_kwargs["cat_indices"] = ci
     clf = load_and_fit(donor, X_ctx, y_ctx, task=task, device=device, **fit_kwargs)
-    embs = extract_all_layers(donor, clf, X_query, task=task, seed=EXTRACT_SEED)
+    embs = extract_all_layers(donor, clf, X_query, task=task)
     names = sort_layer_names(list(embs.keys()))
     idx = min(max(get_extraction_layer_taskaware(donor, dataset), 0), len(names) - 1)
     raw = np.asarray(embs[names[idx]], dtype=np.float32)

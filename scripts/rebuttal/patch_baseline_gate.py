@@ -128,9 +128,7 @@ def layer_embeddings(model: str, dataset: str, X_train, y_train, X_query, task: 
         torch.cuda.manual_seed_all(EXTRACT_SEED)
 
     clf = load_and_fit(model, X_train, y_train, task=task, device="cuda")
-    # TabDPT's predict() draws n_ensembles retrieval contexts unseeded by default;
-    # pin it so re-extraction is reproducible (docs/reproducibility.md).
-    layer_embs = extract_all_layers(model, clf, X_query, task=task, seed=EXTRACT_SEED)
+    layer_embs = extract_all_layers(model, clf, X_query, task=task)
     names = sort_layer_names(list(layer_embs.keys()))
     idx = get_extraction_layer_taskaware(model, dataset)
     idx = min(max(idx, 0), len(names) - 1)

@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
-"""Can any seed reproduce TabDPT's stored (unseeded) corpus embeddings?
+"""Does TabDPT's corpus extraction path reproduce, and does the seed pin it?
 
-TabDPT.predict(..., seed=None) draws its retrieval contexts unseeded, and
-layer_extraction.predict never passed a seed, so the SAE corpus holds ONE arbitrary
-draw. Seeding now makes re-extraction reproducible but produces a DIFFERENT draw.
+TabDPT has two random draws that predict()-level seeding does not fix. Over its
+100-feature cap it fits a randomized PCA (torch.pca_lowrank) that nothing seeds, and
+regression predict() is an 8-member ensemble with OS-entropy member seeds and a
+per-member feature permutation. Seeding predict() switches ON that permutation, which
+is a different forward from the one the corpus used, so it cannot reproduce the corpus.
 
-Before writing tabdpt off, measure whether the choice of seed matters: if the residual
-against the corpus varies a lot across seeds, picking the best one is worth doing; if
-every seed sits at the same distance, the corpus draw is unrecoverable and no amount of
-searching helps.
+`load_and_fit(seed=...)` now pins the RNG before fit (PCA) and `predict` runs a single
+unpermuted member on both task types. This script measures what that buys: each entry
+in --seeds is the fit seed for one re-extraction (`none` = leave the RNG alone), and
+every run is compared against the stored corpus activations and against each other.
 
-Also characterises HOW the draws differ -- per-row agreement, and whether the
-disagreement is concentrated in a few rows/features or spread across all of them.
+Expected under the fixed path: repeated equal seeds are bit-identical; narrow
+classification datasets (<=100 features, no random draw at all) match the corpus at
+~0.998 regardless of seed; wide-classification and regression corpora are one arbitrary
+historical draw and no seed matches them -- those 18 datasets need re-extraction.
 
-Reports, per seed, against the stored corpus activations:
+Reports, per run, against the stored corpus activations:
   cosine, firing agreement, max|d|, and the per-row cosine distribution.
-Plus the seed-to-seed spread, which is the floor any seed search is competing against.
-
-The two task types take different paths in TabDPT. Regression goes through
-`predict`, an 8-member ensemble whose member seeds come from OS entropy and whose
-members each permute the features -- the corpus keeps the LAST member's activations.
-Classification goes through `predict_proba`, a single member with no permutation
-(feature reduction is PCA), and the corpus context (1024 rows) is under the 2048
-retrieval threshold, so that path has no random draw to seed. Pass `none` as a seed to
-re-extract exactly that way; two `none` runs against the corpus tell whether the
-classification corpus is reproducible after all.
+Plus the run-to-run spread.
 
 Usage:
-    python -m scripts.rebuttal.tabdpt_seed_search --seeds 0 1 2 7 13 42 123 2024
-    python -m scripts.rebuttal.tabdpt_seed_search --dataset APSFailure --seeds none none 13
+    python -m scripts.rebuttal.tabdpt_seed_search --dataset APSFailure --seeds 13 13 none
+    python -m scripts.rebuttal.tabdpt_seed_search --dataset miami_housing --seeds 13 13 7
 """
 import argparse
 import json
@@ -51,8 +46,8 @@ def acts_at_seed(model, dataset, device, n_rows, seed):
     X_train, y_train, X_query, _, _, task = load_dataset_context(
         model, dataset, query_source="holdout")
     q = X_query[:n_rows] if not hasattr(X_query, "iloc") else X_query.iloc[:n_rows]
-    clf = load_and_fit(model, X_train, y_train, task=task, device=device)
-    embs = extract_all_layers(model, clf, q, task=task, seed=seed)
+    clf = load_and_fit(model, X_train, y_train, task=task, device=device, seed=seed)
+    embs = extract_all_layers(model, clf, q, task=task)
     names = sort_layer_names(list(embs.keys()))
     idx = min(max(get_extraction_layer_taskaware(model, dataset), 0), len(names) - 1)
     return _sae_acts(model, np.asarray(embs[names[idx]], dtype=np.float32), dataset, device)
@@ -86,8 +81,8 @@ def main():
     ap.add_argument("--model", default="tabdpt")
     ap.add_argument("--dataset", default="miami_housing")
     ap.add_argument("--seeds", nargs="+", type=_seed, default=[0, 1, 2, 7, 13, 42, 123, 2024],
-                    help="integers, or `none` for an unseeded draw (the corpus path); "
-                         "repeat `none` to measure that path's own reproducibility")
+                    help="fit seeds, one re-extraction each; `none` leaves the RNG "
+                         "unpinned. Repeat a value to measure reproducibility")
     ap.add_argument("--n-rows", type=int, default=32)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default=str(
@@ -124,8 +119,8 @@ def main():
     print(f"  vs-corpus cosine:    median={np.median([r['cosine'] for r in results]):.4f} "
           f"min={min(r['cosine'] for r in results):.4f} "
           f"max={max(r['cosine'] for r in results):.4f}")
-    print("\n  If these two ranges coincide, the corpus is just another draw and no seed")
-    print("  reproduces it -- searching harder cannot close a gap that is sampling noise.")
+    print("\n  Equal seeds should be bit-identical. If no seed approaches the corpus, the")
+    print("  corpus is a historical draw this dataset cannot reproduce and must be re-extracted.")
 
     with open(args.out, "w") as fh:
         json.dump({"model": args.model, "dataset": args.dataset, "n_rows": args.n_rows,

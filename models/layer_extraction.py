@@ -45,12 +45,30 @@ import torch
 # Model loading + fit
 # ---------------------------------------------------------------------------
 
+FIT_SEED = 13
+
+
+def pin_rng(seed: int) -> None:
+    """Pin every RNG a model fit or forward can draw from.
+
+    Called immediately before each fit/build, not once per process, so a resumed
+    sweep sees the same draws as a fresh one. TabDPT's randomized PCA over its
+    100-feature cap (torch.pca_lowrank at fit time) and Mitra's predict-time
+    augmentations both read the global torch RNG.
+    """
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def load_and_fit(
     model_name: str,
     X_context: np.ndarray,
     y_context: np.ndarray,
     task: str = "classification",
     device: str = "cuda",
+    seed: int | None = FIT_SEED,
     **kwargs,
 ) -> Any:
     """Load a tabular FM and fit on context data.
@@ -61,12 +79,17 @@ def load_and_fit(
         y_context: Context labels (int32 for clf, float32 for reg).
         task: "classification" or "regression".
         device: Torch device.
+        seed: RNG seed pinned right before fit (see pin_rng); None leaves the
+            process RNG state alone, which is only reproducible when nothing in
+            the fit draws from it.
         **kwargs: Forwarded to model constructor.
 
     Returns:
         Fitted classifier/regressor object.
     """
     key = model_name.lower()
+    if seed is not None:
+        pin_rng(seed)
 
     if key == "tabpfn":
         from models.tabpfn_utils import load_tabpfn
@@ -226,17 +249,19 @@ def get_layer_modules(model_name: str, clf: Any) -> OrderedDict:
 # Forward pass
 # ---------------------------------------------------------------------------
 
-def predict(clf: Any, X_query: np.ndarray, task: str = "classification", seed: int | None = None):
+def predict(clf: Any, X_query: np.ndarray, task: str = "classification"):
     """Run forward pass on query data. Returns predictions.
 
-    TabDPT draws `n_ensembles` retrieval contexts per call and its predict()
-    takes `seed`, defaulting to None -- i.e. unseeded and not reproducible
-    between calls. Pass `seed` to pin it. Other models ignore the argument.
-    Default None preserves the historical behaviour of every existing caller.
+    TabDPT is run as a single, unpermuted ensemble member on both task types.
+    Its classification predict_proba already is one; its regression predict()
+    defaults to 8 members with OS-entropy seeds and a per-member feature
+    permutation, so it is pinned to n_ensembles=1. Passing TabDPT a `seed`
+    would instead switch ON the feature permutation, which is a different
+    forward from the one the SAE corpus was extracted with.
     """
     kwargs = {}
-    if seed is not None and type(clf).__name__.startswith("TabDPT"):
-        kwargs["seed"] = seed
+    if task == "regression" and type(clf).__name__.startswith("TabDPT"):
+        kwargs["n_ensembles"] = 1
     with torch.no_grad():
         if task == "regression":
             return clf.predict(X_query, **kwargs)
@@ -254,7 +279,6 @@ def extract_all_layers(
     X_query: np.ndarray,
     task: str = "classification",
     batch_size: int = 1024,
-    seed: int | None = None,
 ) -> dict[str, np.ndarray]:
     """Extract embeddings from all layers for query samples.
 
@@ -322,7 +346,7 @@ def extract_all_layers(
             handles.append(module.register_forward_hook(make_hook(name)))
 
         try:
-            predict(clf, X_batch, task, seed=seed)
+            predict(clf, X_batch, task)
         finally:
             for handle in handles:
                 handle.remove()

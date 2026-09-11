@@ -1435,6 +1435,11 @@ class TabDPTTail:
     (n_samples, seq, H) or 2D. We cache the hidden state and monkey-patch
     the encoder to skip layers 0..L.
 
+    Regression runs a single unpermuted ensemble member (n_ensembles=1), the
+    same forward the SAE corpus was extracted with; TabDPT's default 8-member
+    regression predict draws member seeds from OS entropy and permutes features
+    per member, so it is neither reproducible nor the corpus path.
+
     Usage:
         tail = TabDPTTail.from_data(X_ctx, y_ctx, X_query, layer=13, task="classification", device="cuda")
         preds = tail.predict(delta)  # delta: (n_samples, H)
@@ -1478,7 +1483,7 @@ class TabDPTTail:
         try:
             with torch.no_grad():
                 if task == "regression":
-                    baseline_preds = clf.predict(X_query)
+                    baseline_preds = clf.predict(X_query, n_ensembles=1)
                 else:
                     baseline_preds = clf.predict_proba(X_query)
         finally:
@@ -1512,7 +1517,7 @@ class TabDPTTail:
         try:
             with torch.no_grad():
                 if self.task == "regression":
-                    preds = self.clf.predict(self.X_query)
+                    preds = self.clf.predict(self.X_query, n_ensembles=1)
                 else:
                     preds = self.clf.predict_proba(self.X_query)
         finally:
@@ -1559,7 +1564,7 @@ class TabDPTTail:
         try:
             with torch.no_grad():
                 if self.task == "regression":
-                    preds = self.clf.predict(X_query_new)
+                    preds = self.clf.predict(X_query_new, n_ensembles=1)
                 else:
                     preds = self.clf.predict_proba(X_query_new)
         finally:
@@ -1755,7 +1760,13 @@ def build_tail(model_key, X_context, y_context, X_query, extraction_layer,
     prefix — but the tail models index directly into blocks[]/encoder_layers[].
     We subtract the prefix offset here so every tail receives a block index.
     """
+    from models.layer_extraction import FIT_SEED, pin_rng
     from models.model_paths import get_model_path
+
+    # Pin every RNG per build, not per process: a resumed sweep must build the same
+    # tail as a fresh one (TabDPT's fit-time PCA and Mitra's predict-time
+    # augmentations both draw from the global RNG).
+    pin_rng(FIT_SEED)
 
     # Models with a non-block prefix in get_layer_modules():
     #   tabicl / tabicl_v2: row_output at index 0
