@@ -179,7 +179,7 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-K", type=int, default=512)
     parser.add_argument("--sae-dir", type=Path, default=None,
-                        help="SAE checkpoint directory (default: sweep round10)")
+                        help="SAE checkpoint directory (default: the DEFAULT_SAE_ROUND sweep)")
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="Output directory (default: output/perrow_importance)")
     args = parser.parse_args()

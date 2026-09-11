@@ -34,18 +34,19 @@ import torch
 
 from scripts._project_root import PROJECT_ROOT
 from scripts.sae.analyze_sae_concepts_deep import load_sae_checkpoint
+from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
 
 MODELS = ["tabpfn", "tabicl", "tabicl_v2", "tabdpt", "mitra", "carte"]
 
-# SAE checkpoint path per model (round 10 validated)
+# SAE checkpoint path per model (validated checkpoint of the default round)
 SAE_CKPT = {
-    m: f"sae_tabarena_sweep_round10/{m}/sae_matryoshka_archetypal_validated.pt"
+    m: f"sae_tabarena_sweep_round{DEFAULT_SAE_ROUND}/{m}/sae_matryoshka_archetypal_validated.pt"
     for m in MODELS
 }
 
 # Pre-processed test embeddings (already per-dataset normalized for SAE)
 TEST_DATA = {
-    m: f"sae_training_round10/{m}_taskaware_sae_test.npz"
+    m: f"sae_training_round{DEFAULT_SAE_ROUND}/{m}_taskaware_sae_test.npz"
     for m in MODELS
 }
 

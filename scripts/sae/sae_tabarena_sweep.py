@@ -727,13 +727,19 @@ def create_optuna_objective(
     return objective
 
 
+def prebuilt_corpus_dir() -> Path:
+    """Where 07_build_sae_training_data.py wrote the corpus for the default round."""
+    from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
+    return PROJECT_ROOT / "output" / f"sae_training_round{DEFAULT_SAE_ROUND}"
+
+
 def _load_prebuilt_embeddings(model_name: str) -> Optional[Tuple[np.ndarray, np.ndarray, List[str], int]]:
     """Try to load prebuilt SAE training and test data.
 
     Returns:
         (train_embeddings, test_embeddings, source_datasets, optimal_layer) or None
     """
-    prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round10"
+    prebuilt_dir = prebuilt_corpus_dir()
 
     # Find train file: prefer taskaware, fall back to layer-specific
     base = model_name.split("_layer")[0] if "_layer" in model_name else model_name
@@ -804,7 +810,7 @@ def run_sweep(
     # Load prebuilt training data (required)
     prebuilt = _load_prebuilt_embeddings(model_name)
     if prebuilt is None:
-        prebuilt_dir = PROJECT_ROOT / "output" / "sae_training_round10"
+        prebuilt_dir = prebuilt_corpus_dir()
         raise FileNotFoundError(
             f"No prebuilt SAE training data found for '{model_name}'. "
             f"Expected: {prebuilt_dir}/{model_name}_taskaware_sae_training.npz\n"

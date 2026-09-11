@@ -51,7 +51,10 @@ from data.extended_loader import load_tabarena_dataset
 # Round 7: Gao et al. recipe (AuxK, step counter dead detection, weight EMA, geometric median b_dec)
 # Round 8: Detach AuxK residual, normalize by residual variance, grad clipping, dead_steps=200
 # Round 10: Task-aware layers, efficiency objective (recon*sqrt(hidden)*sqrt(L0)/alive)
-DEFAULT_SAE_ROUND = 10
+# Round 11 = round 10 with TabDPT's corpus and SAE regenerated on the pinned
+# extraction path (see scripts/sae_corpus/promote_round.py); other models are
+# links to their round-10 artifacts.
+DEFAULT_SAE_ROUND = 11
 SAE_FILENAME = "sae_matryoshka_archetypal_validated.pt"
 
 

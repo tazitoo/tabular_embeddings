@@ -54,7 +54,15 @@ from scripts._project_root import PROJECT_ROOT
 
 SPLITS_PATH = PROJECT_ROOT / "output" / "sae_training_round9" / "tabarena_splits.json"
 EMBEDDINGS_DIR = PROJECT_ROOT / "output" / "sae_training_round9" / "embeddings"
-OUTPUT_DIR = PROJECT_ROOT / "output" / "sae_training_round10"
+
+
+def default_output_dir() -> Path:
+    """Corpus directory for the default SAE round (what the sweep reads)."""
+    from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
+    return PROJECT_ROOT / "output" / f"sae_training_round{DEFAULT_SAE_ROUND}"
+
+
+OUTPUT_DIR = default_output_dir()
 CKA_DIR = PROJECT_ROOT / "output" / "layerwise_cka_v2"
 DEPTH_ANALYSIS_DIR = PROJECT_ROOT / "output"
 
@@ -542,6 +550,7 @@ def build_training_data(
 
 
 def main():
+    global EMBEDDINGS_DIR, OUTPUT_DIR
     parser = argparse.ArgumentParser(
         description="Build SAE training data with full-fold normalization"
     )
@@ -554,7 +563,15 @@ def main():
                              "'fixed_task_aware' uses one layer per architecture variant "
                              "(e.g. TabPFN classifier L19 + regressor L11), "
                              "'per_dataset' uses CKA critical layer per dataset")
+    parser.add_argument("--embeddings-dir", type=Path, default=EMBEDDINGS_DIR,
+                        help="Root of {model}/{dataset}.npz all-layer embeddings "
+                             "(04_extract_all_layers --output-root)")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR,
+                        help="Corpus directory; defaults to the DEFAULT_SAE_ROUND one")
     args = parser.parse_args()
+
+    EMBEDDINGS_DIR = args.embeddings_dir
+    OUTPUT_DIR = args.output_dir
 
     config = load_optimal_layers()
 
@@ -574,7 +591,8 @@ def main():
         print("Run 04_extract_all_layers.py first.")
         return
 
-    print(f"Building SAE training data (round 10)")
+    print("Building SAE training data")
+    print(f"  Embeddings: {EMBEDDINGS_DIR}")
     print(f"  Output: {OUTPUT_DIR}")
     print(f"  Layer mode: {args.layer_mode}")
     print(f"  Models: {models}")

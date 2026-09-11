@@ -837,7 +837,7 @@ def main():
     parser.add_argument("--local-map-adaptive", action="store_true",
                         help="Use adaptive local maps (neighbors with cosine > 2x noise floor)")
     parser.add_argument("--sae-dir", type=Path, default=None,
-                        help="SAE checkpoint directory (default: sweep round10)")
+                        help="SAE checkpoint directory (default: the DEFAULT_SAE_ROUND sweep)")
     parser.add_argument("--importance-dir", type=Path, default=None,
                         help="Per-row importance directory (default: output/perrow_importance)")
     parser.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE,
