@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
-"""Retrain SAE with selected (floor-picked) HPs and save validated model.
+"""Retrain an SAE with chosen HPs and save the validated-artifact set.
 
-For models where the floor-selected trial differs from Optuna's best,
-this retrains with the selected HPs, runs stability seeds, and saves
-the validated model + random baseline.
+Trains at the validation seed, runs the stability seeds, and saves the validated
+model, seed models and the geometry-matched random baseline -- the same artifact set
+the sweep's own validate_and_save writes.
+
+HPs come from one of:
+  * SELECTED_PARAMS below (the round-10 floor picks), the default per model;
+  * a sweep study trial (--trial N, --round R), optionally with the structural
+    params overridden (--expansion, --topk) to train one-off candidates.
+
+Candidates go to a tagged directory beside the sweep's checkpoint dir
+(--tag NAME -> sae_tabarena_sweep_round{R}/{model}_candidates/NAME) so the sweep's
+validated checkpoint is never overwritten; a summary.json with R2/alive/L0/stability
+is written next to them for comparison.
 
 Usage:
-    python scripts/sae/retrain_selected.py --model tabpfn --device cuda
-    python scripts/sae/retrain_selected.py --model tabula8b --device cuda
+    python -m scripts.sae.retrain_selected --model tabpfn --device cuda
+    python -m scripts.sae.retrain_selected --model tabdpt --trial 13 --tag t13_4x_k128
+    python -m scripts.sae.retrain_selected --model tabdpt --trial 13 --expansion 2 --topk 64 --tag t13_2x_k64
 """
 import argparse
 import json
@@ -23,8 +34,39 @@ from scripts.sae.sae_tabarena_sweep import (
     _load_prebuilt_embeddings, run_sae_trial, save_sae_model,
     compute_stability,
 )
-from scripts.sae.compare_sae_cross_model import sae_sweep_dir
+from scripts.round_paths import sae_sweep_dir
 from analysis.sparse_autoencoder import create_random_baseline
+
+STRUCTURAL = ("expansion", "topk")
+HP_KEYS = ("sparsity_penalty", "learning_rate", "archetypal_temp", "archetypal_n",
+           "archetypal_relaxation")
+
+
+def params_from_study(db_path: Path, trial: int) -> dict:
+    """The HPs of one completed trial of an Optuna study, keyed like SELECTED_PARAMS."""
+    import optuna
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.load_study(study_name=db_path.stem, storage=f"sqlite:///{db_path}")
+    t = next(t for t in study.trials if t.number == trial)
+    p = t.params
+    return {"trial": trial, "expansion": int(p["expansion"]), "topk": int(p["topk"]),
+            **{k: p[k] for k in HP_KEYS}}
+
+
+def with_overrides(params: dict, expansion: int | None = None, topk: int | None = None) -> dict:
+    """Copy of `params` with the structural params replaced where given."""
+    out = dict(params)
+    if expansion is not None:
+        out["expansion"] = int(expansion)
+    if topk is not None:
+        out["topk"] = int(topk)
+    return out
+
+
+def candidate_dir(model: str, tag: str) -> Path:
+    """Where a one-off candidate lands: beside, never inside, the sweep's model dir."""
+    return sae_sweep_dir() / f"{model}_candidates" / tag
 
 # Floor-selected trial HPs (from sweep analysis)
 SELECTED_PARAMS = {
@@ -83,13 +125,26 @@ SELECTED_PARAMS = {
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, choices=list(SELECTED_PARAMS.keys()))
+    parser.add_argument("--model", required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--trial", type=int, default=None,
+                        help="take HPs from this trial of the model's sweep study")
+    parser.add_argument("--round", type=int, default=None, help="study round (default: current)")
+    parser.add_argument("--expansion", type=int, default=None, help="override expansion")
+    parser.add_argument("--topk", type=int, default=None, help="override top-k")
+    parser.add_argument("--tag", default=None,
+                        help="write to {model}_candidates/TAG instead of the model's sweep dir")
     args = parser.parse_args()
 
     model_name = args.model
-    params = SELECTED_PARAMS[model_name]
-    output_dir = sae_sweep_dir() / model_name
+    if args.trial is not None:
+        db = sae_sweep_dir(args.round) / model_name / f"{model_name}_matryoshka_archetypal.db"
+        params = with_overrides(params_from_study(db, args.trial), args.expansion, args.topk)
+    else:
+        if model_name not in SELECTED_PARAMS:
+            parser.error(f"no SELECTED_PARAMS for {model_name}; pass --trial")
+        params = with_overrides(SELECTED_PARAMS[model_name], args.expansion, args.topk)
+    output_dir = candidate_dir(model_name, args.tag) if args.tag else sae_sweep_dir() / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load data
@@ -133,13 +188,21 @@ def main():
     l0 = metrics["l0_sparsity"]
     obj = test_recon_loss * np.sqrt(hidden_dim) * np.sqrt(l0) / alive_frac
 
+    var_per_dim = float(test_emb.var(axis=0).mean())
+    r2 = 1.0 - test_recon_loss / var_per_dim
     print(f"\n  Results:")
     print(f"    train_recon:  {metrics['reconstruction_loss']:.6f}")
-    print(f"    test_recon:   {test_recon_loss:.6f}")
+    print(f"    test_recon:   {test_recon_loss:.6f}  (R2 {r2:.4f})")
     print(f"    alive:        {metrics['alive_features']}/{hidden_dim} ({alive_frac*100:.1f}%)")
     print(f"    L0:           {l0:.1f}")
     print(f"    stability:    {metrics['stability']:.4f}")
     print(f"    objective:    {obj:.4f}")
+    with open(output_dir / "summary.json", "w") as fh:
+        json.dump({"model": model_name, "params": params, "hidden_dim": int(hidden_dim),
+                   "test_recon": float(test_recon_loss), "r2": float(r2),
+                   "alive": float(alive_frac), "l0": float(l0),
+                   "stability": float(metrics["stability"]), "objective": float(obj)},
+                  fh, indent=2)
 
     # Save validated model
     best_params = {k: v for k, v in params.items() if k != "trial"}
