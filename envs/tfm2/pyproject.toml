@@ -20,6 +20,17 @@
 #
 # The repo itself is installed with --no-deps because this file, not the root
 # pyproject, owns this environment's dependency set.
+#
+# DEPLOYED STATE (2026-09-11, round 11): no uv.lock was ever generated for this
+# spec, and the fleet's tfm2 envs were built by hand. `deployed-2026-09-11.txt` is
+# the pip freeze of surfer4's tfm2 after the fleet was levelled on every
+# compute-path package (torch 2.7.1+cu126, tabicl 2.0.3, tabpfn 6.4.1, tabdpt
+# 1.1.12, carte-ai 0.0.26, torch-geometric 2.7.0, autogluon 1.4.0, numpy 2.3.5,
+# scikit-learn 1.6.1, scipy 1.16.3, pandas 2.3.3, transformers 5.3.0); the round-11
+# results were produced against it. Two pins above are aspirational, not deployed:
+# tabpfn is 6.4.1 (not 7.0.1; the root env has 6.3.2, so TabPFN differs across the
+# two envs) and autogluon is 1.4.0 (not 1.5.0). Rebuilding from this spec would
+# change both; rebuild from the freeze instead to reproduce round 11.
 
 [build-system]
 requires = ["setuptools>=68.0"]
