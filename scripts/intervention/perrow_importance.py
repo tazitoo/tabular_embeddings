@@ -230,6 +230,7 @@ def main():
             )
             result.update({k: np.array(v) for k, v in provenance().items()})
             result["sae_dir"] = np.array(str(sae_dir or DEFAULT_SAE_DIR))
+            result["max_K"] = np.array(args.max_K)  # copies per batched forward; results are K-invariant
             np.savez_compressed(str(out_path), **result)
 
             rd = result["row_feature_drops"]
