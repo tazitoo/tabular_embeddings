@@ -282,10 +282,17 @@ def load_reference_rows(train_npz: Path, test_npz: Path) -> dict[str, tuple[np.n
     already uses: the stratified sampler below depends on a live TabPFN difficulty
     pass, which is environment-sensitive, so resampling in a new environment picks
     different rows and breaks cross-model row alignment.
+
+    Training corpora written before row bookkeeping was added carry no `row_indices`;
+    their train entry is None and the caller samples train rows from the remainder.
     """
     out: dict[str, list] = {}
     for split, path in (("train", train_npz), ("test", test_npz)):
         z = np.load(path, allow_pickle=True)
+        if "row_indices" not in z.files:
+            for name, _ in z["samples_per_dataset"]:
+                out.setdefault(str(name), [None, None])
+            continue
         rows, offset = z["row_indices"], 0
         for name, n in z["samples_per_dataset"]:
             out.setdefault(str(name), [None, None])[0 if split == "train" else 1] = \
@@ -308,11 +315,35 @@ def select_sample_from_reference(
 
 def select_sample(
     n_holdout: int, y_test: np.ndarray, losses: np.ndarray | None, task_type: str,
+    pinned_test: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Select train/test row indices using stratified sampling.
 
-    Returns (train_indices, test_indices) into the holdout set.
+    Returns (train_indices, test_indices) into the holdout set. With `pinned_test`
+    the test rows are taken as given (cross-model alignment) and only the train rows
+    are sampled, from the remainder, with the same stratification.
     """
+    if pinned_test is not None:
+        test_idx = np.asarray(pinned_test, dtype=np.int64)
+        remaining = np.setdiff1d(np.arange(n_holdout), test_idx)
+        if n_holdout <= SAMPLE_CAP:
+            return remaining, test_idx
+        n_train = 500
+        if losses is None:
+            raise ValueError("Difficulty scores are required to sample train rows around pinned test rows.")
+        if task_type == "classification":
+            pick = sample_target_x_difficulty(y_test[remaining], losses[remaining], n_train)
+        else:
+            rng = np.random.RandomState(42)
+            terciles = tercile_labels(losses[remaining])
+            pick = []
+            for t in range(3):
+                t_idx = np.where(terciles == t)[0]
+                rng.shuffle(t_idx)
+                pick.append(t_idx[:min(n_train // 3, len(t_idx))])
+            pick = np.concatenate(pick)
+        return remaining[pick], test_idx
+
     if n_holdout <= SAMPLE_CAP:
         # Small dataset: take all rows, split proportionally
         n_train = round(n_holdout * TRAIN_FRAC)
@@ -443,13 +474,18 @@ def build_training_data(
         emb_norm = (emb - ds_mean) / ds_std
 
         holdout_indices = np.array(split_info["test_indices"], dtype=np.int32)
+        pinned_test = None
         if reference_rows is not None:
-            # Pinned rows: no difficulty pass, no resampling.
             ref_train, ref_test = reference_rows[ds_name]
-            train_idx, test_idx = select_sample_from_reference(holdout_indices, ref_train, ref_test)
-            losses = None
+            if ref_train is not None:
+                # Both splits recorded: no difficulty pass, no resampling.
+                train_idx, test_idx = select_sample_from_reference(holdout_indices, ref_train, ref_test)
+            else:
+                # Only the test rows are recorded: pin them, sample train from the rest.
+                _, pinned_test = select_sample_from_reference(holdout_indices, np.array([], dtype=np.int32), ref_test)
+        need_losses = reference_rows is None or (pinned_test is not None and n_holdout > SAMPLE_CAP)
         # 3. Compute difficulty scores (lazy, cached)
-        elif ds_name not in difficulty_cache:
+        if need_losses and ds_name not in difficulty_cache:
             y_test = np.array(split_info.get("test_labels", []))
             # Load y_test from preprocessed cache if not in splits
             if len(y_test) == 0:
@@ -474,10 +510,14 @@ def build_training_data(
             losses = compute_difficulty(ds_name, task_type, y_test, device)
             difficulty_cache[ds_name] = (y_test, losses)
 
-        if reference_rows is None:
+        losses = None
+        if need_losses:
             y_test, losses = difficulty_cache[ds_name]
-            # 4. Stratified subsample
-            train_idx, test_idx = select_sample(n_holdout, y_test, losses, task_type)
+        if reference_rows is None or pinned_test is not None:
+            # 4. Stratified subsample (test rows pinned when a reference gave them)
+            y_for_sample = y_test if need_losses else np.zeros(n_holdout)
+            train_idx, test_idx = select_sample(n_holdout, y_for_sample, losses, task_type,
+                                                pinned_test=pinned_test)
 
         train_emb = emb_norm[train_idx]
         test_emb = emb_norm[test_idx]
@@ -491,7 +531,8 @@ def build_training_data(
         train_row_indices[ds_name] = holdout_indices[train_idx]
         test_row_indices[ds_name] = holdout_indices[test_idx]
 
-        sampling = ("reference" if reference_rows is not None else
+        sampling = ("reference" if reference_rows is not None and pinned_test is None else
+                    "pinned-test" if pinned_test is not None else
                     "all" if n_holdout <= SAMPLE_CAP else "stratified")
         diff_str = "T×D" if losses is not None and task_type == "classification" else (
             "diff" if losses is not None else "rnd")

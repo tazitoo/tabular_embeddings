@@ -54,3 +54,34 @@ def test_reference_rows_missing_from_holdout_is_an_error():
     m = _load_07()
     with pytest.raises(ValueError):
         m.select_sample_from_reference(np.array([1, 2, 3]), ref_train=np.array([1, 99]), ref_test=np.array([2]))
+
+
+def test_reference_training_file_without_row_indices_yields_none_for_train(tmp_path):
+    m = _load_07()
+    np.savez(tmp_path / "m_taskaware_sae_training.npz",
+             samples_per_dataset=np.array([("a", 3)], dtype=object), source_datasets=np.array(["a"]))
+    _write_ref(tmp_path, "test", {"a": np.array([20])})
+    ref = m.load_reference_rows(tmp_path / "m_taskaware_sae_training.npz",
+                                tmp_path / "m_taskaware_sae_test.npz")
+    assert ref["a"][0] is None and list(ref["a"][1]) == [20]
+
+
+def test_pinned_test_rows_train_from_remainder_disjoint_and_full_size():
+    m = _load_07()
+    rng = np.random.RandomState(0)
+    n = 1200
+    y = rng.randint(0, 2, n); losses = rng.rand(n)
+    pinned = np.arange(0, 1200, 6)[:200]            # 200 test positions
+    train_idx, test_idx = m.select_sample(n, y, losses, "classification", pinned_test=pinned)
+    assert np.array_equal(test_idx, pinned)
+    assert len(set(train_idx) & set(test_idx)) == 0
+    assert len(train_idx) == 500
+    train_r, test_r = m.select_sample(n, y, losses, "regression", pinned_test=pinned)
+    assert np.array_equal(test_r, pinned) and len(set(train_r) & set(test_r)) == 0 and len(train_r) == 498
+
+
+def test_pinned_test_rows_small_dataset_train_is_the_complement():
+    m = _load_07()
+    pinned = np.array([1, 4, 7])
+    train_idx, test_idx = m.select_sample(10, np.zeros(10), None, "classification", pinned_test=pinned)
+    assert np.array_equal(test_idx, pinned) and sorted(train_idx) == [0, 2, 3, 5, 6, 8, 9]
