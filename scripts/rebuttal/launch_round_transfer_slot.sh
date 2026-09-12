@@ -10,8 +10,16 @@
 set -uo pipefail
 
 GPU="${1:?physical gpu index}"; shift
-ARMS=both   # both | trained | random  (split arms across slots only when both are in the same hardware class)
-if [[ "${1:-}" == "--arms" ]]; then ARMS="$2"; shift 2; fi
+ARMS=both     # both | trained | random  (split arms across slots only when both are in the same hardware class)
+STAGES=both   # both | reverse | forward (forward deltas do not read the reverse outputs, so the two
+              # stages of one arm can run on different slots of the same hardware class)
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --arms) ARMS="$2"; shift 2 ;;
+    --stages) STAGES="$2"; shift 2 ;;
+    *) echo "unknown option $1"; exit 1 ;;
+  esac
+done
 PAIRS=("$@")
 [[ ${#PAIRS[@]} -eq 0 ]] && { echo "no pairs"; exit 1; }
 
@@ -30,20 +38,20 @@ EOF
 )"
 
 stamp() { echo "=== $(date -Iseconds) slot gpu$GPU: $* ==="; }
-if [[ "$ARMS" != random ]]; then
+if [[ "$ARMS" != random && "$STAGES" != forward ]]; then
   stamp "reverse transfer (trained) ${PAIRS[*]}"
   bash scripts/rebuttal/launch_reverse_queue.sh transfer "${PAIRS[@]}"
 fi
-if [[ "$ARMS" != trained ]]; then
+if [[ "$ARMS" != trained && "$STAGES" != forward ]]; then
   stamp "reverse transfer (random) ${PAIRS[*]}"
   bash scripts/rebuttal/launch_reverse_queue.sh transfer_random "${PAIRS[@]}"
 fi
-if [[ "$ARMS" != random ]]; then
+if [[ "$ARMS" != random && "$STAGES" != reverse ]]; then
   stamp "forward transfer (trained)"
   bash scripts/rebuttal/launch_forward_queue.sh "$GPU" "$SAE" "$IMP" "$MATCH" "$CACHE" "$OUT" "${PAIRS[@]}"
 fi
-if [[ "$ARMS" != trained ]]; then
+if [[ "$ARMS" != trained && "$STAGES" != reverse ]]; then
   stamp "forward transfer (random)"
   bash scripts/rebuttal/launch_forward_queue.sh "$GPU" "$RSAE" "$RIMP" "$RMATCH" "$RCACHE" "$ROUT" "${PAIRS[@]}"
 fi
-stamp "TRANSFER SLOT DONE ($ARMS)"
+stamp "TRANSFER SLOT DONE ($ARMS, $STAGES)"
