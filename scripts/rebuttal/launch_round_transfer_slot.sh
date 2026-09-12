@@ -5,7 +5,8 @@
 # docs/reproducibility.md). All directories come from scripts/round_paths.py.
 #
 # Usage (through gpu_launch, which pins CUDA_VISIBLE_DEVICES and thread caps):
-#   gpu_launch <host> <gpu> /tmp/x.out "bash scripts/rebuttal/launch_round_transfer_slot.sh <gpu> [--arms both|trained|random] a:b [a:b ...]"
+#   gpu_launch <host> <gpu> /tmp/x.out "bash scripts/rebuttal/launch_round_transfer_slot.sh <gpu> \
+#       [--arms both|trained|random] [--stages both|reverse|forward] a:b [a:b ...]"
 # <gpu> is the physical index: launch_forward_queue.sh sets CUDA_VISIBLE_DEVICES itself.
 set -uo pipefail
 
