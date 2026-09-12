@@ -23,7 +23,12 @@ Launch mechanics mirror orch.sh (ssh -f, setsid, CUDA pinning, thread caps).
 tabicl_v2 concepts get the tfm2 interpreter on any host (tabicl v1 and v2
 cannot share an env).
 
+Per-concept outputs land under output/round{N}/patch_runs/<run>/ (scripts/round_paths.py)
+on every host and are synced back here. The concept pool is the round's burndown
+(build_patching_burndown.py) unless --pool-from names earlier per-concept files.
+
 Usage:
+    python -m scripts.rebuttal.patch_queue --run r11v31 --flags "--device cuda"
     python -m scripts.rebuttal.patch_queue \
         --run v30q --pool-from "output/rebuttal/patchv28clf_*.json" \
         --done-from "output/rebuttal/patchv30clf_*.json" \
@@ -32,22 +37,57 @@ Usage:
                  --n-datasets 3 --n-rows 10 --device cuda"
 """
 import argparse
+import csv
 import glob
 import json
 import re
 import subprocess
 import time
+from pathlib import Path
 
 from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import PATCHING_BURNDOWN_FILE, PATCH_RUNS_DIR
 
 REPO = "/home/brian/src/tabular_embeddings"
 PY_TFM = "/home/brian/anaconda3/envs/tfm/bin/python"
 PY_TFM2 = "/home/brian/anaconda3/envs/tfm2/bin/python"
 SLOTS = [("morg.local", 0), ("morg.local", 2), ("morg.local", 3), ("morg.local", 4),
-         ("surfer4", 0), ("octo4", 0), ("terrax4", 0), ("firelord4", 0)]
-ENV = ("CUDA_DEVICE_ORDER=PCI_BUS_ID PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True "
+         ("surfer4", 0), ("octo4", 0), ("terrax.local", 0), ("firelord4", 0)]
+# default CUDA allocator: expandable_segments changes Mitra's numerics on wide datasets
+# (docs/reproducibility.md), and every round-11 launcher runs without it
+ENV = ("CUDA_DEVICE_ORDER=PCI_BUS_ID PYTORCH_CUDA_ALLOC_CONF= "
        "OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 "
        "NUMEXPR_NUM_THREADS=8")
+
+
+def run_dir(run: str) -> Path:
+    """Where this run's per-concept files are collected on the Mac."""
+    return PATCH_RUNS_DIR / run
+
+
+def remote_run_dir(run: str) -> str:
+    """The same directory inside a worker's checkout."""
+    return f"{REPO}/{run_dir(run).relative_to(PROJECT_ROOT)}"
+
+
+def pool_from_burndown(path: Path) -> list[tuple[str, int]]:
+    """(donor, feat) in burndown order (impact-first), duplicates dropped."""
+    pool, seen = [], set()
+    for r in csv.DictReader(open(path)):
+        k = (r["donor"], int(r["feat_id"]))
+        if k not in seen:
+            seen.add(k)
+            pool.append(k)
+    return pool
+
+
+def parse_slots(specs: list[str]) -> list[tuple[str, int]]:
+    """'host:gpu' -> (host, gpu)."""
+    out = []
+    for s in specs:
+        host, gpu = s.rsplit(":", 1)
+        out.append((host, int(gpu)))
+    return out
 CONCEPT_RE = re.compile(r"--concepts (\w+):(\d+)")
 BUSY_MIB = 500           # a patch_search job holds GBs; an idle GPU reads ~0
 DOWN_AFTER = 5           # unobservable cycles before a host is presumed down
@@ -97,34 +137,46 @@ def observe(host):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
-    ap.add_argument("--pool-from", nargs="+", required=True)
+    ap.add_argument("--pool-from", nargs="*", default=[],
+                    help="per-concept JSON globs of an earlier run to take the concept "
+                         "list from; default: the round's burndown")
+    ap.add_argument("--burndown", type=Path, default=PATCHING_BURNDOWN_FILE)
     ap.add_argument("--done-from", nargs="*", default=[])
     ap.add_argument("--flags", required=True)
     ap.add_argument("--poll", type=int, default=120)
     ap.add_argument("--max-attempts", type=int, default=3)
+    ap.add_argument("--slots", nargs="*", default=None,
+                    help="host:gpu slots to dispatch to (default: SLOTS)")
     ap.add_argument("--exclude-hosts", nargs="*", default=[],
                     help="hosts to leave alone this run (reserved for other work); "
                          "they are still observed, just never dispatched to")
     args = ap.parse_args()
 
+    all_slots = parse_slots(args.slots) if args.slots else SLOTS
     # exclusion governs DISPATCH only -- an excluded host may still be finishing
     # earlier work, and a concept missing from `running` gets relaunched elsewhere
-    slots = [(h, g) for h, g in SLOTS if h not in set(args.exclude_hosts)]
+    slots = [(h, g) for h, g in all_slots if h not in set(args.exclude_hosts)]
     if args.exclude_hosts:
         print(f"excluding {sorted(set(args.exclude_hosts))}: "
-              f"{len(slots)} of {len(SLOTS)} slots active", flush=True)
+              f"{len(slots)} of {len(all_slots)} slots active", flush=True)
+    hosts = {h for h, _ in all_slots}
 
-    outdir = PROJECT_ROOT / "output" / "rebuttal" / args.run
+    outdir = run_dir(args.run)
     outdir.mkdir(parents=True, exist_ok=True)
+    rdir = remote_run_dir(args.run)
 
-    pool, seen = [], set()
-    for pat in args.pool_from:
-        for p in sorted(glob.glob(pat)):
-            for c in json.load(open(p)):
-                k = (c["donor"], int(c["feat"]))
-                if k not in seen:
-                    seen.add(k)
-                    pool.append(k)
+    if args.pool_from:
+        pool, seen = [], set()
+        for pat in args.pool_from:
+            for p in sorted(glob.glob(pat)):
+                for c in json.load(open(p)):
+                    k = (c["donor"], int(c["feat"]))
+                    if k not in seen:
+                        seen.add(k)
+                        pool.append(k)
+    else:
+        pool = pool_from_burndown(args.burndown)
+        print(f"pool from burndown {args.burndown}", flush=True)
     static_done = set()
     for pat in args.done_from:
         for p in sorted(glob.glob(pat)):
@@ -138,13 +190,13 @@ def main():
 
     while True:
         # ---- observe everything -----------------------------------------------
-        for host in {h for h, _ in SLOTS}:
+        for host in hosts:
             try:
                 # --ignore-existing: per-concept files are immutable, so the sync
                 # only ever moves NEW completions -- cheap and restart-safe
                 subprocess.run(["rsync", "-a", "--ignore-existing",
-                                f"{host}:{REPO}/output/rebuttal/{args.run}/",
-                                str(outdir) + "/"], capture_output=True, timeout=300)
+                                f"{host}:{rdir}/", str(outdir) + "/"],
+                               capture_output=True, timeout=300)
             except (subprocess.SubprocessError, OSError):
                 pass          # missed sync = completions credited next cycle
         file_done = set()
@@ -158,7 +210,7 @@ def main():
 
         state = {}
         running = set()
-        for host in {h for h, _ in SLOTS}:
+        for host in hosts:
             state[host] = observe(host)
             if state[host] is not None:
                 running |= state[host][1]
@@ -201,8 +253,8 @@ def main():
             donor, feat = todo.pop(0)
             py = PY_TFM2 if donor == "tabicl_v2" else PY_TFM
             cid = f"{donor}_f{feat}"
-            rout = f"{REPO}/output/rebuttal/{args.run}/{cid}.json"
-            cmd = (f"mkdir -p {REPO}/output/rebuttal/{args.run} && cd {REPO} && "
+            rout = f"{rdir}/{cid}.json"
+            cmd = (f"mkdir -p {rdir} && cd {REPO} && "
                    f"setsid nohup env CUDA_VISIBLE_DEVICES={gpu} {ENV} "
                    f"{py} -m scripts.rebuttal.patch_search --concepts {donor}:{feat} "
                    f"{args.flags} --out {rout} > /tmp/{args.run}_{cid}.log 2>&1 "

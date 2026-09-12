@@ -63,6 +63,7 @@ FORWARD_DELTAS_RANDOM_DIR = RESULTS_DIR / "forward_deltas_random"
 FUNCTIONAL_DECOMPOSITION_RANDOM_DIR = RESULTS_DIR / "functional_decomposition_random"
 PATCHING_BURNDOWN_FILE = RESULTS_DIR / "patching_burndown.csv"
 PATCH_SEARCH_FILE = RESULTS_DIR / "patch_search.json"
+PATCH_RUNS_DIR = RESULTS_DIR / "patch_runs"      # <run>/<donor>_f<feat>.json per concept
 
 # patching prerequisites and labeling caches (scripts/sae, scripts/concepts). Round 10's
 # live at their untagged legacy paths (output/concept_activations_cache,
