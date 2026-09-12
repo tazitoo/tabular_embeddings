@@ -25,8 +25,10 @@ for idx in "${!GPUS[@]}"; do
       a=${pair%%_vs_*}; b=${pair##*_vs_}; PY=$TFM
       case "$pair" in *tabicl_v2*) PY=$TFM2;; esac
       echo "=== $(date -Iseconds) GPU$g $pair start ===" >> /tmp/fq_gpu${g}.log
+      # Default CUDA allocator on purpose: expandable_segments changes Mitra's numerics on
+      # wide datasets (2026-09-11) and every round-11 result uses the default.
       CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$g \
-        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+        OMP_NUM_THREADS=${THREADS_PER_JOB:-8} MKL_NUM_THREADS=${THREADS_PER_JOB:-8} \
         "$PY" -m scripts.rebuttal.functional_decomposition --models "$a" "$b" \
         --device cuda --delta-dir "$DELTA" --output-dir "$OUT" --var-threshold "$VT" >> /tmp/fq_gpu${g}.log 2>&1
       echo "=== $(date -Iseconds) GPU$g $pair exit=$? ===" >> /tmp/fq_gpu${g}.log
