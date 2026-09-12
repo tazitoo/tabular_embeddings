@@ -29,13 +29,28 @@ from collections import defaultdict
 
 import numpy as np
 
-from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import load_test_embeddings
 from scripts.matching.utils import load_norm_stats as load_norm
 from scripts.rebuttal.subspace_analysis import _eig_cov, _k_for_variance
+from scripts.round_paths import (
+    CONCEPT_ACTIVATIONS_DIR, FORWARD_DELTAS_DIR, FORWARD_DELTAS_RANDOM_DIR,
+    TRANSFER_CACHES_DIR, off_manifold_dump_file,
+)
 
 ACT_NORM = {"carte": "carte", "mitra": "mitra", "tabdpt": "tabdpt",
             "tabicl": "tabicl", "tabicl_v2": "tabicl_v2", "tabpfn": "tabpfn"}
+ACTIVATIONS_DIR = CONCEPT_ACTIVATIONS_DIR
+
+
+def arm_inputs(arm: str):
+    """(forward-deltas dir, virtual-atom cache dir) of the round for one arm."""
+    if arm == "random":
+        return FORWARD_DELTAS_RANDOM_DIR, TRANSFER_CACHES_DIR / "global_random"
+    return FORWARD_DELTAS_DIR, TRANSFER_CACHES_DIR / "global_trained"
+
+
+def default_dump_out(arm: str):
+    return off_manifold_dump_file(arm)
 
 
 def get_E(recipient, dataset, emb_cache, norm_cache, var=0.90):
@@ -62,7 +77,7 @@ def load_vatoms(cache_dir, donor, recipient):
 
 def firing_density(donor_models):
     """Per (donor, feat_id) fraction of the donor's rows the concept fires on (>0)."""
-    base = PROJECT_ROOT / "output" / "concept_activations_cache"
+    base = ACTIVATIONS_DIR
     dens = {}
     for m in donor_models:
         fs = sorted(glob.glob(str(base / ACT_NORM[m] / "*.npz")))
@@ -91,13 +106,10 @@ def main():
     ap.add_argument("--dump-acc-lo", type=float, default=200)
     ap.add_argument("--dump-acc-hi", type=float, default=499)
     ap.add_argument("--dump-out", default=None,
-                     help="default: output/rebuttal/off_manifold_concept_dump_<arm>.csv")
+                     help="default: output/round{N}/off_manifold_concept_dump_<arm>.csv")
     args = ap.parse_args()
 
-    fwd = PROJECT_ROOT / "output" / "rebuttal" / (
-        "forward_deltas_random" if args.arm == "random" else "forward_deltas")
-    cache = PROJECT_ROOT / "output" / "transfer_caches" / (
-        "global_random_randomSAE_p90" if args.arm == "random" else "global_trained")
+    fwd, cache = arm_inputs(args.arm)
 
     off_w = defaultdict(float)   # sum(off_frac * n_accepted)
     acc_w = defaultdict(float)   # sum(n_accepted)
@@ -189,8 +201,7 @@ def main():
         # energy decomposition -- that was dropped as confounded, see 2026-08-02 handoff).
         total_off_mass = sum(off_w.values())
         cell_off_mass = sum(off_w[(r[0], r[1])] for r in cell)
-        out = args.dump_out or str(
-            PROJECT_ROOT / "output" / "rebuttal" / f"off_manifold_concept_dump_{args.arm}.csv")
+        out = args.dump_out or str(default_dump_out(args.arm))
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "w") as fh:
             fh.write("donor,feat_id,off_frac,density,universality,n_datasets,acceptance,"

@@ -30,6 +30,17 @@ from scripts._project_root import PROJECT_ROOT  # noqa: E402
 
 MODEL_FILE_SUFFIXES = ("_sae_training.npz", "_sae_test.npz", "_norm_stats.npz")
 
+# Per-model labeling caches derived from a round's SAE (scripts/round_paths.py). Round 10
+# predates the output/round{N} layout and holds them at the untagged legacy paths.
+LABELING_CACHES = ("concept_activations_cache", "contrastive_examples")
+LEGACY_LAYOUT_ROUND = 10
+
+
+def labeling_cache_dir(output_root: Path, round: int, name: str) -> Path:
+    if round <= LEGACY_LAYOUT_ROUND:
+        return output_root / name
+    return output_root / f"round{round}" / name
+
 
 def _model_of(filename: str) -> str | None:
     for suffix in MODEL_FILE_SUFFIXES:
@@ -79,6 +90,15 @@ def promote_round(output_root: Path, src_round: int, dst_round: int,
                 continue
             _link(dst_random / d.name, d)
         dst_random.mkdir(parents=True, exist_ok=True)
+
+    for name in LABELING_CACHES:
+        src_cache = labeling_cache_dir(output_root, src_round, name)
+        if not src_cache.is_dir():
+            continue
+        for d in sorted(p for p in src_cache.iterdir() if p.is_dir()):
+            if d.name in skip:
+                continue
+            _link(labeling_cache_dir(output_root, dst_round, name) / d.name, d)
 
     dst_train.mkdir(parents=True, exist_ok=True)
     dst_sweep.mkdir(parents=True, exist_ok=True)

@@ -52,13 +52,15 @@ from scripts._project_root import PROJECT_ROOT
 from scripts.intervention.intervene_lib import (
     load_sae, load_test_embeddings, SPLITS_PATH,
 )
+from scripts.round_paths import CONTRASTIVE_EXAMPLES_DIR, sae_training_dir
 
-SAE_DATA_DIR = PROJECT_ROOT / "output" / "sae_training_round10"
+SAE_DATA_DIR = sae_training_dir()
+# row-level caches keyed by dataset row, not by SAE feature: shared across rounds
 PMI_DIR = PROJECT_ROOT / "output" / "pmi_cache"
 SURPRISE_DIR = PROJECT_ROOT / "output" / "surprise_cache"
 COMPRESSION_DIR = PROJECT_ROOT / "output" / "compression_cache"
 PYMFE_PATH = PROJECT_ROOT / "output" / "pymfe_tabarena_cache.json"
-OUTPUT_DIR = PROJECT_ROOT / "output" / "contrastive_examples"
+OUTPUT_DIR = CONTRASTIVE_EXAMPLES_DIR
 VALID_CONTRAST_POLICIES = {"nearest_non_d", "cofire_hard_negative", "stratified_nonfire"}
 DEFAULT_CONTRAST_POLICY = "nearest_non_d"
 DEFAULT_COFIRE_TOP_K = 8

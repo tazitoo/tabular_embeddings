@@ -17,25 +17,32 @@ Takes the locked concept cell dumped by off_manifold_concept_stratification.py
 
 Usage:
     python -m scripts.rebuttal.build_patching_burndown
-    python -m scripts.rebuttal.build_patching_burndown --dump output/rebuttal/off_manifold_concept_dump_trained.csv
+    python -m scripts.rebuttal.build_patching_burndown --dump output/round11/off_manifold_concept_dump_trained.csv
+
+Every default resolves through scripts/round_paths.py, so the burndown of a round is
+built from that round's dump, quality cache and contrastive evidence.
 """
 import argparse
 import csv
 import re
 from pathlib import Path
 
-from scripts._project_root import PROJECT_ROOT
 from scripts.concepts.dataset_quality_cache import (
     DEFAULT_CACHE_PATH,
     load_quality_cache,
     select_top_datasets,
 )
+from scripts.round_paths import (
+    CONTRASTIVE_EXAMPLES_DIR, PATCHING_BURNDOWN_FILE, off_manifold_dump_file,
+)
 
-CONTRASTIVE_DIR = PROJECT_ROOT / "output" / "contrastive_examples"
+CONTRASTIVE_DIR = CONTRASTIVE_EXAMPLES_DIR
+DEFAULT_DUMP = off_manifold_dump_file("trained")
+DEFAULT_OUT = PATCHING_BURNDOWN_FILE
 
 
 def _evidence_datasets(model: str, feat: int) -> set[str]:
-    """Datasets for which output/contrastive_examples/{model}/f{feat}_{dataset}.csv exists."""
+    """Datasets for which {CONTRASTIVE_DIR}/{model}/f{feat}_{dataset}.csv exists."""
     d = CONTRASTIVE_DIR / model
     if not d.is_dir():
         return set()
@@ -50,13 +57,12 @@ def _evidence_datasets(model: str, feat: int) -> set[str]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dump", default=str(
-        PROJECT_ROOT / "output" / "rebuttal" / "off_manifold_concept_dump_trained.csv"))
+    ap.add_argument("--dump", default=str(DEFAULT_DUMP))
     ap.add_argument("--max-datasets-per-concept", type=int, default=3)
     ap.add_argument("--quality-cache", default=str(DEFAULT_CACHE_PATH))
-    ap.add_argument("--out", default=str(
-        PROJECT_ROOT / "output" / "rebuttal" / "patching_burndown.csv"))
+    ap.add_argument("--out", default=str(DEFAULT_OUT))
     args = ap.parse_args()
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
 
     rows = list(csv.DictReader(open(args.dump)))
     cache = load_quality_cache(args.quality_cache)

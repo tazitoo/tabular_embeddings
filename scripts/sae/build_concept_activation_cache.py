@@ -32,31 +32,28 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scripts._project_root import PROJECT_ROOT
+from scripts.round_paths import CONCEPT_ACTIVATIONS_DIR, sae_sweep_dir, sae_training_dir
 from scripts.sae.analyze_sae_concepts_deep import load_sae_checkpoint
-from scripts.sae.compare_sae_cross_model import DEFAULT_SAE_ROUND
 
 MODELS = ["tabpfn", "tabicl", "tabicl_v2", "tabdpt", "mitra", "carte"]
 
-# SAE checkpoint path per model (validated checkpoint of the default round)
-SAE_CKPT = {
-    m: f"sae_tabarena_sweep_round{DEFAULT_SAE_ROUND}/{m}/sae_matryoshka_archetypal_validated.pt"
-    for m in MODELS
-}
+OUTPUT_DIR = CONCEPT_ACTIVATIONS_DIR
 
-# Pre-processed test embeddings (already per-dataset normalized for SAE)
-TEST_DATA = {
-    m: f"sae_training_round{DEFAULT_SAE_ROUND}/{m}_taskaware_sae_test.npz"
-    for m in MODELS
-}
 
-OUTPUT_DIR = PROJECT_ROOT / "output" / "concept_activations_cache"
+def sae_checkpoint(model_name: str) -> Path:
+    """Validated SAE checkpoint of the default round."""
+    return sae_sweep_dir() / model_name / "sae_matryoshka_archetypal_validated.pt"
+
+
+def test_corpus(model_name: str) -> Path:
+    """Pre-processed test embeddings of the default round (already per-dataset normalized)."""
+    return sae_training_dir() / f"{model_name}_taskaware_sae_test.npz"
 
 
 def build_model_cache(model_name: str) -> None:
     """Build concept activation cache for one model across all datasets."""
-    ckpt_path = PROJECT_ROOT / "output" / SAE_CKPT[model_name]
-    test_path = PROJECT_ROOT / "output" / TEST_DATA[model_name]
+    ckpt_path = sae_checkpoint(model_name)
+    test_path = test_corpus(model_name)
 
     if not ckpt_path.exists():
         print(f"  SAE checkpoint not found: {ckpt_path}")

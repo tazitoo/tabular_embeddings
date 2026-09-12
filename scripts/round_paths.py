@@ -63,3 +63,16 @@ FORWARD_DELTAS_RANDOM_DIR = RESULTS_DIR / "forward_deltas_random"
 FUNCTIONAL_DECOMPOSITION_RANDOM_DIR = RESULTS_DIR / "functional_decomposition_random"
 PATCHING_BURNDOWN_FILE = RESULTS_DIR / "patching_burndown.csv"
 PATCH_SEARCH_FILE = RESULTS_DIR / "patch_search.json"
+
+# patching prerequisites and labeling caches (scripts/sae, scripts/concepts). Round 10's
+# live at their untagged legacy paths (output/concept_activations_cache,
+# output/concept_labeling, output/contrastive_examples); promote_round links the
+# per-model directories that a new round does not regenerate.
+CONCEPT_ACTIVATIONS_DIR = RESULTS_DIR / "concept_activations_cache"
+QUALITY_CACHE_FILE = RESULTS_DIR / "concept_labeling" / "dataset_quality_cache.json"
+CONTRASTIVE_EXAMPLES_DIR = RESULTS_DIR / "contrastive_examples"
+
+
+def off_manifold_dump_file(arm: str) -> Path:
+    """The locked patching cell (off_manifold_concept_stratification --dump) per arm."""
+    return RESULTS_DIR / f"off_manifold_concept_dump_{arm}.csv"
