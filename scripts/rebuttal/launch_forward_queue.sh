@@ -58,7 +58,7 @@ pop() {  # atomically remove and echo the first queued pair (empty when drained)
 
 for g in "${GPUS[@]}"; do
     (
-        log=/tmp/fwd_queue_gpu${g}.log
+        log=/tmp/fwd_queue_$(basename "$OUT")_gpu${g}.log   # trained and random arms keep separate logs
         echo "=== $(date -Iseconds) GPU$g start ===" > "$log"
         while :; do
             pair=$(pop)
