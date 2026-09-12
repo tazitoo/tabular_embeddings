@@ -5,11 +5,13 @@
 # docs/reproducibility.md). All directories come from scripts/round_paths.py.
 #
 # Usage (through gpu_launch, which pins CUDA_VISIBLE_DEVICES and thread caps):
-#   gpu_launch <host> <gpu> /tmp/x.out "bash scripts/rebuttal/launch_round_transfer_slot.sh <gpu> a:b [a:b ...]"
+#   gpu_launch <host> <gpu> /tmp/x.out "bash scripts/rebuttal/launch_round_transfer_slot.sh <gpu> [--arms both|trained|random] a:b [a:b ...]"
 # <gpu> is the physical index: launch_forward_queue.sh sets CUDA_VISIBLE_DEVICES itself.
 set -uo pipefail
 
 GPU="${1:?physical gpu index}"; shift
+ARMS=both   # both | trained | random  (split arms across slots only when both are in the same hardware class)
+if [[ "${1:-}" == "--arms" ]]; then ARMS="$2"; shift 2; fi
 PAIRS=("$@")
 [[ ${#PAIRS[@]} -eq 0 ]] && { echo "no pairs"; exit 1; }
 
@@ -28,12 +30,20 @@ EOF
 )"
 
 stamp() { echo "=== $(date -Iseconds) slot gpu$GPU: $* ==="; }
-stamp "reverse transfer (trained) ${PAIRS[*]}"
-bash scripts/rebuttal/launch_reverse_queue.sh transfer "${PAIRS[@]}"
-stamp "reverse transfer (random)"
-bash scripts/rebuttal/launch_reverse_queue.sh transfer_random "${PAIRS[@]}"
-stamp "forward transfer (trained)"
-bash scripts/rebuttal/launch_forward_queue.sh "$GPU" "$SAE" "$IMP" "$MATCH" "$CACHE" "$OUT" "${PAIRS[@]}"
-stamp "forward transfer (random)"
-bash scripts/rebuttal/launch_forward_queue.sh "$GPU" "$RSAE" "$RIMP" "$RMATCH" "$RCACHE" "$ROUT" "${PAIRS[@]}"
-stamp "TRANSFER SLOT DONE"
+if [[ "$ARMS" != random ]]; then
+  stamp "reverse transfer (trained) ${PAIRS[*]}"
+  bash scripts/rebuttal/launch_reverse_queue.sh transfer "${PAIRS[@]}"
+fi
+if [[ "$ARMS" != trained ]]; then
+  stamp "reverse transfer (random) ${PAIRS[*]}"
+  bash scripts/rebuttal/launch_reverse_queue.sh transfer_random "${PAIRS[@]}"
+fi
+if [[ "$ARMS" != random ]]; then
+  stamp "forward transfer (trained)"
+  bash scripts/rebuttal/launch_forward_queue.sh "$GPU" "$SAE" "$IMP" "$MATCH" "$CACHE" "$OUT" "${PAIRS[@]}"
+fi
+if [[ "$ARMS" != trained ]]; then
+  stamp "forward transfer (random)"
+  bash scripts/rebuttal/launch_forward_queue.sh "$GPU" "$RSAE" "$RIMP" "$RMATCH" "$RCACHE" "$ROUT" "${PAIRS[@]}"
+fi
+stamp "TRANSFER SLOT DONE ($ARMS)"
