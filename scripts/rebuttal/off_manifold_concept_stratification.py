@@ -41,6 +41,23 @@ ACT_NORM = {"carte": "carte", "mitra": "mitra", "tabdpt": "tabdpt",
             "tabicl": "tabicl", "tabicl_v2": "tabicl_v2", "tabpfn": "tabpfn"}
 ACTIVATIONS_DIR = CONCEPT_ACTIVATIONS_DIR
 
+# The patching population, one rule over every accepted concept (round 11). The
+# submission used acceptance in [200, 499]; the upper bound was a compute bound that,
+# once transfers accepted more atoms per row, cut off the concepts with the MOST rows.
+# Now: acceptance floor (the search must not be data-limited) and a firing-density cap
+# (always-on concepts offer no non-firing contrast for a suppression patch).
+DEFAULT_CELL = {"off_lo": 0.6, "off_hi": 0.8, "acc_lo": 200, "acc_hi": float("inf"),
+                "density_max": 0.90}
+
+
+def in_patching_cell(row, off_lo=DEFAULT_CELL["off_lo"], off_hi=DEFAULT_CELL["off_hi"],
+                     acc_lo=DEFAULT_CELL["acc_lo"], acc_hi=DEFAULT_CELL["acc_hi"],
+                     density_max=DEFAULT_CELL["density_max"]):
+    """row = (donor, feat, off_frac, acceptance, universality, density, n_datasets)."""
+    _, _, off, acc, _, density, _ = row
+    return (off_lo <= off < off_hi and acc_lo <= acc <= acc_hi
+            and not (density >= density_max))
+
 
 def arm_inputs(arm: str):
     """(forward-deltas dir, virtual-atom cache dir) of the round for one arm."""
@@ -98,13 +115,16 @@ def main():
     ap.add_argument("--var-threshold", type=float, default=0.90)
     ap.add_argument("--dump", action="store_true",
                      help="write the locked patching cell (off in [--dump-off-lo, "
-                          "--dump-off-hi), acceptance in [--dump-acc-lo, --dump-acc-hi]) "
-                          "to --dump-out as CSV: donor,feat_id,off_frac,density,"
-                          "universality,n_datasets,acceptance")
-    ap.add_argument("--dump-off-lo", type=float, default=0.6)
-    ap.add_argument("--dump-off-hi", type=float, default=0.8)
-    ap.add_argument("--dump-acc-lo", type=float, default=200)
-    ap.add_argument("--dump-acc-hi", type=float, default=499)
+                          "--dump-off-hi), acceptance in [--dump-acc-lo, --dump-acc-hi], "
+                          "firing density < --dump-density-max) to --dump-out as CSV: "
+                          "donor,feat_id,off_frac,density,universality,n_datasets,acceptance")
+    ap.add_argument("--dump-off-lo", type=float, default=DEFAULT_CELL["off_lo"])
+    ap.add_argument("--dump-off-hi", type=float, default=DEFAULT_CELL["off_hi"])
+    ap.add_argument("--dump-acc-lo", type=float, default=DEFAULT_CELL["acc_lo"])
+    ap.add_argument("--dump-acc-hi", type=float, default=DEFAULT_CELL["acc_hi"],
+                     help="default: no upper bound (the submission used 499)")
+    ap.add_argument("--dump-density-max", type=float, default=DEFAULT_CELL["density_max"],
+                     help="exclude concepts firing on at least this fraction of rows")
     ap.add_argument("--dump-out", default=None,
                      help="default: output/round{N}/off_manifold_concept_dump_<arm>.csv")
     args = ap.parse_args()
@@ -192,8 +212,9 @@ def main():
 
     if args.dump:
         cell = [r for r in rows
-                if args.dump_off_lo <= r[2] < args.dump_off_hi
-                and args.dump_acc_lo <= r[3] <= args.dump_acc_hi]
+                if in_patching_cell(r, args.dump_off_lo, args.dump_off_hi,
+                                    args.dump_acc_lo, args.dump_acc_hi,
+                                    args.dump_density_max)]
         # per-concept share of total off-manifold "contribution" mass. off_w[c] = sum
         # over accepted (recipient, dataset) instances of (off_frac * n_accepted) -- an
         # acceptance-weighted off-manifold energy-fraction mass. The 20.5% headline is
