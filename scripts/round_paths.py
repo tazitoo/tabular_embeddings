@@ -49,7 +49,8 @@ CROSS_MODEL_BASELINE_FILE = RESULTS_DIR / "sae_cross_model_random_baseline.json"
 # intervention chain (scripts/intervention, scripts/rebuttal)
 IMPORTANCE_DIR = RESULTS_DIR / "perrow_importance"
 BASELINE_PREDICTIONS_DIR = RESULTS_DIR / "baseline_predictions"
-SYMMETRIC_ABLATION_DIR = RESULTS_DIR / "symmetric_ablation"
+SYMMETRIC_ABLATION_DIR = RESULTS_DIR / "symmetric_ablation"   # reverse (above-diagonal) direction
+FORWARD_ABLATION_DIR = RESULTS_DIR / "forward_ablation"       # the paper's direction (Table: ablation summary)
 SYMMETRIC_TRANSFER_DIR = RESULTS_DIR / "symmetric_transfer"
 FORWARD_DELTAS_DIR = RESULTS_DIR / "forward_deltas"
 TRANSFER_CACHES_DIR = RESULTS_DIR / "transfer_caches"
@@ -58,6 +59,7 @@ FUNCTIONAL_DECOMPOSITION_DIR = RESULTS_DIR / "functional_decomposition"
 # random-SAE control arms of the same stages
 IMPORTANCE_RANDOM_DIR = RESULTS_DIR / "perrow_importance_random"
 SYMMETRIC_ABLATION_RANDOM_DIR = RESULTS_DIR / "symmetric_ablation_random"
+FORWARD_ABLATION_RANDOM_DIR = RESULTS_DIR / "forward_ablation_random"
 SYMMETRIC_TRANSFER_RANDOM_DIR = RESULTS_DIR / "symmetric_transfer_random"
 FORWARD_DELTAS_RANDOM_DIR = RESULTS_DIR / "forward_deltas_random"
 FUNCTIONAL_DECOMPOSITION_RANDOM_DIR = RESULTS_DIR / "functional_decomposition_random"

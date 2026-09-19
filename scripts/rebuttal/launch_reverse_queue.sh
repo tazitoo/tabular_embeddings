@@ -37,23 +37,29 @@ case "$KIND" in
     *_random) RANDOM_MODE=1; KIND=${KIND%_random} ;;
 esac
 
+# ablation_forward runs the paper's direction (ablation_sweep_symmetric --forward) into
+# output/round{N}/forward_ablation[_random]; plain ablation is the reverse direction.
+DIRECTION=()
+OUT_STEM=symmetric_${KIND}
 case "$KIND" in
     ablation) MOD=ablation_sweep_symmetric ;;
+    ablation_forward) MOD=ablation_sweep_symmetric; DIRECTION=(--forward); OUT_STEM=forward_ablation ;;
     transfer) MOD=transfer_sweep_symmetric ;;
-    *) echo "Unknown kind '$KIND' (want ablation|transfer[ _random])"; exit 1 ;;
+    *) echo "Unknown kind '$KIND' (want ablation|ablation_forward|transfer[ _random])"; exit 1 ;;
 esac
 
 if [[ $RANDOM_MODE -eq 1 ]]; then
     # The random arm's dirs live in the same round tree as the trained arm's.
     RESULTS_DIR=$(cd "$REPO" && "$TFM" -c "from scripts.round_paths import RESULTS_DIR; print(RESULTS_DIR)")
     RANDOM_SAE_DIR=$(cd "$REPO" && "$TFM" -c "from scripts.round_paths import random_sae_dir; print(random_sae_dir())")
-    EXTRA=(--sae-dir "$RANDOM_SAE_DIR"
+    EXTRA=("${DIRECTION[@]}"
+           --sae-dir "$RANDOM_SAE_DIR"
            --importance-dir "$RESULTS_DIR/perrow_importance_random"
            --matching-file "$RESULTS_DIR/sae_feature_matching_mnn_t0.001_random.json"
-           --output-dir "$RESULTS_DIR/symmetric_${KIND}_random")
+           --output-dir "$RESULTS_DIR/${OUT_STEM}_random")
     tag=_random
 else
-    EXTRA=()
+    EXTRA=("${DIRECTION[@]}")
     tag=
 fi
 

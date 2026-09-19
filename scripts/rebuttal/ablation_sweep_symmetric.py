@@ -42,7 +42,9 @@ import torch
 
 from scripts._project_root import PROJECT_ROOT
 from models.layer_extraction import configure_determinism, provenance
-from scripts.round_paths import DEFAULT_MATCHING_FILE, IMPORTANCE_DIR, SYMMETRIC_ABLATION_DIR
+from scripts.round_paths import (
+    DEFAULT_MATCHING_FILE, FORWARD_ABLATION_DIR, IMPORTANCE_DIR, SYMMETRIC_ABLATION_DIR,
+)
 from scripts.intervention.intervene_lib import (
     DEFAULT_SAE_DIR,
     SPLITS_PATH,
@@ -58,7 +60,13 @@ from scripts.matching.utils import load_norm_stats as load_norm_stats_matching
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = SYMMETRIC_ABLATION_DIR  # output/round{N}/symmetric_ablation
+OUTPUT_DIR = SYMMETRIC_ABLATION_DIR  # output/round{N}/symmetric_ablation (reverse direction)
+
+
+def default_output_dir(reverse: bool):
+    """Each direction has its own round directory: the reverse (above-diagonal) sweep
+    under symmetric_ablation, the paper's forward sweep under forward_ablation."""
+    return SYMMETRIC_ABLATION_DIR if reverse else FORWARD_ABLATION_DIR
 
 SUPPORTED_MODELS = ["tabpfn", "tabicl", "tabicl_v2", "mitra", "tabdpt", "hyperfast", "carte", "tabula8b"]
 
@@ -621,7 +629,7 @@ def main():
     else:
         datasets = available
 
-    out_dir = (args.output_dir if args.output_dir else OUTPUT_DIR) / pair_name
+    out_dir = (args.output_dir if args.output_dir else default_output_dir(reverse)) / pair_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Ablation sweep [{'REVERSE/above-diagonal' if reverse else 'FORWARD/below-diagonal'}]: "
