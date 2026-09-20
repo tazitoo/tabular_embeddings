@@ -20,7 +20,7 @@ interventions, decomposition, patching) was rerun for all pairs.
 | App F trained_vs_random_ablation | `scripts/figures/plot_trained_vs_random_ablation.py` | ablation_sweep_tols(_random) | forward_ablation(_random) |
 | Table 3 off-manifold split (energy, median K) | `scripts/rebuttal/aggregate_functional_clean.py` | output/rebuttal/functional_decomposition | round11/functional_decomposition (15) + _random (15) |
 | Table 3 principal-angle column | `scripts/rebuttal/subspace_analysis.py` -> `subspace_by_recipient.py` | rebuttal/forward_deltas -> subspace_summary.json | round11/forward_deltas has `deployed_delta`; CPU-only, NOT yet run for round 11 |
-| App patch tables (patch_explanations, patch_pipeline) | `scripts/tables/patch_explanations.py`, `patch_pipeline_tables.py` | rebuttal/v31q/*.json, rebuttal/patching_burndown.csv, off_manifold_concept_dump_all.csv | round11/patch_runs/r11v31 (245/245 clean, +52 Rule-A extras), round11/patching_burndown.csv, round11/off_manifold_concept_dump_trained.csv |
+| App patch tables (patch_explanations, patch_pipeline; built from the patch JSONs only, no label text) | `scripts/tables/patch_explanations.py`, `patch_pipeline_tables.py` | rebuttal/v31q/*.json, rebuttal/patching_burndown.csv, off_manifold_concept_dump_all.csv | round11/patch_runs/r11v31 (245/245 clean, +52 Rule-A extras), round11/patching_burndown.csv, round11/off_manifold_concept_dump_trained.csv |
 | Procrustes table (App A) | `scripts/tables/table2/table2.py` | sae_training_round10/*_sae_test.npz | sae_training_round11/*_sae_test.npz (all 8 models) |
 
 Caveats inside A: the 5 hiva_agnostic cells with Mitra as WEAK in forward_ablation are not
@@ -43,7 +43,7 @@ gap-index / individual-concept tables need a labeling pass.
 | Fig ablation_concentration | `scripts/concepts/top_feature_ablation_ranking.py` then `persona_drafts/boss/fig_ablation_concentration.py` | top_features_per_model.json |
 | App C concept_universality, cross_model_concept_hierarchy | `scripts/paper/appendix_c/fig_concept_*.py` | concept_hierarchy_full.json (round-11 build) |
 | Table concept_pair_counts.tex, mitra_feature_labels.tex | static (May 3-4), no script | rebuild by hand from round-11 matching + labels |
-| Patch-table label/explanation text | contrastive labeling (round11/contrastive_examples has mitra 497, tabicl_v2 117, tabicl 50, tabpfn 28; round11/concept_labeling has only the quality cache) | per-concept labels for the 245 patched concepts |
+| Concept semantics quoted in prose (Fig 1 credit-g f92/f6/f11/f86/f36; students_dropout; houses) | contrastive labeling of a handful of concepts (round11/contrastive_examples has mitra 497, tabicl_v2 117, tabicl 50, tabpfn 28) | labels for the specific concepts the new figures select |
 
 ## C. Geometry items: unaffected or TabDPT-only
 
@@ -58,6 +58,6 @@ Fig 1 pipeline figure is static.
 1. Run `subspace_analysis.py` on round-11 forward_deltas (CPU, minutes).
 2. Re-point the group-A generators (a `--round 11` or RESULTS_DIR switch), regenerate, diff vs
    round-10 tables, re-derive prose numbers.
-3. Decide group B: regenerate (needs an LLM labeling pass for gap-index + patch explanations) or
+3. Decide group B: regenerate (labeling pass only for the gap-index tables and the few concepts named in prose) or
    keep round-10 with an explicit note. Mixed rounds in one paper must be stated.
 4. Group C: TabDPT-only refresh, or state that geometry figures are round-9/10.
