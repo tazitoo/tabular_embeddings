@@ -219,6 +219,21 @@ reviewer that prompted each. Keep in sync with `rebuttal_draft_*.md`.
       — the quartile disaggregation already answers the gate, and the loss-weighted
       number is tail-sensitive (large-gap band runs to ~16 nats). The script no longer
       computes it; re-add if ever revisited.
+- [ ] **Candidate: efficiency (gap-closed-per-concept) as the primary ablation readout**
+      (2026-10-07) — reviewers read "random ≈ trained" off raw `gc`, which is close
+      because ablating a random SAE's concepts perturbs the embedding off-manifold and
+      collapses predictions regardless of meaning. On **efficiency (gc/K)** the arms
+      separate by an order of magnitude: full-scale (15 pairs, 698 cells) trained is
+      **~9× more efficient** than the archetypal-random control — 10.1× median gc/K,
+      8.6× ratio-of-means — closing the gap in a median **~1.7 concepts vs ~10.5**.
+      Holds on every pair. If adopted, the ablation table (`ablation_summary.py`,
+      currently `gc` vs `gc_R`) would surface **K / gc-per-concept**, and the same
+      efficiency cut would extend to the **importance and transfer** tables. Report
+      median + ratio-of-means, NOT mean-of-ratios (tiny-K cells inflate it). Readout:
+      `scripts/analysis/compare_ablation_arms.py`. A second (data-free random top-k)
+      control was piloted and found unnecessary — the ~9× is insensitive to the
+      random dictionary's data-informedness; keep it as a one-line robustness note,
+      not a new baseline. See memory `random_topk_baseline_pilot`.
 
 ## D. Framing
 - [x] **Reframe interventions as a causal DIAGNOSTIC, not a deployment/model-
