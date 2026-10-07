@@ -518,6 +518,21 @@ def main():
         help="Compute cross-model null: trained-A vs random-B for all pairs.",
     )
     parser.add_argument(
+        "--random-filename",
+        type=str,
+        default=RANDOM_BASELINE_FILENAME,
+        help=f"Random-baseline checkpoint under each trained SAE's dir "
+             f"(default: {RANDOM_BASELINE_FILENAME}; "
+             f"use sae_randomtopk_baseline.pt for the data-free top-k null).",
+    )
+    parser.add_argument(
+        "--baseline-tag",
+        type=str,
+        default="",
+        help="Suffix inserted into auto-generated baseline output filenames "
+             "(e.g. '_randomtopk') so a new null does not overwrite the archetypal one.",
+    )
+    parser.add_argument(
         "--sweep-dir",
         type=str,
         default=None,
@@ -598,7 +613,7 @@ def main():
         summary = {}
         for name in model_names:
             info = models[name]
-            rand_ckpt = info["ckpt"].parent / RANDOM_BASELINE_FILENAME
+            rand_ckpt = info["ckpt"].parent / args.random_filename
             if not rand_ckpt.exists():
                 print(f"  Skipping {name}: no random baseline at {rand_ckpt}")
                 continue
@@ -649,7 +664,8 @@ def main():
             "summary": {"per_pair": summary},
         }
         if args.output == default_output:
-            args.output = args.output.replace(".json", "_random_baseline.json")
+            args.output = args.output.replace(
+                ".json", f"_random_baseline{args.baseline_tag}.json")
 
         out_path = PROJECT_ROOT / args.output
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -675,7 +691,7 @@ def main():
         random_alive = {}
         for name in model_names:
             info = models[name]
-            rand_ckpt = info["ckpt"].parent / RANDOM_BASELINE_FILENAME
+            rand_ckpt = info["ckpt"].parent / args.random_filename
             if not rand_ckpt.exists():
                 print(f"  Skipping {name}: no random baseline at {rand_ckpt}")
                 continue
@@ -751,7 +767,9 @@ def main():
             "pairs": pairs,
         }
         if args.output == default_output:
-            args.output = str(CROSS_MODEL_BASELINE_FILE)
+            base = CROSS_MODEL_BASELINE_FILE
+            args.output = str(base.with_name(
+                base.stem + args.baseline_tag + base.suffix))
 
         out_path = PROJECT_ROOT / args.output
         out_path.parent.mkdir(parents=True, exist_ok=True)

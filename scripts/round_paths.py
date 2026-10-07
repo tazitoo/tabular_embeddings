@@ -34,9 +34,24 @@ def sae_training_dir(round: int | None = None) -> Path:
 def random_sae_dir(round: int | None = None) -> Path:
     """Geometry-matched random-SAE controls ({model}/sae_*_validated.pt), one per
     trained SAE of the same round. Round 10's live at the untagged
-    output/sae_random_baseline; output/sae_random_baseline_round10 links to it."""
+    output/sae_random_baseline; output/sae_random_baseline_round10 links to it.
+
+    This arm keeps the archetypal decoder (dictionary = random convex combos of the
+    trained SAE's K-means centroids), so it is still data-informed. For the data-free
+    null that strips the archetypal scaffold, see random_topk_sae_dir()."""
     r = round if round is not None else DEFAULT_SAE_ROUND
     return PROJECT_ROOT / "output" / f"sae_random_baseline_round{r}"
+
+
+def random_topk_sae_dir(round: int | None = None) -> Path:
+    """Data-free random top-k SAE controls ({model}/sae_*_validated.pt), one per
+    trained SAE of the same round. Same input_dim/hidden_dim/topk as the trained SAE
+    but a plain top-k SAE (sparsity_type demoted matryoshka_archetypal -> topk) whose
+    decoder is unit-norm random directions, carrying no data geometry. The third rung
+    below random_sae_dir() (archetypal-random): purely random < data-informed random <
+    trained."""
+    r = round if round is not None else DEFAULT_SAE_ROUND
+    return PROJECT_ROOT / "output" / f"sae_randomtopk_baseline_round{r}"
 
 
 RESULTS_DIR = PROJECT_ROOT / "output" / f"round{DEFAULT_SAE_ROUND}"
