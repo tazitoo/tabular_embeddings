@@ -19,14 +19,14 @@ coupling with stratified K-fold cross-fitting:
      exactly once under a set that never saw it. Report the pooled mean, the
      across-fold std (variance on small N), and the CONSENSUS set (features chosen
      in >= a fraction of folds) as the interpretable "the gap is these concepts".
-  4. Arms: UNMATCHED (the claim), MATCHED (best-case control, selected the same
-     way), RANDOM-alive (floor at matched size, averaged over draws). The paper's
-     per-row ORACLE gc on the same active rows is read from the cached ablation
-     results for a direct overfitting contrast.
+  4. One arm only: UNMATCHED trained-SAE concepts (the claim). The comparison is the
+     paper's own per-row circular gap-closed, read from the cached forward-ablation
+     results and joined by row_indices on the SAME active rows -- a paired,
+     per-row contrast of circular (selection saw the eval row) vs honest (it did not).
 
-Success criterion, fixed in advance: pooled out-of-fold unmatched gc must clearly
-beat matched and random; it is expected to sit below the per-row oracle, and that
-gap is the quantity of interest.
+Success criterion, fixed in advance: a large fraction of the reported per-row
+circular closure survives cross-fitting. The honest OOF gc is expected to sit below
+the circular per-row gc, and the size of that drop is the quantity of interest.
 
 Output:
     output/round{N}/heldout_generality/{model_a}_vs_{model_b}/{dataset}.npz
@@ -287,79 +287,84 @@ def run_dataset(model_a, model_b, dataset, saes, splits, norm_stats,
                   task=task, data_std=data_std, firing_mask=firing_mask, device=device,
                   use_mitra=use_mitra, use_seq=use_seq, max_K=args.max_K)
 
-    # Cross-fit over the active rows.
+    # Cross-fit over the active rows. One arm: UNMATCHED trained-SAE concepts.
     active_idx = np.where(active)[0]
     y_active = y_query[active_idx]
     is_loo = n_active < args.loo_threshold
 
-    # Per-arm accumulators: pooled out-of-fold gc (one entry per active row),
-    # per-fold held-out means, per-fold selected sets, selection frequencies.
-    acc = {a: {"oof": [], "fold_means": [], "fold_feats": [], "sel": Counter()}
-           for a in ("unmatched", "matched", "random")}
+    # Keep row identity so the honest OOF gc can be paired per-row against the
+    # paper's circular per-row gc. Each active row is held out in exactly one fold.
+    oof_row, oof_gc = [], []                       # absolute idx into n_query, honest gc
+    fold_means, fold_feats, sel = [], [], Counter()
 
     for train_rows, held_rows in _make_folds(active_idx, y_active, task,
                                              args.n_folds, args.loo_threshold, args.seed):
         if not train_rows or not held_rows:
             continue
-        alive_train = [fi for fi in feat_cols if firing_mask[train_rows].any(axis=0)[fi]]
-        for name, members in (("unmatched", unmatched_set),
-                              ("matched", set(alive_train) - unmatched_set)):
-            pool = _ranked_pool(members, train_rows)
-            feats, _ = _greedy_select(pool, train_rows, m_max=args.m_max, **common)
-            per_row = _eval_perrow(feats, held_rows, **common)
-            final = per_row[:, -1] if feats else np.zeros(len(held_rows), dtype=np.float32)
-            acc[name]["oof"].extend(final.tolist())
-            acc[name]["fold_means"].append(float(final.mean()) if len(final) else 0.0)
-            acc[name]["fold_feats"].append(feats)
-            acc[name]["sel"].update(feats)
-        # Random-alive floor at the unmatched size, averaged over draws.
-        size = len(acc["unmatched"]["fold_feats"][-1])
-        if size > 0 and len(alive_train) >= size:
-            draws = []
-            for d in range(args.random_draws):
-                drng = np.random.default_rng(args.seed + 1 + d + len(acc["random"]["fold_means"]))
-                feats = drng.choice(alive_train, size=size, replace=False).tolist()
-                draws.append(_eval_perrow(feats, held_rows, **common)[:, -1])
-            final = np.mean(draws, axis=0)
-            acc["random"]["oof"].extend(final.tolist())
-            acc["random"]["fold_means"].append(float(final.mean()))
+        pool = _ranked_pool(unmatched_set, train_rows)
+        feats, _ = _greedy_select(pool, train_rows, m_max=args.m_max, **common)
+        per_row = _eval_perrow(feats, held_rows, **common)
+        final = per_row[:, -1] if feats else np.zeros(len(held_rows), dtype=np.float32)
+        oof_row.extend(held_rows)
+        oof_gc.extend(final.tolist())
+        fold_means.append(float(final.mean()) if len(final) else 0.0)
+        fold_feats.append(feats)
+        sel.update(feats)
 
-    n_folds_used = len(acc["unmatched"]["fold_means"])
+    n_folds_used = len(fold_means)
 
-    def _summ(name, with_sets):
-        a = acc[name]
-        pooled = float(np.mean(a["oof"])) if a["oof"] else float("nan")
-        fold_std = float(np.std(a["fold_means"])) if len(a["fold_means"]) > 1 else 0.0
-        out = {"pooled_oof_gc": pooled, "oof_gc_fold_std": fold_std,
-               "fold_means": a["fold_means"]}
-        if with_sets:
-            out["fold_sizes"] = [len(f) for f in a["fold_feats"]]
-            out["consensus_freq"] = {str(fi): c / n_folds_used for fi, c in a["sel"].most_common()}
-        return out
-
-    arms = {"unmatched": _summ("unmatched", True),
-            "matched": _summ("matched", True),
-            "random": _summ("random", False)}
-
-    # Per-row ORACLE gc on the active rows, from cached ablation results.
-    oracle = None
+    # The paper's per-row circular gap-closed, joined by global row id on the active
+    # rows, paired with the honest OOF gc row-for-row.
     abl = (Path(args.ablation_dir) if args.ablation_dir else FORWARD_ABLATION_DIR) / \
           f"{model_a}_vs_{model_b}" / f"{dataset}.npz"
+    circ_by_row = {}
+    paper_mean_gc = None
     if abl.exists():
         z = np.load(abl, allow_pickle=True)
+        paper_mean_gc = float(z["mean_gap_closed"]) if "mean_gap_closed" in z else None
         if "gap_closed" in z and "row_indices" in z:
-            pos = {int(ri): i for i, ri in enumerate(z["row_indices"])}
-            gc = z["gap_closed"]
-            vals = [float(gc[pos[int(row_indices[r])]]) for r in active_idx
-                    if int(row_indices[r]) in pos and np.isfinite(gc[pos[int(row_indices[r])]])]
-            oracle = float(np.mean(vals)) if vals else None
+            cpos = {int(ri): i for i, ri in enumerate(z["row_indices"])}
+            cgc = z["gap_closed"]
+            for r in active_idx:
+                gid = int(row_indices[r])
+                if gid in cpos and np.isfinite(cgc[cpos[gid]]):
+                    circ_by_row[int(r)] = float(cgc[cpos[gid]])
+
+    honest_by_row = dict(zip([int(r) for r in oof_row], oof_gc))
+    paired_rows = [int(row_indices[r]) for r in active_idx
+                   if int(r) in honest_by_row and int(r) in circ_by_row]
+    honest_arr = [honest_by_row[r] for r in active_idx
+                  if int(r) in honest_by_row and int(r) in circ_by_row]
+    circ_arr = [circ_by_row[int(r)] for r in active_idx
+                if int(r) in honest_by_row and int(r) in circ_by_row]
+    honest_arr = np.asarray(honest_arr, dtype=np.float32)
+    circ_arr = np.asarray(circ_arr, dtype=np.float32)
+
+    honest_mean = float(np.mean(oof_gc)) if oof_gc else float("nan")
+    fold_std = float(np.std(fold_means)) if len(fold_means) > 1 else 0.0
+    circ_mean_paired = float(circ_arr.mean()) if len(circ_arr) else float("nan")
+    honest_mean_paired = float(honest_arr.mean()) if len(honest_arr) else float("nan")
+    # Retention: fraction of the circular closure that survives cross-fitting.
+    retention = (honest_mean_paired / circ_mean_paired
+                 if circ_mean_paired and circ_mean_paired > 1e-8 else float("nan"))
 
     return {
         "status": "ok", "strong_model": strong, "weak_model": weak,
         "task": task, "metric_name": mname,
-        "n_query": n_query, "n_active": n_active,
+        "n_query": n_query, "n_active": n_active, "n_paired": len(paired_rows),
         "n_folds": n_folds_used, "loo": is_loo, "seed": args.seed,
-        "arms": json.dumps(arms), "oracle_oof_gc": oracle,
+        # honest (cross-fit) results
+        "honest_oof_gc": honest_mean, "oof_gc_fold_std": fold_std,
+        "fold_means": json.dumps(fold_means),
+        "fold_sizes": json.dumps([len(f) for f in fold_feats]),
+        "consensus_freq": json.dumps(
+            {str(fi): c / n_folds_used for fi, c in sel.most_common()}),
+        # circular (paper, on-disk) comparison, paired on the same active rows
+        "circ_mean_paired": circ_mean_paired, "honest_mean_paired": honest_mean_paired,
+        "retention": retention, "paper_mean_gap_closed": paper_mean_gc,
+        # per-row paired arrays for downstream paired stats / distributions
+        "paired_row_ids": np.asarray(paired_rows, dtype=np.int64),
+        "honest_gc_perrow": honest_arr, "circ_gc_perrow": circ_arr,
     }
 
 
@@ -377,7 +382,6 @@ def main():
     p.add_argument("--min-gap", type=float, default=0.01)
     p.add_argument("--min-active", type=int, default=10,
                    help="skip datasets with fewer active rows than this")
-    p.add_argument("--random-draws", type=int, default=3)
     p.add_argument("--max-K", type=int, default=512)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE)
@@ -424,16 +428,16 @@ def main():
                                  test_embeddings, unmatched, args.device, args)
             np.savez_compressed(str(out_path), **result)
             if result.get("status") == "ok":
-                arms = json.loads(result["arms"])
+                ret = result.get("retention")
+                ret_s = f"{ret:.0%}" if isinstance(ret, float) and np.isfinite(ret) else "n/a"
                 logger.info(
                     f"  {result['strong_model']}>{result['weak_model']} "
-                    f"active={result['n_active']} folds={result['n_folds']}"
-                    f"{' (LOO)' if result['loo'] else ''} | OOF gc "
-                    f"unmatched={arms['unmatched']['pooled_oof_gc']:.2f}"
-                    f"±{arms['unmatched']['oof_gc_fold_std']:.2f} "
-                    f"matched={arms['matched']['pooled_oof_gc']:.2f} "
-                    f"random={arms['random']['pooled_oof_gc']:.2f} | "
-                    f"oracle={result.get('oracle_oof_gc')} ({time.time()-t0:.0f}s)")
+                    f"active={result['n_active']} paired={result['n_paired']} "
+                    f"folds={result['n_folds']}{' (LOO)' if result['loo'] else ''} | "
+                    f"honest OOF gc={result['honest_mean_paired']:.2f}"
+                    f"±{result['oof_gc_fold_std']:.2f} vs "
+                    f"circular={result['circ_mean_paired']:.2f} "
+                    f"(retention {ret_s}) ({time.time()-t0:.0f}s)")
             else:
                 logger.info(f"  status={result.get('status')} ({time.time()-t0:.0f}s)")
         except Exception as e:
