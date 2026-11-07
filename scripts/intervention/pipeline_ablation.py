@@ -168,25 +168,27 @@ def _row_preds(ctx, r, sets):
     return batched_ablation(ctx["tail"], X_row, deltas, max_K=ctx["max_K"])
 
 
+def _clip(a):
+    return np.clip(a, 0.0, 1.0)
+
+
 def _gc(ctx, r, preds):
-    """gap_closed per pred (ablation_sweep.py:402-432): fraction of strong->weak
-    loss gap recovered on the true class, clipped [0,1]."""
+    """RAW gap_closed per pred: fraction of the strong->weak loss gap recovered on
+    the true class, UNCLIPPED. ablation_sweep stores min(1,max(0,.)) of this; the
+    raw ratio exceeds 1 when an ablation overshoots the weak model's loss (<0 if it
+    moves away). Callers clamp with _clip to match the paper's stored gap_closed."""
     row_sp, row_wp = ctx["baseline_preds_s"][r], ctx["weak_preds"][r]
     if ctx["task"] == "classification":
         yr = int(ctx["y_query"][r])
         orig = -np.log(np.clip(row_sp[yr], EPS, 1 - EPS))
         target = -np.log(np.clip(row_wp[yr], EPS, 1 - EPS))
         gap = target - orig
-        out = []
-        for p in preds:
-            moved = -np.log(np.clip(p[yr], EPS, 1 - EPS)) - orig
-            out.append(min(1.0, max(0.0, moved / gap)) if gap > 1e-8 else 1.0)
+        out = [((-np.log(np.clip(p[yr], EPS, 1 - EPS)) - orig) / gap if gap > 1e-8 else 1.0)
+               for p in preds]
     else:
         orig = float((row_sp - row_wp) ** 2)
-        out = []
-        for p in preds:
-            d = float((np.asarray(p).ravel()[0] - row_wp) ** 2)
-            out.append(min(1.0, abs(d - orig) / orig) if orig > 1e-8 else 1.0)
+        out = [(abs(float((np.asarray(p).ravel()[0] - row_wp) ** 2) - orig) / orig
+                if orig > 1e-8 else 1.0) for p in preds]
     return np.asarray(out, dtype=np.float64)
 
 
@@ -301,11 +303,11 @@ def _greedy(ctx, r, ranked, gc_tolerance=GC_TOLERANCE):
             accepted = tuple(accepted) + subsets[best_c]
             current = best_c_dist
             best_pred = cps[best_c]
-            if _gc(ctx, r, [best_pred])[0] >= gc_tolerance:
+            if _clip(_gc(ctx, r, [best_pred])[0]) >= gc_tolerance:  # goal is clamped
                 break
         offset = batch_end
     sel = [ranked[j] for j in accepted]
-    gc = float(_gc(ctx, r, [best_pred])[0]) if accepted else 0.0
+    gc = float(_gc(ctx, r, [best_pred])[0]) if accepted else 0.0  # raw (may be >1)
     return sel, gc
 
 
@@ -338,7 +340,7 @@ def _validate(ctx, abl, active_rows):
         sel = [int(f) for f in sel_disk[r][:k_disk[r]] if int(f) >= 0]
         if not sel:
             continue
-        g = _gc(ctx, r, _row_preds(ctx, r, [sel]))[0]
+        g = _clip(_gc(ctx, r, _row_preds(ctx, r, [sel]))[0])
         replay_diff.append(abs(g - float(gc_disk[r])))
     replay_diff = np.asarray(replay_diff)
 
@@ -349,7 +351,7 @@ def _validate(ctx, abl, active_rows):
         k_mine.append(len(sel))
         gc_mine.append(gc)
         k_same += int(len(sel) == k_disk[r])
-    k_mine, gc_mine = np.asarray(k_mine), np.asarray(gc_mine)
+    k_mine, gc_mine = np.asarray(k_mine), _clip(np.asarray(gc_mine))
     gc_greedy_diff = np.abs(gc_mine - gc_disk[active_rows])
 
     print("\n── validation vs on-disk paper arm ──")
@@ -396,17 +398,43 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, do_validate, ou
     uni_row_gc, uni_row_k = _greedy_arm(ctx, active_rows, lambda r: _pool_uni_row(ctx, r), seeds)
 
     # ── report ──
-    def fmt(curve):
-        return "  ".join(f"{np.mean(curve[lab]):.2f}" for lab in M_LABELS)
+    # curves hold RAW (unclipped) gc. clamped mean matches the paper's stored
+    # gap_closed; the raw mean exposes overshoot the clamp hides.
+    def row(curve, fn):
+        return "  ".join(f"{fn(curve[lab]):>4.2f}" for lab in M_LABELS)
+    cmean = lambda a: float(np.mean(_clip(a)))
+    rmean = lambda a: float(np.mean(a))
+    reach = lambda a: float(np.mean(a >= GC_TOLERANCE))   # frac of rows that truly close
     hdr = "  ".join(f"{lab:>4}" for lab in M_LABELS)
-    print(f"\n{'arm (ordering, granularity, selection)':44} {hdr}")
-    print("-" * (44 + len(hdr) + 2))
-    print(f"{'importance, row,     none  (top-m)':44} {fmt(imp_row)}")
-    print(f"{'importance, dataset, none  (top-m)':44} {fmt(imp_ds)}")
-    print(f"{'uniform,    dataset, none  (top-m)':44} {fmt(uni_ds)}")
-    print(f"\n{'uniform,    row,     greedy':44} gc={uni_row_gc.mean():.2f}  "
-          f"mean k={uni_row_k.mean():.2f}")
-    print(f"{'PAPER: importance, row, greedy (disk)':44} gc={gc_disk.mean():.2f}  "
+
+    print(f"\nclamped gap_closed (paper convention, min(1,max(0,.)))")
+    print(f"{'arm':38} {hdr}")
+    print("-" * (38 + len(hdr) + 2))
+    print(f"{'importance, row,     none':38} {row(imp_row, cmean)}")
+    print(f"{'importance, dataset, none':38} {row(imp_ds, cmean)}")
+    print(f"{'uniform,    dataset, none':38} {row(uni_ds, cmean)}")
+
+    print(f"\nUNCLIPPED gap_closed (raw moved/gap; >1 = overshoot)")
+    print(f"{'arm':38} {hdr}")
+    print("-" * (38 + len(hdr) + 2))
+    print(f"{'importance, row,     none':38} {row(imp_row, rmean)}")
+    print(f"{'importance, dataset, none':38} {row(imp_ds, rmean)}")
+    print(f"{'uniform,    dataset, none':38} {row(uni_ds, rmean)}")
+
+    print(f"\nfraction of rows that ACTUALLY reach gc>={GC_TOLERANCE} (no clamp hiding it)")
+    print(f"{'importance, row,     none':38} {row(imp_row, reach)}")
+    print(f"{'importance, dataset, none':38} {row(imp_ds, reach)}")
+
+    g1 = imp_row["1"]
+    print(f"\nimportance,row,none @ m=1 per-row raw gc (n={n}): "
+          f"min={g1.min():.2f} median={np.median(g1):.2f} mean={g1.mean():.2f} max={g1.max():.2f}")
+    print(f"  rows reaching goal (>= {GC_TOLERANCE}): {int((g1>=GC_TOLERANCE).sum())}/{n}   "
+          f"overshoot (>1): {int((g1>1.0).sum())}/{n}   "
+          f"undershoot (< {GC_TOLERANCE}): {int((g1<GC_TOLERANCE).sum())}/{n}")
+
+    print(f"\n{'uniform,    row,     greedy':38} gc(clamped)={cmean(uni_row_gc):.2f}  "
+          f"gc(raw)={rmean(uni_row_gc):.2f}  mean k={uni_row_k.mean():.2f}")
+    print(f"{'PAPER: importance, row, greedy (disk)':38} gc(clamped)={gc_disk.mean():.2f}  "
           f"mean k={k_disk[active_mask].mean():.2f}  median k={np.median(k_disk[active_mask]):.0f}")
     assert len(ranked_ds) == len(uni_pool_ds)  # same filtered pool, different order
     print(f"\n|U| = {len(ranked_ds)}  (unmatched & fires on >=1 active row; the m-grid endpoint)")
