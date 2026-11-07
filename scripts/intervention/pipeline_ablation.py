@@ -375,7 +375,7 @@ def _validate(ctx, abl, active_rows):
 # ── driver ─────────────────────────────────────────────────────────────────────
 def run(model_a, model_b, dataset, device, seeds, matching_file, do_validate,
         skip_greedy, quiet, out_dir, fwd_dir=FORWARD_ABLATION_DIR,
-        importance_dir=IMPORTANCE_DIR, sae_dir=DEFAULT_SAE_DIR):
+        importance_dir=IMPORTANCE_DIR, sae_dir=DEFAULT_SAE_DIR, greedy_only=False):
     pair = f"{model_a}_vs_{model_b}"
     abl_path = fwd_dir / pair / f"{dataset}.npz"
     if not abl_path.exists():
@@ -399,6 +399,25 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, do_validate,
     active_rows = np.where(active_mask)[0]
     gc_disk = abl["gap_closed"][active_mask]
     n = len(active_rows)
+
+    # greedy-only: merge the uniform,row,greedy arm into the existing none npz
+    # (reuses the done none-arm forwards; adds only the uninformed greedy search).
+    if greedy_only:
+        npz_path = out_dir / f"{dataset}.npz"
+        if not npz_path.exists():
+            print(f"  {dataset}: SKIP greedy-only (no none npz yet)")
+            return
+        existing = dict(np.load(npz_path, allow_pickle=True))
+        uni_row_gc, uni_row_k = _greedy_arm(ctx, active_rows,
+                                            lambda r: _pool_uni_row(ctx, r), seeds)
+        existing["uni_row_gc"] = uni_row_gc
+        existing["uni_row_k"] = uni_row_k
+        np.savez_compressed(npz_path, **existing)
+        print(f"  {dataset:30.30} strong={ctx['strong']:9.9} n={n:>4}  "
+              f"uni,row,greedy  gc(raw)={np.mean(uni_row_gc):.2f}  "
+              f"gc(clamped)={np.mean(_clip(uni_row_gc)):.2f}  mean k={uni_row_k.mean():.2f}  "
+              f"[{time.time()-t0:.0f}s]")
+        return
 
     vinfo = _validate(ctx, abl, active_rows) if do_validate else None
 
@@ -508,6 +527,9 @@ def main():
                    help="check the replicated forward/greedy path against on-disk paper arm")
     p.add_argument("--skip-greedy", action="store_true",
                    help="skip the uniform,row,greedy arm -- compute the three none arms only")
+    p.add_argument("--greedy-only", action="store_true",
+                   help="compute ONLY the uniform,row,greedy arm and merge it into the "
+                        "existing none npz (requires the none sweep to have run first)")
     p.add_argument("--quiet", action="store_true", help="one summary line per dataset (sweep)")
     p.add_argument("--resume", action="store_true", help="skip datasets already written")
     p.add_argument("--output-dir", type=Path, default=None)
@@ -528,15 +550,22 @@ def main():
     else:
         datasets = sorted(pp.stem for pp in (fwd_dir / pair).glob("*.npz"))
     print(f"{pair}: {len(datasets)} datasets  seeds={args.seeds}  "
-          f"skip_greedy={args.skip_greedy}  random={args.random}")
+          f"skip_greedy={args.skip_greedy}  greedy_only={args.greedy_only}  random={args.random}")
     for i, ds in enumerate(datasets):
-        if args.resume and (out_dir / f"{ds}.npz").exists():
-            print(f"[{i+1}/{len(datasets)}] {ds}: SKIP (exists)")
-            continue
+        npz_path = out_dir / f"{ds}.npz"
+        if args.resume:
+            # greedy-only resumes on the uni_row_gc key (the npz already exists from
+            # the none sweep); the none sweep resumes on the file existing at all.
+            done = (npz_path.exists() and "uni_row_gc" in np.load(npz_path, allow_pickle=True)
+                    if args.greedy_only else npz_path.exists())
+            if done:
+                print(f"[{i+1}/{len(datasets)}] {ds}: SKIP (done)")
+                continue
         try:
             run(model_a, model_b, ds, args.device, args.seeds, matching_file,
                 args.validate, args.skip_greedy, args.quiet, out_dir,
-                fwd_dir=fwd_dir, importance_dir=importance_dir, sae_dir=sae_dir)
+                fwd_dir=fwd_dir, importance_dir=importance_dir, sae_dir=sae_dir,
+                greedy_only=args.greedy_only)
         except Exception as e:
             logger.error(f"[{i+1}/{len(datasets)}] FAIL {ds}: {e}")
             import traceback
