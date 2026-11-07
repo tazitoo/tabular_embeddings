@@ -364,29 +364,37 @@ def _validate(ctx, abl, active_rows):
 
 
 # ── driver ─────────────────────────────────────────────────────────────────────
-def run(model_a, model_b, dataset, device, seeds, matching_file, do_validate, out_dir):
-    t0 = time.time()
-    ctx = setup(model_a, model_b, dataset, device, 512, matching_file, IMPORTANCE_DIR)
+def run(model_a, model_b, dataset, device, seeds, matching_file, do_validate,
+        skip_greedy, quiet, out_dir):
     pair = f"{model_a}_vs_{model_b}"
-    abl = np.load(FORWARD_ABLATION_DIR / pair / f"{dataset}.npz", allow_pickle=True)
-    assert str(abl["strong_model"]) == ctx["strong"], "strong/weak orientation mismatch"
-    assert np.array_equal(abl["row_indices"], ctx["row_indices"]), "row index mismatch"
-
+    abl_path = FORWARD_ABLATION_DIR / pair / f"{dataset}.npz"
+    if not abl_path.exists():
+        print(f"  {dataset}: SKIP (no paper arm on disk)")
+        return
+    abl = np.load(abl_path, allow_pickle=True)
+    if "optimal_k" not in abl:
+        print(f"  {dataset}: SKIP (models tied -- no active rows)")
+        return
     k_disk = abl["optimal_k"].astype(int)
     active_mask = k_disk > 0
+    if active_mask.sum() == 0:
+        print(f"  {dataset}: SKIP (0 active rows)")
+        return
+
+    t0 = time.time()
+    ctx = setup(model_a, model_b, dataset, device, 512, matching_file, IMPORTANCE_DIR)
+    assert str(abl["strong_model"]) == ctx["strong"], "strong/weak orientation mismatch"
+    assert np.array_equal(abl["row_indices"], ctx["row_indices"]), "row index mismatch"
     active_rows = np.where(active_mask)[0]
     gc_disk = abl["gap_closed"][active_mask]
     n = len(active_rows)
-    print(f"\n=== {pair} / {dataset} ===")
-    print(f"strong={ctx['strong']}  weak={ctx['weak']}  active rows (optimal_k>0)={n}")
 
     vinfo = _validate(ctx, abl, active_rows) if do_validate else None
 
-    print("\n── computing arms ──")
+    # three "none" arms (fixed top-m, no search): raw (unclipped) gc per row
     imp_row = _none_curve(ctx, active_rows, lambda r: _ranked_imp_row(ctx, r))
     ranked_ds = _ranked_imp_dataset(ctx, active_mask)
     imp_ds = _none_curve(ctx, active_rows, lambda r, L=ranked_ds: L)
-
     uni_pool_ds = _latents_dataset(ctx, active_mask)
     uni_ds_seeds = []
     for s in range(seeds):
@@ -395,17 +403,49 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, do_validate, ou
         uni_ds_seeds.append(_none_curve(ctx, active_rows, lambda r, L=perm: L))
     uni_ds = _mean_curves(uni_ds_seeds)
 
-    uni_row_gc, uni_row_k = _greedy_arm(ctx, active_rows, lambda r: _pool_uni_row(ctx, r), seeds)
+    uni_row_gc = uni_row_k = None
+    if not skip_greedy:
+        uni_row_gc, uni_row_k = _greedy_arm(ctx, active_rows, lambda r: _pool_uni_row(ctx, r), seeds)
 
-    # ── report ──
-    # curves hold RAW (unclipped) gc. clamped mean matches the paper's stored
-    # gap_closed; the raw mean exposes overshoot the clamp hides.
-    def row(curve, fn):
-        return "  ".join(f"{fn(curve[lab]):>4.2f}" for lab in M_LABELS)
     cmean = lambda a: float(np.mean(_clip(a)))
     rmean = lambda a: float(np.mean(a))
-    reach = lambda a: float(np.mean(a >= GC_TOLERANCE))   # frac of rows that truly close
+    reach = lambda a: float(np.mean(a >= GC_TOLERANCE))
+
+    if quiet:
+        print(f"  {dataset:30.30} strong={ctx['strong']:9.9} n={n:>4} |U|={len(uni_pool_ds):>4}  "
+              f"UNCLIPPED@m=1  imp_row={rmean(imp_row['1']):7.2f}  imp_ds={rmean(imp_ds['1']):6.2f}  "
+              f"uni_ds={rmean(uni_ds['1']):6.2f}  [{time.time()-t0:.0f}s]")
+    else:
+        _report_full(dataset, ctx, imp_row, imp_ds, uni_ds, uni_row_gc, uni_row_k,
+                     ranked_ds, uni_pool_ds, gc_disk, k_disk[active_mask], n, t0,
+                     cmean, rmean, reach)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    save = dict(
+        strong=ctx["strong"], weak=ctx["weak"], dataset=dataset,
+        active_rows=active_rows, gc_disk=gc_disk, k_disk=k_disk[active_mask],
+        ranked_ds=np.asarray(ranked_ds), uni_pool_ds=np.asarray(uni_pool_ds),
+        m_labels=np.asarray(M_LABELS),
+    )
+    for lab in M_LABELS:
+        save[f"imp_row__{lab}"] = imp_row[lab]
+        save[f"imp_ds__{lab}"] = imp_ds[lab]
+        save[f"uni_ds__{lab}"] = uni_ds[lab]
+    if not skip_greedy:
+        save["uni_row_gc"] = uni_row_gc
+        save["uni_row_k"] = uni_row_k
+    if vinfo:
+        save["validation"] = json.dumps(vinfo)
+    np.savez_compressed(out_dir / f"{dataset}.npz", **save)
+
+
+def _report_full(dataset, ctx, imp_row, imp_ds, uni_ds, uni_row_gc, uni_row_k,
+                 ranked_ds, uni_pool_ds, gc_disk, k_active, n, t0,
+                 cmean, rmean, reach):
+    def row(curve, fn):
+        return "  ".join(f"{fn(curve[lab]):>4.2f}" for lab in M_LABELS)
     hdr = "  ".join(f"{lab:>4}" for lab in M_LABELS)
+    print(f"\n=== {ctx['strong']}(strong) vs {ctx['weak']} / {dataset}  active rows={n} ===")
 
     print(f"\nclamped gap_closed (paper convention, min(1,max(0,.)))")
     print(f"{'arm':38} {hdr}")
@@ -432,48 +472,51 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, do_validate, ou
           f"overshoot (>1): {int((g1>1.0).sum())}/{n}   "
           f"undershoot (< {GC_TOLERANCE}): {int((g1<GC_TOLERANCE).sum())}/{n}")
 
-    print(f"\n{'uniform,    row,     greedy':38} gc(clamped)={cmean(uni_row_gc):.2f}  "
-          f"gc(raw)={rmean(uni_row_gc):.2f}  mean k={uni_row_k.mean():.2f}")
+    if uni_row_gc is not None:
+        print(f"\n{'uniform,    row,     greedy':38} gc(clamped)={cmean(uni_row_gc):.2f}  "
+              f"gc(raw)={rmean(uni_row_gc):.2f}  mean k={uni_row_k.mean():.2f}")
     print(f"{'PAPER: importance, row, greedy (disk)':38} gc(clamped)={gc_disk.mean():.2f}  "
-          f"mean k={k_disk[active_mask].mean():.2f}  median k={np.median(k_disk[active_mask]):.0f}")
-    assert len(ranked_ds) == len(uni_pool_ds)  # same filtered pool, different order
+          f"mean k={k_active.mean():.2f}  median k={np.median(k_active):.0f}")
     print(f"\n|U| = {len(ranked_ds)}  (unmatched & fires on >=1 active row; the m-grid endpoint)")
     print(f"[{time.time() - t0:.0f}s]")
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    save = dict(
-        strong=ctx["strong"], weak=ctx["weak"], dataset=dataset,
-        active_rows=active_rows, gc_disk=gc_disk, k_disk=k_disk[active_mask],
-        uni_row_gc=uni_row_gc, uni_row_k=uni_row_k,
-        ranked_ds=np.asarray(ranked_ds), uni_pool_ds=np.asarray(uni_pool_ds),
-        m_labels=np.asarray(M_LABELS),
-    )
-    for lab in M_LABELS:
-        save[f"imp_row__{lab}"] = imp_row[lab]
-        save[f"imp_ds__{lab}"] = imp_ds[lab]
-        save[f"uni_ds__{lab}"] = uni_ds[lab]
-    if vinfo:
-        save["validation"] = json.dumps(vinfo)
-    np.savez_compressed(out_dir / f"{dataset}.npz", **save)
-    print(f"wrote {out_dir / f'{dataset}.npz'}")
 
 
 def main():
     p = argparse.ArgumentParser(description="Pipeline-knob ablation of the per-row greedy")
     p.add_argument("--models", nargs=2, required=True)
-    p.add_argument("--datasets", nargs="+", required=True)
+    p.add_argument("--datasets", nargs="+", default=None,
+                   help="default: every dataset with a paper arm on disk for this pair")
     p.add_argument("--device", default="cuda")
     p.add_argument("--seeds", type=int, default=5, help="random draws for the uniform arms")
     p.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE)
     p.add_argument("--validate", action="store_true",
                    help="check the replicated forward/greedy path against on-disk paper arm")
+    p.add_argument("--skip-greedy", action="store_true",
+                   help="skip the uniform,row,greedy arm -- compute the three none arms only")
+    p.add_argument("--quiet", action="store_true", help="one summary line per dataset (sweep)")
+    p.add_argument("--resume", action="store_true", help="skip datasets already written")
     p.add_argument("--output-dir", type=Path, default=None)
     args = p.parse_args()
     model_a, model_b = sorted(args.models)
-    out_dir = (args.output_dir or OUTPUT_DIR) / f"{model_a}_vs_{model_b}"
-    for ds in args.datasets:
-        run(model_a, model_b, ds, args.device, args.seeds, args.matching_file,
-            args.validate, out_dir)
+    pair = f"{model_a}_vs_{model_b}"
+    out_dir = (args.output_dir or OUTPUT_DIR) / pair
+    if args.datasets:
+        datasets = args.datasets
+    else:
+        datasets = sorted(pp.stem for pp in (FORWARD_ABLATION_DIR / pair).glob("*.npz"))
+    print(f"{pair}: {len(datasets)} datasets  seeds={args.seeds}  "
+          f"skip_greedy={args.skip_greedy}")
+    for i, ds in enumerate(datasets):
+        if args.resume and (out_dir / f"{ds}.npz").exists():
+            print(f"[{i+1}/{len(datasets)}] {ds}: SKIP (exists)")
+            continue
+        try:
+            run(model_a, model_b, ds, args.device, args.seeds, args.matching_file,
+                args.validate, args.skip_greedy, args.quiet, out_dir)
+        except Exception as e:
+            logger.error(f"[{i+1}/{len(datasets)}] FAIL {ds}: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
