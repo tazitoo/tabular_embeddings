@@ -51,9 +51,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scripts.round_paths import FORWARD_ABLATION_DIR, IMPORTANCE_DIR
+from scripts.round_paths import (
+    FORWARD_ABLATION_DIR, IMPORTANCE_DIR,
+    FORWARD_ABLATION_RANDOM_DIR, IMPORTANCE_RANDOM_DIR, RESULTS_DIR, random_sae_dir,
+)
 from scripts.intervention.intervene_lib import (
-    SPLITS_PATH,
+    SPLITS_PATH, DEFAULT_SAE_DIR,
     load_sae, get_extraction_layer_taskaware, build_tail,
     load_dataset_context, load_test_embeddings,
     compute_per_row_loss, compute_importance_metric,
@@ -67,6 +70,11 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path(str(FORWARD_ABLATION_DIR)).parent / "pipeline_ablation"
+# --random control: swap trained SAE/importance/matching/paper-arm for the random-
+# init baselines (the same dirs the on-disk random greedy + transfer used), so the
+# three none arms are apples-to-apples with the random greedy already on disk.
+RANDOM_OUTPUT_DIR = Path(str(FORWARD_ABLATION_DIR)).parent / "pipeline_ablation_random"
+RANDOM_MATCHING_FILE = RESULTS_DIR / "sae_feature_matching_mnn_t0.001_random.json"
 M_GRID = (1, 2, 5, 10, 20, 50)          # top-m sweep for the "none" arms
 # endpoint = |U|, the filtered pool size per dataset (unmatched & fires on >=1
 # active row). Every row's pool is a subset of it, so top-|U| is each row's full
@@ -85,7 +93,8 @@ def _widen_binary(p):
 
 
 # ── setup: replicate run_dataset's setup half (ablation_sweep.py:86-249) ───────
-def setup(model_a, model_b, dataset, device, max_K, matching_file, importance_dir):
+def setup(model_a, model_b, dataset, device, max_K, matching_file, importance_dir,
+          sae_dir=DEFAULT_SAE_DIR):
     imp_a = np.load(importance_dir / model_a / f"{dataset}.npz", allow_pickle=True)
     imp_b = np.load(importance_dir / model_b / f"{dataset}.npz", allow_pickle=True)
     preds_a = _widen_binary(imp_a["baseline_preds"])
@@ -121,7 +130,7 @@ def setup(model_a, model_b, dataset, device, max_K, matching_file, importance_di
     target_name = splits.get(dataset, {}).get("target", "target")
     torch.manual_seed(13)
     np.random.seed(13)
-    sae, _ = load_sae(strong, device=device)
+    sae, _ = load_sae(strong, sae_dir=sae_dir, device=device)
     sae.eval()
     tail = build_tail(strong, X_train, y_train, X_query, layer, task_s, device,
                       cat_indices=cat_indices, target_name=target_name)
@@ -365,9 +374,10 @@ def _validate(ctx, abl, active_rows):
 
 # ── driver ─────────────────────────────────────────────────────────────────────
 def run(model_a, model_b, dataset, device, seeds, matching_file, do_validate,
-        skip_greedy, quiet, out_dir):
+        skip_greedy, quiet, out_dir, fwd_dir=FORWARD_ABLATION_DIR,
+        importance_dir=IMPORTANCE_DIR, sae_dir=DEFAULT_SAE_DIR):
     pair = f"{model_a}_vs_{model_b}"
-    abl_path = FORWARD_ABLATION_DIR / pair / f"{dataset}.npz"
+    abl_path = fwd_dir / pair / f"{dataset}.npz"
     if not abl_path.exists():
         print(f"  {dataset}: SKIP (no paper arm on disk)")
         return
@@ -382,7 +392,8 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, do_validate,
         return
 
     t0 = time.time()
-    ctx = setup(model_a, model_b, dataset, device, 512, matching_file, IMPORTANCE_DIR)
+    ctx = setup(model_a, model_b, dataset, device, 512, matching_file, importance_dir,
+                sae_dir=sae_dir)
     assert str(abl["strong_model"]) == ctx["strong"], "strong/weak orientation mismatch"
     assert np.array_equal(abl["row_indices"], ctx["row_indices"]), "row index mismatch"
     active_rows = np.where(active_mask)[0]
@@ -488,7 +499,11 @@ def main():
                    help="default: every dataset with a paper arm on disk for this pair")
     p.add_argument("--device", default="cuda")
     p.add_argument("--seeds", type=int, default=5, help="random draws for the uniform arms")
-    p.add_argument("--matching-file", type=Path, default=DEFAULT_MATCHING_FILE)
+    p.add_argument("--matching-file", type=Path, default=None)
+    p.add_argument("--random", action="store_true",
+                   help="random-init SAE control: read the random SAE/importance/"
+                        "matching/paper-arm dirs (the same inputs the on-disk random "
+                        "greedy used); write to pipeline_ablation_random/")
     p.add_argument("--validate", action="store_true",
                    help="check the replicated forward/greedy path against on-disk paper arm")
     p.add_argument("--skip-greedy", action="store_true",
@@ -499,20 +514,29 @@ def main():
     args = p.parse_args()
     model_a, model_b = sorted(args.models)
     pair = f"{model_a}_vs_{model_b}"
-    out_dir = (args.output_dir or OUTPUT_DIR) / pair
+
+    fwd_dir = FORWARD_ABLATION_RANDOM_DIR if args.random else FORWARD_ABLATION_DIR
+    importance_dir = IMPORTANCE_RANDOM_DIR if args.random else IMPORTANCE_DIR
+    sae_dir = random_sae_dir() if args.random else DEFAULT_SAE_DIR
+    default_out = RANDOM_OUTPUT_DIR if args.random else OUTPUT_DIR
+    matching_file = args.matching_file or (RANDOM_MATCHING_FILE if args.random
+                                           else DEFAULT_MATCHING_FILE)
+    out_dir = (args.output_dir or default_out) / pair
+
     if args.datasets:
         datasets = args.datasets
     else:
-        datasets = sorted(pp.stem for pp in (FORWARD_ABLATION_DIR / pair).glob("*.npz"))
+        datasets = sorted(pp.stem for pp in (fwd_dir / pair).glob("*.npz"))
     print(f"{pair}: {len(datasets)} datasets  seeds={args.seeds}  "
-          f"skip_greedy={args.skip_greedy}")
+          f"skip_greedy={args.skip_greedy}  random={args.random}")
     for i, ds in enumerate(datasets):
         if args.resume and (out_dir / f"{ds}.npz").exists():
             print(f"[{i+1}/{len(datasets)}] {ds}: SKIP (exists)")
             continue
         try:
-            run(model_a, model_b, ds, args.device, args.seeds, args.matching_file,
-                args.validate, args.skip_greedy, args.quiet, out_dir)
+            run(model_a, model_b, ds, args.device, args.seeds, matching_file,
+                args.validate, args.skip_greedy, args.quiet, out_dir,
+                fwd_dir=fwd_dir, importance_dir=importance_dir, sae_dir=sae_dir)
         except Exception as e:
             logger.error(f"[{i+1}/{len(datasets)}] FAIL {ds}: {e}")
             import traceback
