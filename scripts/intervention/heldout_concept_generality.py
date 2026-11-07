@@ -331,14 +331,17 @@ def run_dataset(model_a, model_b, dataset, saes, splits, norm_stats,
                     circ_by_row[int(r)] = float(cgc[cpos[gid]])
 
     honest_by_row = dict(zip([int(r) for r in oof_row], oof_gc))
-    paired_rows = [int(row_indices[r]) for r in active_idx
-                   if int(r) in honest_by_row and int(r) in circ_by_row]
-    honest_arr = [honest_by_row[r] for r in active_idx
-                  if int(r) in honest_by_row and int(r) in circ_by_row]
-    circ_arr = [circ_by_row[int(r)] for r in active_idx
-                if int(r) in honest_by_row and int(r) in circ_by_row]
-    honest_arr = np.asarray(honest_arr, dtype=np.float32)
-    circ_arr = np.asarray(circ_arr, dtype=np.float32)
+    # Always emit the honest OOF gc keyed by GLOBAL row id for every scored active
+    # row, so the circular join can be (re)done on any host that has the ablation
+    # cache -- the workers do not carry it; the Mac does.
+    honest_rows_all = [int(r) for r in active_idx if int(r) in honest_by_row]
+    honest_gid_all = np.asarray([int(row_indices[r]) for r in honest_rows_all], dtype=np.int64)
+    honest_gc_all = np.asarray([honest_by_row[r] for r in honest_rows_all], dtype=np.float32)
+    # In-process paired contrast (populated only where the ablation cache is present).
+    paired_local = [r for r in honest_rows_all if r in circ_by_row]
+    paired_rows = [int(row_indices[r]) for r in paired_local]
+    honest_arr = np.asarray([honest_by_row[r] for r in paired_local], dtype=np.float32)
+    circ_arr = np.asarray([circ_by_row[r] for r in paired_local], dtype=np.float32)
 
     honest_mean = float(np.mean(oof_gc)) if oof_gc else float("nan")
     fold_std = float(np.std(fold_means)) if len(fold_means) > 1 else 0.0
@@ -362,7 +365,9 @@ def run_dataset(model_a, model_b, dataset, saes, splits, norm_stats,
         # circular (paper, on-disk) comparison, paired on the same active rows
         "circ_mean_paired": circ_mean_paired, "honest_mean_paired": honest_mean_paired,
         "retention": retention, "paper_mean_gap_closed": paper_mean_gc,
-        # per-row paired arrays for downstream paired stats / distributions
+        # honest OOF gc keyed by global row id -- for the Mac-side circular join
+        "honest_row_ids": honest_gid_all, "honest_gc_all": honest_gc_all,
+        # per-row paired arrays (in-process; empty on hosts without the ablation cache)
         "paired_row_ids": np.asarray(paired_rows, dtype=np.int64),
         "honest_gc_perrow": honest_arr, "circ_gc_perrow": circ_arr,
     }
