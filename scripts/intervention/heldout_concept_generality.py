@@ -435,14 +435,15 @@ def main():
             if result.get("status") == "ok":
                 ret = result.get("retention")
                 ret_s = f"{ret:.0%}" if isinstance(ret, float) and np.isfinite(ret) else "n/a"
+                circ = result.get("circ_mean_paired")
+                circ_s = f"{circ:.2f}" if isinstance(circ, float) and np.isfinite(circ) else "n/a(no cache)"
                 logger.info(
                     f"  {result['strong_model']}>{result['weak_model']} "
                     f"active={result['n_active']} paired={result['n_paired']} "
                     f"folds={result['n_folds']}{' (LOO)' if result['loo'] else ''} | "
-                    f"honest OOF gc={result['honest_mean_paired']:.2f}"
+                    f"honest OOF gc={result['honest_oof_gc']:.2f}"
                     f"±{result['oof_gc_fold_std']:.2f} vs "
-                    f"circular={result['circ_mean_paired']:.2f} "
-                    f"(retention {ret_s}) ({time.time()-t0:.0f}s)")
+                    f"circular={circ_s} (retention {ret_s}) ({time.time()-t0:.0f}s)")
             else:
                 logger.info(f"  status={result.get('status')} ({time.time()-t0:.0f}s)")
         except Exception as e:
