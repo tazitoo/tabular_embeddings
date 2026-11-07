@@ -20,13 +20,16 @@ coupling with stratified K-fold cross-fitting:
      across-fold std (variance on small N), and the CONSENSUS set (features chosen
      in >= a fraction of folds) as the interpretable "the gap is these concepts".
   4. One arm only: UNMATCHED trained-SAE concepts (the claim). The comparison is the
-     paper's own per-row circular gap-closed, read from the cached forward-ablation
-     results and joined by row_indices on the SAME active rows -- a paired,
-     per-row contrast of circular (selection saw the eval row) vs honest (it did not).
+     paper's own per-row self-selected gap-closed (each row's concepts chosen using
+     that row's target, then scored on that row), read from the cached
+     forward-ablation results and joined by row_indices on the SAME active rows --
+     a paired, per-row contrast of selection-saw-the-row vs out-of-fold.
 
 Success criterion, fixed in advance: a large fraction of the reported per-row
-circular closure survives cross-fitting. The honest OOF gc is expected to sit below
-the circular per-row gc, and the size of that drop is the quantity of interest.
+closure survives cross-fitting. The out-of-fold set gc is expected to sit below the
+per-row self-selected gc, and the size of that drop is the quantity of interest.
+Also reported: the selected-set size, its fold-to-fold overlap, and closure as a
+function of set size k -- so "a few unmatched concepts" is characterised, not assumed.
 
 Output:
     output/round{N}/heldout_generality/{model_a}_vs_{model_b}/{dataset}.npz
@@ -39,7 +42,7 @@ import argparse
 import json
 import logging
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -292,10 +295,15 @@ def run_dataset(model_a, model_b, dataset, saes, splits, norm_stats,
     y_active = y_query[active_idx]
     is_loo = n_active < args.loo_threshold
 
-    # Keep row identity so the honest OOF gc can be paired per-row against the
-    # paper's circular per-row gc. Each active row is held out in exactly one fold.
-    oof_row, oof_gc = [], []                       # absolute idx into n_query, honest gc
+    # Keep row identity so the out-of-fold set gc can be paired per-row against the
+    # paper's per-row self-selected gc. Each active row is held out in exactly one
+    # fold. gc_by_k pools held-out gc at each frozen-set prefix size k across folds,
+    # so we can read closure as a function of how many unmatched concepts are applied
+    # (not just the terminal set). fold_feats keeps each fold's selected set so
+    # downstream can measure fold-to-fold overlap (Jaccard).
+    oof_row, oof_gc = [], []                       # absolute idx into n_query, OOF set gc
     fold_means, fold_feats, sel = [], [], Counter()
+    gc_by_k = defaultdict(list)                    # prefix size k -> pooled held-out gc values
 
     for train_rows, held_rows in _make_folds(active_idx, y_active, task,
                                              args.n_folds, args.loo_threshold, args.seed):
@@ -303,21 +311,24 @@ def run_dataset(model_a, model_b, dataset, saes, splits, norm_stats,
             continue
         pool = _ranked_pool(unmatched_set, train_rows)
         feats, _ = _greedy_select(pool, train_rows, m_max=args.m_max, **common)
-        per_row = _eval_perrow(feats, held_rows, **common)
+        per_row = _eval_perrow(feats, held_rows, **common)   # (n_held, len(feats))
         final = per_row[:, -1] if feats else np.zeros(len(held_rows), dtype=np.float32)
         oof_row.extend(held_rows)
         oof_gc.extend(final.tolist())
+        for k in range(per_row.shape[1]):          # prefix size k+1 across this fold's set
+            gc_by_k[k + 1].extend(per_row[:, k].tolist())
         fold_means.append(float(final.mean()) if len(final) else 0.0)
-        fold_feats.append(feats)
+        fold_feats.append([int(f) for f in feats])
         sel.update(feats)
 
     n_folds_used = len(fold_means)
+    gc_by_k_out = {str(k): [float(np.mean(v)), len(v)] for k, v in sorted(gc_by_k.items())}
 
-    # The paper's per-row circular gap-closed, joined by global row id on the active
-    # rows, paired with the honest OOF gc row-for-row.
+    # The paper's per-row self-selected gap-closed, joined by global row id on the
+    # active rows, paired with the out-of-fold set gc row-for-row.
     abl = (Path(args.ablation_dir) if args.ablation_dir else FORWARD_ABLATION_DIR) / \
           f"{model_a}_vs_{model_b}" / f"{dataset}.npz"
-    circ_by_row = {}
+    perrow_by_row = {}
     paper_mean_gc = None
     if abl.exists():
         z = np.load(abl, allow_pickle=True)
@@ -328,48 +339,47 @@ def run_dataset(model_a, model_b, dataset, saes, splits, norm_stats,
             for r in active_idx:
                 gid = int(row_indices[r])
                 if gid in cpos and np.isfinite(cgc[cpos[gid]]):
-                    circ_by_row[int(r)] = float(cgc[cpos[gid]])
+                    perrow_by_row[int(r)] = float(cgc[cpos[gid]])
 
-    honest_by_row = dict(zip([int(r) for r in oof_row], oof_gc))
-    # Always emit the honest OOF gc keyed by GLOBAL row id for every scored active
-    # row, so the circular join can be (re)done on any host that has the ablation
-    # cache -- the workers do not carry it; the Mac does.
-    honest_rows_all = [int(r) for r in active_idx if int(r) in honest_by_row]
-    honest_gid_all = np.asarray([int(row_indices[r]) for r in honest_rows_all], dtype=np.int64)
-    honest_gc_all = np.asarray([honest_by_row[r] for r in honest_rows_all], dtype=np.float32)
+    oof_by_row = dict(zip([int(r) for r in oof_row], oof_gc))
+    # Always emit the OOF set gc keyed by GLOBAL row id for every scored active row,
+    # so the per-row self-selected join can be (re)done on any host that has the
+    # ablation cache -- the workers do not carry it; the Mac does.
+    oof_rows_all = [int(r) for r in active_idx if int(r) in oof_by_row]
+    oof_gid_all = np.asarray([int(row_indices[r]) for r in oof_rows_all], dtype=np.int64)
+    oof_gc_all = np.asarray([oof_by_row[r] for r in oof_rows_all], dtype=np.float32)
     # In-process paired contrast (populated only where the ablation cache is present).
-    paired_local = [r for r in honest_rows_all if r in circ_by_row]
+    paired_local = [r for r in oof_rows_all if r in perrow_by_row]
     paired_rows = [int(row_indices[r]) for r in paired_local]
-    honest_arr = np.asarray([honest_by_row[r] for r in paired_local], dtype=np.float32)
-    circ_arr = np.asarray([circ_by_row[r] for r in paired_local], dtype=np.float32)
+    oof_arr = np.asarray([oof_by_row[r] for r in paired_local], dtype=np.float32)
+    perrow_arr = np.asarray([perrow_by_row[r] for r in paired_local], dtype=np.float32)
 
-    honest_mean = float(np.mean(oof_gc)) if oof_gc else float("nan")
+    oof_mean = float(np.mean(oof_gc)) if oof_gc else float("nan")
     fold_std = float(np.std(fold_means)) if len(fold_means) > 1 else 0.0
-    circ_mean_paired = float(circ_arr.mean()) if len(circ_arr) else float("nan")
-    honest_mean_paired = float(honest_arr.mean()) if len(honest_arr) else float("nan")
-    # Retention: fraction of the circular closure that survives cross-fitting.
-    retention = (honest_mean_paired / circ_mean_paired
-                 if circ_mean_paired and circ_mean_paired > 1e-8 else float("nan"))
+    perrow_mean_paired = float(perrow_arr.mean()) if len(perrow_arr) else float("nan")
+    oof_mean_paired = float(oof_arr.mean()) if len(oof_arr) else float("nan")
 
     return {
         "status": "ok", "strong_model": strong, "weak_model": weak,
         "task": task, "metric_name": mname,
         "n_query": n_query, "n_active": n_active, "n_paired": len(paired_rows),
         "n_folds": n_folds_used, "loo": is_loo, "seed": args.seed,
-        # honest (cross-fit) results
-        "honest_oof_gc": honest_mean, "oof_gc_fold_std": fold_std,
+        # out-of-fold frozen-set results
+        "oof_set_gc": oof_mean, "oof_gc_fold_std": fold_std,
         "fold_means": json.dumps(fold_means),
         "fold_sizes": json.dumps([len(f) for f in fold_feats]),
+        "fold_feats": json.dumps(fold_feats),          # per-fold selected sets (for Jaccard)
+        "gc_by_k": json.dumps(gc_by_k_out),            # prefix size k -> [mean held-out gc, n]
         "consensus_freq": json.dumps(
             {str(fi): c / n_folds_used for fi, c in sel.most_common()}),
-        # circular (paper, on-disk) comparison, paired on the same active rows
-        "circ_mean_paired": circ_mean_paired, "honest_mean_paired": honest_mean_paired,
-        "retention": retention, "paper_mean_gap_closed": paper_mean_gc,
-        # honest OOF gc keyed by global row id -- for the Mac-side circular join
-        "honest_row_ids": honest_gid_all, "honest_gc_all": honest_gc_all,
+        # per-row self-selected (paper, on-disk) comparison, paired on the same rows
+        "perrow_gc_paired": perrow_mean_paired, "oof_gc_paired": oof_mean_paired,
+        "paper_mean_gap_closed": paper_mean_gc,
+        # OOF set gc keyed by global row id -- for the Mac-side per-row-self-sel join
+        "oof_row_ids": oof_gid_all, "oof_gc_all": oof_gc_all,
         # per-row paired arrays (in-process; empty on hosts without the ablation cache)
         "paired_row_ids": np.asarray(paired_rows, dtype=np.int64),
-        "honest_gc_perrow": honest_arr, "circ_gc_perrow": circ_arr,
+        "oof_gc_perrow": oof_arr, "perrow_gc_perrow": perrow_arr,
     }
 
 
@@ -433,17 +443,17 @@ def main():
                                  test_embeddings, unmatched, args.device, args)
             np.savez_compressed(str(out_path), **result)
             if result.get("status") == "ok":
-                ret = result.get("retention")
-                ret_s = f"{ret:.0%}" if isinstance(ret, float) and np.isfinite(ret) else "n/a"
-                circ = result.get("circ_mean_paired")
-                circ_s = f"{circ:.2f}" if isinstance(circ, float) and np.isfinite(circ) else "n/a(no cache)"
+                pr = result.get("perrow_gc_paired")
+                pr_s = f"{pr:.2f}" if isinstance(pr, float) and np.isfinite(pr) else "n/a(no cache)"
+                sizes = json.loads(result["fold_sizes"])
+                size_s = f"{np.mean(sizes):.1f}±{np.std(sizes):.1f}" if sizes else "0"
                 logger.info(
                     f"  {result['strong_model']}>{result['weak_model']} "
                     f"active={result['n_active']} paired={result['n_paired']} "
                     f"folds={result['n_folds']}{' (LOO)' if result['loo'] else ''} | "
-                    f"honest OOF gc={result['honest_oof_gc']:.2f}"
-                    f"±{result['oof_gc_fold_std']:.2f} vs "
-                    f"circular={circ_s} (retention {ret_s}) ({time.time()-t0:.0f}s)")
+                    f"OOF set gc={result['oof_set_gc']:.2f}±{result['oof_gc_fold_std']:.2f} "
+                    f"vs per-row self-sel={pr_s} | set size {size_s} "
+                    f"({time.time()-t0:.0f}s)")
             else:
                 logger.info(f"  status={result.get('status')} ({time.time()-t0:.0f}s)")
         except Exception as e:
