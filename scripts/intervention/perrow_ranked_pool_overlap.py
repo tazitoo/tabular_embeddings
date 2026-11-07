@@ -41,7 +41,8 @@ def _ranked_pools(model_a, model_b, dataset, matching_file, device):
     pair = f"{model_a}_vs_{model_b}"
     abl = np.load(FORWARD_ABLATION_DIR / pair / f"{dataset}.npz", allow_pickle=True)
     strong, weak = str(abl["strong_model"]), str(abl["weak_model"])
-    active = abl["optimal_k"].astype(int) > 0
+    kacc = abl["optimal_k"].astype(int)
+    active = kacc > 0
 
     imp = np.load(IMPORTANCE_DIR / strong / f"{dataset}.npz", allow_pickle=True)
     feat_idx = [int(fi) for fi in imp["feature_indices"]]       # positions -> latent ids
@@ -60,7 +61,7 @@ def _ranked_pools(model_a, model_b, dataset, matching_file, device):
                   if drops[r, i] > 0 and firing[r, feat_idx[i]] and feat_idx[i] in unmatched]
         scored.sort(key=lambda x: -x[1])
         pools.append([fi for fi, _ in scored])
-    return strong, weak, pools
+    return strong, weak, pools, kacc[active]
 
 
 def _overlap(sets):
@@ -77,21 +78,33 @@ def _overlap(sets):
 
 
 def run(model_a, model_b, dataset, matching_file, device):
-    strong, weak, pools = _ranked_pools(model_a, model_b, dataset, matching_file, device)
+    strong, weak, pools, kacc = _ranked_pools(model_a, model_b, dataset, matching_file, device)
     sizes = np.array([len(p) for p in pools])
+    n = len(pools)
     print(f"=== {model_a}_vs_{model_b} / {dataset} ===")
-    print(f"strong={strong} weak={weak}  active rows={len(pools)}")
+    print(f"strong={strong} weak={weak}  active rows={n}")
     print(f"positive-importance firing-unmatched pool size per row: "
           f"mean={sizes.mean():.1f} median={np.median(sizes):.0f} min={sizes.min()} max={sizes.max()}")
+    # Concepts ACTUALLY accepted to close each row's gap (what the paper uses).
+    kc = Counter(int(k) for k in kacc)
+    print(f"accepted k per row (concepts needed to close gc~0.99): "
+          f"mean={kacc.mean():.2f} median={np.median(kacc):.0f} max={kacc.max()}  "
+          f"dist={dict(sorted(kc.items()))}")
+    cum = {t: int((kacc <= t).sum()) for t in (1, 2, 3, 5, 10, 20)}
+    print(f"rows with accepted k<=t: " + "  ".join(f"<={t}:{c}/{n}" for t, c in cum.items()))
     print()
-    print(f"{'depth m':>8} {'topcov':>7} {'core@.5':>8} {'jaccard':>8} {'pool_used':>10}")
-    print("-" * 45)
+    # overlap-vs-depth: 'rows>=m' is how many rows' pools even reach depth m, i.e.
+    # the sample count behind that row (truncation makes deep m describe a candidate
+    # ranking, NOT the concepts rows actually use -- see accepted k above).
+    print(f"{'depth m':>8} {'rows>=m':>8} {'topcov':>7} {'core@.5':>8} {'jaccard':>8} {'pool_used':>10}")
+    print("-" * 54)
     for m in DEPTHS:
+        rows_m = int((sizes >= m).sum())
         topm = [p[:m] for p in pools]
         tc, core, jac, used = _overlap(topm)
-        print(f"{m:>8} {tc:>7.2f} {core:>8} {jac:>8.2f} {used:>10}")
+        print(f"{m:>8} {rows_m:>8} {tc:>7.2f} {core:>8} {jac:>8.2f} {used:>10}")
     tc, core, jac, used = _overlap(pools)
-    print(f"{'all':>8} {tc:>7.2f} {core:>8} {jac:>8.2f} {used:>10}")
+    print(f"{'all':>8} {n:>8} {tc:>7.2f} {core:>8} {jac:>8.2f} {used:>10}")
 
 
 def main():
