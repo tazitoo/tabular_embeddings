@@ -32,30 +32,40 @@ GC_TOLERANCE = 0.99
 
 
 def _pool(npzs):
-    """Row-pool each arm/label across datasets -> {arm: {label: vector}}."""
+    """Row-pool each arm/label across datasets -> {arm: {label: vector}}, and the
+    per-dataset medians -> {arm: {label: vector of one median per dataset}}."""
     pooled = {key: {lab: [] for lab in M_LABELS} for _, key in ARMS}
+    ds_med = {key: {lab: [] for lab in M_LABELS} for _, key in ARMS}
     gc_disk, k_disk = [], []
     for z in npzs:
         for _, key in ARMS:
             for lab in M_LABELS:
-                pooled[key][lab].append(z[f"{key}__{lab}"])
+                arr = z[f"{key}__{lab}"]
+                pooled[key][lab].append(arr)
+                ds_med[key][lab].append(float(np.median(arr)))
         gc_disk.append(z["gc_disk"])
         k_disk.append(z["k_disk"])
     pooled = {k: {lab: np.concatenate(v) for lab, v in d.items()} for k, d in pooled.items()}
-    return pooled, np.concatenate(gc_disk), np.concatenate(k_disk)
+    ds_med = {k: {lab: np.asarray(v) for lab, v in d.items()} for k, d in ds_med.items()}
+    return pooled, ds_med, np.concatenate(gc_disk), np.concatenate(k_disk)
 
 
-def _print_block(title, pooled, gc_disk, k_disk, n_ds):
+def _print_block(title, pooled, ds_med, gc_disk, k_disk, n_ds):
     n = len(gc_disk)
     hdr = "  ".join(f"{lab:>5}" for lab in M_LABELS)
     print(f"\n=== {title}   datasets={n_ds}  active rows={n} ===")
     # Per-row unclipped gc is heavy-tailed (a few rows blow up to 1e3+), so the
-    # MEDIAN is the honest central tendency; the mean is outlier-dominated.
-    print(f"UNCLIPPED gap_closed -- MEDIAN (raw moved/gap; >1 = overshoot)")
+    # MEDIAN is the honest central tendency; the mean is outlier-dominated. Report
+    # both poolings: pooled-rows (row-weighted) and per-dataset (equal dataset wt).
+    print(f"UNCLIPPED gap_closed MEDIAN -- pooled rows (row-weighted)")
     print(f"{'arm':28} {hdr}")
     print("-" * (28 + len(hdr) + 2))
     for name, key in ARMS:
         cells = "  ".join(f"{np.median(pooled[key][lab]):>5.2f}" for lab in M_LABELS)
+        print(f"{name:28} {cells}")
+    print(f"UNCLIPPED gap_closed MEDIAN -- per-dataset (median of dataset medians)")
+    for name, key in ARMS:
+        cells = "  ".join(f"{np.median(ds_med[key][lab]):>5.2f}" for lab in M_LABELS)
         print(f"{name:28} {cells}")
     print(f"clamped gap_closed (paper convention)")
     for name, key in ARMS:
@@ -85,13 +95,13 @@ def main():
         npzs = [z for z in npzs if "imp_row__1" in z]
         if not npzs:
             continue
-        pooled, gc_disk, k_disk = _pool(npzs)
-        _print_block(pdir.name, pooled, gc_disk, k_disk, len(npzs))
+        pooled, ds_med, gc_disk, k_disk = _pool(npzs)
+        _print_block(pdir.name, pooled, ds_med, gc_disk, k_disk, len(npzs))
         all_npzs.extend(npzs)
 
     if len(pair_dirs) > 1 and all_npzs:
-        pooled, gc_disk, k_disk = _pool(all_npzs)
-        _print_block("ALL PAIRS POOLED", pooled, gc_disk, k_disk, len(all_npzs))
+        pooled, ds_med, gc_disk, k_disk = _pool(all_npzs)
+        _print_block("ALL PAIRS POOLED", pooled, ds_med, gc_disk, k_disk, len(all_npzs))
 
 
 if __name__ == "__main__":

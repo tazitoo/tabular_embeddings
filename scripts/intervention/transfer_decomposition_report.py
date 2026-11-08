@@ -41,6 +41,7 @@ def _pool_arm(tag, arm):
     if not root.exists():
         return None, 0, 0
     cols = {lab: [] for lab in M_LABELS}
+    ds_med = {lab: [] for lab in M_LABELS}
     nflip, npool, nds = 0, 0, 0
     for pdir in sorted(d for d in root.iterdir() if d.is_dir()):
         for f in sorted(pdir.glob("*.npz")):
@@ -48,13 +49,16 @@ def _pool_arm(tag, arm):
             if f"{arm}__1" not in z:
                 continue
             for lab in M_LABELS:
-                cols[lab].append(z[f"{arm}__{lab}"])
+                arr = z[f"{arm}__{lab}"]
+                cols[lab].append(arr)
+                ds_med[lab].append(float(np.median(arr)))
             if "n_sign_flip" in z:
                 nflip += int(z["n_sign_flip"]); npool += int(z["n_pool_signed"])
             nds += 1
     if nds == 0:
-        return None, 0, 0
-    return {lab: np.concatenate(v) for lab, v in cols.items()}, nds, (nflip, npool)
+        return None, None, 0, 0
+    return ({lab: np.concatenate(v) for lab, v in cols.items()},
+            {lab: np.asarray(v) for lab, v in ds_med.items()}, nds, (nflip, npool))
 
 
 def _greedy_disk(root):
@@ -105,28 +109,32 @@ def main():
     ]
     pooled = []
     for name, tag, arm in cells:
-        cols, nds, flip = _pool_arm(tag, arm)
-        pooled.append((name, cols, nds, flip))
+        cols, ds_med, nds, flip = _pool_arm(tag, arm)
+        pooled.append((name, cols, ds_med, nds, flip))
 
-    n_rows = next((len(c[list(c)[0]]) for _, c, _, _ in pooled if c), 0)
-    print(f"\n=== TRANSFER DECOMPOSITION  (pooled, UNCLIPPED gc toward strong, MEDIAN) ===")
+    print(f"\n=== TRANSFER DECOMPOSITION  (UNCLIPPED gc toward strong, MEDIAN) ===")
+    print(f"MEDIAN -- pooled rows (row-weighted)")
     print(f"{'cell':34} {hdr}")
     print("-" * (34 + len(hdr) + 2))
-    for name, cols, nds, flip in pooled:
+    for name, cols, ds_med, nds, flip in pooled:
         if cols is None:
             print(f"{name:34} (not on disk yet)")
         else:
             print(_row(name, cols) + f"   [{nds} ds]")
+    print(f"\nMEDIAN -- per-dataset (median of dataset medians, equal dataset weight)")
+    for name, cols, ds_med, nds, flip in pooled:
+        if ds_med is not None:
+            print(f"{name:34} " + "  ".join(f"{np.median(ds_med[lab]):>6.2f}" for lab in M_LABELS))
     print(f"\nfrac of rows moved TOWARD W (gc<0)")
-    for name, cols, nds, flip in pooled:
+    for name, cols, ds_med, nds, flip in pooled:
         if cols is not None:
             print(_fracW(name, cols))
     print(f"\nclamped gap_closed (paper convention)")
-    for name, cols, nds, flip in pooled:
+    for name, cols, ds_med, nds, flip in pooled:
         if cols is not None:
             print(_clamped(name, cols))
     print(f"\nper-dataset sign flips (how often the natural map sign was wrong)")
-    for name, cols, nds, flip in pooled:
+    for name, cols, ds_med, nds, flip in pooled:
         if cols is not None and flip and flip[1]:
             print(f"{name:34} {flip[0]}/{flip[1]} = {flip[0]/flip[1]:.2f}")
 
