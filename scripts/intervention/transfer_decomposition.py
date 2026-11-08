@@ -74,6 +74,11 @@ OUTPUT_DIR = Path(str(FORWARD_ABLATION_DIR)).parent / "transfer_decomposition"
 RANDOM_MATCHING_FILE = RESULTS_DIR / "sae_feature_matching_mnn_t0.001_random.json"
 MIN_COSINE = 0.0        # filter_landmarks threshold (matches transfer_sweep default)
 MAP_VARIANTS = ("ridge", "shuffled", "procrustes", "random_orth", "schnaus")
+SKIP_RECIPIENTS = {"mitra"}   # weak models whose forwards are intractable here
+
+
+class _SkipDataset(Exception):
+    """Dataset intentionally skipped (not an error) -- e.g. intractable recipient."""
 
 
 # ── map builders: each returns M (d_weak x d_strong) mapping strong atoms -> weak ──
@@ -162,6 +167,13 @@ def setup(model_a, model_b, dataset, device, matching_file, importance_dir,
     metric_b, _ = compute_importance_metric(y_query, preds_b, task)
     strong, weak = (model_a, model_b) if metric_a >= metric_b else (model_b, model_a)
     imp_s = imp_a if strong == model_a else imp_b
+
+    # Mitra as RECIPIENT is intractable here: on 24 GB it OOM-retries every
+    # inference (reducing its support set), and the none-curve path fires
+    # thousands of forwards per dataset (vs the on-disk greedy's handful). Skip
+    # these datasets; the greedy T1/T6 references for them stay on disk.
+    if weak in SKIP_RECIPIENTS:
+        raise _SkipDataset(f"recipient={weak} intractable (OOM-retry forwards)")
 
     # strong -> weak transfer: inject strong's concepts into the WEAK model.
     splits = json.loads(SPLITS_PATH.read_text())
@@ -426,8 +438,12 @@ def _none_curve(ctx, active_rows, ranked_for_row):
 def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
         importance_dir, sae_dir, variant):
     t0 = time.time()
-    ctx = setup(model_a, model_b, dataset, device, matching_file, importance_dir,
-                sae_dir, variant)
+    try:
+        ctx = setup(model_a, model_b, dataset, device, matching_file, importance_dir,
+                    sae_dir, variant)
+    except _SkipDataset as e:
+        print(f"  {dataset}: SKIP ({e})")
+        return
     swins = _swins(ctx)
     active_rows = np.where(swins)[0]
     if len(active_rows) == 0:
