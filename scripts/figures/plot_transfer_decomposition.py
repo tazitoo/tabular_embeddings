@@ -83,7 +83,11 @@ def main():
     p.add_argument("--out", type=Path, default=OUTPUT_PATH)
     args = p.parse_args()
 
-    fig, ax = plt.subplots(figsize=(4.2, 3.8), constrained_layout=True)
+    # median+IQR gc on top, frac toward W (gc<0) strip below (shared log-x)
+    fig, (ax, axs) = plt.subplots(
+        2, 1, figsize=(4.2, 4.6), sharex=True,
+        gridspec_kw=dict(height_ratios=[3.4, 1.0], hspace=0.08),
+        constrained_layout=True)
     meanU = None
     n_ds = 0
     for label, tag, arm, color, ls, mk in CURVES:
@@ -92,40 +96,53 @@ def main():
             continue
         meanU = float(U.mean())
         n_ds = max(n_ds, len(U))
-        xs = list(M_GRID) + [meanU]
-        ys = [cols[lab].mean() for lab in M_LABELS]
-        ax.plot(xs, ys, color=color, linestyle=ls, marker=mk, markersize=4,
+        xs = np.array(list(M_GRID) + [meanU])
+        med = np.array([np.median(cols[lab]) for lab in M_LABELS])
+        p25 = np.array([np.percentile(cols[lab], 25) for lab in M_LABELS])
+        p75 = np.array([np.percentile(cols[lab], 75) for lab in M_LABELS])
+        fneg = np.array([float((cols[lab] < 0).mean()) for lab in M_LABELS])
+        if ls == "-":                       # IQR band only on the solid primary arms
+            ax.fill_between(xs, p25, p75, color=color, alpha=0.13, linewidth=0)
+        ax.plot(xs, med, color=color, linestyle=ls, marker=mk, markersize=4,
                 linewidth=1.5, label=label)
+        axs.plot(xs, fneg, color=color, linestyle=ls, marker=mk, markersize=3,
+                 linewidth=1.2)
     if meanU is None:
         print(f"No transfer npz under {TD_DIR} yet.")
         return
 
     gc, k = _greedy_disk()
     if gc is not None:
-        ax.axhline(gc.mean(), color=GREEDY_COLOR, linewidth=1.3,
+        ax.axhline(np.median(gc), color=GREEDY_COLOR, linewidth=1.3,
                    label="T1 greedy ridge (on disk)")
         ax.axvline(np.median(k), color=GREEDY_COLOR, linewidth=0.9,
                    linestyle=":", alpha=0.6, ymax=0.06)
 
     ax.axhline(0.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.4)
+    ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.3)
     ax.set_xscale("log")
     if args.yscale == "symlog":
         ax.set_yscale("symlog", linthresh=1.0)
-    ax.set_xticks(list(M_GRID) + [meanU])
-    ax.set_xticklabels([str(m) for m in M_GRID] + [f"|U|\n≈{meanU:.0f}"], fontsize=8)
-    ax.set_xlabel("concepts injected  (top-m, no search)", fontsize=9)
-    ax.set_ylabel("gap closed toward strong (unclipped)", fontsize=9)
+    ax.set_ylabel("gap closed -> strong (median, IQR)", fontsize=9)
     ax.tick_params(labelsize=8)
     ax.legend(fontsize=6.5, loc="best", framealpha=0.9)
-    ax.set_title(f"transfer  (map varies; dataset-sign none arms)\n{n_ds} datasets",
-                 fontsize=9)
+    ax.set_title(f"transfer  (map varies; dataset-sign none arms)\n"
+                 f"{n_ds} datasets  (mitra-recipient excluded)", fontsize=9)
+
+    axs.axhline(0.5, color="black", linewidth=0.5, linestyle=(0, (1, 3)), alpha=0.3)
+    axs.set_ylim(0, 1)
+    axs.set_ylabel("frac toward W\n(gc<0)", fontsize=8)
+    axs.set_xticks(list(M_GRID) + [meanU])
+    axs.set_xticklabels([str(m) for m in M_GRID] + [f"|U|\n≈{meanU:.0f}"], fontsize=8)
+    axs.set_xlabel("concepts injected  (top-m, no search)", fontsize=9)
+    axs.tick_params(labelsize=8)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, bbox_inches="tight", dpi=300)
     fig.savefig(args.out.with_suffix(".png"), bbox_inches="tight", dpi=150)
     print(f"wrote {args.out}  ({n_ds} datasets)")
     if gc is not None:
-        print(f"T1 greedy ridge: gc={gc.mean():.3f}  median k={np.median(k):.0f}")
+        print(f"T1 greedy ridge: median gc={np.median(gc):.3f}  median k={np.median(k):.0f}")
 
 
 if __name__ == "__main__":
