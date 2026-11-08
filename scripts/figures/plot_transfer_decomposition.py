@@ -45,10 +45,14 @@ GREEDY_COLOR = "#000000"
 
 
 def _pool(tag, arm):
+    """Per-DATASET aggregation: each dataset contributes its median gc and its
+    frac(rows<0) per m. Returns ({lab: per-dataset medians}, {lab: per-dataset
+    frac(<0)}, per-dataset |U|)."""
     root = TD_DIR / tag
     if not root.exists():
-        return None, None
-    cols = {lab: [] for lab in M_LABELS}
+        return None, None, None
+    med = {lab: [] for lab in M_LABELS}
+    frac = {lab: [] for lab in M_LABELS}
     U = []
     for pdir in sorted(d for d in root.iterdir() if d.is_dir()):
         for f in sorted(pdir.glob("*.npz")):
@@ -56,11 +60,14 @@ def _pool(tag, arm):
             if f"{arm}__1" not in z:
                 continue
             for lab in M_LABELS:
-                cols[lab].append(z[f"{arm}__{lab}"])
-            U.append(np.full(len(z[f"{arm}__1"]), len(z["uni_pool_ds"])))
+                a = z[f"{arm}__{lab}"]
+                med[lab].append(float(np.median(a)))
+                frac[lab].append(float((a < 0).mean()))
+            U.append(len(z["uni_pool_ds"]))
     if not U:
-        return None, None
-    return {lab: np.concatenate(v) for lab, v in cols.items()}, np.concatenate(U)
+        return None, None, None
+    return ({lab: np.asarray(v) for lab, v in med.items()},
+            {lab: np.asarray(v) for lab, v in frac.items()}, np.asarray(U))
 
 
 def _greedy_disk():
@@ -74,10 +81,11 @@ def _greedy_disk():
                 continue
             kk = z["optimal_k"].astype(int); act = kk > 0
             if act.sum():
-                gc.append(z["gap_closed"][act]); k.append(kk[act])
+                gc.append(float(np.median(z["gap_closed"][act])))
+                k.append(float(np.median(kk[act])))
     if not gc:
         return None, None
-    return np.concatenate(gc), np.concatenate(k)
+    return np.asarray(gc), np.asarray(k)
 
 
 def main():
@@ -94,23 +102,19 @@ def main():
     meanU = None
     n_ds = 0
     for label, tag, arm, color, ls, mk in CURVES:
-        cols, U = _pool(tag, arm)
-        if cols is None:
+        med_d, frac_d, U = _pool(tag, arm)
+        if med_d is None:
             continue
         meanU = float(U.mean())
         n_ds = max(n_ds, len(U))
         xs = np.array(list(M_GRID) + [meanU])
-        med = np.array([np.median(cols[lab]) for lab in M_LABELS])
-        p25 = np.array([np.percentile(cols[lab], 25) for lab in M_LABELS])
-        p75 = np.array([np.percentile(cols[lab], 75) for lab in M_LABELS])
-        fneg = np.array([float((cols[lab] < 0).mean()) for lab in M_LABELS])
-        # Per-row transfer gc is heavy-tailed; a solid IQR block muddies. Trace it
-        # instead with a very light fill + thin p25/p75 edge lines, and only on the
-        # two solid primary arms (M1 ridge, T2) to keep the panel clean.
-        if ls == "-":
-            ax.fill_between(xs, p25, p75, color=color, alpha=0.06, linewidth=0)
-            ax.plot(xs, p25, color=color, linewidth=0.7, alpha=0.4)
-            ax.plot(xs, p75, color=color, linewidth=0.7, alpha=0.4)
+        med = np.array([np.median(med_d[lab]) for lab in M_LABELS])
+        p25 = np.array([np.percentile(med_d[lab], 25) for lab in M_LABELS])
+        p75 = np.array([np.percentile(med_d[lab], 75) for lab in M_LABELS])
+        fneg = np.array([float(frac_d[lab].mean()) for lab in M_LABELS])
+        # No band here: even per-dataset, the transfer IQR is tight at small m but
+        # blows out at large m (ridge |U| ~[-2.6,+2.0]), so a band fills the panel.
+        # Median lines carry the map comparison; the per-dataset IQR is in the table.
         ax.plot(xs, med, color=color, linestyle=ls, marker=mk, markersize=4,
                 linewidth=1.5, label=label)
         axs.plot(xs, fneg, color=color, linestyle=ls, marker=mk, markersize=3,
@@ -127,13 +131,12 @@ def main():
                    linestyle=":", alpha=0.5)   # full-height median-k guide
 
     ax.set_xscale("log")
-    # symlog so the p25/p75 edges (~[-6,+2.6]) fit while linscale gives the [-1,1]
-    # band (where the medians and greedy ref live) room to read.
-    from matplotlib.ticker import SymmetricalLogLocator
-    ax.set_yscale("symlog", linthresh=1.0, linscale=1.1)
-    ax.set_ylim(-2.5, 2.5)
-    ax.yaxis.set_minor_locator(SymmetricalLogLocator(
-        base=10.0, linthresh=1.0, subs=[2, 3, 4, 5, 6, 7, 8, 9]))
+    # per-dataset medians sit in ~[0, 0.7] with the greedy ref at 1.0; tight linear
+    # y keeps the map comparison and its (now tight) IQR bands crisp.
+    from matplotlib.ticker import MultipleLocator
+    ax.set_ylim(-0.35, 1.35)
+    ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
+    ax.yaxis.set_minor_locator(MultipleLocator(0.125))
     ax.tick_params(axis="y", which="minor", length=2.5)
     ax.set_ylabel("gap closed", fontsize=9)
     ax.tick_params(labelsize=8)

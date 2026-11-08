@@ -67,41 +67,41 @@ def _load(pdir):
 
 
 def _collect(root, pairs):
-    """Row-pool every arm/label across all datasets/pairs under root.
+    """Per-DATASET aggregation: for every arm/label, each dataset contributes its
+    own median gc and its own frac(rows<0). Each dataset is one data point (equal
+    weight), so the curve/IQR aren't dominated by large datasets or per-row tails.
 
-    Returns dict: key -> {label -> pooled per-row vector}, plus pooled greedy
-    arrays (uni_row_*) and the per-row |U| (each active row tagged with its
-    dataset's filtered-pool size)."""
+    Returns dict: key -> {label -> array of per-dataset medians}, a matching
+    per-dataset frac(<0), per-dataset |U|, and per-dataset greedy medians."""
     pair_dirs = sorted(d for d in root.iterdir() if d.is_dir()) if root.exists() else []
     if pairs:
         pair_dirs = [d for d in pair_dirs if d.name in pairs]
-    pooled = {key: {lab: [] for lab in M_LABELS} for _, key, _, _ in ARMS}
-    uni_row_gc, uni_row_k, per_row_U = [], [], []
-    n_ds = 0
+    med = {key: {lab: [] for lab in M_LABELS} for _, key, _, _ in ARMS}
+    frac = {key: {lab: [] for lab in M_LABELS} for _, key, _, _ in ARMS}
+    U, uni_gc_med, uni_k_med = [], [], []
     for pdir in pair_dirs:
         for z in _load(pdir):
-            n_ds += 1
             for _, key, _, _ in ARMS:
                 for lab in M_LABELS:
-                    pooled[key][lab].append(z[f"{key}__{lab}"])
-            nrows = len(z["imp_row__1"])
-            per_row_U.append(np.full(nrows, len(z["uni_pool_ds"])))
+                    a = z[f"{key}__{lab}"]
+                    med[key][lab].append(float(np.median(a)))
+                    frac[key][lab].append(float((a < 0).mean()))
+            U.append(len(z["uni_pool_ds"]))
             if "uni_row_gc" in z:
-                uni_row_gc.append(z["uni_row_gc"])
-                uni_row_k.append(z["uni_row_k"])
-    if n_ds == 0:
+                uni_gc_med.append(float(np.median(z["uni_row_gc"])))
+                uni_k_med.append(float(np.median(z["uni_row_k"])))
+    if not U:
         return None
-    pooled = {k: {lab: np.concatenate(v) for lab, v in d.items()} for k, d in pooled.items()}
+    arr = lambda d: {k: {lab: np.asarray(v) for lab, v in dd.items()} for k, dd in d.items()}
     return dict(
-        pooled=pooled, n_ds=n_ds,
-        per_row_U=np.concatenate(per_row_U),
-        uni_row_gc=np.concatenate(uni_row_gc) if uni_row_gc else None,
-        uni_row_k=np.concatenate(uni_row_k) if uni_row_k else None,
+        med=arr(med), frac=arr(frac), n_ds=len(U), U=np.asarray(U),
+        uni_gc_med=np.asarray(uni_gc_med) if uni_gc_med else None,
+        uni_k_med=np.asarray(uni_k_med) if uni_k_med else None,
     )
 
 
 def _greedy_disk(root, pairs):
-    """Pool the on-disk greedy paper arm (clamped gap_closed, optimal_k)."""
+    """Per-dataset medians of the on-disk greedy paper arm (clamped gc, optimal_k)."""
     pair_dirs = sorted(d for d in root.iterdir() if d.is_dir()) if root.exists() else []
     if pairs:
         pair_dirs = [d for d in pair_dirs if d.name in pairs]
@@ -115,27 +115,27 @@ def _greedy_disk(root, pairs):
             act = kk > 0
             if act.sum() == 0:
                 continue
-            gc.append(z["gap_closed"][act])
-            k.append(kk[act])
+            gc.append(float(np.median(z["gap_closed"][act])))
+            k.append(float(np.median(kk[act])))
     if not gc:
         return None, None
-    return np.concatenate(gc), np.concatenate(k)
+    return np.asarray(gc), np.asarray(k)
 
 
 def _stats(data, key):
-    """Per-m x positions + pooled per-row MEDIAN / p25 / p75 / frac(gc<0).
+    """Per-m x positions + per-DATASET MEDIAN / p25 / p75 / frac(gc<0).
 
-    The per-row unclipped gc is heavy-tailed -- a few rows blow up to 1e3-1e5 and
-    wreck the mean -- so the median + IQR is the honest central tendency, and
-    frac(gc<0) is the share of rows the intervention moved the WRONG way (away
-    from the target)."""
-    pooled = data["pooled"][key]
-    meanU = float(data["per_row_U"].mean())
+    Each dataset contributes its own median gc; the curve is the median across
+    the ~696 dataset medians and the band their 25/75 (equal dataset weight, not
+    row-weighted). The strip is the dataset-mean frac of rows moved the WRONG way."""
+    med_d = data["med"][key]        # {lab: per-dataset medians}
+    frac_d = data["frac"][key]      # {lab: per-dataset frac(<0)}
+    meanU = float(data["U"].mean())
     xs = np.array(list(M_GRID) + [meanU])
-    med = np.array([np.median(pooled[lab]) for lab in M_LABELS])
-    p25 = np.array([np.percentile(pooled[lab], 25) for lab in M_LABELS])
-    p75 = np.array([np.percentile(pooled[lab], 75) for lab in M_LABELS])
-    fneg = np.array([float((pooled[lab] < 0).mean()) for lab in M_LABELS])
+    med = np.array([np.median(med_d[lab]) for lab in M_LABELS])
+    p25 = np.array([np.percentile(med_d[lab], 25) for lab in M_LABELS])
+    p75 = np.array([np.percentile(med_d[lab], 75) for lab in M_LABELS])
+    fneg = np.array([float(frac_d[lab].mean()) for lab in M_LABELS])
     return xs, med, p25, p75, fneg, meanU
 
 
@@ -184,10 +184,10 @@ def main():
         ax.axhline(np.median(pg_gc), color=PAPER_GREEDY_COLOR, linewidth=1.3,
                    label="paper greedy (imp,row)")
         kmarks.append((np.median(pg_k), PAPER_GREEDY_COLOR))
-    if trained["uni_row_gc"] is not None:
-        ax.axhline(np.median(trained["uni_row_gc"]), color=UNI_GREEDY_COLOR,
+    if trained["uni_gc_med"] is not None:
+        ax.axhline(np.median(trained["uni_gc_med"]), color=UNI_GREEDY_COLOR,
                    linewidth=1.3, linestyle="-.", label="uniform, row, greedy")
-        kmarks.append((np.median(trained["uni_row_k"]), UNI_GREEDY_COLOR))
+        kmarks.append((np.median(trained["uni_k_med"]), UNI_GREEDY_COLOR))
     if rg_gc is not None:
         ax.axhline(np.median(rg_gc), color=RANDOM_GREEDY_COLOR, linewidth=1.3,
                    linestyle=":", label="random-SAE greedy")
@@ -218,7 +218,7 @@ def main():
               ncol=3, columnspacing=1.1, handletextpad=0.4, framealpha=0.9)
 
     # ── frac(gc<0) strip ──
-    meanU = float(trained["per_row_U"].mean())
+    meanU = float(trained["U"].mean())
     axs.set_ylim(0, 0.5)
     axs.set_ylabel("frac. wrong\ndirection", fontsize=8)
     axs.set_xticks(list(M_GRID) + [meanU])
