@@ -130,6 +130,8 @@ def main():
         ax.tick_params(axis="y", which="minor", length=2.5)
     ax.set_ylabel("gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
+    ax.text(0.015, 0.97, "b) transfer", transform=ax.transAxes, ha="left",
+            va="top", fontsize=10, fontweight="bold")
     # legend above the panel in a few rows (title/counts/caveats go in the caption:
     # map varies, dataset-sign none arms, mitra-recipient datasets excluded)
     ax.legend(fontsize=6.0, loc="lower center", bbox_to_anchor=(0.5, 1.01),

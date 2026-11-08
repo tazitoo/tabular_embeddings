@@ -212,6 +212,8 @@ def main():
     ax.set_ylabel("gap closed", fontsize=9)
     ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.4)
     ax.tick_params(labelsize=8)
+    ax.text(0.015, 0.97, "a) ablation", transform=ax.transAxes, ha="left",
+            va="top", fontsize=10, fontweight="bold")
     # legend above the panel in a few rows (title/counts live in the caption)
     ax.legend(fontsize=6.0, loc="lower center", bbox_to_anchor=(0.5, 1.01),
               ncol=3, columnspacing=1.1, handletextpad=0.4, framealpha=0.9)
