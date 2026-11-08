@@ -101,8 +101,9 @@ def main():
         p25 = np.array([np.percentile(cols[lab], 25) for lab in M_LABELS])
         p75 = np.array([np.percentile(cols[lab], 75) for lab in M_LABELS])
         fneg = np.array([float((cols[lab] < 0).mean()) for lab in M_LABELS])
-        if ls == "-":                       # IQR band only on the solid primary arms
-            ax.fill_between(xs, p25, p75, color=color, alpha=0.13, linewidth=0)
+        # No IQR band here: per-row transfer gc is so heavy-tailed (|U| IQR ~
+        # [-6, +2.6], p90~33) that bands clip into blocks and muddy the medians.
+        # The median lines carry the map comparison; the frac strip carries spread.
         ax.plot(xs, med, color=color, linestyle=ls, marker=mk, markersize=4,
                 linewidth=1.5, label=label)
         axs.plot(xs, fneg, color=color, linestyle=ls, marker=mk, markersize=3,
@@ -121,13 +122,13 @@ def main():
     ax.axhline(0.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.4)
     ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.3)
     ax.set_xscale("log")
-    if args.yscale == "symlog":
-        from matplotlib.ticker import SymmetricalLogLocator
-        ax.set_yscale("symlog", linthresh=1.0, linscale=0.9)
-        ax.set_ylim(-1.0, 120)
-        ax.yaxis.set_minor_locator(SymmetricalLogLocator(
-            base=10.0, linthresh=1.0, subs=[2, 3, 4, 5, 6, 7, 8, 9]))
-        ax.tick_params(axis="y", which="minor", length=2.5)
+    # transfer medians sit in ~[0, 0.65] with the greedy ref at 1.0 and no
+    # overshoot, so a tight linear y keeps the map comparison crisp.
+    ax.set_ylim(-0.35, 1.35)
+    ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
+    from matplotlib.ticker import MultipleLocator
+    ax.yaxis.set_minor_locator(MultipleLocator(0.125))
+    ax.tick_params(axis="y", which="minor", length=2.5)
     ax.set_ylabel("gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
     ax.text(0.015, 0.97, "b) transfer", transform=ax.transAxes, ha="left",
