@@ -196,8 +196,18 @@ def setup(model_a, model_b, dataset, device, matching_file, importance_dir,
 
     atoms_s = extract_decoder_atoms(sae_s).numpy()          # (n_latent_s, d_strong)
     atoms_w = extract_decoder_atoms(sae_w).numpy()          # (n_latent_w, d_weak)
-    m_pairs = get_matched_pairs(strong, weak, matching_file=matching_file)
-    unmatched = [int(c) for c in get_unmatched_features(strong, weak, matching_file=matching_file)]
+    n_ls, n_lw = atoms_s.shape[0], atoms_w.shape[0]
+    # Drop matched/unmatched ids that fall outside the loaded SAE latent ranges:
+    # some matching files carry stale concept ids from a larger pre-rebuild SAE
+    # (matching_file_provenance). Ablation only ever indexed the strong SAE, so it
+    # never tripped; transfer indexes the WEAK SAE's atoms via matched targets.
+    m_pairs = [(int(si), int(ti)) for si, ti in
+               get_matched_pairs(strong, weak, matching_file=matching_file)
+               if int(si) < n_ls and int(ti) < n_lw]
+    unmatched = [int(c) for c in
+                 get_unmatched_features(strong, weak, matching_file=matching_file)
+                 if int(c) < n_ls]
+    # feat_idx stays aligned with drops columns (same SAE as importance -> in range)
     feat_idx = [int(fi) for fi in imp_s["feature_indices"]]
 
     ctx = dict(
