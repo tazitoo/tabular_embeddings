@@ -311,11 +311,14 @@ def _row_preds(ctx, r, sets):
     return _forward(ctx, r, deltas)
 
 
-def _dataset_signs(ctx, active_rows):
+def _dataset_signs(ctx, active_rows, chunk=96):
     """Choose each concept's injection sign ONCE per dataset: the sign (+/-) whose
     single-concept injection yields higher mean gap_closed toward strong over the
     active rows where it fires. Applied uniformly to all rows -- no per-row search,
-    so the none arms match the greedy's sign freedom at dataset granularity."""
+    so the none arms match the greedy's sign freedom at dataset granularity.
+
+    Wide datasets have hundreds of firing concepts; the per-concept +/- deltas are
+    forwarded in chunks so the sequential (carte) batch and VRAM stay bounded."""
     pool = list(ctx["vatoms"].keys())
     acc = {fi: [0.0, 0.0] for fi in pool}          # [sum gc(+), sum gc(-)]
     for r in active_rows:
@@ -329,9 +332,10 @@ def _dataset_signs(ctx, active_rows):
             base = a_s * v * ctx["ds_std_w"]
             deltas.append(base); meta.append((fi, 0))
             deltas.append(-base); meta.append((fi, 1))
-        gc = _gc(ctx, r, _forward(ctx, r, torch.stack(deltas)))
-        for (fi, slot), g in zip(meta, gc):
-            acc[fi][slot] += float(g)
+        for i in range(0, len(deltas), chunk):
+            gc = _gc(ctx, r, _forward(ctx, r, torch.stack(deltas[i:i + chunk])))
+            for (fi, slot), g in zip(meta[i:i + chunk], gc):
+                acc[fi][slot] += float(g)
     return {fi: (1.0 if s_plus >= s_minus else -1.0) for fi, (s_plus, s_minus) in acc.items()}
 
 
