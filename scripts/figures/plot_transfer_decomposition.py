@@ -31,12 +31,14 @@ M_GRID = (1, 2, 5, 10, 20, 50)
 M_LABELS = [str(m) for m in M_GRID] + ["|U|"]
 
 # (label, tag, arm, color, linestyle, marker)
+# short labels (the imp/dataset selection is the same for the map arms; stated in
+# the caption) so the legend width -- and thus the axes width -- matches panel a)
 CURVES = [
-    ("M1 ridge (imp, dataset)",     "ridge",       "imp_ds",  "#0072B2", "-",  "s"),
-    ("M2 shuffled (imp, dataset)",  "shuffled",    "imp_ds",  "#0072B2", "--", "s"),
-    ("M4 random-orth (imp, dataset)","random_orth","imp_ds",  "#009E73", ":",  "^"),
-    ("T5 ridge, random dict",       "ridge_random","imp_ds",  "#999999", "--", "o"),
-    ("T2 ridge (imp, row)",         "ridge",       "imp_row", "#D55E00", "-",  "o"),
+    ("M1 ridge",       "ridge",       "imp_ds",  "#0072B2", "-",  "s"),
+    ("M2 shuffled",    "shuffled",    "imp_ds",  "#0072B2", "--", "s"),
+    ("M4 random-orth", "random_orth", "imp_ds",  "#009E73", ":",  "^"),
+    ("T5 random dict", "ridge_random","imp_ds",  "#999999", "--", "o"),
+    ("T2 ridge (row)", "ridge",       "imp_row", "#D55E00", "-",  "o"),
 ]
 GREEDY_COLOR = "#000000"
 
@@ -119,7 +121,7 @@ def main():
     gc, k = _greedy_disk()
     if gc is not None:
         ax.axhline(np.median(gc), color=GREEDY_COLOR, linewidth=1.3,
-                   label="T1 greedy ridge (on disk)")
+                   label="T1 greedy")
         ax.axvline(np.median(k), color=GREEDY_COLOR, linewidth=0.9,
                    linestyle=":", alpha=0.5)   # full-height median-k guide
 
