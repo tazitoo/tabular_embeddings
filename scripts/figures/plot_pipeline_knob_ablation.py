@@ -122,13 +122,21 @@ def _greedy_disk(root, pairs):
     return np.concatenate(gc), np.concatenate(k)
 
 
-def _curve_xy(data, key):
-    """x positions (1..50, then mean |U|) and pooled-mean unclipped gc per m."""
+def _stats(data, key):
+    """Per-m x positions + pooled per-row MEDIAN / p25 / p75 / frac(gc<0).
+
+    The per-row unclipped gc is heavy-tailed -- a few rows blow up to 1e3-1e5 and
+    wreck the mean -- so the median + IQR is the honest central tendency, and
+    frac(gc<0) is the share of rows the intervention moved the WRONG way (away
+    from the target)."""
     pooled = data["pooled"][key]
     meanU = float(data["per_row_U"].mean())
-    xs = list(M_GRID) + [meanU]
-    ys = [float(pooled[lab].mean()) for lab in M_LABELS]
-    return np.array(xs), np.array(ys), meanU
+    xs = np.array(list(M_GRID) + [meanU])
+    med = np.array([np.median(pooled[lab]) for lab in M_LABELS])
+    p25 = np.array([np.percentile(pooled[lab], 25) for lab in M_LABELS])
+    p75 = np.array([np.percentile(pooled[lab], 75) for lab in M_LABELS])
+    fneg = np.array([float((pooled[lab] < 0).mean()) for lab in M_LABELS])
+    return xs, med, p25, p75, fneg, meanU
 
 
 def main():
@@ -150,47 +158,48 @@ def main():
     pg_gc, pg_k = _greedy_disk(FORWARD_ABLATION_DIR, args.pairs)
     rg_gc, rg_k = _greedy_disk(FORWARD_ABLATION_RANDOM_DIR, args.pairs)
 
-    fig, ax = plt.subplots(figsize=(4.2, 3.8), constrained_layout=True)
+    # two stacked axes: median+IQR gc on top, frac(gc<0) strip below (shared log-x)
+    fig, (ax, axs) = plt.subplots(
+        2, 1, figsize=(4.2, 4.6), sharex=True,
+        gridspec_kw=dict(height_ratios=[3.4, 1.0], hspace=0.08),
+        constrained_layout=True)
 
-    # ── none curves: trained (solid) + random (dashed), same hue per arm ──
+    # ── none curves: MEDIAN, trained (solid, IQR band) + random (dashed) ──
     for name, key, color, marker in ARMS:
-        xs, ys, meanU = _curve_xy(trained, key)
-        ax.plot(xs, ys, color=color, marker=marker, markersize=4, linewidth=1.6,
+        xs, med, p25, p75, fneg, meanU = _stats(trained, key)
+        ax.fill_between(xs, p25, p75, color=color, alpha=0.13, linewidth=0)
+        ax.plot(xs, med, color=color, marker=marker, markersize=4, linewidth=1.6,
                 label=name)
+        axs.plot(xs, fneg, color=color, marker=marker, markersize=3, linewidth=1.3)
         if random is not None:
-            xr, yr, _ = _curve_xy(random, key)
-            ax.plot(xr, yr, color=color, marker=marker, markersize=3, linewidth=1.2,
-                    linestyle="--", alpha=0.8)
+            xr, medr, _, _, fnegr, _ = _stats(random, key)
+            ax.plot(xr, medr, color=color, marker=marker, markersize=3, linewidth=1.1,
+                    linestyle="--", alpha=0.85)
+            axs.plot(xr, fnegr, color=color, marker=marker, markersize=2.5,
+                     linewidth=1.0, linestyle="--", alpha=0.85)
 
-    # ── greedy reference lines (no m-axis) + median-k ticks on the x-axis ──
+    # ── greedy reference lines (median gc) + median-k ticks on the x-axis ──
     kmarks = []
     if pg_gc is not None:
-        ax.axhline(pg_gc.mean(), color=PAPER_GREEDY_COLOR, linewidth=1.3,
+        ax.axhline(np.median(pg_gc), color=PAPER_GREEDY_COLOR, linewidth=1.3,
                    label="paper greedy (imp,row)")
-        kmarks.append((np.median(pg_k), PAPER_GREEDY_COLOR, "paper k"))
+        kmarks.append((np.median(pg_k), PAPER_GREEDY_COLOR))
     if trained["uni_row_gc"] is not None:
-        ax.axhline(trained["uni_row_gc"].mean(), color=UNI_GREEDY_COLOR,
+        ax.axhline(np.median(trained["uni_row_gc"]), color=UNI_GREEDY_COLOR,
                    linewidth=1.3, linestyle="-.", label="uniform, row, greedy")
-        kmarks.append((np.median(trained["uni_row_k"]), UNI_GREEDY_COLOR, "uni k"))
+        kmarks.append((np.median(trained["uni_row_k"]), UNI_GREEDY_COLOR))
     if rg_gc is not None:
-        ax.axhline(rg_gc.mean(), color=RANDOM_GREEDY_COLOR, linewidth=1.3,
+        ax.axhline(np.median(rg_gc), color=RANDOM_GREEDY_COLOR, linewidth=1.3,
                    linestyle=":", label="random-SAE greedy")
-
-    # median-k markers: short vertical ticks at the bottom of the axis
-    ymin = 0 if args.yscale == "linear" else None
-    for kval, color, _ in kmarks:
+    for kval, color in kmarks:
         ax.axvline(kval, color=color, linewidth=0.9, linestyle=":", alpha=0.6, ymax=0.06)
 
     ax.set_xscale("log")
     if args.yscale != "linear":
         ax.set_yscale(args.yscale, **({"linthresh": 1.0} if args.yscale == "symlog" else {}))
         if args.yscale == "symlog":
-            ax.set_ylim(bottom=-1.0)   # pooled means are >=0; show only a sliver below 0
-    meanU = float(trained["per_row_U"].mean())
-    ax.set_xticks(list(M_GRID) + [meanU])
-    ax.set_xticklabels([str(m) for m in M_GRID] + [f"|U|\n≈{meanU:.0f}"], fontsize=8)
-    ax.set_xlabel("concepts ablated  (top-m, no search)", fontsize=9)
-    ax.set_ylabel("gap closed (unclipped)", fontsize=9)
+            ax.set_ylim(bottom=-1.0)
+    ax.set_ylabel("gap closed (median, IQR)", fontsize=9)
     ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.4)
     ax.tick_params(labelsize=8)
     ax.legend(fontsize=6.5, loc="best", framealpha=0.9)
@@ -199,6 +208,16 @@ def main():
                  + (f", random {random['n_ds']}" if random else ""),
                  fontsize=9)
 
+    # ── frac(gc<0) strip ──
+    meanU = float(trained["per_row_U"].mean())
+    axs.axhline(0.5, color="black", linewidth=0.5, linestyle=(0, (1, 3)), alpha=0.3)
+    axs.set_ylim(0, 1)
+    axs.set_ylabel("frac gc<0", fontsize=8)
+    axs.set_xticks(list(M_GRID) + [meanU])
+    axs.set_xticklabels([str(m) for m in M_GRID] + [f"|U|\n≈{meanU:.0f}"], fontsize=8)
+    axs.set_xlabel("concepts ablated  (top-m, no search)", fontsize=9)
+    axs.tick_params(labelsize=8)
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, bbox_inches="tight", dpi=300)
     fig.savefig(args.out.with_suffix(".png"), bbox_inches="tight", dpi=150)
@@ -206,7 +225,7 @@ def main():
     print(f"trained datasets={trained['n_ds']}  "
           f"random datasets={random['n_ds'] if random else 0}")
     if pg_gc is not None:
-        print(f"paper greedy: gc={pg_gc.mean():.3f}  median k={np.median(pg_k):.0f}")
+        print(f"paper greedy: median gc={np.median(pg_gc):.3f}  median k={np.median(pg_k):.0f}")
 
 
 if __name__ == "__main__":
