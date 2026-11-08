@@ -191,8 +191,10 @@ def main():
     if rg_gc is not None:
         ax.axhline(np.median(rg_gc), color=RANDOM_GREEDY_COLOR, linewidth=1.3,
                    linestyle=":", label="random-SAE greedy")
+    # median-k of each greedy arm, full-height so you can read where the search
+    # lands against the top-m none curves (importance k=2 vs uniform k=6)
     for kval, color in kmarks:
-        ax.axvline(kval, color=color, linewidth=0.9, linestyle=":", alpha=0.6, ymax=0.06)
+        ax.axvline(kval, color=color, linewidth=0.9, linestyle=":", alpha=0.5)
 
     ax.set_xscale("log")
     if args.yscale == "symlog":
