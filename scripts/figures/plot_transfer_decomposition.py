@@ -30,15 +30,15 @@ OUTPUT_PATH = PROJECT_ROOT / "output" / "figures" / "transfer_decomposition.pdf"
 M_GRID = (1, 2, 5, 10, 20, 50)
 M_LABELS = [str(m) for m in M_GRID] + ["|U|"]
 
-# (label, tag, arm, color, linestyle, marker)
-# name each arm by its distinguishing feature (map, or random dict); the two ridge
-# arms collide, so they keep the granularity that separates them (both importance
-# ordering). Short labels keep the legend/axes width matched to panel a).
+# (label, tag, arm, color, linestyle, marker). Name each arm by WHAT is random:
+# "random map" randomizes the MAP (trained concepts, random orthogonal map);
+# "random SAE" randomizes the DICTIONARY (random-init SAE, ridge map). The two
+# ridge arms keep granularity to disambiguate (both importance ordering).
 CURVES = [
     ("ridge (dataset)", "ridge",       "imp_ds",  "#0072B2", "-",  "s"),
     ("ridge shuffled",  "shuffled",    "imp_ds",  "#0072B2", "--", "D"),
-    ("random-orth",     "random_orth", "imp_ds",  "#009E73", ":",  "^"),
-    ("random dict",     "ridge_random","imp_ds",  "#999999", "--", "o"),
+    ("random map",      "random_orth", "imp_ds",  "#009E73", ":",  "^"),
+    ("random SAE",      "ridge_random","imp_ds",  "#999999", "--", "o"),
     ("ridge (row)",     "ridge",       "imp_row", "#D55E00", "-",  "o"),
 ]
 GREEDY_COLOR = "#000000"
