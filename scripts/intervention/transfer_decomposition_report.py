@@ -107,6 +107,9 @@ def main():
         ("M2  shuffled  importance,ds,none",   "shuffled",    "imp_ds"),
         ("M3  procrustes  importance,ds,none", "procrustes",  "imp_ds"),
         ("M4  random_orth  importance,ds,none","random_orth", "imp_ds"),
+        # dictionary magnitude control: paper/greedy 'natural' injection scale
+        ("N1  ridge NATURAL-scale  imp,ds",    "ridge_natural",        "imp_ds"),
+        ("N2  random-SAE NATURAL-scale imp,ds","ridge_random_natural", "imp_ds"),
     ]
     pooled = []
     for name, tag, arm in cells:
