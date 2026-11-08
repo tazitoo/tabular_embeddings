@@ -46,10 +46,12 @@ M_GRID = (1, 2, 5, 10, 20, 50)          # the fixed top-m points
 M_LABELS = [str(m) for m in M_GRID] + ["|U|"]
 
 # Okabe-Ito (colorblind-safe), one hue per none arm; trained solid, random dashed.
+# labels drop the selection field 'none' (x-axis says no search); trained SAE is
+# solid, random SAE dashed (swatch in the legend).
 ARMS = [
-    ("importance, row, none",     "imp_row", "#D55E00", "o"),   # vermillion
-    ("importance, dataset, none", "imp_ds",  "#0072B2", "s"),   # blue
-    ("uniform, dataset, none",    "uni_ds",  "#009E73", "^"),   # bluish green
+    ("importance, row",     "imp_row", "#D55E00", "o"),   # vermillion
+    ("importance, dataset", "imp_ds",  "#0072B2", "s"),   # blue
+    ("uniform, dataset",    "uni_ds",  "#009E73", "^"),   # bluish green
 ]
 PAPER_GREEDY_COLOR = "#000000"          # black  -- the paper's reported result
 UNI_GREEDY_COLOR = "#CC79A7"            # reddish purple -- uninformed search
@@ -182,7 +184,7 @@ def main():
     kmarks = []
     if pg_gc is not None:
         ax.axhline(np.median(pg_gc), color=PAPER_GREEDY_COLOR, linewidth=1.3,
-                   label="paper greedy (imp,row)")
+                   label="importance, row, greedy")
         kmarks.append((np.median(pg_k), PAPER_GREEDY_COLOR))
     if trained["uni_gc_med"] is not None:
         ax.axhline(np.median(trained["uni_gc_med"]), color=UNI_GREEDY_COLOR,
@@ -190,7 +192,7 @@ def main():
         kmarks.append((np.median(trained["uni_k_med"]), UNI_GREEDY_COLOR))
     if rg_gc is not None:
         ax.axhline(np.median(rg_gc), color=RANDOM_GREEDY_COLOR, linewidth=1.3,
-                   linestyle=":", label="random-SAE greedy")
+                   linestyle=":", label="random SAE, importance, row, greedy")
     # median-k of each greedy arm, full-height so you can read where the search
     # lands against the top-m none curves (importance k=2 vs uniform k=6)
     for kval, color in kmarks:
@@ -213,9 +215,16 @@ def main():
     ax.tick_params(labelsize=8)
     ax.text(0.015, 0.97, "a) ablation", transform=ax.transAxes, ha="left",
             va="top", fontsize=10, fontweight="bold")
-    # legend above the panel in a few rows (title/counts live in the caption)
-    ax.legend(fontsize=6.0, loc="lower center", bbox_to_anchor=(0.5, 1.01),
-              ncol=3, columnspacing=1.1, handletextpad=0.4, framealpha=0.9)
+    # legend above the panel; append solid/dashed swatches for the SAE dictionary
+    # (trained vs random) since the none arms show both and the title is in the caption
+    from matplotlib.lines import Line2D
+    handles, labels = ax.get_legend_handles_labels()
+    handles += [Line2D([0], [0], color="#444444", linestyle="-", linewidth=1.3),
+                Line2D([0], [0], color="#444444", linestyle="--", linewidth=1.3)]
+    labels += ["trained SAE", "random SAE"]
+    ax.legend(handles, labels, fontsize=6.0, loc="lower center",
+              bbox_to_anchor=(0.5, 1.01), ncol=2, columnspacing=1.1,
+              handletextpad=0.4, framealpha=0.9)
 
     # ── frac(gc<0) strip ──
     meanU = float(trained["U"].mean())
