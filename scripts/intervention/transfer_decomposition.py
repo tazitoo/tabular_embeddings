@@ -271,22 +271,58 @@ def _train_pairs(strong, weak, dataset, n_max):
 
 
 # ── transfer forward + gap_closed toward the strong model ──────────────────────
-def _row_preds(ctx, r, sets):
-    """Inject each concept set's summed mapped delta into the weak model on row r."""
-    n = len(sets)
-    deltas = []
-    for s in sets:
-        d = torch.zeros(ctx["d_weak"], dtype=torch.float32, device=ctx["ds_std_w"].device)
-        for fi in s:
-            a_s = float(ctx["h_strong"][r, fi])
-            v = torch.tensor(ctx["vatoms"][fi], device=d.device)
-            d = d + a_s * v * ctx["ds_std_w"]
-        deltas.append(d)
-    deltas = torch.stack(deltas) if deltas else torch.zeros((0, ctx["d_weak"]))
+def _forward(ctx, r, deltas):
+    """Inject each delta into the weak model on row r -> one prediction per delta."""
     X_row = ctx["X_query_w"][r:r + 1]
     if ctx["use_seq"]:
         return batched_intervention_sequential(ctx["tail_w"], X_row, deltas, query_idx=r)
     return batched_intervention(ctx["tail_w"], X_row, deltas, inject_context=False)
+
+
+def _concept_delta(ctx, r, fi):
+    """Signed raw-weak-space delta for injecting concept fi on row r.
+    The per-dataset sign (ctx['csign']) resolves the arbitrary SAE/map sign once
+    per concept -- the dataset-granularity analog of the greedy's per-row flip."""
+    a_s = float(ctx["h_strong"][r, fi])
+    v = torch.tensor(ctx["vatoms"][fi], device=ctx["ds_std_w"].device)
+    sgn = ctx.get("csign", {}).get(fi, 1.0)
+    return a_s * sgn * v * ctx["ds_std_w"]
+
+
+def _row_preds(ctx, r, sets):
+    """Inject each concept set's summed (signed) mapped delta on row r."""
+    deltas = []
+    for s in sets:
+        d = torch.zeros(ctx["d_weak"], dtype=torch.float32, device=ctx["ds_std_w"].device)
+        for fi in s:
+            d = d + _concept_delta(ctx, r, fi)
+        deltas.append(d)
+    deltas = torch.stack(deltas) if deltas else torch.zeros((0, ctx["d_weak"]))
+    return _forward(ctx, r, deltas)
+
+
+def _dataset_signs(ctx, active_rows):
+    """Choose each concept's injection sign ONCE per dataset: the sign (+/-) whose
+    single-concept injection yields higher mean gap_closed toward strong over the
+    active rows where it fires. Applied uniformly to all rows -- no per-row search,
+    so the none arms match the greedy's sign freedom at dataset granularity."""
+    pool = list(ctx["vatoms"].keys())
+    acc = {fi: [0.0, 0.0] for fi in pool}          # [sum gc(+), sum gc(-)]
+    for r in active_rows:
+        firing = [fi for fi in pool if ctx["firing"][r, fi]]
+        if not firing:
+            continue
+        deltas, meta = [], []
+        for fi in firing:
+            a_s = float(ctx["h_strong"][r, fi])
+            v = torch.tensor(ctx["vatoms"][fi], device=ctx["ds_std_w"].device)
+            base = a_s * v * ctx["ds_std_w"]
+            deltas.append(base); meta.append((fi, 0))
+            deltas.append(-base); meta.append((fi, 1))
+        gc = _gc(ctx, r, _forward(ctx, r, torch.stack(deltas)))
+        for (fi, slot), g in zip(meta, gc):
+            acc[fi][slot] += float(g)
+    return {fi: (1.0 if s_plus >= s_minus else -1.0) for fi, (s_plus, s_minus) in acc.items()}
 
 
 def _gc(ctx, r, preds):
@@ -373,6 +409,10 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
         return
     n = len(active_rows)
 
+    # resolve each concept's injection sign once per dataset (see _dataset_signs)
+    ctx["csign"] = _dataset_signs(ctx, active_rows)
+    n_flip = sum(1 for s in ctx["csign"].values() if s < 0)
+
     imp_row = _none_curve(ctx, active_rows, lambda r: _ranked_imp_row(ctx, r))
     ranked_ds = _ranked_imp_dataset(ctx, swins)
     imp_ds = _none_curve(ctx, active_rows, lambda r, L=ranked_ds: L)
@@ -387,8 +427,8 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
     rmean = lambda a: float(np.mean(a))
     if quiet:
         print(f"  {dataset:28.28} {ctx['strong']:8.8}->{ctx['weak']:8.8} n={n:>4} "
-              f"|U|={len(uni_pool_ds):>4} map={variant:11.11}  UNCLIP@m=1 "
-              f"imp_row={rmean(imp_row['1']):6.2f} imp_ds={rmean(imp_ds['1']):6.2f} "
+              f"|U|={len(uni_pool_ds):>4} flip={n_flip}/{len(ctx['csign'])} map={variant:9.9}  "
+              f"UNCLIP@m=1 imp_row={rmean(imp_row['1']):6.2f} imp_ds={rmean(imp_ds['1']):6.2f} "
               f"uni_ds={rmean(uni_ds['1']):6.2f}  [{time.time()-t0:.0f}s]")
     else:
         _report(dataset, ctx, imp_row, imp_ds, uni_ds, n, variant, t0)
@@ -396,6 +436,7 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
     out_dir.mkdir(parents=True, exist_ok=True)
     save = dict(strong=ctx["strong"], weak=ctx["weak"], dataset=dataset, map=variant,
                 active_rows=active_rows, map_info=json.dumps(ctx["map_info"]),
+                n_sign_flip=n_flip, n_pool_signed=len(ctx["csign"]),
                 uni_pool_ds=np.asarray(uni_pool_ds), m_labels=np.asarray(M_LABELS))
     for lab in M_LABELS:
         save[f"imp_row__{lab}"] = imp_row[lab]
