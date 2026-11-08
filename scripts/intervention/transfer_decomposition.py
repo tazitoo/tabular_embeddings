@@ -311,17 +311,22 @@ def _row_preds(ctx, r, sets):
     return _forward(ctx, r, deltas)
 
 
-def _dataset_signs(ctx, active_rows, chunk=96):
+def _dataset_signs(ctx, active_rows, chunk=96, max_rows=24):
     """Choose each concept's injection sign ONCE per dataset: the sign (+/-) whose
     single-concept injection yields higher mean gap_closed toward strong over the
     active rows where it fires. Applied uniformly to all rows -- no per-row search,
     so the none arms match the greedy's sign freedom at dataset granularity.
 
-    Wide datasets have hundreds of firing concepts; the per-concept +/- deltas are
-    forwarded in chunks so the sequential (carte) batch and VRAM stay bounded."""
+    The sign is a dataset-level majority vote, so it is estimated from a bounded
+    sample of active rows (it would otherwise cost 2*n_firing forwards per row,
+    which blows up on wide datasets with hundreds of firing concepts). The +/-
+    deltas within a row are forwarded in chunks to bound the sequential (carte)
+    batch and VRAM."""
     pool = list(ctx["vatoms"].keys())
     acc = {fi: [0.0, 0.0] for fi in pool}          # [sum gc(+), sum gc(-)]
-    for r in active_rows:
+    sign_rows = (np.random.RandomState(7).choice(active_rows, max_rows, replace=False)
+                 if len(active_rows) > max_rows else active_rows)
+    for r in sign_rows:
         firing = [fi for fi in pool if ctx["firing"][r, fi]]
         if not firing:
             continue
