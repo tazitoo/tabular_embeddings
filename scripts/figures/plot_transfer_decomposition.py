@@ -126,8 +126,6 @@ def main():
         ax.axvline(np.median(k), color=GREEDY_COLOR, linewidth=0.9,
                    linestyle=":", alpha=0.5)   # full-height median-k guide
 
-    ax.axhline(0.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.4)
-    ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.3)
     ax.set_xscale("log")
     # symlog so the p25/p75 edges (~[-6,+2.6]) fit while linscale gives the [-1,1]
     # band (where the medians and greedy ref live) room to read.
