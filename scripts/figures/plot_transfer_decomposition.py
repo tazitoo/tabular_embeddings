@@ -101,9 +101,13 @@ def main():
         p25 = np.array([np.percentile(cols[lab], 25) for lab in M_LABELS])
         p75 = np.array([np.percentile(cols[lab], 75) for lab in M_LABELS])
         fneg = np.array([float((cols[lab] < 0).mean()) for lab in M_LABELS])
-        # No IQR band here: per-row transfer gc is so heavy-tailed (|U| IQR ~
-        # [-6, +2.6], p90~33) that bands clip into blocks and muddy the medians.
-        # The median lines carry the map comparison; the frac strip carries spread.
+        # Per-row transfer gc is heavy-tailed; a solid IQR block muddies. Trace it
+        # instead with a very light fill + thin p25/p75 edge lines, and only on the
+        # two solid primary arms (M1 ridge, T2) to keep the panel clean.
+        if ls == "-":
+            ax.fill_between(xs, p25, p75, color=color, alpha=0.06, linewidth=0)
+            ax.plot(xs, p25, color=color, linewidth=0.7, alpha=0.4)
+            ax.plot(xs, p75, color=color, linewidth=0.7, alpha=0.4)
         ax.plot(xs, med, color=color, linestyle=ls, marker=mk, markersize=4,
                 linewidth=1.5, label=label)
         axs.plot(xs, fneg, color=color, linestyle=ls, marker=mk, markersize=3,
@@ -122,12 +126,13 @@ def main():
     ax.axhline(0.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.4)
     ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.3)
     ax.set_xscale("log")
-    # transfer medians sit in ~[0, 0.65] with the greedy ref at 1.0 and no
-    # overshoot, so a tight linear y keeps the map comparison crisp.
-    ax.set_ylim(-0.35, 1.35)
-    ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
-    from matplotlib.ticker import MultipleLocator
-    ax.yaxis.set_minor_locator(MultipleLocator(0.125))
+    # symlog so the p25/p75 edges (~[-6,+2.6]) fit while linscale gives the [-1,1]
+    # band (where the medians and greedy ref live) room to read.
+    from matplotlib.ticker import SymmetricalLogLocator
+    ax.set_yscale("symlog", linthresh=1.0, linscale=1.1)
+    ax.set_ylim(-2.5, 2.5)
+    ax.yaxis.set_minor_locator(SymmetricalLogLocator(
+        base=10.0, linthresh=1.0, subs=[2, 3, 4, 5, 6, 7, 8, 9]))
     ax.tick_params(axis="y", which="minor", length=2.5)
     ax.set_ylabel("gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
