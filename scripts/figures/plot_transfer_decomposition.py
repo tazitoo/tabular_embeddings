@@ -130,7 +130,7 @@ def main():
     gc, k = _greedy_disk()
     if gc is not None:
         ax.axhline(np.median(gc), color=GREEDY_COLOR, linewidth=1.3,
-                   label="greedy (on disk)")
+                   label="greedy")
         ax.axvline(np.median(k), color=GREEDY_COLOR, linewidth=0.9,
                    linestyle=":", alpha=0.5)   # full-height median-k guide
 
