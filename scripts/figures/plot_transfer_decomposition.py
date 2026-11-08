@@ -112,9 +112,13 @@ def main():
         p25 = np.array([np.percentile(med_d[lab], 25) for lab in M_LABELS])
         p75 = np.array([np.percentile(med_d[lab], 75) for lab in M_LABELS])
         fneg = np.array([float(frac_d[lab].mean()) for lab in M_LABELS])
-        # No band here: even per-dataset, the transfer IQR is tight at small m but
-        # blows out at large m (ridge |U| ~[-2.6,+2.0]), so a band fills the panel.
-        # Median lines carry the map comparison; the per-dataset IQR is in the table.
+        # IQR band (light fill + thin p25/p75 edge lines) on the two solid primary
+        # arms. The band is tight at small m and fans out hard at large m -- that
+        # blow-out is the point: across datasets the map's effect diverges wildly.
+        if ls == "-":
+            ax.fill_between(xs, p25, p75, color=color, alpha=0.10, linewidth=0)
+            ax.plot(xs, p25, color=color, linewidth=0.7, alpha=0.4)
+            ax.plot(xs, p75, color=color, linewidth=0.7, alpha=0.4)
         ax.plot(xs, med, color=color, linestyle=ls, marker=mk, markersize=4,
                 linewidth=1.5, label=label)
         axs.plot(xs, fneg, color=color, linestyle=ls, marker=mk, markersize=3,
@@ -131,12 +135,12 @@ def main():
                    linestyle=":", alpha=0.5)   # full-height median-k guide
 
     ax.set_xscale("log")
-    # per-dataset medians sit in ~[0, 0.7] with the greedy ref at 1.0; tight linear
-    # y keeps the map comparison and its (now tight) IQR bands crisp.
+    # medians sit in ~[0, 0.75] (greedy ref at 1.0) but the IQR fans out to ~[-3,
+    # +2] at large m; show that range so the blow-out is visible, not clipped.
     from matplotlib.ticker import MultipleLocator
-    ax.set_ylim(-0.35, 1.35)
-    ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
-    ax.yaxis.set_minor_locator(MultipleLocator(0.125))
+    ax.set_ylim(-3.2, 2.5)
+    ax.set_yticks([-3, -2, -1, 0, 1, 2])
+    ax.yaxis.set_minor_locator(MultipleLocator(0.5))
     ax.tick_params(axis="y", which="minor", length=2.5)
     ax.set_ylabel("gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
