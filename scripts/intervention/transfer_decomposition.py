@@ -137,22 +137,32 @@ def build_map(variant, ctx):
     raise ValueError(f"unknown map variant {variant}")
 
 
-def virtual_atoms(ctx, M):
-    """{unmatched fi -> UNIT direction in normalized weak space} = normalize(M @ atom_s).
-    Unit-normalizing removes each map's scale so the arms are comparable (and the
-    injection magnitude is governed by the SAE activation a_s and weak std only)."""
+def virtual_atoms(ctx, M, scale="unit"):
+    """{unmatched fi -> direction in normalized weak space} = normalize(M @ atom_s),
+    scaled per `scale`:
+      'unit'    : unit direction (map scale removed) -- comparable across MAP arms.
+      'natural' : the paper/greedy scaling -- unit_dir * ||atom_s|| * median matched
+                  (weak/strong) norm ratio. Preserves the DICTIONARY's own injection
+                  magnitude (trained vs random SAE), for the norm/magnitude control.
+    Injection magnitude is then this * the SAE activation a_s * weak std."""
+    nr = float(ctx.get("median_norm_ratio", 1.0))
     out = {}
     for fi in ctx["unmatched"]:
-        v = M @ ctx["atoms_s"][fi]
+        a = ctx["atoms_s"][fi]
+        v = M @ a
         n = np.linalg.norm(v)
-        if n > 1e-8:
-            out[fi] = (v / n).astype(np.float32)
+        if n <= 1e-8:
+            continue
+        u = v / n
+        if scale == "natural":
+            u = u * float(np.linalg.norm(a)) * nr
+        out[fi] = u.astype(np.float32)
     return out
 
 
 # ── setup (mirrors transfer_sweep_symmetric's per-dataset setup) ────────────────
 def setup(model_a, model_b, dataset, device, matching_file, importance_dir,
-          sae_dir, variant):
+          sae_dir, variant, scale="unit"):
     imp_a = np.load(importance_dir / model_a / f"{dataset}.npz", allow_pickle=True)
     imp_b = np.load(importance_dir / model_b / f"{dataset}.npz", allow_pickle=True)
     preds_a = _widen_binary(imp_a["baseline_preds"])
@@ -234,12 +244,21 @@ def setup(model_a, model_b, dataset, device, matching_file, importance_dir,
         drops=imp_s["row_feature_drops"],
         d_strong=atoms_s.shape[1], d_weak=atoms_w.shape[1],
     )
+    # matched-concept (weak/strong) norm ratio -- the paper/greedy injection scale
+    # (used only for scale='natural'); computed from this SAE's matched landmarks.
+    _fs, _ft, _, _ = filter_landmarks(atoms_s[[si for si, _ in m_pairs]],
+                                      atoms_w[[ti for _, ti in m_pairs]], m_pairs,
+                                      min_cosine=MIN_COSINE)
+    _sn = np.linalg.norm(_fs, axis=1); _tn = np.linalg.norm(_ft, axis=1)
+    _ok = (_sn > 1e-8) & (_tn > 1e-8)
+    ctx["median_norm_ratio"] = float(np.median(_tn[_ok] / _sn[_ok])) if _ok.sum() else 1.0
+
     # paired SAE-training embeddings (<=500) for geometry maps; scored rows excluded
     if variant in ("procrustes", "schnaus"):
         ctx["train_emb_s"], ctx["train_emb_w"] = _train_pairs(strong, weak, dataset, 500)
 
     M, info = build_map(variant, ctx)
-    ctx["vatoms"] = virtual_atoms(ctx, M)
+    ctx["vatoms"] = virtual_atoms(ctx, M, scale=scale)
     # restrict unmatched to those with a usable mapped direction AND importance
     ctx["unmatched"] = [u for u in ctx["unmatched"] if u in ctx["vatoms"]]
     ctx["map_info"] = info
@@ -439,11 +458,11 @@ def _none_curve(ctx, active_rows, ranked_for_row):
 
 # ── driver ─────────────────────────────────────────────────────────────────────
 def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
-        importance_dir, sae_dir, variant):
+        importance_dir, sae_dir, variant, scale="unit"):
     t0 = time.time()
     try:
         ctx = setup(model_a, model_b, dataset, device, matching_file, importance_dir,
-                    sae_dir, variant)
+                    sae_dir, variant, scale=scale)
     except _SkipDataset as e:
         print(f"  {dataset}: SKIP ({e})")
         return
@@ -513,6 +532,10 @@ def main():
     p.add_argument("--matching-file", type=Path, default=None)
     p.add_argument("--random", action="store_true",
                    help="random-init SAE dictionary (T5/T6 control)")
+    p.add_argument("--scale", choices=["unit", "natural"], default="unit",
+                   help="injection scale: unit (map comparison) or natural "
+                        "(paper/greedy: atom_norm x matched weak/strong ratio) for "
+                        "the dictionary magnitude control")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--output-dir", type=Path, default=None)
@@ -524,7 +547,7 @@ def main():
     sae_dir = random_sae_dir() if args.random else DEFAULT_SAE_DIR
     matching_file = args.matching_file or (RANDOM_MATCHING_FILE if args.random
                                            else DEFAULT_MATCHING_FILE)
-    tag = args.map + ("_random" if args.random else "")
+    tag = args.map + ("_random" if args.random else "") + ("_natural" if args.scale == "natural" else "")
     out_dir = (args.output_dir or (OUTPUT_DIR / tag)) / pair
 
     if args.datasets:
@@ -538,7 +561,7 @@ def main():
             continue
         try:
             run(model_a, model_b, ds, args.device, args.seeds, matching_file,
-                args.quiet, out_dir, importance_dir, sae_dir, args.map)
+                args.quiet, out_dir, importance_dir, sae_dir, args.map, scale=args.scale)
         except Exception as e:
             logger.error(f"[{i+1}/{len(datasets)}] FAIL {ds}: {e}")
             import traceback; traceback.print_exc()
