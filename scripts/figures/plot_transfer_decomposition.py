@@ -38,7 +38,7 @@ CURVES = [
     ("ridge (dataset)", "ridge",       "imp_ds",  "#0072B2", "-",  "s"),
     ("ridge shuffled",  "shuffled",    "imp_ds",  "#0072B2", "--", "D"),
     ("random map",      "random_orth", "imp_ds",  "#009E73", ":",  "^"),
-    ("random SAE",      "ridge_random","imp_ds",  "#999999", "--", "o"),
+    ("random SAE, ridge","ridge_random","imp_ds",  "#999999", "--", "o"),
     ("ridge (row)",     "ridge",       "imp_row", "#D55E00", "-",  "o"),
 ]
 GREEDY_COLOR = "#000000"
