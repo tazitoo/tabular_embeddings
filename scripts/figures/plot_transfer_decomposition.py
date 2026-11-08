@@ -129,8 +129,7 @@ def main():
     ax.set_title(f"transfer  (map varies; dataset-sign none arms)\n"
                  f"{n_ds} datasets  (mitra-recipient excluded)", fontsize=9)
 
-    axs.axhline(0.5, color="black", linewidth=0.5, linestyle=(0, (1, 3)), alpha=0.3)
-    axs.set_ylim(0, 1)
+    axs.set_ylim(0, 0.5)
     axs.set_ylabel("frac toward W\n(gc<0)", fontsize=8)
     axs.set_xticks(list(M_GRID) + [meanU])
     axs.set_xticklabels([str(m) for m in M_GRID] + [f"|U|\n≈{meanU:.0f}"], fontsize=8)

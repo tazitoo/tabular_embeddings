@@ -210,8 +210,7 @@ def main():
 
     # ── frac(gc<0) strip ──
     meanU = float(trained["per_row_U"].mean())
-    axs.axhline(0.5, color="black", linewidth=0.5, linestyle=(0, (1, 3)), alpha=0.3)
-    axs.set_ylim(0, 1)
+    axs.set_ylim(0, 0.5)
     axs.set_ylabel("frac gc<0", fontsize=8)
     axs.set_xticks(list(M_GRID) + [meanU])
     axs.set_xticklabels([str(m) for m in M_GRID] + [f"|U|\n≈{meanU:.0f}"], fontsize=8)
