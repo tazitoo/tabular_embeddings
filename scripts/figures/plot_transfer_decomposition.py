@@ -36,7 +36,7 @@ M_LABELS = [str(m) for m in M_GRID] + ["|U|"]
 # ordering). Short labels keep the legend/axes width matched to panel a).
 CURVES = [
     ("ridge (dataset)", "ridge",       "imp_ds",  "#0072B2", "-",  "s"),
-    ("shuffled",        "shuffled",    "imp_ds",  "#0072B2", "--", "s"),
+    ("ridge shuffled",  "shuffled",    "imp_ds",  "#0072B2", "--", "s"),
     ("random-orth",     "random_orth", "imp_ds",  "#009E73", ":",  "^"),
     ("random dict",     "ridge_random","imp_ds",  "#999999", "--", "o"),
     ("ridge (row)",     "ridge",       "imp_row", "#D55E00", "-",  "o"),
