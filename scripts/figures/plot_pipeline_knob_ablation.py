@@ -199,7 +199,7 @@ def main():
         ax.set_yscale(args.yscale, **({"linthresh": 1.0} if args.yscale == "symlog" else {}))
         if args.yscale == "symlog":
             ax.set_ylim(bottom=-1.0)
-    ax.set_ylabel("gap closed (median, IQR)", fontsize=9)
+    ax.set_ylabel("percentage gap closed", fontsize=9)
     ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.4)
     ax.tick_params(labelsize=8)
     ax.legend(fontsize=6.5, loc="best", framealpha=0.9)
@@ -211,7 +211,7 @@ def main():
     # ── frac(gc<0) strip ──
     meanU = float(trained["per_row_U"].mean())
     axs.set_ylim(0, 0.5)
-    axs.set_ylabel("frac gc<0", fontsize=8)
+    axs.set_ylabel("frac. wrong\ndirection", fontsize=8)
     axs.set_xticks(list(M_GRID) + [meanU])
     axs.set_xticklabels([str(m) for m in M_GRID] + [f"|U|\n≈{meanU:.0f}"], fontsize=8)
     axs.set_xlabel("concepts ablated  (top-m, no search)", fontsize=9)

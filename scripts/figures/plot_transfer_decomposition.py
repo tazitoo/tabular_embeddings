@@ -123,14 +123,14 @@ def main():
     ax.set_xscale("log")
     if args.yscale == "symlog":
         ax.set_yscale("symlog", linthresh=1.0)
-    ax.set_ylabel("gap closed -> strong (median, IQR)", fontsize=9)
+    ax.set_ylabel("percentage gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
     ax.legend(fontsize=6.5, loc="best", framealpha=0.9)
     ax.set_title(f"transfer  (map varies; dataset-sign none arms)\n"
                  f"{n_ds} datasets  (mitra-recipient excluded)", fontsize=9)
 
     axs.set_ylim(0, 0.5)
-    axs.set_ylabel("frac toward W\n(gc<0)", fontsize=8)
+    axs.set_ylabel("frac. wrong\ndirection", fontsize=8)
     axs.set_xticks(list(M_GRID) + [meanU])
     axs.set_xticklabels([str(m) for m in M_GRID] + [f"|U|\n≈{meanU:.0f}"], fontsize=8)
     axs.set_xlabel("concepts injected  (top-m, no search)", fontsize=9)
