@@ -311,19 +311,26 @@ def _row_preds(ctx, r, sets):
     return _forward(ctx, r, deltas)
 
 
-def _dataset_signs(ctx, active_rows, chunk=96, max_rows=24):
+def _dataset_signs(ctx, active_rows, chunk=96, max_rows=24, max_concepts=128):
     """Choose each concept's injection sign ONCE per dataset: the sign (+/-) whose
     single-concept injection yields higher mean gap_closed toward strong over the
     active rows where it fires. Applied uniformly to all rows -- no per-row search,
     so the none arms match the greedy's sign freedom at dataset granularity.
 
-    The sign is a dataset-level majority vote, so it is estimated from a bounded
-    sample of active rows (it would otherwise cost 2*n_firing forwards per row,
-    which blows up on wide datasets with hundreds of firing concepts). The +/-
-    deltas within a row are forwarded in chunks to bound the sequential (carte)
-    batch and VRAM."""
-    pool = list(ctx["vatoms"].keys())
+    The sign is a dataset-level majority vote, estimated from a bounded sample of
+    rows AND only for the top-max_concepts concepts by importance -- otherwise it
+    costs 2*n_firing forwards per row, which wedges mitra-weak pairs (~1300
+    unmatched, with mitra OOM-retrying each forward). Deep-tail concepts (reached
+    only at the |U| endpoint) default to +sign. The +/- deltas within a row are
+    forwarded in chunks to bound the sequential (carte) batch and VRAM."""
+    # rank the mapped pool by dataset-mean importance; the none curves only reach
+    # the top concepts at m<=50, so signs past max_concepts don't move those points.
+    pos = {fi: i for i, fi in enumerate(ctx["feat_idx"])}
+    mean_drop = ctx["drops"][active_rows].mean(axis=0)
+    pool = sorted(ctx["vatoms"].keys(),
+                  key=lambda fi: -(mean_drop[pos[fi]] if fi in pos else 0.0))[:max_concepts]
     acc = {fi: [0.0, 0.0] for fi in pool}          # [sum gc(+), sum gc(-)]
+    pool_set = set(pool)
     sign_rows = (np.random.RandomState(7).choice(active_rows, max_rows, replace=False)
                  if len(active_rows) > max_rows else active_rows)
     for r in sign_rows:
