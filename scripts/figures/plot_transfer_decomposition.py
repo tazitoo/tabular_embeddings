@@ -138,9 +138,9 @@ def main():
     # medians sit in ~[0, 0.75] (greedy ref at 1.0) but the IQR fans out to ~[-3,
     # +2] at large m; show that range so the blow-out is visible, not clipped.
     from matplotlib.ticker import MultipleLocator
-    ax.set_ylim(-3.2, 2.5)
-    ax.set_yticks([-3, -2, -1, 0, 1, 2])
-    ax.yaxis.set_minor_locator(MultipleLocator(0.5))
+    ax.set_ylim(-1.5, 1.5)   # medians get room; the IQR fan-out clips at the edges
+    ax.set_yticks([-1, 0, 1])
+    ax.yaxis.set_minor_locator(MultipleLocator(0.25))
     ax.tick_params(axis="y", which="minor", length=2.5)
     ax.set_ylabel("gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
