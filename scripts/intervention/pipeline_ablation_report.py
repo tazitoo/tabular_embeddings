@@ -49,11 +49,13 @@ def _print_block(title, pooled, gc_disk, k_disk, n_ds):
     n = len(gc_disk)
     hdr = "  ".join(f"{lab:>5}" for lab in M_LABELS)
     print(f"\n=== {title}   datasets={n_ds}  active rows={n} ===")
-    print(f"UNCLIPPED gap_closed (raw moved/gap; >1 = overshoot)")
+    # Per-row unclipped gc is heavy-tailed (a few rows blow up to 1e3+), so the
+    # MEDIAN is the honest central tendency; the mean is outlier-dominated.
+    print(f"UNCLIPPED gap_closed -- MEDIAN (raw moved/gap; >1 = overshoot)")
     print(f"{'arm':28} {hdr}")
     print("-" * (28 + len(hdr) + 2))
     for name, key in ARMS:
-        cells = "  ".join(f"{pooled[key][lab].mean():>5.2f}" for lab in M_LABELS)
+        cells = "  ".join(f"{np.median(pooled[key][lab]):>5.2f}" for lab in M_LABELS)
         print(f"{name:28} {cells}")
     print(f"clamped gap_closed (paper convention)")
     for name, key in ARMS:

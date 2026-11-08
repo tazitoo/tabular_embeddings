@@ -76,8 +76,14 @@ def _greedy_disk(root):
 
 
 def _row(name, cols):
-    unc = "  ".join(f"{cols[lab].mean():>6.2f}" for lab in M_LABELS)
+    # median -- per-row unclipped gc is heavy-tailed, the mean is outlier-dominated
+    unc = "  ".join(f"{np.median(cols[lab]):>6.2f}" for lab in M_LABELS)
     return f"{name:34} {unc}"
+
+
+def _fracW(name, cols):
+    f = "  ".join(f"{(cols[lab] < 0).mean():>6.2f}" for lab in M_LABELS)
+    return f"{name:34} {f}"
 
 
 def _clamped(name, cols):
@@ -103,7 +109,7 @@ def main():
         pooled.append((name, cols, nds, flip))
 
     n_rows = next((len(c[list(c)[0]]) for _, c, _, _ in pooled if c), 0)
-    print(f"\n=== TRANSFER DECOMPOSITION  (pooled, UNCLIPPED gap_closed toward strong) ===")
+    print(f"\n=== TRANSFER DECOMPOSITION  (pooled, UNCLIPPED gc toward strong, MEDIAN) ===")
     print(f"{'cell':34} {hdr}")
     print("-" * (34 + len(hdr) + 2))
     for name, cols, nds, flip in pooled:
@@ -111,6 +117,10 @@ def main():
             print(f"{name:34} (not on disk yet)")
         else:
             print(_row(name, cols) + f"   [{nds} ds]")
+    print(f"\nfrac of rows moved TOWARD W (gc<0)")
+    for name, cols, nds, flip in pooled:
+        if cols is not None:
+            print(_fracW(name, cols))
     print(f"\nclamped gap_closed (paper convention)")
     for name, cols, nds, flip in pooled:
         if cols is not None:
