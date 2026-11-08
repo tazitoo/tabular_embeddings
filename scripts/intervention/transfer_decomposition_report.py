@@ -105,6 +105,7 @@ def main():
         ("T4  ridge  uniform,ds,none",         "ridge",       "uni_ds"),
         ("T5  ridge  imp,ds,none  RANDOM-dict","ridge_random","imp_ds"),
         ("M2  shuffled  importance,ds,none",   "shuffled",    "imp_ds"),
+        ("M3  procrustes  importance,ds,none", "procrustes",  "imp_ds"),
         ("M4  random_orth  importance,ds,none","random_orth", "imp_ds"),
     ]
     pooled = []
