@@ -123,13 +123,15 @@ def main():
     ax.set_xscale("log")
     if args.yscale == "symlog":
         from matplotlib.ticker import SymmetricalLogLocator
-        ax.set_yscale("symlog", linthresh=1.0, linscale=0.35)
+        ax.set_yscale("symlog", linthresh=1.0, linscale=0.9)
+        ax.set_ylim(-1.0, 120)
         ax.yaxis.set_minor_locator(SymmetricalLogLocator(
             base=10.0, linthresh=1.0, subs=[2, 3, 4, 5, 6, 7, 8, 9]))
         ax.tick_params(axis="y", which="minor", length=2.5)
     ax.set_ylabel("percentage gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
-    ax.legend(fontsize=6.5, loc="best", framealpha=0.9)
+    ax.legend(fontsize=6.0, loc="upper left", bbox_to_anchor=(1.01, 1.0),
+              borderaxespad=0, framealpha=0.9)
     ax.set_title(f"transfer  (map varies; dataset-sign none arms)\n"
                  f"{n_ds} datasets  (mitra-recipient excluded)", fontsize=9)
 
