@@ -116,7 +116,7 @@ def main():
         ax.axhline(np.median(gc), color=GREEDY_COLOR, linewidth=1.3,
                    label="T1 greedy ridge (on disk)")
         ax.axvline(np.median(k), color=GREEDY_COLOR, linewidth=0.9,
-                   linestyle=":", alpha=0.6, ymax=0.06)
+                   linestyle=":", alpha=0.5)   # full-height median-k guide
 
     ax.axhline(0.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.4)
     ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.3)
