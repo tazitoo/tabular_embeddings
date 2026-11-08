@@ -130,10 +130,10 @@ def main():
         ax.tick_params(axis="y", which="minor", length=2.5)
     ax.set_ylabel("percentage gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
-    ax.legend(fontsize=6.0, loc="upper left", bbox_to_anchor=(1.01, 1.0),
-              borderaxespad=0, framealpha=0.9)
-    ax.set_title(f"transfer  (map varies; dataset-sign none arms)\n"
-                 f"{n_ds} datasets  (mitra-recipient excluded)", fontsize=9)
+    # legend above the panel in a few rows (title/counts/caveats go in the caption:
+    # map varies, dataset-sign none arms, mitra-recipient datasets excluded)
+    ax.legend(fontsize=6.0, loc="lower center", bbox_to_anchor=(0.5, 1.01),
+              ncol=3, columnspacing=1.1, handletextpad=0.4, framealpha=0.9)
 
     axs.set_ylim(0, 0.5)
     axs.set_ylabel("frac. wrong\ndirection", fontsize=8)
