@@ -36,11 +36,11 @@ M_LABELS = [str(m) for m in M_GRID] + ["|U|"]
 # transfer mechanism: ridge map / shuffled-landmark ridge / random map / random-
 # init SAE (dictionary). Ordered as a degradation story (top -> bottom).
 CURVES = [
-    ("ridge, importance, dataset, none",      "ridge",       "imp_ds",  "#0072B2", "-",  "s"),
-    ("shuffled, importance, dataset, none",   "shuffled",    "imp_ds",  "#0072B2", "--", "D"),
-    ("random map, importance, dataset, none", "random_orth", "imp_ds",  "#009E73", ":",  "^"),
-    ("random SAE, importance, dataset, none", "ridge_random","imp_ds",  "#999999", "--", "o"),
-    ("ridge, importance, row, none",          "ridge",       "imp_row", "#D55E00", "-",  "o"),
+    ("ridge, importance, dataset",      "ridge",       "imp_ds",  "#0072B2", "-",  "s"),
+    ("shuffled, importance, dataset",   "shuffled",    "imp_ds",  "#0072B2", "--", "D"),
+    ("random map, importance, dataset", "random_orth", "imp_ds",  "#009E73", ":",  "^"),
+    ("ridge, random SAE, dataset",      "ridge_random","imp_ds",  "#999999", "--", "o"),
+    ("ridge, importance, row",          "ridge",       "imp_row", "#D55E00", "-",  "o"),
 ]
 GREEDY_COLOR = "#000000"
 
@@ -149,9 +149,9 @@ def main():
             va="top", fontsize=10, fontweight="bold")
     # legend above the panel in a few rows (title/counts/caveats go in the caption:
     # map varies, dataset-sign none arms, mitra-recipient datasets excluded)
-    # one column so the parallel tuple labels read top-down as a degradation story
+    # two columns (shorter labels, 'none' dropped -> x-axis says no search)
     ax.legend(fontsize=6.0, loc="lower center", bbox_to_anchor=(0.5, 1.01),
-              ncol=1, handletextpad=0.4, framealpha=0.9)
+              ncol=2, columnspacing=1.1, handletextpad=0.4, framealpha=0.9)
 
     axs.set_ylim(0, 0.5)
     axs.set_ylabel("frac. wrong\ndirection", fontsize=8)
