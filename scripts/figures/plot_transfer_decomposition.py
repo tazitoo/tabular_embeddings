@@ -122,7 +122,11 @@ def main():
     ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.3)
     ax.set_xscale("log")
     if args.yscale == "symlog":
-        ax.set_yscale("symlog", linthresh=1.0)
+        from matplotlib.ticker import SymmetricalLogLocator
+        ax.set_yscale("symlog", linthresh=1.0, linscale=0.35)
+        ax.yaxis.set_minor_locator(SymmetricalLogLocator(
+            base=10.0, linthresh=1.0, subs=[2, 3, 4, 5, 6, 7, 8, 9]))
+        ax.tick_params(axis="y", which="minor", length=2.5)
     ax.set_ylabel("percentage gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
     ax.legend(fontsize=6.5, loc="best", framealpha=0.9)

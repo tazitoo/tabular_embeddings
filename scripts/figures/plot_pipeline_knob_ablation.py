@@ -195,10 +195,17 @@ def main():
         ax.axvline(kval, color=color, linewidth=0.9, linestyle=":", alpha=0.6, ymax=0.06)
 
     ax.set_xscale("log")
-    if args.yscale != "linear":
-        ax.set_yscale(args.yscale, **({"linthresh": 1.0} if args.yscale == "symlog" else {}))
-        if args.yscale == "symlog":
-            ax.set_ylim(bottom=-1.0)
+    if args.yscale == "symlog":
+        # linscale<1 shrinks the [-1,1] linear band (little data there); minor
+        # subticks mark 2..9 in each log decade.
+        from matplotlib.ticker import SymmetricalLogLocator
+        ax.set_yscale("symlog", linthresh=1.0, linscale=0.35)
+        ax.set_ylim(-1.0, 120)
+        ax.yaxis.set_minor_locator(SymmetricalLogLocator(
+            base=10.0, linthresh=1.0, subs=[2, 3, 4, 5, 6, 7, 8, 9]))
+        ax.tick_params(axis="y", which="minor", length=2.5)
+    elif args.yscale == "log":
+        ax.set_yscale("log")
     ax.set_ylabel("percentage gap closed", fontsize=9)
     ax.axhline(1.0, color="black", linewidth=0.6, linestyle=(0, (1, 3)), alpha=0.4)
     ax.tick_params(labelsize=8)
