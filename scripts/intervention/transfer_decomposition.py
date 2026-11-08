@@ -286,7 +286,10 @@ def _train_pairs(strong, weak, dataset, n_max):
             pair_s.append(k); pair_w.append(pos_w[int(r)])
             if len(pair_s) >= n_max:
                 break
-    if len(pair_s) < 10:
+    # need enough ALIGNED rows for a usable d_strong x d_weak Procrustes map;
+    # aligned pairs give ~500, misaligned (tabdpt, partial datasets) far fewer ->
+    # skip those datasets for the geometry maps.
+    if len(pair_s) < 100:
         raise RuntimeError(f"too few paired SAE-training rows ({len(pair_s)}) "
                            f"for {strong}/{weak} on {dataset}")
     return Es[pair_s].astype(np.float32), Ew[pair_w].astype(np.float32)
