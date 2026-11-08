@@ -225,18 +225,49 @@ def setup(model_a, model_b, dataset, device, matching_file, importance_dir,
 
 
 def _train_pairs(strong, weak, dataset, n_max):
-    """Normalized SAE-training embeddings for strong & weak on the same rows."""
+    """Normalized SAE-TRAINING embeddings for strong & weak on this dataset's rows.
+
+    The corpus is one (N, d) `embeddings` array sliced per dataset via
+    `source_datasets`/`samples_per_dataset`; `norm_stats` carries per-dataset
+    means/stds. Only carte/tabdpt have a training corpus on disk, so geometry
+    maps (procrustes/schnaus) are only available for pairs of those models;
+    otherwise this raises and the dataset is skipped for that map."""
     def _load(model):
-        z = np.load(sae_training_dir() / f"{model}_taskaware_sae_training.npz",
-                    allow_pickle=True)
+        p = sae_training_dir() / f"{model}_taskaware_sae_training.npz"
+        if not p.exists():
+            raise RuntimeError(f"no SAE-training corpus for {model} "
+                               f"(procrustes/schnaus need it)")
+        z = np.load(p, allow_pickle=True)
+        spd = z["samples_per_dataset"]                      # structured (dataset, count)
+        names = [str(d) for d in spd["dataset"]]
+        counts = np.asarray(spd["count"], dtype=int)
+        if dataset not in names:
+            raise RuntimeError(f"{dataset} not in {model} SAE-training corpus")
+        offs = np.concatenate([[0], np.cumsum(counts)])
+        i = names.index(dataset)
+        sl = slice(offs[i], offs[i + 1])
+        emb = z["embeddings"][sl]
+        ridx = np.asarray(z["row_indices"])[sl]             # original dataset row ids
         ns = np.load(sae_training_dir() / f"{model}_taskaware_norm_stats.npz",
                      allow_pickle=True)
-        emb = z[dataset] if dataset in z.files else z["embeddings"]
-        mean, std = ns[dataset] if dataset in ns.files else (ns["mean"], ns["std"])
-        return (emb - mean) / std
-    Xs, Xw = _load(strong), _load(weak)
-    n = min(len(Xs), len(Xw), n_max)
-    return Xs[:n].astype(np.float32), Xw[:n].astype(np.float32)
+        nds = [str(x) for x in ns["datasets"]]
+        j = nds.index(dataset)
+        emb = (emb - np.asarray(ns["means"])[j]) / np.asarray(ns["stds"])[j]
+        return emb, ridx
+    Es, rs = _load(strong)
+    Ew, rw = _load(weak)
+    # pair rows by shared original row id (keep strong's order), cap at n_max
+    pos_w = {int(r): k for k, r in enumerate(rw)}
+    pair_s, pair_w = [], []
+    for k, r in enumerate(rs):
+        if int(r) in pos_w:
+            pair_s.append(k); pair_w.append(pos_w[int(r)])
+            if len(pair_s) >= n_max:
+                break
+    if len(pair_s) < 10:
+        raise RuntimeError(f"too few paired SAE-training rows ({len(pair_s)}) "
+                           f"for {strong}/{weak} on {dataset}")
+    return Es[pair_s].astype(np.float32), Ew[pair_w].astype(np.float32)
 
 
 # ── transfer forward + gap_closed toward the strong model ──────────────────────
