@@ -30,16 +30,17 @@ OUTPUT_PATH = PROJECT_ROOT / "output" / "figures" / "transfer_decomposition.pdf"
 M_GRID = (1, 2, 5, 10, 20, 50)
 M_LABELS = [str(m) for m in M_GRID] + ["|U|"]
 
-# (label, tag, arm, color, linestyle, marker). Name each arm by WHAT is random:
-# "random map" randomizes the MAP (trained concepts, random orthogonal map);
-# "random SAE" randomizes the DICTIONARY (random-init SAE, ridge map). The two
-# ridge arms keep granularity to disambiguate (both importance ordering).
+# (label, tag, arm, color, linestyle, marker). Labels parallel the ablation panel
+# ("importance, dataset, none") with the transfer MECHANISM prepended:
+# "<mechanism>, <ordering>, <granularity>, <selection>". First field = the concept-
+# transfer mechanism: ridge map / shuffled-landmark ridge / random map / random-
+# init SAE (dictionary). Ordered as a degradation story (top -> bottom).
 CURVES = [
-    ("ridge (dataset)", "ridge",       "imp_ds",  "#0072B2", "-",  "s"),
-    ("ridge shuffled",  "shuffled",    "imp_ds",  "#0072B2", "--", "D"),
-    ("random map",      "random_orth", "imp_ds",  "#009E73", ":",  "^"),
-    ("random SAE, ridge","ridge_random","imp_ds",  "#999999", "--", "o"),
-    ("ridge (row)",     "ridge",       "imp_row", "#D55E00", "-",  "o"),
+    ("ridge, importance, dataset, none",      "ridge",       "imp_ds",  "#0072B2", "-",  "s"),
+    ("shuffled, importance, dataset, none",   "shuffled",    "imp_ds",  "#0072B2", "--", "D"),
+    ("random map, importance, dataset, none", "random_orth", "imp_ds",  "#009E73", ":",  "^"),
+    ("random SAE, importance, dataset, none", "ridge_random","imp_ds",  "#999999", "--", "o"),
+    ("ridge, importance, row, none",          "ridge",       "imp_row", "#D55E00", "-",  "o"),
 ]
 GREEDY_COLOR = "#000000"
 
@@ -130,7 +131,7 @@ def main():
     gc, k = _greedy_disk()
     if gc is not None:
         ax.axhline(np.median(gc), color=GREEDY_COLOR, linewidth=1.3,
-                   label="greedy")
+                   label="ridge, importance, row, greedy")
         ax.axvline(np.median(k), color=GREEDY_COLOR, linewidth=0.9,
                    linestyle=":", alpha=0.5)   # full-height median-k guide
 
@@ -148,8 +149,9 @@ def main():
             va="top", fontsize=10, fontweight="bold")
     # legend above the panel in a few rows (title/counts/caveats go in the caption:
     # map varies, dataset-sign none arms, mitra-recipient datasets excluded)
+    # one column so the parallel tuple labels read top-down as a degradation story
     ax.legend(fontsize=6.0, loc="lower center", bbox_to_anchor=(0.5, 1.01),
-              ncol=3, columnspacing=1.1, handletextpad=0.4, framealpha=0.9)
+              ncol=1, handletextpad=0.4, framealpha=0.9)
 
     axs.set_ylim(0, 0.5)
     axs.set_ylabel("frac. wrong\ndirection", fontsize=8)
