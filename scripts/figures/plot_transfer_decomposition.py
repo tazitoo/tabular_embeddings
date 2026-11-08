@@ -128,7 +128,7 @@ def main():
         ax.yaxis.set_minor_locator(SymmetricalLogLocator(
             base=10.0, linthresh=1.0, subs=[2, 3, 4, 5, 6, 7, 8, 9]))
         ax.tick_params(axis="y", which="minor", length=2.5)
-    ax.set_ylabel("percentage gap closed", fontsize=9)
+    ax.set_ylabel("gap closed", fontsize=9)
     ax.tick_params(labelsize=8)
     # legend above the panel in a few rows (title/counts/caveats go in the caption:
     # map varies, dataset-sign none arms, mitra-recipient datasets excluded)
