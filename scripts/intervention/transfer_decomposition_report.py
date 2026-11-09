@@ -110,6 +110,13 @@ def main():
         # dictionary magnitude control: paper/greedy 'natural' injection scale
         ("N1  ridge NATURAL-scale  imp,ds",    "ridge_natural",        "imp_ds"),
         ("N2  random-SAE NATURAL-scale imp,ds","ridge_random_natural", "imp_ds"),
+        # matched vs unmatched concepts
+        ("P1  UNMATCHED via map   imp,row",    "ridge",         "imp_row"),
+        ("P2  UNMATCHED via map   imp,ds",     "ridge",         "imp_ds"),
+        ("P3  MATCHED via map     imp,row",    "ridge_matched", "imp_row"),
+        ("P4  MATCHED via map     imp,ds",     "ridge_matched", "imp_ds"),
+        ("P5  MATCHED via W-decoder imp,row",  "matched_wdec",  "imp_row"),
+        ("P6  MATCHED via W-decoder imp,ds",   "matched_wdec",  "imp_ds"),
     ]
     pooled = []
     for name, tag, arm in cells:
