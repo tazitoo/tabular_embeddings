@@ -97,32 +97,27 @@ def _arm_dirs(ctx, arm):
     return {fi: v.astype(np.float64) for fi, v in virtual_atoms(ctx, M, pool=pool).items()}
 
 
-def main():
-    p = argparse.ArgumentParser(description="On/off-manifold of transfer-arm directions")
-    p.add_argument("--random", action="store_true", help="random-init SAE dictionary")
-    p.add_argument("--pairs", nargs="+", default=None)
-    p.add_argument("--var-threshold", type=float, default=0.90)
-    args = p.parse_args()
-
-    sae_dir = random_sae_dir() if args.random else DEFAULT_SAE_DIR
-    matching_file = RANDOM_MATCHING_FILE if args.random else DEFAULT_MATCHING_FILE
-    importance_dir = IMPORTANCE_RANDOM_DIR if args.random else IMPORTANCE_DIR
+def collect(random=False, var_threshold=0.90, pairs=None, verbose=False):
+    """Per-arm off-manifold fractions of the injected directions. Returns
+    (offs, offs_top, offs_recip, n_pairs): pooled-all, pooled top-20-by-importance,
+    and per-recipient top-20 (recipient's own basis). Shared by main() and the
+    manifold table generator."""
+    import glob
+    from collections import defaultdict
+    sae_dir = random_sae_dir() if random else DEFAULT_SAE_DIR
+    matching_file = RANDOM_MATCHING_FILE if random else DEFAULT_MATCHING_FILE
+    importance_dir = IMPORTANCE_RANDOM_DIR if random else IMPORTANCE_DIR
 
     pair_dirs = sorted(d.name for d in Path(str(FORWARD_ABLATION_DIR)).iterdir() if d.is_dir())
-    if args.pairs:
-        pair_dirs = [d for d in pair_dirs if d in args.pairs]
+    if pairs:
+        pair_dirs = [d for d in pair_dirs if d in pairs]
 
     emb_cache, norm_cache = {}, {}
-    # pooled off fractions per arm: all concepts, and top-20 by donor importance
     offs = {a: [] for a in ARMS}
     offs_top = {a: [] for a in ARMS}
-    # per-recipient top-20 off (the manifold is the recipient's own basis; pooling
-    # across recipients of different intrinsic dim mixes bases -- subspace_by_recipient)
-    from collections import defaultdict
     offs_recip = defaultdict(lambda: {a: [] for a in ARMS})
     n_pairs = 0
     for pair in pair_dirs:
-        import glob
         fs = sorted(glob.glob(str(FORWARD_ABLATION_DIR / pair / "*.npz")))
         if not fs:
             continue
@@ -133,13 +128,15 @@ def main():
             ctx["median_norm_ratio"] = 1.0
             std_w_all = load_norm(weak)
         except Exception as e:
-            print(f"{pair:28} SKIP ({str(e)[:50]})"); continue
+            if verbose:
+                print(f"{pair:28} SKIP ({str(e)[:50]})")
+            continue
         dirs = {a: _arm_dirs(ctx, a) for a in ARMS}
         datasets = sorted(Path(f).stem for f in fs)
         used = 0
         for ds in datasets:
             try:
-                E = get_E(weak, ds, emb_cache, norm_cache, args.var_threshold)
+                E = get_E(weak, ds, emb_cache, norm_cache, var_threshold)
                 _, std_w = std_w_all[ds]
             except Exception:
                 continue
@@ -161,8 +158,21 @@ def main():
             used += 1
         if used:
             n_pairs += 1
-            print(f"{pair:28} {strong}->{weak}  {used} ds  "
-                  f"(|unmatched|={len(dirs['unmatched'])} |matched|={len(dirs['matched_wdec'])})")
+            if verbose:
+                print(f"{pair:28} {strong}->{weak}  {used} ds  "
+                      f"(|unmatched|={len(dirs['unmatched'])} |matched|={len(dirs['matched_wdec'])})")
+    return offs, offs_top, offs_recip, n_pairs
+
+
+def main():
+    p = argparse.ArgumentParser(description="On/off-manifold of transfer-arm directions")
+    p.add_argument("--random", action="store_true", help="random-init SAE dictionary")
+    p.add_argument("--pairs", nargs="+", default=None)
+    p.add_argument("--var-threshold", type=float, default=0.90)
+    args = p.parse_args()
+
+    offs, offs_top, offs_recip, n_pairs = collect(
+        args.random, args.var_threshold, args.pairs, verbose=True)
 
     print(f"\n=== OFF-MANIFOLD FRACTION of injected directions ({'RANDOM' if args.random else 'TRAINED'} dict) ===")
     print(f"E = top-k PCA of recipient RAW embeddings @ {args.var_threshold:.0%} variance; "
