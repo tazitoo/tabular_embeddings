@@ -488,8 +488,26 @@ def _none_curve(ctx, active_rows, ranked_for_row):
 
 
 # ── driver ─────────────────────────────────────────────────────────────────────
+def _deployed_delta(ctx, active_rows, ranked_ds, m):
+    """The SUMMED injection actually added to the weak model per active row at menu
+    size m (imp,dataset ordering) -- the deployed-delta analog of the greedy's
+    deployed_delta, in RAW weak space. _concept_delta already returns raw-space
+    deltas (normalized-space dir * std_w), with per-dataset signs for the map arms
+    and W's own usage for matched_wdec. Rows whose top-m concepts don't fire give a
+    zero vector and are dropped by the downstream norm filter."""
+    sel = ranked_ds[:m]
+    out = np.zeros((len(active_rows), ctx["d_weak"]), dtype=np.float32)
+    for k, r in enumerate(active_rows):
+        d = torch.zeros(ctx["d_weak"], dtype=torch.float32, device=ctx["ds_std_w"].device)
+        for fi in sel:
+            if ctx["firing"][r, fi] if ctx.get("arm") != "matched_wdec" else True:
+                d = d + _concept_delta(ctx, r, fi)
+        out[k] = d.cpu().numpy()
+    return out
+
+
 def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
-        importance_dir, sae_dir, variant, scale="unit", arm="unmatched"):
+        importance_dir, sae_dir, variant, scale="unit", arm="unmatched", dump_m=None):
     t0 = time.time()
     try:
         ctx = setup(model_a, model_b, dataset, device, matching_file, importance_dir,
@@ -511,6 +529,21 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
     else:
         ctx["csign"] = _dataset_signs(ctx, active_rows)
     n_flip = sum(1 for s in ctx["csign"].values() if s < 0)
+
+    # deployed-delta dump: the summed injection the model actually saw at menu m
+    # (imp,dataset). Reuses the exact signs; skips the none-curve forwards entirely.
+    if dump_m is not None:
+        ranked_ds = _ranked_imp_dataset(ctx, swins)
+        dd = _deployed_delta(ctx, active_rows, ranked_ds, dump_m)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(out_dir / f"{dataset}.npz",
+                            deployed_delta=dd, strong_model=ctx["strong"],
+                            weak_model=ctx["weak"], dataset=dataset, menu_m=dump_m,
+                            active_rows=active_rows, n_sign_flip=n_flip,
+                            n_pool_signed=len(ctx["csign"]))
+        print(f"  {dataset:28.28} {ctx['strong']:8.8}->{ctx['weak']:8.8} n={n:>4} "
+              f"m={dump_m} dumped deployed_delta {dd.shape}  [{time.time()-t0:.0f}s]")
+        return
 
     imp_row = _none_curve(ctx, active_rows, lambda r: _ranked_imp_row(ctx, r))
     ranked_ds = _ranked_imp_dataset(ctx, swins)
@@ -577,6 +610,10 @@ def main():
                         "map (default); matched strong concepts via the SAME map "
                         "(matched_map); or matched concepts via W's OWN decoder at S's "
                         "activation level, no map (matched_wdec -- underweighting test)")
+    p.add_argument("--dump-deltas", type=int, default=None, metavar="M",
+                   help="instead of the gc curves, dump the SUMMED deployed delta at "
+                        "menu size M (imp,dataset ordering) for the deployed-delta "
+                        "subspace analysis; writes to the <tag>_deltas dir")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--output-dir", type=Path, default=None)
@@ -594,6 +631,8 @@ def main():
         tag = (args.map + ("_random" if args.random else "")
                + ("_natural" if args.scale == "natural" else "")
                + ("_matched" if args.arm == "matched_map" else ""))
+    if args.dump_deltas is not None:
+        tag += "_deltas"
     out_dir = (args.output_dir or (OUTPUT_DIR / tag)) / pair
 
     if args.datasets:
@@ -608,7 +647,7 @@ def main():
         try:
             run(model_a, model_b, ds, args.device, args.seeds, matching_file,
                 args.quiet, out_dir, importance_dir, sae_dir, args.map,
-                scale=args.scale, arm=args.arm)
+                scale=args.scale, arm=args.arm, dump_m=args.dump_deltas)
         except Exception as e:
             logger.error(f"[{i+1}/{len(datasets)}] FAIL {ds}: {e}")
             import traceback; traceback.print_exc()
