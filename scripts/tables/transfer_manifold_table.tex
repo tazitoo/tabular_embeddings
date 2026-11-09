@@ -1,0 +1,21 @@
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{l r r r r r}
+\toprule
+Transfer arm & $n$ & dir.\ off-man. & dep.\ aligned & dep.\ novel & $\Delta$ dim \\
+\midrule
+greedy (search) & 678 & --- & 0.49 & 0.51 & 6 \\
+greedy, random dict & 681 & --- & 0.64 & 0.36 & 2 \\
+unmatched & 558 & 0.55 & 0.63 & 0.37 & 1 \\
+unmatched, random & 558 & 0.64 & 0.44 & 0.56 & 4 \\
+matched (map) & 557 & 0.55 & 0.54 & 0.46 & 1 \\
+matched (W decoder) & 532 & 0.59 & 0.45 & 0.55 & 1 \\
+\bottomrule
+\end{tabular}
+\caption{%
+  Where transferred concept directions land relative to the weak (recipient)   model's active manifold. \emph{dir.\ off-man.}: per-direction energy outside   the recipient's top-90\% PCA subspace, median over the top-20 injected   concepts. \emph{dep.\ aligned}/\emph{novel}: share of the summed deployed   delta's energy inside/outside that subspace. $\Delta$ dim: effective   (90\%-energy) rank of the deployed delta. The greedy searches a per-row   menu, so it has no single per-direction entry (---). Mitra-recipient   datasets are excluded from the none-curve arms.
+}
+\label{tab:transfer_manifold}
+\end{table}
