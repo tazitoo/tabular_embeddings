@@ -376,7 +376,7 @@ def _row_preds(ctx, r, sets):
     return _forward(ctx, r, deltas)
 
 
-def _dataset_signs(ctx, active_rows, chunk=96, max_rows=24, max_concepts=128):
+def _dataset_signs(ctx, active_rows, chunk=96, max_rows=24, max_concepts=128, only=None):
     """Choose each concept's injection sign ONCE per dataset: the sign (+/-) whose
     single-concept injection yields higher mean gap_closed toward strong over the
     active rows where it fires. Applied uniformly to all rows -- no per-row search,
@@ -387,13 +387,21 @@ def _dataset_signs(ctx, active_rows, chunk=96, max_rows=24, max_concepts=128):
     costs 2*n_firing forwards per row, which wedges mitra-weak pairs (~1300
     unmatched, with mitra OOM-retrying each forward). Deep-tail concepts (reached
     only at the |U| endpoint) default to +sign. The +/- deltas within a row are
-    forwarded in chunks to bound the sequential (carte) batch and VRAM."""
+    forwarded in chunks to bound the sequential (carte) batch and VRAM.
+
+    `only` (deployed-delta dump): resolve signs for exactly this concept list (the
+    top-m used at the dump menu) instead of the top-max_concepts pool. Per-concept
+    signs are independent, so this gives bit-identical signs for those concepts at a
+    fraction of the forwards."""
     # rank the mapped pool by dataset-mean importance; the none curves only reach
     # the top concepts at m<=50, so signs past max_concepts don't move those points.
     pos = {fi: i for i, fi in enumerate(ctx["feat_idx"])}
     mean_drop = ctx["drops"][active_rows].mean(axis=0)
-    pool = sorted(ctx["vatoms"].keys(),
-                  key=lambda fi: -(mean_drop[pos[fi]] if fi in pos else 0.0))[:max_concepts]
+    if only is not None:
+        pool = [int(fi) for fi in only if fi in ctx["vatoms"]]
+    else:
+        pool = sorted(ctx["vatoms"].keys(),
+                      key=lambda fi: -(mean_drop[pos[fi]] if fi in pos else 0.0))[:max_concepts]
     acc = {fi: [0.0, 0.0] for fi in pool}          # [sum gc(+), sum gc(-)]
     pool_set = set(pool)
     sign_rows = (np.random.RandomState(7).choice(active_rows, max_rows, replace=False)
@@ -522,18 +530,15 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
         return
     n = len(active_rows)
 
-    # resolve each concept's injection sign once per dataset (see _dataset_signs);
-    # matched_wdec has no sign freedom (the activation difference is directional)
-    if arm == "matched_wdec":
-        ctx["csign"] = {}
-    else:
-        ctx["csign"] = _dataset_signs(ctx, active_rows)
-    n_flip = sum(1 for s in ctx["csign"].values() if s < 0)
-
     # deployed-delta dump: the summed injection the model actually saw at menu m
-    # (imp,dataset). Reuses the exact signs; skips the none-curve forwards entirely.
+    # (imp,dataset). Resolve signs for EXACTLY the top-m used concepts (bit-identical
+    # per-concept, far fewer forwards); skip the none-curve forwards entirely.
     if dump_m is not None:
         ranked_ds = _ranked_imp_dataset(ctx, swins)
+        used = ranked_ds[:dump_m]
+        ctx["csign"] = ({} if arm == "matched_wdec"
+                        else _dataset_signs(ctx, active_rows, only=used))
+        n_flip = sum(1 for s in ctx["csign"].values() if s < 0)
         dd = _deployed_delta(ctx, active_rows, ranked_ds, dump_m)
         out_dir.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(out_dir / f"{dataset}.npz",
@@ -544,6 +549,14 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
         print(f"  {dataset:28.28} {ctx['strong']:8.8}->{ctx['weak']:8.8} n={n:>4} "
               f"m={dump_m} dumped deployed_delta {dd.shape}  [{time.time()-t0:.0f}s]")
         return
+
+    # resolve each concept's injection sign once per dataset (see _dataset_signs);
+    # matched_wdec has no sign freedom (the activation difference is directional)
+    if arm == "matched_wdec":
+        ctx["csign"] = {}
+    else:
+        ctx["csign"] = _dataset_signs(ctx, active_rows)
+    n_flip = sum(1 for s in ctx["csign"].values() if s < 0)
 
     imp_row = _none_curve(ctx, active_rows, lambda r: _ranked_imp_row(ctx, r))
     ranked_ds = _ranked_imp_dataset(ctx, swins)
