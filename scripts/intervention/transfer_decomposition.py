@@ -137,17 +137,18 @@ def build_map(variant, ctx):
     raise ValueError(f"unknown map variant {variant}")
 
 
-def virtual_atoms(ctx, M, scale="unit"):
-    """{unmatched fi -> direction in normalized weak space} = normalize(M @ atom_s),
-    scaled per `scale`:
+def virtual_atoms(ctx, M, scale="unit", pool=None):
+    """{strong fi -> direction in normalized weak space} = normalize(M @ atom_s),
+    over `pool` strong concept ids (default ctx['unmatched']), scaled per `scale`:
       'unit'    : unit direction (map scale removed) -- comparable across MAP arms.
       'natural' : the paper/greedy scaling -- unit_dir * ||atom_s|| * median matched
                   (weak/strong) norm ratio. Preserves the DICTIONARY's own injection
                   magnitude (trained vs random SAE), for the norm/magnitude control.
     Injection magnitude is then this * the SAE activation a_s * weak std."""
     nr = float(ctx.get("median_norm_ratio", 1.0))
+    pool = ctx["unmatched"] if pool is None else pool
     out = {}
-    for fi in ctx["unmatched"]:
+    for fi in pool:
         a = ctx["atoms_s"][fi]
         v = M @ a
         n = np.linalg.norm(v)
@@ -162,7 +163,7 @@ def virtual_atoms(ctx, M, scale="unit"):
 
 # ── setup (mirrors transfer_sweep_symmetric's per-dataset setup) ────────────────
 def setup(model_a, model_b, dataset, device, matching_file, importance_dir,
-          sae_dir, variant, scale="unit"):
+          sae_dir, variant, scale="unit", arm="unmatched"):
     imp_a = np.load(importance_dir / model_a / f"{dataset}.npz", allow_pickle=True)
     imp_b = np.load(importance_dir / model_b / f"{dataset}.npz", allow_pickle=True)
     preds_a = _widen_binary(imp_a["baseline_preds"])
@@ -253,14 +254,34 @@ def setup(model_a, model_b, dataset, device, matching_file, importance_dir,
     _ok = (_sn > 1e-8) & (_tn > 1e-8)
     ctx["median_norm_ratio"] = float(np.median(_tn[_ok] / _sn[_ok])) if _ok.sum() else 1.0
 
+    ctx["arm"] = arm
+    if arm == "matched_wdec":
+        # No map: inject each matched concept through W's OWN decoder atom, setting
+        # W's activation of ti to S's activation of si (underweighting-as-operation).
+        # delta = (a_si^S - a_ti^W) * atoms_w[ti] * std_w  -- sign is intrinsic, no
+        # map, no csign; sidesteps every cross-model correspondence question.
+        emb_w = load_test_embeddings(weak)[dataset]
+        with torch.no_grad():
+            acts_w = sae_w.encode(torch.tensor(emb_w, dtype=torch.float32, device=device))
+        ctx["h_weak"] = acts_w.cpu().numpy()
+        ctx["pair_of"] = {int(si): int(ti) for si, ti in m_pairs}
+        ctx["vatoms"] = {int(si): atoms_w[ti].astype(np.float32) for si, ti in m_pairs}
+        ctx["unmatched"] = [int(si) for si, _ in m_pairs if int(si) in ctx["vatoms"]]
+        ctx["map_info"] = {"arm": "matched_wdec", "n_pairs": len(m_pairs)}
+        return ctx
+
     # paired SAE-training embeddings (<=500) for geometry maps; scored rows excluded
     if variant in ("procrustes", "schnaus"):
         ctx["train_emb_s"], ctx["train_emb_w"] = _train_pairs(strong, weak, dataset, 500)
 
+    # map-based arms: inject UNMATCHED strong concepts (default) or the MATCHED ones
+    # (matched_map -- the concepts the map was fit on, directly parallel to unmatched)
+    pool = ([int(si) for si, _ in m_pairs] if arm == "matched_map"
+            else ctx["unmatched"])
     M, info = build_map(variant, ctx)
-    ctx["vatoms"] = virtual_atoms(ctx, M, scale=scale)
-    # restrict unmatched to those with a usable mapped direction AND importance
-    ctx["unmatched"] = [u for u in ctx["unmatched"] if u in ctx["vatoms"]]
+    ctx["vatoms"] = virtual_atoms(ctx, M, scale=scale, pool=pool)
+    # iteration pool = concepts with a usable mapped direction AND importance
+    ctx["unmatched"] = [u for u in pool if u in ctx["vatoms"]]
     ctx["map_info"] = info
     return ctx
 
@@ -326,9 +347,15 @@ def _forward(ctx, r, deltas):
 def _concept_delta(ctx, r, fi):
     """Signed raw-weak-space delta for injecting concept fi on row r.
     The per-dataset sign (ctx['csign']) resolves the arbitrary SAE/map sign once
-    per concept -- the dataset-granularity analog of the greedy's per-row flip."""
-    a_s = float(ctx["h_strong"][r, fi])
+    per concept -- the dataset-granularity analog of the greedy's per-row flip.
+    matched_wdec: no map, no csign -- amplitude is the S-vs-W activation difference
+    on the matched partner ti, direction is W's own decoder atom (stored in vatoms)."""
     v = torch.tensor(ctx["vatoms"][fi], device=ctx["ds_std_w"].device)
+    if ctx.get("arm") == "matched_wdec":
+        ti = ctx["pair_of"][fi]
+        amp = float(ctx["h_strong"][r, fi]) - float(ctx["h_weak"][r, ti])
+        return amp * v * ctx["ds_std_w"]
+    a_s = float(ctx["h_strong"][r, fi])
     sgn = ctx.get("csign", {}).get(fi, 1.0)
     return a_s * sgn * v * ctx["ds_std_w"]
 
@@ -458,11 +485,11 @@ def _none_curve(ctx, active_rows, ranked_for_row):
 
 # ── driver ─────────────────────────────────────────────────────────────────────
 def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
-        importance_dir, sae_dir, variant, scale="unit"):
+        importance_dir, sae_dir, variant, scale="unit", arm="unmatched"):
     t0 = time.time()
     try:
         ctx = setup(model_a, model_b, dataset, device, matching_file, importance_dir,
-                    sae_dir, variant, scale=scale)
+                    sae_dir, variant, scale=scale, arm=arm)
     except _SkipDataset as e:
         print(f"  {dataset}: SKIP ({e})")
         return
@@ -473,8 +500,12 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
         return
     n = len(active_rows)
 
-    # resolve each concept's injection sign once per dataset (see _dataset_signs)
-    ctx["csign"] = _dataset_signs(ctx, active_rows)
+    # resolve each concept's injection sign once per dataset (see _dataset_signs);
+    # matched_wdec has no sign freedom (the activation difference is directional)
+    if arm == "matched_wdec":
+        ctx["csign"] = {}
+    else:
+        ctx["csign"] = _dataset_signs(ctx, active_rows)
     n_flip = sum(1 for s in ctx["csign"].values() if s < 0)
 
     imp_row = _none_curve(ctx, active_rows, lambda r: _ranked_imp_row(ctx, r))
@@ -536,6 +567,12 @@ def main():
                    help="injection scale: unit (map comparison) or natural "
                         "(paper/greedy: atom_norm x matched weak/strong ratio) for "
                         "the dictionary magnitude control")
+    p.add_argument("--arm", choices=["unmatched", "matched_map", "matched_wdec"],
+                   default="unmatched",
+                   help="which concepts to inject: unmatched strong concepts via the "
+                        "map (default); matched strong concepts via the SAME map "
+                        "(matched_map); or matched concepts via W's OWN decoder at S's "
+                        "activation level, no map (matched_wdec -- underweighting test)")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--output-dir", type=Path, default=None)
@@ -547,7 +584,12 @@ def main():
     sae_dir = random_sae_dir() if args.random else DEFAULT_SAE_DIR
     matching_file = args.matching_file or (RANDOM_MATCHING_FILE if args.random
                                            else DEFAULT_MATCHING_FILE)
-    tag = args.map + ("_random" if args.random else "") + ("_natural" if args.scale == "natural" else "")
+    if args.arm == "matched_wdec":
+        tag = "matched_wdec" + ("_random" if args.random else "")   # no map, no scale
+    else:
+        tag = (args.map + ("_random" if args.random else "")
+               + ("_natural" if args.scale == "natural" else "")
+               + ("_matched" if args.arm == "matched_map" else ""))
     out_dir = (args.output_dir or (OUTPUT_DIR / tag)) / pair
 
     if args.datasets:
@@ -561,7 +603,8 @@ def main():
             continue
         try:
             run(model_a, model_b, ds, args.device, args.seeds, matching_file,
-                args.quiet, out_dir, importance_dir, sae_dir, args.map, scale=args.scale)
+                args.quiet, out_dir, importance_dir, sae_dir, args.map,
+                scale=args.scale, arm=args.arm)
         except Exception as e:
             logger.error(f"[{i+1}/{len(datasets)}] FAIL {ds}: {e}")
             import traceback; traceback.print_exc()
