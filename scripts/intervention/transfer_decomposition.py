@@ -256,10 +256,11 @@ def setup(model_a, model_b, dataset, device, matching_file, importance_dir,
 
     ctx["arm"] = arm
     if arm == "matched_wdec":
-        # No map: inject each matched concept through W's OWN decoder atom, setting
-        # W's activation of ti to S's activation of si (underweighting-as-operation).
-        # delta = (a_si^S - a_ti^W) * atoms_w[ti] * std_w  -- sign is intrinsic, no
-        # map, no csign; sidesteps every cross-model correspondence question.
+        # No map: amplify W's OWN usage of each matched concept. Matched concepts
+        # cofire, so W already fires ti on the S-relevant rows; we turn it up by its
+        # own activation and decode through W's OWN atom (underweighting-as-operation).
+        # delta = a_ti^W * atoms_w[ti] * std_w -- scale-free (all in W's SAE), no map,
+        # no csign; sidesteps every cross-model correspondence AND cross-SAE scale question.
         emb_w = load_test_embeddings(weak)[dataset]
         with torch.no_grad():
             acts_w = sae_w.encode(torch.tensor(emb_w, dtype=torch.float32, device=device))
@@ -348,12 +349,15 @@ def _concept_delta(ctx, r, fi):
     """Signed raw-weak-space delta for injecting concept fi on row r.
     The per-dataset sign (ctx['csign']) resolves the arbitrary SAE/map sign once
     per concept -- the dataset-granularity analog of the greedy's per-row flip.
-    matched_wdec: no map, no csign -- amplitude is the S-vs-W activation difference
-    on the matched partner ti, direction is W's own decoder atom (stored in vatoms)."""
+    matched_wdec: no map, no csign. Matched concepts COFIRE, so W already has the
+    concept active on these rows; we amplify W's OWN usage of the matched partner ti
+    by its own activation (in W's units -- no cross-SAE scale gap), direction = W's
+    own decoder atom. delta = a_ti^W * d_ti^W * std_w (one extra unit of what W fires;
+    top-m sweeps how many matched concepts are turned up)."""
     v = torch.tensor(ctx["vatoms"][fi], device=ctx["ds_std_w"].device)
     if ctx.get("arm") == "matched_wdec":
         ti = ctx["pair_of"][fi]
-        amp = float(ctx["h_strong"][r, fi]) - float(ctx["h_weak"][r, ti])
+        amp = float(ctx["h_weak"][r, ti])          # W's own activation of ti
         return amp * v * ctx["ds_std_w"]
     a_s = float(ctx["h_strong"][r, fi])
     sgn = ctx.get("csign", {}).get(fi, 1.0)
