@@ -66,6 +66,11 @@ from scripts.intervention.transfer_virtual_nodes import (
 from scripts.intervention.pipeline_ablation import (
     M_GRID, M_LABELS, GC_TOLERANCE, EPS, _clip, _mean_curves, _widen_binary,
 )
+# reuse the deployed-delta subspace basis so the split uses the SAME active
+# subspace (90%-energy PCA of W's test embeddings) that the A2 composition does
+from scripts.rebuttal.subspace_analysis import _eig_cov, _k_for_variance
+
+SPLIT_LABELS = ["1", "5", "|U|"]        # on/off split reports the A1 menu points
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -514,8 +519,68 @@ def _deployed_delta(ctx, active_rows, ranked_ds, m):
     return out
 
 
+def _active_E(weak, dataset, device):
+    """Recipient's active subspace: the orthonormal basis of the top principal
+    directions of W's RAW test embeddings capturing 90% of the variance. Built
+    EXACTLY as subspace_analysis.analyze_unit (same ~500 test rows, centered PCA,
+    same 90% cutoff) so the on/off split and the A2 composition share one basis.
+    Returns E (d_weak x ke) as a torch tensor on `device`."""
+    Xn = np.asarray(load_test_embeddings(weak)[dataset], dtype=np.float64)
+    mean, std = load_norm_stats_matching(weak)[dataset]
+    Xraw = Xn * np.asarray(std) + np.asarray(mean)
+    _, lam_e, V_e = _eig_cov(Xraw, center=True)
+    ke = max(1, min(_k_for_variance(lam_e, 0.90), V_e.shape[1]))
+    return torch.tensor(V_e[:, :ke], dtype=torch.float32, device=device)
+
+
+def _split_curves(ctx, active_rows, ranked_ds, E):
+    """Decisive on/off-manifold injection test. At each menu m in {1, 5, |U|} the
+    summed deployed delta Delta is split against the recipient's active subspace E:
+        Delta_on  = E E^T Delta        (component inside the active manifold)
+        Delta_off = Delta - Delta_on   (component orthogonal to it)
+    Both are NORM-MATCHED to ||Delta|| (hence to each other), so the comparison
+    isolates DIRECTION, not magnitude -- otherwise the larger component wins. We
+    forward the recipient on {full, on, off} and report gap closed for each, plus
+    the on-manifold energy share (the composition, from the same E as A2).
+    Returns per-label arrays: gc for full/on/off and the on-energy fraction."""
+    gcf = {l: [] for l in SPLIT_LABELS}
+    gon = {l: [] for l in SPLIT_LABELS}
+    goff = {l: [] for l in SPLIT_LABELS}
+    e_on = {l: [] for l in SPLIT_LABELS}
+    dev = ctx["ds_std_w"].device
+    for r in active_rows:
+        ms = [min(1, len(ranked_ds)), min(5, len(ranked_ds)), len(ranked_ds)]
+        for lab, m in zip(SPLIT_LABELS, ms):
+            d = torch.zeros(ctx["d_weak"], dtype=torch.float32, device=dev)
+            for fi in ranked_ds[:m]:
+                d = d + _concept_delta(ctx, r, fi)
+            nrm = float(torch.linalg.norm(d))
+            if nrm < 1e-8:                       # top-m didn't fire on this row
+                for g in (gcf, gon, goff, e_on):
+                    g[lab].append(np.nan)
+                continue
+            d_on = E @ (E.T @ d)
+            d_off = d - d_on
+            non = float(torch.linalg.norm(d_on)); noff = float(torch.linalg.norm(d_off))
+            e_on[lab].append(non * non / (nrm * nrm))
+            # norm-match each component to ||Delta|| (undefined if a component ~0)
+            d_on_nm = d_on * (nrm / non) if non > 1e-8 else None
+            d_off_nm = d_off * (nrm / noff) if noff > 1e-8 else None
+            deltas = torch.stack([
+                d,
+                d_on_nm if d_on_nm is not None else torch.zeros_like(d),
+                d_off_nm if d_off_nm is not None else torch.zeros_like(d)])
+            g = _gc(ctx, r, _forward(ctx, r, deltas))
+            gcf[lab].append(float(g[0]))
+            gon[lab].append(float(g[1]) if d_on_nm is not None else np.nan)
+            goff[lab].append(float(g[2]) if d_off_nm is not None else np.nan)
+    arr = lambda d: {l: np.asarray(v, dtype=np.float64) for l, v in d.items()}
+    return arr(gcf), arr(gon), arr(goff), arr(e_on)
+
+
 def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
-        importance_dir, sae_dir, variant, scale="unit", arm="unmatched", dump_m=None):
+        importance_dir, sae_dir, variant, scale="unit", arm="unmatched", dump_m=None,
+        split=False):
     t0 = time.time()
     try:
         ctx = setup(model_a, model_b, dataset, device, matching_file, importance_dir,
@@ -557,6 +622,29 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
     else:
         ctx["csign"] = _dataset_signs(ctx, active_rows)
     n_flip = sum(1 for s in ctx["csign"].values() if s < 0)
+
+    # on/off-manifold split: forward the full deployed delta and its norm-matched
+    # on-/off-manifold components, per menu, and measure which closes the gap.
+    if split:
+        E = _active_E(ctx["weak"], dataset, device)
+        ranked_ds = _ranked_imp_dataset(ctx, swins)
+        gcf, gon, goff, e_on = _split_curves(ctx, active_rows, ranked_ds, E)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        save = dict(strong=ctx["strong"], weak=ctx["weak"], dataset=dataset, map=variant,
+                    active_rows=active_rows, n_sign_flip=n_flip,
+                    n_pool_signed=len(ctx["csign"]), active_dim=int(E.shape[1]),
+                    uni_pool_ds=np.asarray(_latents_dataset(ctx, swins)))
+        for lab in SPLIT_LABELS:
+            save[f"full__{lab}"] = gcf[lab]
+            save[f"on__{lab}"] = gon[lab]
+            save[f"off__{lab}"] = goff[lab]
+            save[f"energy_on__{lab}"] = e_on[lab]
+        np.savez_compressed(out_dir / f"{dataset}.npz", **save)
+        nm = lambda a: float(np.nanmedian(a)) if np.isfinite(a).any() else float("nan")
+        print(f"  {dataset:28.28} {ctx['strong']:8.8}->{ctx['weak']:8.8} n={n:>4} "
+              f"ke={int(E.shape[1])} | @|U| full={nm(gcf['|U|']):.2f} on={nm(gon['|U|']):.2f} "
+              f"off={nm(goff['|U|']):.2f} e_on={nm(e_on['|U|']):.2f}  [{time.time()-t0:.0f}s]")
+        return
 
     imp_row = _none_curve(ctx, active_rows, lambda r: _ranked_imp_row(ctx, r))
     ranked_ds = _ranked_imp_dataset(ctx, swins)
@@ -627,6 +715,11 @@ def main():
                    help="instead of the gc curves, dump the SUMMED deployed delta at "
                         "menu size M (imp,dataset ordering) for the deployed-delta "
                         "subspace analysis; writes to the <tag>_deltas dir")
+    p.add_argument("--project-split", action="store_true",
+                   help="instead of the gc curves, run the decisive on/off-manifold "
+                        "test: forward the full deployed delta and its norm-matched "
+                        "on-/off-manifold components (vs W's active subspace) per menu; "
+                        "writes to the <tag>_split dir")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--output-dir", type=Path, default=None)
@@ -646,6 +739,8 @@ def main():
                + ("_matched" if args.arm == "matched_map" else ""))
     if args.dump_deltas is not None:
         tag += "_deltas"
+    if args.project_split:
+        tag += "_split"
     out_dir = (args.output_dir or (OUTPUT_DIR / tag)) / pair
 
     if args.datasets:
@@ -660,7 +755,8 @@ def main():
         try:
             run(model_a, model_b, ds, args.device, args.seeds, matching_file,
                 args.quiet, out_dir, importance_dir, sae_dir, args.map,
-                scale=args.scale, arm=args.arm, dump_m=args.dump_deltas)
+                scale=args.scale, arm=args.arm, dump_m=args.dump_deltas,
+                split=args.project_split)
         except Exception as e:
             logger.error(f"[{i+1}/{len(datasets)}] FAIL {ds}: {e}")
             import traceback; traceback.print_exc()
