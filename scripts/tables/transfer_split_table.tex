@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{l r r r}
+\toprule
+Injected component & $m{=}1$ & $m{=}5$ & $m{=}|U|$ \\
+\midrule
+full injection & +0.50 (0.29) & +0.66 (0.31) & +0.45 (0.40) \\
+on-manifold only & +0.52 (0.30) & +0.65 (0.31) & +0.46 (0.40) \\
+off-manifold only & +0.16 (0.35) & +0.18 (0.38) & +0.00 (0.47) \\
+\midrule
+on-manifold energy share & 0.53 & 0.55 & 0.63 \\
+\bottomrule
+\end{tabular}
+\caption{%
+  Decisive on/off-manifold injection test (unmatched transfer arm). The   summed deployed delta is projected onto the recipient's active subspace   (90\%-energy PCA of its embeddings) and its complement; both components   are norm-matched to the full delta (and each other) before injection, so   only direction differs. Cells are per-dataset median gap closed with the   pooled-row wrong-direction fraction in parentheses. The last row is the   share of injected energy that is on-manifold (the composition, same   subspace). $|U|$ is the full unmatched pool (median 544   concepts; the overshoot regime). Mitra-recipient datasets excluded.
+}
+\label{tab:transfer_split}
+\end{table}

@@ -107,19 +107,18 @@ def main():
     ap.add_argument("--out", type=Path, default=OUT_TEX)
     args = ap.parse_args()
 
-    rows = []            # (disp, m-label, med, p25, p75, pooled_med, wrongfrac, K)
-    meanU = None
+    rows = []            # (disp, m-label, med, p25, p75, pooled_med, wrongfrac, K, medU)
     for disp, tag, arm in ARMS:
         per_ds, pooled, U = _collect(tag, arm)
         if per_ds is None:
             print(f"  (no npz for tag {tag} -- skipping)")
             continue
-        meanU = float(U.mean())
+        medU = float(np.median(U))      # this ARM's own pool (unmatched ~540 vs matched ~27)
         for lab in M_SHOW:
             med, p25, p75 = _iqr(per_ds[lab])
             prow = float(np.median(pooled[lab]))
             wf = float((pooled[lab] < 0).mean())
-            rows.append((disp, lab, med, p25, p75, prow, wf, None))
+            rows.append((disp, lab, med, p25, p75, prow, wf, None, medU))
 
     g = _greedy()
     greedy_row = None
@@ -127,20 +126,21 @@ def main():
         per_ds, pooled, ks = g
         greedy_row = ("greedy (search)", "search", float(np.median(per_ds)),
                       None, None, float(np.median(pooled)),
-                      float((pooled < 0).mean()), float(np.median(ks)))
+                      float((pooled < 0).mean()), float(np.median(ks)), None)
 
-    def mlabel(lab):
-        return f"$|U|\\approx{meanU:.0f}$" if lab == "|U|" else lab
+    def mlabel(lab, medU):
+        return f"$|U|{{\\approx}}{medU:.0f}$" if lab == "|U|" else lab
 
     # ---- stdout pre-read --------------------------------------------------------
     print("\n=== TRANSFER gc COMPANION (pre-read) ===")
     print(f"{'arm':20} {'m':>8} {'med gc':>8} {'IQR':>15} {'pooled':>8} {'wrong%':>8} {'K':>5}")
-    for disp, lab, med, p25, p75, prow, wf, K in rows:
+    for disp, lab, med, p25, p75, prow, wf, K, medU in rows:
         iqr = f"[{p25:+.2f},{p75:+.2f}]"
-        print(f"{disp:20} {lab if lab!='|U|' else f'|U|~{meanU:.0f}':>8} {med:>8.2f} {iqr:>15} "
+        mlab = f"|U|~{medU:.0f}" if lab == "|U|" else lab
+        print(f"{disp:20} {mlab:>8} {med:>8.2f} {iqr:>15} "
               f"{prow:>8.2f} {wf*100:>7.0f}% {'':>5}")
     if greedy_row:
-        _, _, med, _, _, prow, wf, K = greedy_row
+        _, _, med, _, _, prow, wf, K, _ = greedy_row
         print(f"{'greedy (search)':20} {'search':>8} {med:>8.2f} {'':>15} "
               f"{prow:>8.2f} {wf*100:>7.0f}% {int(K):>5}")
 
@@ -151,16 +151,16 @@ def main():
          r"Arm & $m$ & median gc (IQR) & pooled-row gc & wrong-dir.\ frac & $K$ \\",
          r"\midrule"]
     last = None
-    for disp, lab, med, p25, p75, prow, wf, K in rows:
+    for disp, lab, med, p25, p75, prow, wf, K, medU in rows:
         name = disp if disp != last else ""
         last = disp
         if name and name != rows[0][0]:
             L.append(r"\addlinespace[2pt]")
         iqr = f"[{_sg(p25)},\\,{_sg(p75)}]"
-        L.append(f"{name} & {mlabel(lab)} & {_sg(med)}\\ {iqr} & {_sg(prow)} & "
+        L.append(f"{name} & {mlabel(lab, medU)} & {_sg(med)}\\ {iqr} & {_sg(prow)} & "
                  f"{wf:.2f} & \\\\")
     if greedy_row:
-        _, _, med, _, _, prow, wf, K = greedy_row
+        _, _, med, _, _, prow, wf, K, _ = greedy_row
         L.append(r"\midrule")
         L.append(f"greedy (search) & search & {_sg(med)} & {_sg(prow)} & {wf:.2f} & {int(K)} \\\\")
     L += [r"\bottomrule", r"\end{tabular}", r"\caption{%",
