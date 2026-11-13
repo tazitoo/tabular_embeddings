@@ -43,7 +43,7 @@ import numpy as np
 import torch
 
 from scripts.round_paths import (
-    FORWARD_ABLATION_DIR, IMPORTANCE_DIR, IMPORTANCE_RANDOM_DIR,
+    FORWARD_ABLATION_DIR, FORWARD_DELTAS_DIR, IMPORTANCE_DIR, IMPORTANCE_RANDOM_DIR,
     SYMMETRIC_TRANSFER_DIR, RESULTS_DIR, random_sae_dir, sae_training_dir,
 )
 from scripts.intervention.intervene_lib import (
@@ -578,9 +578,63 @@ def _split_curves(ctx, active_rows, ranked_ds, E):
     return arr(gcf), arr(gon), arr(goff), arr(e_on)
 
 
+def _load_greedy_delta(strong, weak, dataset):
+    """The on-disk GREEDY deployed delta for this (strong->weak, dataset): the
+    per-row net injection the per-row search accepted (forward_deltas). Returns
+    (deployed_delta (n_query,d), optimal_k (n_query,), row_indices, gap_closed) or
+    None. Matches the pair by model names (the symmetric sweep stores both directions)."""
+    for pdir in sorted(d for d in FORWARD_DELTAS_DIR.iterdir() if d.is_dir()):
+        f = pdir / f"{dataset}.npz"
+        if not f.exists():
+            continue
+        z = np.load(f, allow_pickle=True)
+        if str(z["strong_model"]) == strong and str(z["weak_model"]) == weak:
+            return (np.asarray(z["deployed_delta"], dtype=np.float32),
+                    np.asarray(z["optimal_k"]).astype(int),
+                    np.asarray(z["row_indices"]), np.asarray(z["gap_closed"], dtype=np.float64))
+    return None
+
+
+def _greedy_split(ctx, dataset, E):
+    """Decisive on/off test on the GREEDY accepted deltas (not a rebuilt menu): load
+    each per-row deployed delta the search produced, split it against the recipient's
+    active subspace E, norm-match on/off to ||Delta||, forward {full, on, off}, and
+    measure gap closed. Reproducing the stored greedy gc with the full delta validates
+    the injection path. Returns per-active-row dict of gc(full/on/off), on-energy, and
+    the stored greedy gc for cross-check."""
+    got = _load_greedy_delta(ctx["strong"], ctx["weak"], dataset)
+    if got is None:
+        raise _SkipDataset("no greedy delta on disk for this pair/dataset")
+    dd, optk, ridx, gc_stored = got
+    if not np.array_equal(ridx, ctx["row_indices"]):
+        raise _SkipDataset("greedy row_indices misaligned with ctx")
+    dev = ctx["ds_std_w"].device
+    active = np.where((optk > 0) & ctx["_swins"])[0]
+    out = {k: [] for k in ("full", "on", "off", "energy_on", "greedy_stored")}
+    for r in active:
+        d = torch.tensor(dd[r], dtype=torch.float32, device=dev)
+        nrm = float(torch.linalg.norm(d))
+        if nrm < 1e-8:
+            continue
+        d_on = E @ (E.T @ d); d_off = d - d_on
+        non = float(torch.linalg.norm(d_on)); noff = float(torch.linalg.norm(d_off))
+        d_on_nm = d_on * (nrm / non) if non > 1e-8 else None
+        d_off_nm = d_off * (nrm / noff) if noff > 1e-8 else None
+        deltas = torch.stack([d,
+                              d_on_nm if d_on_nm is not None else torch.zeros_like(d),
+                              d_off_nm if d_off_nm is not None else torch.zeros_like(d)])
+        g = _gc(ctx, r, _forward(ctx, r, deltas))
+        out["full"].append(float(g[0]))
+        out["on"].append(float(g[1]) if d_on_nm is not None else np.nan)
+        out["off"].append(float(g[2]) if d_off_nm is not None else np.nan)
+        out["energy_on"].append(non * non / (nrm * nrm))
+        out["greedy_stored"].append(float(gc_stored[r]))
+    return {k: np.asarray(v, dtype=np.float64) for k, v in out.items()}
+
+
 def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
         importance_dir, sae_dir, variant, scale="unit", arm="unmatched", dump_m=None,
-        split=False):
+        split=False, greedy_split=False):
     t0 = time.time()
     try:
         ctx = setup(model_a, model_b, dataset, device, matching_file, importance_dir,
@@ -622,6 +676,29 @@ def run(model_a, model_b, dataset, device, seeds, matching_file, quiet, out_dir,
     else:
         ctx["csign"] = _dataset_signs(ctx, active_rows)
     n_flip = sum(1 for s in ctx["csign"].values() if s < 0)
+
+    # decisive on/off test on the GREEDY accepted deltas (the paper's headline arm):
+    # load each per-row searched delta, split/norm-match/forward, measure gc.
+    if greedy_split:
+        try:
+            ctx["_swins"] = swins
+            E = _active_E(ctx["weak"], dataset, device)
+            res = _greedy_split(ctx, dataset, E)
+        except _SkipDataset as e:
+            print(f"  {dataset}: SKIP ({e})")
+            return
+        out_dir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(out_dir / f"{dataset}.npz",
+                            strong=ctx["strong"], weak=ctx["weak"], dataset=dataset,
+                            active_dim=int(E.shape[1]), full=res["full"], on=res["on"],
+                            off=res["off"], energy_on=res["energy_on"],
+                            greedy_stored=res["greedy_stored"])
+        nm = lambda a: float(np.nanmedian(a)) if np.isfinite(a).any() else float("nan")
+        print(f"  {dataset:28.28} {ctx['strong']:8.8}->{ctx['weak']:8.8} n={len(res['full'])} "
+              f"ke={int(E.shape[1])} | full={nm(res['full']):.2f} (greedy={nm(res['greedy_stored']):.2f}) "
+              f"on={nm(res['on']):.2f} off={nm(res['off']):.2f} e_on={nm(res['energy_on']):.2f}  "
+              f"[{time.time()-t0:.0f}s]")
+        return
 
     # on/off-manifold split: forward the full deployed delta and its norm-matched
     # on-/off-manifold components, per menu, and measure which closes the gap.
@@ -720,6 +797,10 @@ def main():
                         "test: forward the full deployed delta and its norm-matched "
                         "on-/off-manifold components (vs W's active subspace) per menu; "
                         "writes to the <tag>_split dir")
+    p.add_argument("--greedy-split", action="store_true",
+                   help="decisive on/off test on the ON-DISK GREEDY deltas (forward_"
+                        "deltas): split each searched per-row delta on/off, norm-match, "
+                        "forward {full,on,off}; writes to the greedy_split dir")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--output-dir", type=Path, default=None)
@@ -741,6 +822,8 @@ def main():
         tag += "_deltas"
     if args.project_split:
         tag += "_split"
+    if args.greedy_split:
+        tag = "greedy_split" + ("_random" if args.random else "")
     out_dir = (args.output_dir or (OUTPUT_DIR / tag)) / pair
 
     if args.datasets:
@@ -756,7 +839,7 @@ def main():
             run(model_a, model_b, ds, args.device, args.seeds, matching_file,
                 args.quiet, out_dir, importance_dir, sae_dir, args.map,
                 scale=args.scale, arm=args.arm, dump_m=args.dump_deltas,
-                split=args.project_split)
+                split=args.project_split, greedy_split=args.greedy_split)
         except Exception as e:
             logger.error(f"[{i+1}/{len(datasets)}] FAIL {ds}: {e}")
             import traceback; traceback.print_exc()
