@@ -1,0 +1,21 @@
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{l r r r}
+\toprule
+Recipient & full $\Delta$ & on-manifold only & off-manifold only \\
+\midrule
+TabPFN & 0.98 & 0.95 & 0.47 \\
+TabICL & 1.00 & 1.00 & 0.38 \\
+TabICL-v2 & 1.00 & 1.00 & 0.18 \\
+TabDPT & 0.99 & 1.00 & 0.36 \\
+CARTE & 0.79 & 0.78 & 0.51 \\
+\midrule
+Overall & 0.99 & 0.96 & 0.40 \\
+\bottomrule
+\end{tabular}
+\caption{%
+  Decisive on/off-manifold test on the greedy accepted transfer deltas   (the same deltas whose composition is Table~\ref{tab:offmanifold}). Each   per-row searched delta is split against the recipient's active subspace;   the on-manifold-only and off-manifold-only components are each   norm-matched to the full delta and injected. Columns are per-dataset   median gap closed (clamped to $[0,1]$). Whether off-only closes the gap   tests directly whether the off-manifold energy reported in   Table~\ref{tab:offmanifold} is doing the work. Mitra-recipient datasets   excluded (forward intractable on 24\,GB).
+}
+\label{tab:greedy_split}
+\end{table}
